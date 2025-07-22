@@ -5,4 +5,6 @@ psycopg2-binary
 alembic
 python-jose[cryptography]
 passlib[bcrypt]
-pydantic 
+pydantic
+pytest
+httpx 
