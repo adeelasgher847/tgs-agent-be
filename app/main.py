@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
+# from app.routers import auth_router
 
 app = FastAPI()
 
@@ -10,3 +11,4 @@ def read_root():
 
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(health_router) 
+#app.include_router(auth_router.router)
