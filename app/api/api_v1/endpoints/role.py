@@ -1,0 +1,67 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List
+from app.schemas.role import RoleCreate, RoleOut
+from app.models.role import Role
+from app.api.deps import get_db
+
+router = APIRouter()
+
+@router.post("/", response_model=RoleOut)
+def create_role(role_in: RoleCreate, db: Session = Depends(get_db)):
+    """Create a new role"""
+    # Check if role name already exists
+    existing_role = db.query(Role).filter(Role.name == role_in.name).first()
+    if existing_role:
+        raise HTTPException(status_code=400, detail="Role name already exists")
+    
+    db_role = Role(**role_in.dict())
+    db.add(db_role)
+    db.commit()
+    db.refresh(db_role)
+    return db_role
+
+@router.get("/", response_model=List[RoleOut])
+def get_roles(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """Get all roles"""
+    roles = db.query(Role).offset(skip).limit(limit).all()
+    return roles
+
+@router.get("/{role_id}", response_model=RoleOut)
+def get_role(role_id: int, db: Session = Depends(get_db)):
+    """Get a specific role by ID"""
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    return role
+
+@router.put("/{role_id}", response_model=RoleOut)
+def update_role(role_id: int, role_in: RoleCreate, db: Session = Depends(get_db)):
+    """Update a role"""
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    
+    # Check if new name conflicts with existing role
+    if role_in.name != role.name:
+        existing_role = db.query(Role).filter(Role.name == role_in.name).first()
+        if existing_role:
+            raise HTTPException(status_code=400, detail="Role name already exists")
+    
+    for field, value in role_in.dict().items():
+        setattr(role, field, value)
+    
+    db.commit()
+    db.refresh(role)
+    return role
+
+@router.delete("/{role_id}")
+def delete_role(role_id: int, db: Session = Depends(get_db)):
+    """Delete a role"""
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    
+    db.delete(role)
+    db.commit()
+    return {"message": "Role deleted successfully"} 
