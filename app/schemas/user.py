@@ -1,22 +1,24 @@
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
-
 class UserBase(BaseModel):
     first_name: str
     last_name: str
     email: str
     phone: Optional[str] = None
-
 class UserCreate(UserBase):
     password: str
-    tenant_id: Optional[int] = None
-
 class UserOut(UserBase):
     id: int
-    tenant_id: Optional[int] = None
-    join_date: datetime     
+    join_date: datetime
     created_at: datetime
-
     class Config:
-        orm_mode = True 
+        orm_mode = True
+        
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str        

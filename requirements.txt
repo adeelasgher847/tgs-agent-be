@@ -8,3 +8,4 @@ passlib[bcrypt]
 pydantic
 pytest
 httpx 
+python-multipart
