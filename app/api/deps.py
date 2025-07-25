@@ -17,12 +17,25 @@ def get_db() -> Generator:
         db.close()
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
-    include_tenants: bool = False
-) -> Union[User, tuple[User, TokenData]]:
+    x_user_id: int = Header(..., description="User ID for authentication"),
+    db: Session = Depends(get_db)
+) -> User:
     """
-    JWT-based user authentication with optional tenant context.
+    Simple user authentication via header.
+    In production, this would be replaced with JWT token validation.
+    """
+    user = db.query(User).filter(User.id == x_user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
+
+def get_current_user_jwt(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    JWT-based user authentication.
+    Validates JWT token and returns the authenticated user.
     """
     token = credentials.credentials
     payload = verify_token(token)
@@ -50,23 +63,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # If tenant context is not needed, return just the user
-    if not include_tenants:
-        return user
-
-    # If tenant context is needed, extract and return with token data
-    email: str = payload.get("email")
-    tenant_ids: list = payload.get("tenant_ids", [])
-    current_tenant_id: int = payload.get("current_tenant_id")
-
-    token_data = TokenData(
-        user_id=user_id,
-        email=email,
-        tenant_ids=tenant_ids,
-        current_tenant_id=current_tenant_id
-    )
-
-    return user, token_data
+    return user
 
 def get_current_user_with_tenants_jwt(
     credentials: HTTPAuthorizationCredentials = Depends(security),

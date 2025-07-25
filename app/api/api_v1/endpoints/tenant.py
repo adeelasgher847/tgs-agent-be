@@ -45,11 +45,10 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
         existing_schema = db.query(Tenant).filter(Tenant.schema_name == schema_name).first()
         counter += 1
     
-    # Create new tenant with current user as admin
+    # Create new tenant
     db_tenant = Tenant(
         name=tenant_in.name,
-        schema_name=schema_name,
-        admin_id=current_user.id
+        schema_name=schema_name
     )
     
     db.add(db_tenant)

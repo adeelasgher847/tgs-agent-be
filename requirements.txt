@@ -6,5 +6,6 @@ alembic
 python-jose[cryptography]
 passlib[bcrypt]
 pydantic
+pydantic-settings
 pytest
 httpx 
