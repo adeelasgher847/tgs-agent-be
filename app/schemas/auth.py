@@ -11,6 +11,7 @@ class TokenResponse(BaseModel):
     user_id: int
     email: str
     tenant_id: Optional[int] = None  # Changed from current_tenant_id
+    tenant_ids: Optional[List]
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.api.deps import get_db,get_current_user_with_tenants_jwt
+from app.api.deps import get_db
 from app.models.user import User
 from app.core.security import verify_password, create_user_token
 from app.schemas.auth import LoginRequest, TokenResponse
@@ -41,27 +41,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         access_token=access_token,
         user_id=user.id,
         email=user.email,
-        tenant_id=tenant_ids[0] if tenant_ids else None  # Changed from current_tenant_id
+        tenant_id=tenant_ids[0] if tenant_ids else None,
+        tenant_ids=tenant_ids
     )
 
 
-
-@router.get("/me")
-def get_current_user_info(
-    current_user: tuple = Depends(get_current_user_with_tenants_jwt),
-    db: Session = Depends(get_db)
-):
-    """
-    Get current user information with tenant details.
-    """
-    user, token_data = current_user
-    
-    return {
-        "user_id": user.id,
-        "email": user.email,
-        "tenant_id": token_data.tenant_id,
-        "role_id": user.role_id
-    }
 
 @router.post("/logout")
 def logout():

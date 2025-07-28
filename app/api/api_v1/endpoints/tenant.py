@@ -4,12 +4,9 @@ from app.schemas.tenant import TenantCreate, TenantCreateResponse, TenantOut
 from app.schemas.auth import SwitchTenantRequest, TokenResponse
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.api.deps import get_db, get_current_user_jwt, get_current_user_with_tenants_jwt
+from app.api.deps import get_db, get_current_user_jwt
 from app.core.security import create_user_token
 import re
-from typing import Optional
-from app.core.security import create_access_token, verify_token
-from fastapi.security import HTTPAuthorizationCredentials
 
 router = APIRouter()
 
@@ -80,7 +77,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
 @router.post("/switch", response_model=TokenResponse)
 def switch_tenant(
     switch_data: SwitchTenantRequest,
-    current_user: User = Depends(get_current_user_jwt),  # Use simple auth
+    current_user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
     """
@@ -107,5 +104,6 @@ def switch_tenant(
         access_token=access_token,
         user_id=current_user.id,
         email=current_user.email,
-        tenant_id=switch_data.tenant_id  
+        tenant_id=switch_data.tenant_id,
+        tenant_ids=user_tenant_ids
     )
