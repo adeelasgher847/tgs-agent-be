@@ -10,14 +10,14 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user_id: int
     email: str
-    tenant_id: Optional[int] = None  # Changed from current_tenant_id
-    tenant_ids: Optional[List]
+    tenant_id: Optional[int] = None
+    tenant_ids: Optional[List[int]] = None  # Fix type
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
-    tenant_ids: List[int] = []  # Will be populated from database
-    tenant_id: Optional[int] = None  # Changed from current_tenant_id
+    tenant_ids: List[int] = []  # Keep as is for now
+    tenant_id: Optional[int] = None
 
 class SwitchTenantRequest(BaseModel):
     tenant_id: int 

@@ -7,6 +7,7 @@ from app.models.user import User
 from app.api.deps import get_db, get_current_user_jwt
 from app.core.security import create_user_token
 import re
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -59,7 +60,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     current_user.tenants.append(db_tenant)
     
     # Update user's role to admin (role_id = 1 for admin)
-    current_user.role_id = 1 
+    current_user.role_id = settings.ADMIN_ROLE_ID 
     db.commit()
     db.refresh(current_user)
     
