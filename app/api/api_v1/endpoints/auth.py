@@ -30,7 +30,6 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     # Get user's tenant IDs
     tenant_ids = [tenant.id for tenant in user.tenants]
     
-    # Create JWT token (without tenant_ids)
     access_token = create_user_token(
         user_id=user.id,
         email=user.email,

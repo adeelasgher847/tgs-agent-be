@@ -59,7 +59,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     current_user.tenants.append(db_tenant)
     
     # Update user's role to admin (role_id = 1 for admin)
-    current_user.role_id = 1  # Assuming role_id 1 is admin
+    current_user.role_id = 1 
     db.commit()
     db.refresh(current_user)
     
@@ -73,7 +73,6 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     )
 
 
-# on tenant switching, login token will be replaced using this token
 @router.post("/switch", response_model=TokenResponse)
 def switch_tenant(
     switch_data: SwitchTenantRequest,
