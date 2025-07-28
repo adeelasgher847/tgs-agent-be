@@ -1,5 +1,5 @@
 from app.db.session import SessionLocal
-from typing import Generator, Union
+from typing import Generator, Union, Optional
 from fastapi import Depends, HTTPException, Header, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
@@ -85,8 +85,7 @@ def get_current_user_with_tenants_jwt(
 
     user_id: int = payload.get("user_id")
     email: str = payload.get("email")
-    tenant_ids: list = payload.get("tenant_ids", [])
-    current_tenant_id: int = payload.get("current_tenant_id")
+    tenant_id: int = payload.get("tenant_id")
 
     if user_id is None:
         raise HTTPException(
@@ -102,12 +101,23 @@ def get_current_user_with_tenants_jwt(
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # Additional validation: check if email in token matches user's email
+    if user.email != email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token email does not match user email",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Get current tenant IDs from database (not from token)
+    current_tenant_ids = [tenant.id for tenant in user.tenants]
 
     token_data = TokenData(
         user_id=user_id,
         email=email,
-        tenant_ids=tenant_ids,
-        current_tenant_id=current_tenant_id
+        tenant_ids=current_tenant_ids,
+        tenant_id=tenant_id
     )
 
     return user, token_data 

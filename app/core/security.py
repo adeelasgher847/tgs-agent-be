@@ -35,12 +35,11 @@ def get_password_hash(password: str) -> str:
     """Hash password"""
     return pwd_context.hash(password)
 
-def create_user_token(user_id: int, email: str, tenant_ids: List[int], current_tenant_id: Optional[int] = None):
-    """Create JWT token for user with tenant information"""
+def create_user_token(user_id: int, email: str, tenant_id: Optional[int] = None):
+    """Create JWT token for user without tenant IDs"""
     token_data = {
         "user_id": user_id,
         "email": email,
-        "tenant_ids": tenant_ids,
-        "current_tenant_id": current_tenant_id or (tenant_ids[0] if tenant_ids else None)
+        "tenant_id": tenant_id
     }
     return create_access_token(data=token_data) 

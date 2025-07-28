@@ -30,20 +30,18 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     # Get user's tenant IDs
     tenant_ids = [tenant.id for tenant in user.tenants]
     
-    # Create JWT token
+    # Create JWT token (without tenant_ids)
     access_token = create_user_token(
         user_id=user.id,
         email=user.email,
-        tenant_ids=tenant_ids,
-        current_tenant_id=tenant_ids[0] if tenant_ids else None
+        tenant_id=tenant_ids[0] if tenant_ids else None  # Changed from current_tenant_id
     )
     
     return TokenResponse(
         access_token=access_token,
         user_id=user.id,
         email=user.email,
-        tenant_ids=tenant_ids,
-        current_tenant_id=tenant_ids[0] if tenant_ids else None
+        tenant_id=tenant_ids[0] if tenant_ids else None  # Changed from current_tenant_id
     )
 
 
@@ -61,8 +59,7 @@ def get_current_user_info(
     return {
         "user_id": user.id,
         "email": user.email,
-        "tenant_ids": token_data.tenant_ids,
-        "current_tenant_id": token_data.current_tenant_id,
+        "tenant_id": token_data.tenant_id,
         "role_id": user.role_id
     }
 
