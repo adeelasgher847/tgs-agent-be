@@ -1,5 +1,6 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
+from pydantic import EmailStr
 from datetime import datetime
 
 
@@ -12,22 +13,17 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
-
+    # role_id: Optional[int] = None
 
 class UserOut(UserBase):
     id: int
+    role_id: Optional[int] = None
     join_date: datetime
     created_at: datetime
-
-    class Config:
-        orm_mode = True
+    
+    model_config = ConfigDict(from_attributes=True) 
 
 
 class UserLogin(BaseModel):
     email: str
     password: str
-
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
