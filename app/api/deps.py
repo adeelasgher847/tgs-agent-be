@@ -1,3 +1,7 @@
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import jwt, JWTError
+from app.models.user import User
 from app.db.session import SessionLocal
 from typing import Generator
 from fastapi import Depends, HTTPException, Header, status
@@ -7,6 +11,11 @@ from app.models.user import User
 from app.core.security import verify_token
 
 security = HTTPBearer()
+
+SECRET_KEY = "your_secret_key"  # Use the same as in user.py
+ALGORITHM = "HS256"
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/login")
 
 def get_db() -> Generator:
     db = SessionLocal()
