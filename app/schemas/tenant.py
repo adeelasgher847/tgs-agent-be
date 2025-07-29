@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
@@ -13,9 +13,8 @@ class TenantOut(TenantBase):
     id: int
     schema_name: str
     created_at: datetime
-
-    class Config:
-        from_attributes = True  # Updated from orm_mode for newer Pydantic versions
+    
+    model_config = ConfigDict(from_attributes=True)
 
 class TenantCreateResponse(BaseModel):
     tenant_id: int

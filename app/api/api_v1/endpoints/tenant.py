@@ -65,7 +65,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     db.refresh(current_user)
     
     # Convert SQLAlchemy model to Pydantic model
-    tenant_out = TenantOut.from_orm(db_tenant)
+    tenant_out = TenantOut.model_validate(db_tenant)
     
     return TenantCreateResponse(
         tenant_id=db_tenant.id,

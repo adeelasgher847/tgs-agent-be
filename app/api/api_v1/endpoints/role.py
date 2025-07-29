@@ -15,7 +15,7 @@ def create_role(role_in: RoleCreate, db: Session = Depends(get_db)):
     if existing_role:
         raise HTTPException(status_code=400, detail="Role name already exists")
     
-    db_role = Role(**role_in.dict())
+    db_role = Role(**role_in.model_dump())
     db.add(db_role)
     db.commit()
     db.refresh(db_role)
@@ -48,7 +48,7 @@ def update_role(role_id: int, role_in: RoleCreate, db: Session = Depends(get_db)
         if existing_role:
             raise HTTPException(status_code=400, detail="Role name already exists")
     
-    for field, value in role_in.dict().items():
+    for field, value in role_in.model_dump().items():
         setattr(role, field, value)
     
     db.commit()
