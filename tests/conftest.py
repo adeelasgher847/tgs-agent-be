@@ -40,12 +40,16 @@ def db():
     db = TestingSessionLocal()
     
     try:
-        # Create test data
-        # Create test role
-        test_role = Role(name="test_user", description="Test user role")
-        db.add(test_role)
+        # Create test roles - we need role ID 2 for the default user role
+        admin_role = Role(name="admin", description="Administrator role")
+        db.add(admin_role)
         db.commit()
-        db.refresh(test_role)
+        db.refresh(admin_role)
+        
+        user_role = Role(name="user", description="Regular user role")
+        db.add(user_role)
+        db.commit()
+        db.refresh(user_role)
         
         # Create test tenant
         test_tenant = Tenant(name="Test Tenant", schema_name="test_tenant_schema")
@@ -53,11 +57,13 @@ def db():
         db.commit()
         db.refresh(test_tenant)
         
-        # Create test user (you'll provide the actual test user data)
+        # Create test user with required fields
         test_user = User(
             email="test@example.com",
             hashed_password="$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4tbQJbqK8O",  # "testpassword123"
-            role_id=test_role.id
+            first_name="Test",
+            last_name="User",
+            role_id=user_role.id  # Use the user role (ID: 2)
         )
         db.add(test_user)
         db.commit()

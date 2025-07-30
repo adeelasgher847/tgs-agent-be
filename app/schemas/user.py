@@ -5,14 +5,14 @@ from datetime import datetime
 
 
 class UserBase(BaseModel):
-    first_name: str
-    last_name: str
-    email: EmailStr
+    first_name: str = Field(..., min_length=1, description="First name is required")
+    last_name: str = Field(..., min_length=1, description="Last name is required")
+    email: EmailStr = Field(..., description="Valid email address is required")
     phone: Optional[str] = None
 
 
 class UserCreate(UserBase):
-    password: str
+    password: str = Field(..., min_length=6, description="Password must be at least 6 characters long")
     # role_id: Optional[int] = None
 
 class UserOut(UserBase):
@@ -23,7 +23,3 @@ class UserOut(UserBase):
     
     model_config = ConfigDict(from_attributes=True) 
 
-
-class UserLogin(BaseModel):
-    email: str
-    password: str

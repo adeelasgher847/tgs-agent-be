@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
-# from app.routers import auth_router 
 
 app = FastAPI()
 

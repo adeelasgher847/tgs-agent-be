@@ -4,12 +4,272 @@ from sqlalchemy.orm import Session
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
-from app.core.security import create_user_token
+from app.core.security import create_user_token, verify_password, get_password_hash
 
 # Test account credentials (you'll provide these)
 TEST_USER_EMAIL = "test@example.com"
 TEST_USER_ID = 1  # You'll provide the actual test user ID
 TEST_TENANT_ID = 1  # You'll provide the actual test tenant ID
+
+class TestUserAuthentication:
+    """Test user registration and authentication endpoints"""
+    
+    def test_register_user_success(self, client: TestClient, db: Session):
+        """Test successful user registration"""
+        user_data = {
+            "email": "newuser@example.com",
+            "password": "securepassword123",
+            "first_name": "John",
+            "last_name": "Doe",
+            "phone": "+1234567890"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Check response structure
+        assert data["email"] == "newuser@example.com"
+        assert data["first_name"] == "John"
+        assert data["last_name"] == "Doe"
+        assert data["phone"] == "+1234567890"
+        assert "id" in data
+        assert "role_id" in data
+        assert "join_date" in data
+        assert "created_at" in data
+        assert "password" not in data  # Password should not be returned
+        
+        # Verify user is in database
+        user = db.query(User).filter(User.email == "newuser@example.com").first()
+        assert user is not None
+        assert user.first_name == "John"
+        assert user.last_name == "Doe"
+        assert user.phone == "+1234567890"
+        assert user.role_id == 2  # Default user role
+        assert verify_password("securepassword123", user.hashed_password)
+    
+    def test_register_user_duplicate_email(self, client: TestClient, db: Session):
+        """Test registration with existing email"""
+        # Create a user first
+        existing_user = User(
+            email="existing@example.com",
+            hashed_password="hashedpassword",
+            first_name="Existing",
+            last_name="User",
+            role_id=2
+        )
+        db.add(existing_user)
+        db.commit()
+        
+        user_data = {
+            "email": "existing@example.com",
+            "password": "newpassword123",
+            "first_name": "New",
+            "last_name": "User"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        
+        assert response.status_code == 400
+        assert "Email already registered" in response.json()["detail"]
+    
+    def test_register_user_missing_required_fields(self, client: TestClient):
+        """Test registration with missing required fields"""
+        # Test missing email
+        user_data = {
+            "password": "password123",
+            "first_name": "John",
+            "last_name": "Doe"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        assert response.status_code == 422
+        
+        # Test missing password
+        user_data = {
+            "email": "test@example.com",
+            "first_name": "John",
+            "last_name": "Doe"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        assert response.status_code == 422
+        
+        # Test missing first_name
+        user_data = {
+            "email": "test@example.com",
+            "password": "password123",
+            "last_name": "Doe"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        assert response.status_code == 422
+        
+        # Test missing last_name
+        user_data = {
+            "email": "test@example.com",
+            "password": "password123",
+            "first_name": "John"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        assert response.status_code == 422
+    
+    def test_register_user_invalid_email(self, client: TestClient):
+        """Test registration with invalid email format"""
+        user_data = {
+            "email": "invalid-email",
+            "password": "password123",
+            "first_name": "John",
+            "last_name": "Doe"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        assert response.status_code == 422
+    
+    def test_register_user_short_password(self, client: TestClient):
+        """Test registration with password shorter than 6 characters"""
+        user_data = {
+            "email": "test@example.com",
+            "password": "12345",  # Less than 6 characters
+            "first_name": "John",
+            "last_name": "Doe"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        assert response.status_code == 422
+    
+    def test_register_user_empty_fields(self, client: TestClient):
+        """Test registration with empty string fields"""
+        user_data = {
+            "email": "",
+            "password": "",
+            "first_name": "",
+            "last_name": ""
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        assert response.status_code == 422
+    
+    def test_login_success(self, client: TestClient, db: Session):
+        """Test successful user login"""
+        # Create a test user for login with proper password hashing
+        test_password = "testpassword123"
+        hashed_password = get_password_hash(test_password)
+        
+        test_user = User(
+            email="logintest@example.com",
+            hashed_password=hashed_password,
+            first_name="Login",
+            last_name="Test",
+            role_id=2
+        )
+        db.add(test_user)
+        db.commit()
+        
+        login_data = {
+            "email": "logintest@example.com",
+            "password": test_password
+        }
+        
+        response = client.post("/api/v1/users/login", json=login_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Check response structure
+        assert "access_token" in data
+        assert data["user_id"] == test_user.id
+        assert data["email"] == "logintest@example.com"
+        assert "tenant_id" in data
+        assert "tenant_ids" in data
+        assert isinstance(data["tenant_ids"], list)
+    
+    def test_login_invalid_email(self, client: TestClient):
+        """Test login with non-existent email"""
+        login_data = {
+            "email": "nonexistent@example.com",
+            "password": "password123"
+        }
+        
+        response = client.post("/api/v1/users/login", json=login_data)
+        
+        assert response.status_code == 401
+        assert "Incorrect email or password" in response.json()["detail"]
+    
+    def test_login_invalid_password(self, client: TestClient, db: Session):
+        """Test login with incorrect password"""
+        # Create a test user with proper password hashing
+        test_password = "correctpassword123"
+        hashed_password = get_password_hash(test_password)
+        
+        test_user = User(
+            email="wrongpass@example.com",
+            hashed_password=hashed_password,
+            first_name="Wrong",
+            last_name="Pass",
+            role_id=2
+        )
+        db.add(test_user)
+        db.commit()
+        
+        login_data = {
+            "email": "wrongpass@example.com",
+            "password": "wrongpassword"
+        }
+        
+        response = client.post("/api/v1/users/login", json=login_data)
+        
+        assert response.status_code == 401
+        assert "Incorrect email or password" in response.json()["detail"]
+    
+    def test_login_missing_fields(self, client: TestClient):
+        """Test login with missing fields"""
+        # Test missing email
+        login_data = {
+            "password": "password123"
+        }
+        
+        response = client.post("/api/v1/users/login", json=login_data)
+        assert response.status_code == 422
+        
+        # Test missing password
+        login_data = {
+            "email": "test@example.com"
+        }
+        
+        response = client.post("/api/v1/users/login", json=login_data)
+        assert response.status_code == 422
+    
+    def test_logout_success(self, client: TestClient):
+        """Test logout endpoint"""
+        response = client.post("/api/v1/users/logout")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Successfully logged out"
+    
+    def test_register_user_with_tenant_association(self, client: TestClient, db: Session):
+        """Test that registered user gets proper role assignment"""
+        user_data = {
+            "email": "tenantuser@example.com",
+            "password": "securepassword123",
+            "first_name": "Tenant",
+            "last_name": "User"
+        }
+        
+        response = client.post("/api/v1/users/register", json=user_data)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Verify user has default role (ID: 2 for "user" role)
+        assert data["role_id"] == 2
+        
+        # Verify in database
+        user = db.query(User).filter(User.email == "tenantuser@example.com").first()
+        assert user.role_id == 2
 
 class TestTenantManagement:
     """Test tenant management endpoints using test account"""
