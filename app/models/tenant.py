@@ -11,3 +11,4 @@ class Tenant(Base):
     
     # Relationships
     users = relationship("User", secondary="user_tenant_association", back_populates="tenants") 
+    voice_agents = relationship("VoiceAgent",back_populates="tenants")
