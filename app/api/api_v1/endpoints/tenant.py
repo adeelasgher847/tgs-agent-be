@@ -27,6 +27,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     Requirements:
     - Tenant name must be unique
     - Creator user is auto-linked to the tenant with role "admin"
+    - Sets the new tenant as user's current tenant
     - Returns tenant_id and tenant details with updated token
     """
     # Check if tenant name already exists
@@ -60,7 +61,11 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     current_user.tenants.append(db_tenant)
     
     # Update user's role to admin (role_id = 1 for admin)
-    current_user.role_id = settings.ADMIN_ROLE_ID 
+    current_user.role_id = settings.ADMIN_ROLE_ID
+    
+    # Set the new tenant as user's current tenant
+    current_user.current_tenant_id = db_tenant.id
+    
     db.commit()
     db.refresh(current_user)
     
@@ -82,6 +87,7 @@ def switch_tenant(
 ):
     """
     Switch to a different tenant and return new JWT token.
+    Also updates the user's current_tenant_id in the database.
     """
     # Get user's tenant IDs from database
     user_tenant_ids = [tenant.id for tenant in current_user.tenants]
@@ -93,7 +99,12 @@ def switch_tenant(
             detail="Access denied to this tenant"
         )
     
-    # Create new token with updated tenant (no tenant_ids in token)
+    # Update user's current_tenant_id in the database
+    current_user.current_tenant_id = switch_data.tenant_id
+    db.commit()
+    db.refresh(current_user)
+    
+    # Create new token with updated tenant
     access_token = create_user_token(
         user_id=current_user.id,
         email=current_user.email,

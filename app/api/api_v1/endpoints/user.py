@@ -52,6 +52,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
 def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     User login endpoint that returns JWT token.
+    Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
     """
     # Find user by email
     user = db.query(User).filter(User.email == login_data.email).first()
@@ -71,17 +72,29 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     # Get user's tenant IDs
     tenant_ids = [tenant.id for tenant in user.tenants]
     
+    # Determine which tenant to use
+    current_tenant_id = None
+    if user.current_tenant_id and user.current_tenant_id in tenant_ids:
+        # Use the user's current tenant if it exists and user has access
+        current_tenant_id = user.current_tenant_id
+    elif tenant_ids:
+        # If no current tenant set, use the first available tenant
+        current_tenant_id = tenant_ids[0]
+        # Update user's current_tenant_id
+        user.current_tenant_id = current_tenant_id
+        db.commit()
+    
     access_token = create_user_token(
         user_id=user.id,
         email=user.email,
-        tenant_id=tenant_ids[0] if tenant_ids else None
+        tenant_id=current_tenant_id
     )
     
     return TokenResponse(
         access_token=access_token,
         user_id=user.id,
         email=user.email,
-        tenant_id=tenant_ids[0] if tenant_ids else None,
+        tenant_id=current_tenant_id,
         tenant_ids=tenant_ids
     )
 
