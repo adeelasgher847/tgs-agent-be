@@ -150,3 +150,30 @@ def check_token_expiration(
         "is_expired": False,
         "message": "Token is still valid"
     }
+
+
+@router.get("/my-tenants")
+def get_user_tenants(
+    user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all tenants associated with the current user for dropdown selection.
+    Returns list of tenants with id and name, plus current tenant id.
+    """
+    # Get all tenants for the user
+    user_tenants = user.tenants
+    
+    # Convert to simple format for dropdown
+    tenant_list = [
+        {
+            "id": tenant.id,
+            "name": tenant.name
+        }
+        for tenant in user_tenants
+    ]
+    
+    return {
+        "tenants": tenant_list,
+        "current_tenant_id": user.current_tenant_id
+    }
