@@ -3,9 +3,9 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.base_class import Base
 
-class VoiceAgent(Base):
+class Agent(Base):    
     id = Column(Integer, primary_key=True, index=True)
-    tenant_id = Column(Integer, ForeignKey("tenant.id" ), nullable=False)
+    tenant_id = Column(Integer, ForeignKey("tenant.id"), nullable=False)
     name = Column(String(255), nullable=False)
     system_prompt = Column(Text, nullable=True)
     language = Column(String(50), nullable=True)
@@ -15,4 +15,4 @@ class VoiceAgent(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationship back to tenant
-    tenants = relationship("Tenant", back_populates="voice_agents")
+    tenant = relationship("Tenant", back_populates="agents")
