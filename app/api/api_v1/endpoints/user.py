@@ -1,16 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.auth import LoginRequest, TokenResponse
 from app.models.user import User
 from app.models.role import Role
-from app.api.deps import get_db
-from app.core.security import verify_password, create_user_token, get_password_hash
-from passlib.context import CryptContext
+from app.models.tenant import Tenant
+from app.api.deps import get_db, get_current_user_jwt, security
+from app.core.security import verify_password, create_user_token, pwd_context
 from datetime import datetime, timezone
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 @router.post("/register", response_model=UserOut)
@@ -106,3 +106,47 @@ def logout():
     Note: JWT tokens are stateless, so server-side logout requires token blacklisting.
     """
     return {"message": "Successfully logged out"}
+
+
+@router.get("/token-info")
+def get_token_information(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Get detailed information about the current token including expiration"""
+    from app.core.security import get_token_info
+    
+    token = credentials.credentials
+    token_info = get_token_info(token)
+    
+    if not token_info:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+    
+    return {
+        "token_info": token_info,
+        "message": "Token expires in 30 minutes from creation"
+    }
+
+
+@router.get("/check-token-expiration")
+def check_token_expiration(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Check if the current token is expired"""
+    from app.core.security import is_token_expired
+    
+    token = credentials.credentials
+    is_expired = is_token_expired(token)
+    
+    if is_expired:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired"
+        )
+    
+    return {
+        "is_expired": False,
+        "message": "Token is still valid"
+    }
