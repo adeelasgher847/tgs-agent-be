@@ -9,6 +9,7 @@ from app.models.tenant import Tenant
 from app.api.deps import get_db, get_current_user_jwt, security
 from app.core.security import verify_password, create_user_token, pwd_context
 from datetime import datetime, timezone
+import uuid
 
 router = APIRouter()
 
@@ -20,11 +21,10 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     if user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    # Set default role_id to "user" (ID: 2) - no longer from user input
-    role_id = 2  # Default to "user" role
+    role_name = "admin"  
     
     # Validate role_id
-    role = db.query(Role).filter(Role.id == role_id).first()
+    role = db.query(Role).filter(Role.name == role_name).first()
     if not role:
         raise HTTPException(
             status_code=400, 
@@ -34,7 +34,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     hashed_password = pwd_context.hash(user_in.password)
     db_user = User(
         email=user_in.email,
-        role_id=role_id,
+        role_id=role.id,
         first_name=user_in.first_name,
         last_name=user_in.last_name,
         phone=user_in.phone,

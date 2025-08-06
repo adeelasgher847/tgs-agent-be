@@ -5,6 +5,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.models.user import User
 from app.core.security import verify_token
+import uuid
 
 security = HTTPBearer()
 
@@ -35,11 +36,21 @@ def get_current_user_jwt(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user_id: int = payload.get("user_id")
-    if user_id is None:
+    user_id_str: str = payload.get("user_id")
+    if user_id_str is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Convert string back to UUID
+    try:
+        user_id = uuid.UUID(user_id_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user ID format",
             headers={"WWW-Authenticate": "Bearer"},
         )
 

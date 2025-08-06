@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+import uuid
 
 
 class AgentBase(BaseModel):
@@ -25,8 +26,8 @@ class AgentUpdate(BaseModel):
 
 
 class AgentOut(AgentBase):
-    id: int
-    tenant_id: int
+    id: uuid.UUID
+    tenant_id: uuid.UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
 

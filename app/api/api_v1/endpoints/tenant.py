@@ -8,6 +8,7 @@ from app.api.deps import get_db, get_current_user_jwt
 from app.core.security import create_user_token
 import re
 from app.core.config import settings
+from app.models.role import Role
 
 router = APIRouter()
 
@@ -60,8 +61,16 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     # Add user to tenant's users list (many-to-many association)
     current_user.tenants.append(db_tenant)
     
-    # Update user's role to admin (role_id = 1 for admin)
-    current_user.role_id = settings.ADMIN_ROLE_ID
+    # Get admin role by name
+    admin_role = db.query(Role).filter(Role.name == settings.ADMIN_ROLE).first()
+    if not admin_role:
+        raise HTTPException(
+            status_code=400, 
+            detail="Admin role not found. Please contact administrator."
+        )
+
+    # Update user's role to admin
+    current_user.role_id = admin_role.id
     
     # Set the new tenant as user's current tenant
     current_user.current_tenant_id = db_tenant.id

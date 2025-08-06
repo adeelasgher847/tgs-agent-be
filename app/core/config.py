@@ -2,8 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     
-    # Role IDs
-    ADMIN_ROLE_ID: int = 1
+    ADMIN_ROLE: str = "admin"
     
     DATABASE_URL: str = "postgresql+psycopg2://postgres:1234@localhost:5432/voiceagent"
     SECRET_KEY: str = "supersecretkey"

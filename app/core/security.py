@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.core.config import settings
+import uuid
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -84,22 +85,22 @@ def get_password_hash(password: str) -> str:
     """Hash password"""
     return pwd_context.hash(password)
 
-def create_user_token(user_id: int, email: str, tenant_id: Optional[int] = None):
+def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.UUID] = None):
     """
     Create JWT token for user with 30-minute expiration
     
     Args:
-        user_id: User's ID
+        user_id: User's ID (UUID)
         email: User's email
-        tenant_id: Current tenant ID (optional)
+        tenant_id: Current tenant ID (UUID, optional)
     
     Returns:
         JWT token that expires in 30 minutes
     """
     token_data = {
-        "user_id": user_id,
+        "user_id": str(user_id),  # Convert UUID to string
         "email": email,
-        "tenant_id": tenant_id,
+        "tenant_id": str(tenant_id) if tenant_id else None,  # Convert UUID to string
         "iat": datetime.now(timezone.utc),  # Issued at
         "type": "access"
     }

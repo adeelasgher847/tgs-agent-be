@@ -2,6 +2,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 from pydantic import EmailStr
 from datetime import datetime
+import uuid
 
 
 class UserBase(BaseModel):
@@ -16,8 +17,8 @@ class UserCreate(UserBase):
     # role_id: Optional[int] = None
 
 class UserOut(UserBase):
-    id: int
-    role_id: Optional[int] = None
+    id: uuid.UUID
+    role_id: Optional[uuid.UUID] = None
     join_date: datetime
     created_at: datetime
     
