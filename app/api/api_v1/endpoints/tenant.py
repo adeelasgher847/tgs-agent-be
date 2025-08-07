@@ -1,14 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.schemas.tenant import TenantCreate, TenantCreateResponse, TenantOut
-from app.schemas.auth import SwitchTenantRequest, TokenResponse
+from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.role import Role
 from app.api.deps import get_db, get_current_user_jwt
 from app.core.security import create_user_token
 import re
 from app.core.config import settings
-from app.models.role import Role
 
 router = APIRouter()
 
@@ -95,7 +95,7 @@ def switch_tenant(
     db: Session = Depends(get_db)
 ):
     """
-    Switch to a different tenant and return new JWT token.
+    Switch to a different tenant and return new JWT token with role information.
     Also updates the user's current_tenant_id in the database.
     """
     # Get user's tenant IDs from database
@@ -113,6 +113,17 @@ def switch_tenant(
     db.commit()
     db.refresh(current_user)
     
+    # Get role information as object
+    role_info = None
+    if current_user.role_id:
+        role = db.query(Role).filter(Role.id == current_user.role_id).first()
+        if role:
+            role_info = RoleInfo(
+                id=role.id,
+                name=role.name,
+                description=role.description
+            )
+    
     # Create new token with updated tenant
     access_token = create_user_token(
         user_id=current_user.id,
@@ -125,5 +136,6 @@ def switch_tenant(
         user_id=current_user.id,
         email=current_user.email,
         tenant_id=switch_data.tenant_id,
-        tenant_ids=user_tenant_ids
+        tenant_ids=user_tenant_ids,
+        role=role_info
     )
