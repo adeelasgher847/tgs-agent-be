@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.schemas.user import UserCreate, UserOut
-from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo
 from app.models.user import User
 from app.models.role import Role
 from app.models.tenant import Tenant
@@ -51,7 +51,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
-    User login endpoint that returns JWT token.
+    User login endpoint that returns JWT token with role information as object.
     Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
     """
     # Find user by email
@@ -84,6 +84,17 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         user.current_tenant_id = current_tenant_id
         db.commit()
     
+    # Get role information as object
+    role_info = None
+    if user.role_id:
+        role = db.query(Role).filter(Role.id == user.role_id).first()
+        if role:
+            role_info = RoleInfo(
+                id=role.id,
+                name=role.name,
+                description=role.description
+            )
+    
     access_token = create_user_token(
         user_id=user.id,
         email=user.email,
@@ -95,7 +106,8 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         user_id=user.id,
         email=user.email,
         tenant_id=current_tenant_id,
-        tenant_ids=tenant_ids
+        tenant_ids=tenant_ids,
+        role=role_info
     )
 
 
