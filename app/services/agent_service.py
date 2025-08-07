@@ -50,9 +50,10 @@ class AgentService:
         # Base query with tenant isolation
         query = db.query(Agent).filter(Agent.tenant_id == tenant_id)
         
-        # Apply search filter
-        if search:
-            query = query.filter(func.lower(Agent.name).like(f"%{search.lower()}%"))
+        # Apply search filter - handle empty strings and whitespace
+        if search and search.strip():
+            search_term = search.strip().lower()
+            query = query.filter(func.lower(Agent.name).like(f"%{search_term}%"))
         
         # Get total count
         total = query.count()
@@ -130,9 +131,13 @@ class AgentService:
         """
         Search agents by name within tenant
         """
+        if not search_term or not search_term.strip():
+            return []
+        
+        clean_search_term = search_term.strip().lower()
         return db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
-            func.lower(Agent.name).like(f"%{search_term.lower()}%")
+            func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
 
 agent_service = AgentService() 
