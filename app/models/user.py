@@ -1,10 +1,28 @@
-from sqlalchemy import Column, Integer, String, ForeignKey
+from sqlalchemy import Column, String, Table, ForeignKey, DateTime
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+import uuid
 from app.db.base_class import Base
 
+user_tenant_association = Table(
+    'user_tenant_association', Base.metadata,
+    Column('user_id', UUID(as_uuid=True), ForeignKey('user.id')),
+    Column('tenant_id', UUID(as_uuid=True), ForeignKey('tenant.id'))
+)
+
 class User(Base):
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    first_name = Column(String, nullable=False)
+    last_name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True, nullable=False)
+    phone = Column(String, nullable=True)  # Optional field
     hashed_password = Column(String, nullable=False)
-    tenant_id = Column(Integer, ForeignKey('tenant.id'))
-    tenant = relationship("Tenant") 
+    join_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    role_id = Column(UUID(as_uuid=True), ForeignKey('role.id'), nullable=True)
+    current_tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id'), nullable=True)
+    
+    tenants = relationship("Tenant", secondary=user_tenant_association, back_populates="users")
+    role = relationship("Role", back_populates="users") 
+    current_tenant = relationship("Tenant", foreign_keys=[current_tenant_id])
