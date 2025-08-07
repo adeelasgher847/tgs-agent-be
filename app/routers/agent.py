@@ -5,6 +5,7 @@ from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListRespo
 from app.api.deps import get_db, get_current_user_jwt
 from app.services.agent_service import agent_service
 from app.models.user import User
+import uuid
 
 router = APIRouter()
 
@@ -21,12 +22,12 @@ def create_agent(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User has no current tenant set"
         )
-    return agent_service.create_agent(db, agent_in, user.current_tenant_id)
+    return agent_service.create_agent(db, agent_in, user.current_tenant_id, user.id)
 
 
 @router.get("/{agent_id}", response_model=AgentOut)
 def get_agent(
-    agent_id: int,
+    agent_id: uuid.UUID,
     user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
@@ -64,7 +65,7 @@ def list_agents(
 
 @router.put("/{agent_id}", response_model=AgentOut)
 def update_agent(
-    agent_id: int,
+    agent_id: uuid.UUID,
     agent_update: AgentUpdate,
     user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
@@ -75,12 +76,12 @@ def update_agent(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User has no current tenant set"
         )
-    return agent_service.update_agent(db, agent_id, agent_update, user.current_tenant_id)
+    return agent_service.update_agent(db, agent_id, agent_update, user.current_tenant_id, user.id)
 
 
 @router.delete("/{agent_id}")
 def delete_agent(
-    agent_id: int,
+    agent_id: uuid.UUID,
     user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):

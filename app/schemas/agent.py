@@ -30,6 +30,8 @@ class AgentOut(AgentBase):
     tenant_id: uuid.UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
+    created_by: uuid.UUID
+    updated_by: uuid.UUID
 
     class Config:
         from_attributes = True
