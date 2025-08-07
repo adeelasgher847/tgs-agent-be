@@ -14,10 +14,24 @@ class AgentService:
         """
         Create a new agent with tenant context
         """
-        # Add tenant_id to the agent data
+        # Check for duplicate name within tenant
+        existing = db.query(Agent).filter(
+            Agent.tenant_id == tenant_id,
+            func.lower(Agent.name) == agent_in.name.strip().lower()
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Agent name must be unique within the tenant."
+            )
+
         agent_data = agent_in.model_dump()
         agent_data['tenant_id'] = tenant_id
-        
+
+        # Sanitize string fields
+        for field in ['name', 'system_prompt', 'fallback_response']:
+            if field in agent_data and agent_data[field]:
+                agent_data[field] = agent_data[field].strip()
         db_agent = Agent(**agent_data)
         db.add(db_agent)
         db.commit()
@@ -92,8 +106,29 @@ class AgentService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Agent not found"
             )
-        
+
         update_dict = agent_update.model_dump(exclude_unset=True)
+
+        # If name is being updated, check for duplicates
+        if "name" in update_dict and update_dict["name"]:
+            new_name = update_dict["name"].strip()
+            existing = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                func.lower(Agent.name) == new_name.lower(),
+                Agent.id != agent_id
+            ).first()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent name must be unique within the tenant."
+                )
+            update_dict["name"] = new_name
+
+        # Sanitize string fields
+        for field in ['system_prompt', 'fallback_response']:
+            if field in update_dict and update_dict[field]:
+                update_dict[field] = update_dict[field].strip()
+
         for field, value in update_dict.items():
             setattr(agent, field, value)
         
