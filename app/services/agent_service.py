@@ -27,14 +27,29 @@ class AgentService:
         db.refresh(db_agent)
         return db_agent
     
-    def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Optional[Agent]:
+    def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
         """
-        Get agent by ID with tenant isolation
+        Get agent by ID with strict tenant isolation.
+        Returns 403 if agent exists but belongs to different tenant.
+        Returns 404 if agent doesn't exist at all.
         """
-        return db.query(Agent).filter(
-            Agent.id == agent_id,
-            Agent.tenant_id == tenant_id
-        ).first()
+        # First, check if agent exists (regardless of tenant)
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found"
+            )
+        
+        # If agent exists but belongs to different tenant, return 403
+        if agent.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You can only access agents within your current tenant."
+            )
+        
+        return agent
     
     def list_agents(
         self, 
@@ -89,12 +104,7 @@ class AgentService:
         """
         Update agent with tenant isolation and audit trail
         """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent not found"
-            )
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
         
         update_dict = agent_update.model_dump(exclude_unset=True)
         for field, value in update_dict.items():
@@ -111,12 +121,7 @@ class AgentService:
         """
         Delete agent with tenant isolation
         """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent not found"
-            )
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
         
         db.delete(agent)
         db.commit()
