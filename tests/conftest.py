@@ -1,7 +1,11 @@
+import sys, os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.db.base import Base
 from app.db.session import SessionLocal
@@ -10,10 +14,14 @@ from app.models.user import User
 from app.models.role import Role
 from app.models.tenant import Tenant
 
-# Use a separate test database
-TEST_DATABASE_URL = settings.DATABASE_URL + "_test"
+# Use SQLite in-memory database instead of PostgreSQL
+TEST_DATABASE_URL = "sqlite://"
 
-engine = create_engine(TEST_DATABASE_URL)
+engine = create_engine(
+    TEST_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,  # Keep a single in-memory DB across threads
+)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Create the test database and tables
@@ -63,14 +71,15 @@ def db():
             hashed_password="$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4tbQJbqK8O",  # "testpassword123"
             first_name="Test",
             last_name="User",
-            role_id=user_role.id  # Use the user role (ID: 2)
+            role_id=user_role.id
         )
         db.add(test_user)
         db.commit()
         db.refresh(test_user)
         
-        # Associate user with tenant
+        # Associate user with tenant and set current tenant
         test_user.tenants.append(test_tenant)
+        test_user.current_tenant_id = test_tenant.id
         db.commit()
         
         yield db

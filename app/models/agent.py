@@ -15,6 +15,10 @@ class Agent(Base):
     fallback_response = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
+    updated_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
 
-    # Relationship back to tenant
+    # Relationships
     tenant = relationship("Tenant", back_populates="agents")
+    creator = relationship("User", foreign_keys=[created_by], back_populates="created_agents")
+    updater = relationship("User", foreign_keys=[updated_by], back_populates="updated_agents")

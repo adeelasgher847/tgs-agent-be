@@ -6,6 +6,11 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class RoleInfo(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -13,6 +18,7 @@ class TokenResponse(BaseModel):
     email: str
     tenant_id: Optional[uuid.UUID] = None
     tenant_ids: Optional[List[uuid.UUID]] = None
+    role: Optional[RoleInfo] = None
 
 class TokenData(BaseModel):
     user_id: Optional[uuid.UUID] = None

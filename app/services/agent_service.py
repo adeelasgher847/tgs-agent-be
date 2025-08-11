@@ -4,15 +4,16 @@ from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from fastapi import HTTPException, status
+import uuid
 
 class AgentService:
     """
     Agent service with business logic for agent operations
     """
     
-    def create_agent(self, db: Session, agent_in: AgentCreate, tenant_id: int) -> Agent:
+    def create_agent(self, db: Session, agent_in: AgentCreate, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Agent:
         """
-        Create a new agent with tenant context
+        Create a new agent with tenant context and audit trail
         """
         # Check for duplicate name within tenant
         existing = db.query(Agent).filter(
@@ -32,25 +33,46 @@ class AgentService:
         for field in ['name', 'system_prompt', 'fallback_response']:
             if field in agent_data and agent_data[field]:
                 agent_data[field] = agent_data[field].strip()
+        # Add tenant_id and user audit fields to the agent data
+        agent_data = agent_in.model_dump()
+        agent_data['tenant_id'] = tenant_id
+        agent_data['created_by'] = user_id
+        agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
+        
         db_agent = Agent(**agent_data)
         db.add(db_agent)
         db.commit()
         db.refresh(db_agent)
         return db_agent
     
-    def get_agent_by_id(self, db: Session, agent_id: int, tenant_id: int) -> Optional[Agent]:
+    def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
         """
-        Get agent by ID with tenant isolation
+        Get agent by ID with strict tenant isolation.
+        Returns 403 if agent exists but belongs to different tenant.
+        Returns 404 if agent doesn't exist at all.
         """
-        return db.query(Agent).filter(
-            Agent.id == agent_id,
-            Agent.tenant_id == tenant_id
-        ).first()
+        # First, check if agent exists (regardless of tenant)
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found"
+            )
+        
+        # If agent exists but belongs to different tenant, return 403
+        if agent.tenant_id != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You can only access agents within your current tenant."
+            )
+        
+        return agent
     
     def list_agents(
         self, 
         db: Session, 
-        tenant_id: int,
+        tenant_id: uuid.UUID,
         page: int = 1,
         limit: int = 10,
         search: Optional[str] = None
@@ -93,20 +115,16 @@ class AgentService:
     def update_agent(
         self, 
         db: Session, 
-        agent_id: int, 
+        agent_id: uuid.UUID, 
         agent_update: AgentUpdate, 
-        tenant_id: int
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID
     ) -> Agent:
         """
-        Update agent with tenant isolation
+        Update agent with tenant isolation and audit trail
         """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent not found"
-            )
-
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
+        
         update_dict = agent_update.model_dump(exclude_unset=True)
 
         # If name is being updated, check for duplicates
@@ -132,26 +150,24 @@ class AgentService:
         for field, value in update_dict.items():
             setattr(agent, field, value)
         
+        # Update the updated_by field
+        agent.updated_by = user_id
+        
         db.commit()
         db.refresh(agent)
         return agent
     
-    def delete_agent(self, db: Session, agent_id: int, tenant_id: int) -> bool:
+    def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
         """
         Delete agent with tenant isolation
         """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent not found"
-            )
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
         
         db.delete(agent)
         db.commit()
         return True
     
-    def get_agents_by_tenant(self, db: Session, tenant_id: int) -> List[Agent]:
+    def get_agents_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> List[Agent]:
         """
         Get all agents for a specific tenant
         """
@@ -160,7 +176,7 @@ class AgentService:
     def search_agents(
         self, 
         db: Session, 
-        tenant_id: int, 
+        tenant_id: uuid.UUID, 
         search_term: str
     ) -> List[Agent]:
         """

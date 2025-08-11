@@ -1,80 +1,48 @@
-from pydantic import BaseModel, validator, root_validator
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 import uuid
 from enum import Enum
 
 class LanguageEnum(str, Enum):
-    EN = "en"
-    ES = "es"
-    FR = "fr"
-    DE = "de"
+    en = "en"
+    ur = "ur"
+    es = "es"
+    hi = "hi"
+    ar = "ar"
+    zh = "zh"
 
 class VoiceTypeEnum(str, Enum):
-    MALE = "male"
-    FEMALE = "female"
-    NEUTRAL = "neutral"
-
-
-
+    male = "male"
+    female = "female"
+    
 class AgentBase(BaseModel):
-    name: str
-    system_prompt: Optional[str] = None
+    name: str =  Field(..., min_length=1, max_length=100)
+    system_prompt: Optional[str] = Field(None, max_length=1000)
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
-    fallback_response: Optional[str] = None
+    fallback_response: Optional[str] = Field(None, max_length=1000)
 
-    @validator("name")
-    def name_must_not_be_empty(cls, v):
-        if not v or not v.strip():
-            raise ValueError("Agent name must not be empty.")
-        return v.strip()
-
-    @validator("system_prompt")
-    def prompt_length_limit(cls, v):
-        if v is not None and len(v) > 1000:
-            raise ValueError("System prompt must not exceed 1000 characters.")
-        return v
-
-    @validator("fallback_response")
-    def fallback_length_limit(cls, v):
-        if v is not None and len(v) > 1000:
-            raise ValueError("Fallback response must not exceed 1000 characters.")
-        return v
 
 class AgentCreate(AgentBase):
+    # tenant_id is automatically added from current tenant context
     pass
 
+
 class AgentUpdate(BaseModel):
-    name: Optional[str] = None
-    system_prompt: Optional[str] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    system_prompt: Optional[str] = Field(None, max_length=1000)
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
-    fallback_response: Optional[str] = None
-
-    @validator("name")
-    def name_must_not_be_empty(cls, v):
-        if v is not None and not v.strip():
-            raise ValueError("Agent name must not be empty.")
-        return v.strip() if v else v
-
-    @validator("system_prompt")
-    def prompt_length_limit(cls, v):
-        if v is not None and len(v) > 1000:
-            raise ValueError("System prompt must not exceed 1000 characters.")
-        return v
-
-    @validator("fallback_response")
-    def fallback_length_limit(cls, v):
-        if v is not None and len(v) > 1000:
-            raise ValueError("Fallback response must not exceed 1000 characters.")
-        return v
+    fallback_response: Optional[str] = Field(None, max_length=1000)
 
 class AgentOut(AgentBase):
     id: uuid.UUID
     tenant_id: uuid.UUID
     created_at: datetime
     updated_at: Optional[datetime] = None
+    created_by: uuid.UUID
+    updated_by: uuid.UUID
 
     class Config:
         from_attributes = True

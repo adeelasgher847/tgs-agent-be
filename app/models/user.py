@@ -26,3 +26,7 @@ class User(Base):
     tenants = relationship("Tenant", secondary=user_tenant_association, back_populates="users")
     role = relationship("Role", back_populates="users") 
     current_tenant = relationship("Tenant", foreign_keys=[current_tenant_id])
+    
+    # Back references for audit trail
+    created_agents = relationship("Agent", foreign_keys="Agent.created_by", back_populates="creator")
+    updated_agents = relationship("Agent", foreign_keys="Agent.updated_by", back_populates="updater")
