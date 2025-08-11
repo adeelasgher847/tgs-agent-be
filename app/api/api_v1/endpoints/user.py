@@ -3,18 +3,20 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo
+from app.schemas.base import SuccessResponse
 from app.models.user import User
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.api.deps import get_db, get_current_user_jwt, security
 from app.core.security import verify_password, create_user_token, pwd_context
+from app.utils.response import create_success_response
 from datetime import datetime, timezone
 import uuid
 
 router = APIRouter()
 
 
-@router.post("/register", response_model=UserOut)
+@router.post("/register", response_model=SuccessResponse[UserOut])
 def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     # Check if email already exists
     user = db.query(User).filter(User.email == user_in.email).first()
@@ -45,10 +47,10 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    return db_user
+    return create_success_response(db_user, "User registered successfully", status.HTTP_201_CREATED)
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=SuccessResponse[TokenResponse])
 def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     User login endpoint that returns JWT token with role information as object.
@@ -101,7 +103,7 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         tenant_id=current_tenant_id
     )
     
-    return TokenResponse(
+    token_response = TokenResponse(
         access_token=access_token,
         user_id=user.id,
         email=user.email,
@@ -109,18 +111,20 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         tenant_ids=tenant_ids,
         role=role_info
     )
+    
+    return create_success_response(token_response, "Login successful")
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=SuccessResponse[dict])
 def logout():
     """
     Logout endpoint (client should discard token).
     Note: JWT tokens are stateless, so server-side logout requires token blacklisting.
     """
-    return {"message": "Successfully logged out"}
+    return create_success_response({"message": "Successfully logged out"}, "Logout successful")
 
 
-@router.get("/token-info")
+@router.get("/token-info", response_model=SuccessResponse[dict])
 def get_token_information(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
@@ -136,13 +140,13 @@ def get_token_information(
             detail="Invalid token"
         )
     
-    return {
+    return create_success_response({
         "token_info": token_info,
         "message": "Token expires in 30 minutes from creation"
-    }
+    }, "Token information retrieved successfully")
 
 
-@router.get("/check-token-expiration")
+@router.get("/check-token-expiration", response_model=SuccessResponse[dict])
 def check_token_expiration(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
@@ -158,13 +162,13 @@ def check_token_expiration(
             detail="Token has expired"
         )
     
-    return {
+    return create_success_response({
         "is_expired": False,
         "message": "Token is still valid"
-    }
+    }, "Token validation successful")
 
 
-@router.get("/my-tenants")
+@router.get("/my-tenants", response_model=SuccessResponse[dict])
 def get_user_tenants(
     user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
@@ -185,7 +189,7 @@ def get_user_tenants(
         for tenant in user_tenants
     ]
     
-    return {
+    return create_success_response({
         "tenants": tenant_list,
         "current_tenant_id": user.current_tenant_id
-    }
+    }, "User tenants retrieved successfully")
