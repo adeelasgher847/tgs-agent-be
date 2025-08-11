@@ -19,5 +19,4 @@ class TenantOut(TenantBase):
 
 class TenantCreateResponse(BaseModel):
     tenant_id: uuid.UUID
-    message: str
     tenant: TenantOut
