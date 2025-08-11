@@ -2,11 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.schemas.tenant import TenantCreate, TenantCreateResponse, TenantOut
 from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
+from app.schemas.base import SuccessResponse
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
 from app.api.deps import get_db, get_current_user_jwt
 from app.core.security import create_user_token
+from app.utils.response import create_success_response
 import re
 from app.core.config import settings
 
@@ -20,7 +22,7 @@ def generate_schema_name(tenant_name: str) -> str:
     schema_name = re.sub(r'_+', '_', schema_name).strip('_')
     return f"{schema_name}_schema"
 
-@router.post("/create", response_model=TenantCreateResponse)
+@router.post("/create", response_model=SuccessResponse[TenantCreateResponse])
 def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
     """
     Create a new tenant organization and associate the creator as its admin.
@@ -81,14 +83,15 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     # Convert SQLAlchemy model to Pydantic model
     tenant_out = TenantOut.model_validate(db_tenant)
     
-    return TenantCreateResponse(
+    tenant_response = TenantCreateResponse(
         tenant_id=db_tenant.id,
-        message="Tenant created successfully",
         tenant=tenant_out
     )
+    
+    return create_success_response(tenant_response, "Tenant created successfully", status.HTTP_201_CREATED)
 
 
-@router.post("/switch", response_model=TokenResponse)
+@router.post("/switch", response_model=SuccessResponse[TokenResponse])
 def switch_tenant(
     switch_data: SwitchTenantRequest,
     current_user: User = Depends(get_current_user_jwt),
@@ -131,7 +134,7 @@ def switch_tenant(
         tenant_id=switch_data.tenant_id  
     )
     
-    return TokenResponse(
+    token_response = TokenResponse(
         access_token=access_token,
         user_id=current_user.id,
         email=current_user.email,
@@ -139,3 +142,5 @@ def switch_tenant(
         tenant_ids=user_tenant_ids,
         role=role_info
     )
+    
+    return create_success_response(token_response, "Tenant switched successfully")

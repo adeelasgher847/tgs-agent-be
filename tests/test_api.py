@@ -618,13 +618,16 @@ def test_api_delete_agent_200(client: TestClient, auth_headers):
 
 def test_api_tenant_mismatch_403_on_get(client: TestClient, auth_headers, db, other_tenant):
     # Create agent under a different tenant
-    other_agent = agent_service.create_agent(db, AgentCreate(name="OtherTenantApi"), other_tenant.id)
+    # Use existing test user as creator
+    test_user = db.query(User).filter_by(email="test@example.com").first()
+    other_agent = agent_service.create_agent(db, AgentCreate(name="OtherTenantApi"), other_tenant.id, test_user.id)
     # Try to fetch with current tenant context -> 403
     resp = client.get(f"/api/v1/agent/{other_agent.id}", headers=auth_headers)
     assert resp.status_code == 403
 
 def test_api_tenant_mismatch_403_on_update_delete(client: TestClient, auth_headers, db, other_tenant):
-    other_agent = agent_service.create_agent(db, AgentCreate(name="OtherTenantApi2"), other_tenant.id)
+    test_user = db.query(User).filter_by(email="test@example.com").first()
+    other_agent = agent_service.create_agent(db, AgentCreate(name="OtherTenantApi2"), other_tenant.id, test_user.id)
 
     resp_upd = client.put(f"/api/v1/agent/{other_agent.id}", json={"name": "X"}, headers=auth_headers)
     assert resp_upd.status_code == 403
