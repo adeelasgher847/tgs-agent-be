@@ -21,7 +21,14 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     # Check if email already exists
     user = db.query(User).filter(User.email == user_in.email).first()
     if user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "field": "email",
+                "message": "Email already registered",
+                "error_type": "email_already_exists"
+            }
+        )
     
     role_name = "admin"  
     
@@ -30,7 +37,11 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     if not role:
         raise HTTPException(
             status_code=400, 
-            detail="Default role not found. Please contact administrator."
+            detail={
+                "field": "role",
+                "message": "Default role not found. Please contact administrator.",
+                "error_type": "role_not_found"
+            }
         )
     
     hashed_password = pwd_context.hash(user_in.password)
