@@ -75,7 +75,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     current_user.role_id = admin_role.id
     
     # Set the new tenant as user's current tenant
-    current_user.current_tenant_id = db_tenant.id
+    # current_user.current_tenant_id = db_tenant.id
     
     db.commit()
     db.refresh(current_user)

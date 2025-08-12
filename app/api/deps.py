@@ -65,14 +65,18 @@ def get_current_user_jwt(
     return user
 
 
-def require_tenant(user: User = Depends(get_current_user_jwt)) -> User:
+def require_tenant(user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)) -> User:
     """
     Simple dependency that ensures user has a current tenant set.
     Use this instead of get_current_user_jwt for tenant-scoped endpoints.
     """
+    # Refresh the user from database to get the latest current_tenant_id
+    db.refresh(user)
+    
     if not user.current_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="No tenant selected. Please set a current tenant."
         )
+    
     return user
