@@ -82,10 +82,11 @@ class AgentService:
         """
         # Calculate offset
         offset = (page - 1) * limit
-        
+        print(tenant_id,'tenant_id')
         # Base query with tenant isolation
         query = db.query(Agent).filter(Agent.tenant_id == tenant_id)
-        
+        print(query,'query')
+
         # Apply search filter - handle empty strings and whitespace
         if search and search.strip():
             search_term = search.strip().lower()
