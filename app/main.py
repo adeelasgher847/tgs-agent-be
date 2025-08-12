@@ -4,6 +4,8 @@ from app.routers.health import router as health_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+import uuid
 
 app = FastAPI()
 
