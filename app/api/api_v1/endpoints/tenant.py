@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.schemas.tenant import TenantCreate, TenantCreateResponse, TenantOut
-from app.schemas.auth import SwitchTenantRequest, TokenResponse
+from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
+from app.schemas.base import SuccessResponse
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.role import Role
 from app.api.deps import get_db, get_current_user_jwt
 from app.core.security import create_user_token
+from app.utils.response import create_success_response
 import re
 from app.core.config import settings
 
@@ -19,7 +22,7 @@ def generate_schema_name(tenant_name: str) -> str:
     schema_name = re.sub(r'_+', '_', schema_name).strip('_')
     return f"{schema_name}_schema"
 
-@router.post("/create", response_model=TenantCreateResponse)
+@router.post("/create", response_model=SuccessResponse[TenantCreateResponse])
 def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
     """
     Create a new tenant organization and associate the creator as its admin.
@@ -27,6 +30,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     Requirements:
     - Tenant name must be unique
     - Creator user is auto-linked to the tenant with role "admin"
+    - Sets the new tenant as user's current tenant
     - Returns tenant_id and tenant details with updated token
     """
     # Check if tenant name already exists
@@ -59,29 +63,43 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     # Add user to tenant's users list (many-to-many association)
     current_user.tenants.append(db_tenant)
     
-    # Update user's role to admin (role_id = 1 for admin)
-    current_user.role_id = settings.ADMIN_ROLE_ID 
+    # Get admin role by name
+    admin_role = db.query(Role).filter(Role.name == settings.ADMIN_ROLE).first()
+    if not admin_role:
+        raise HTTPException(
+            status_code=400, 
+            detail="Admin role not found. Please contact administrator."
+        )
+
+    # Update user's role to admin
+    current_user.role_id = admin_role.id
+    
+    # Set the new tenant as user's current tenant
+    current_user.current_tenant_id = db_tenant.id
+    
     db.commit()
     db.refresh(current_user)
     
     # Convert SQLAlchemy model to Pydantic model
     tenant_out = TenantOut.model_validate(db_tenant)
     
-    return TenantCreateResponse(
+    tenant_response = TenantCreateResponse(
         tenant_id=db_tenant.id,
-        message="Tenant created successfully",
         tenant=tenant_out
     )
+    
+    return create_success_response(tenant_response, "Tenant created successfully", status.HTTP_201_CREATED)
 
 
-@router.post("/switch", response_model=TokenResponse)
+@router.post("/switch", response_model=SuccessResponse[TokenResponse])
 def switch_tenant(
     switch_data: SwitchTenantRequest,
     current_user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
     """
-    Switch to a different tenant and return new JWT token.
+    Switch to a different tenant and return new JWT token with role information.
+    Also updates the user's current_tenant_id in the database.
     """
     # Get user's tenant IDs from database
     user_tenant_ids = [tenant.id for tenant in current_user.tenants]
@@ -93,17 +111,36 @@ def switch_tenant(
             detail="Access denied to this tenant"
         )
     
-    # Create new token with updated tenant (no tenant_ids in token)
+    # Update user's current_tenant_id in the database
+    current_user.current_tenant_id = switch_data.tenant_id
+    db.commit()
+    db.refresh(current_user)
+    
+    # Get role information as object
+    role_info = None
+    if current_user.role_id:
+        role = db.query(Role).filter(Role.id == current_user.role_id).first()
+        if role:
+            role_info = RoleInfo(
+                id=role.id,
+                name=role.name,
+                description=role.description
+            )
+    
+    # Create new token with updated tenant
     access_token = create_user_token(
         user_id=current_user.id,
         email=current_user.email,
         tenant_id=switch_data.tenant_id  
     )
     
-    return TokenResponse(
+    token_response = TokenResponse(
         access_token=access_token,
         user_id=current_user.id,
         email=current_user.email,
         tenant_id=switch_data.tenant_id,
-        tenant_ids=user_tenant_ids
+        tenant_ids=user_tenant_ids,
+        role=role_info
     )
+    
+    return create_success_response(token_response, "Tenant switched successfully")
