@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
+from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse, LanguageEnum, VoiceTypeEnum
+from app.api.deps import get_db, get_current_user_jwt
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.schemas.base import SuccessResponse
 from app.api.deps import get_db, require_tenant
@@ -83,5 +85,16 @@ def search_agents(
 ):
     """Search agents by name"""
     agents = agent_service.search_agents(db, user.current_tenant_id, search_term)
+    agent_list = [AgentOut.model_validate(agent) for agent in agents]
+    return create_success_response(agent_list, f"Found {len(agent_list)} agents matching '{search_term}'") 
+
+@router.get("/meta/voice-options")
+def get_voice_options(
+    user: User = Depends(get_current_user_jwt),
+):
+    return {
+        "voice_types": [v.value for v in VoiceTypeEnum],
+        "languages": [l.value for l in LanguageEnum],
+    }    
     agent_list = [AgentOut.model_validate(agent) for agent in agents]
     return create_success_response(agent_list, f"Found {len(agent_list)} agents matching '{search_term}'") 

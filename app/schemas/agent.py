@@ -1,15 +1,27 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 import uuid
+from enum import Enum
 
+class LanguageEnum(str, Enum):
+    en = "en"
+    ur = "ur"
+    es = "es"
+    hi = "hi"
+    ar = "ar"
+    zh = "zh"
 
+class VoiceTypeEnum(str, Enum):
+    male = "male"
+    female = "female"
+    
 class AgentBase(BaseModel):
-    name: str
-    system_prompt: Optional[str] = None
-    language: Optional[str] = None
-    voice_type: Optional[str] = None
-    fallback_response: Optional[str] = None
+    name: str =  Field(..., min_length=1, max_length=100)
+    system_prompt: Optional[str] = Field(None, max_length=1000)
+    language: Optional[LanguageEnum] = None
+    voice_type: Optional[VoiceTypeEnum] = None
+    fallback_response: Optional[str] = Field(None, max_length=1000)
 
 
 class AgentCreate(AgentBase):
@@ -18,12 +30,11 @@ class AgentCreate(AgentBase):
 
 
 class AgentUpdate(BaseModel):
-    name: Optional[str] = None
-    system_prompt: Optional[str] = None
-    language: Optional[str] = None
-    voice_type: Optional[str] = None
-    fallback_response: Optional[str] = None
-
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    system_prompt: Optional[str] = Field(None, max_length=1000)
+    language: Optional[LanguageEnum] = None
+    voice_type: Optional[VoiceTypeEnum] = None
+    fallback_response: Optional[str] = Field(None, max_length=1000)
 
 class AgentOut(AgentBase):
     id: uuid.UUID

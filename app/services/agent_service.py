@@ -15,6 +15,24 @@ class AgentService:
         """
         Create a new agent with tenant context and audit trail
         """
+        # Check for duplicate name within tenant
+        existing = db.query(Agent).filter(
+            Agent.tenant_id == tenant_id,
+            func.lower(Agent.name) == agent_in.name.strip().lower()
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Agent name must be unique within the tenant."
+            )
+
+        agent_data = agent_in.model_dump()
+        agent_data['tenant_id'] = tenant_id
+
+        # Sanitize string fields
+        for field in ['name', 'system_prompt', 'fallback_response']:
+            if field in agent_data and agent_data[field]:
+                agent_data[field] = agent_data[field].strip()
         # Add tenant_id and user audit fields to the agent data
         agent_data = agent_in.model_dump()
         agent_data['tenant_id'] = tenant_id
@@ -64,13 +82,15 @@ class AgentService:
         """
         # Calculate offset
         offset = (page - 1) * limit
-        
+        print(tenant_id,'tenant_id')
         # Base query with tenant isolation
         query = db.query(Agent).filter(Agent.tenant_id == tenant_id)
-        
-        # Apply search filter
-        if search:
-            query = query.filter(func.lower(Agent.name).like(f"%{search.lower()}%"))
+        print(query,'query')
+
+        # Apply search filter - handle empty strings and whitespace
+        if search and search.strip():
+            search_term = search.strip().lower()
+            query = query.filter(func.lower(Agent.name).like(f"%{search_term}%"))
         
         # Get total count
         total = query.count()
@@ -107,6 +127,27 @@ class AgentService:
         agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
         
         update_dict = agent_update.model_dump(exclude_unset=True)
+
+        # If name is being updated, check for duplicates
+        if "name" in update_dict and update_dict["name"]:
+            new_name = update_dict["name"].strip()
+            existing = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                func.lower(Agent.name) == new_name.lower(),
+                Agent.id != agent_id
+            ).first()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent name must be unique within the tenant."
+                )
+            update_dict["name"] = new_name
+
+        # Sanitize string fields
+        for field in ['system_prompt', 'fallback_response']:
+            if field in update_dict and update_dict[field]:
+                update_dict[field] = update_dict[field].strip()
+
         for field, value in update_dict.items():
             setattr(agent, field, value)
         
@@ -142,9 +183,13 @@ class AgentService:
         """
         Search agents by name within tenant
         """
+        if not search_term or not search_term.strip():
+            return []
+        
+        clean_search_term = search_term.strip().lower()
         return db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
-            func.lower(Agent.name).like(f"%{search_term.lower()}%")
+            func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
 
 agent_service = AgentService() 

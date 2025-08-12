@@ -21,7 +21,14 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     # Check if email already exists
     user = db.query(User).filter(User.email == user_in.email).first()
     if user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(
+            status_code=400, 
+            detail={
+                "field": "email",
+                "message": "Email already registered",
+                "error_type": "email_already_exists"
+            }
+        )
     
     role_name = "admin"  
     
@@ -30,7 +37,11 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     if not role:
         raise HTTPException(
             status_code=400, 
-            detail="Default role not found. Please contact administrator."
+            detail={
+                "field": "role",
+                "message": "Default role not found. Please contact administrator.",
+                "error_type": "role_not_found"
+            }
         )
     
     hashed_password = pwd_context.hash(user_in.password)
@@ -61,14 +72,22 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            detail={
+                "field": "email",
+                "message": "Email not found in our system",
+                "error_type": "email_not_found"
+            }
         )
     
     # Verify password
     if not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            detail={
+                "field": "password",
+                "message": "Password is incorrect for this email",
+                "error_type": "invalid_password"
+            }
         )
     
     # Get user's tenant IDs
