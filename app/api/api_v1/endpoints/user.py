@@ -224,11 +224,14 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     # Find user by email
     user = db.query(User).filter(User.email == request.email).first()
     
-    # Always return success to prevent email enumeration attacks
+    # Check if user exists
     if not user:
-        return create_success_response(
-            ForgotPasswordResponse(message="If the email exists, a password reset link has been sent."),
-            "Password reset email sent (if email exists)"
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": "Email address not found in our system.",
+                "error_type": "email_not_found"
+            }
         )
     
     # Invalidate any existing reset tokens for this user
