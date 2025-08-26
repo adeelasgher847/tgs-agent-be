@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 import uuid
 
@@ -19,6 +19,19 @@ class TokenResponse(BaseModel):
     tenant_id: Optional[uuid.UUID] = None
     tenant_ids: Optional[List[uuid.UUID]] = None
     role: Optional[RoleInfo] = None
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class ResetPasswordResponse(BaseModel):
+    message: str
 
 class TokenData(BaseModel):
     user_id: Optional[uuid.UUID] = None
