@@ -7,7 +7,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg2://postgres:1234@localhost:5432/voiceagent"
     SECRET_KEY: str = "supersecretkey"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_MINUTES: int = 10080
     
     # Email settings for password reset
     SMTP_HOST: str = "mubeenhussain8@gmail.com"
@@ -23,4 +24,4 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env")
 
-settings = Settings() 
+settings = Settings()

@@ -3,13 +3,17 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.schemas.user import UserCreate, UserOut
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
+from app.schemas.auth import RefreshRequest
 from app.schemas.base import SuccessResponse
 from app.models.user import User
 from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
+from app.models.refresh_token import RefreshToken
 from app.api.deps import get_db, get_current_user_jwt, security
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
+from app.core.security import create_refresh_token_value, refresh_token_expires_at
+from app.core.security import is_token_expired, verify_token
 from app.services.email_service import email_service
 from app.utils.response import create_success_response
 from datetime import datetime, timezone
@@ -123,6 +127,17 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         email=user.email,
         tenant_id=current_tenant_id
     )
+
+    # Create refresh token (valid 7 days)
+    rt_value = create_refresh_token_value()
+    rt = RefreshToken(
+        user_id=user.id,
+        token=rt_value,
+        expires_at=refresh_token_expires_at(),
+        revoked=False
+    )
+    db.add(rt)
+    db.commit()
     
     token_response = TokenResponse(
         access_token=access_token,
@@ -130,20 +145,94 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         email=user.email,
         tenant_id=current_tenant_id,
         tenant_ids=tenant_ids,
-        role=role_info
+        role=role_info,
+        refresh_token=rt_value
     )
     
     return create_success_response(token_response, "Login successful")
 
 
-@router.post("/logout", response_model=SuccessResponse[dict])
-def logout():
+@router.post("/refresh")
+def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     """
-    Logout endpoint (client should discard token).
-    Note: JWT tokens are stateless, so server-side logout requires token blacklisting.
+    Refresh endpoint:
+    1) If access_token is provided and still valid -> return "still valid"
+    2) If access_token expired but refresh_token valid -> issue new access_token only
+    3) If refresh_token invalid/expired -> return 401
     """
-    return create_success_response({"message": "Successfully logged out"}, "Logout successful")
 
+    # 1) Agar access token hai aur valid hai -> naya token mat banao
+    if req.access_token:
+        payload = verify_token(req.access_token)
+        if payload and not is_token_expired(req.access_token):
+            return {
+                "status_code": 200,
+                "message": "Access token still valid"
+            }
+
+    # 2) Refresh token validate karo
+    rt = db.query(RefreshToken).filter(RefreshToken.token == req.refresh_token).first()
+    if not rt or rt.revoked or rt.expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token"
+        )
+
+    user = db.query(User).filter(User.id == rt.user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    # Tenant aur role info collect karo
+    tenant_ids = [t.id for t in user.tenants]
+    current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
+
+    role_info = None
+    if user.role_id:
+        role = db.query(Role).filter(Role.id == user.role_id).first()
+        if role:
+            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+
+    # 3) Sirf naya access token banao
+    new_access_token = create_user_token(
+        user_id=user.id,
+        email=user.email,
+        tenant_id=current_tenant_id
+    )
+
+    db.commit()
+
+    return {
+        "status_code": 200,
+        "message": "Access token refreshed",
+        "data": {
+            "access_token": new_access_token,
+            "token_type": "bearer",
+            "user_id": user.id,
+            "email": user.email,
+            "tenant_id": current_tenant_id,
+            "tenant_ids": tenant_ids,
+            "role": role_info
+        }
+    }
+
+@router.post("/logout", response_model=SuccessResponse[dict])
+def logout(current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
+    """
+    Logout endpoint: revoke all active refresh tokens for the user.
+    Note: Access JWTs are stateless and cannot be revoked server-side.
+    """
+    # Find and revoke all active refresh tokens for the user
+    active_tokens = db.query(RefreshToken).filter(
+        RefreshToken.user_id == current_user.id,
+        RefreshToken.revoked == False,
+        RefreshToken.expires_at > datetime.now(timezone.utc)
+    ).all()
+    
+    for token in active_tokens:
+        token.revoked = True
+    
+    db.commit()
+    return create_success_response({"message": "Successfully logged out"}, "Logout successful")
 
 @router.get("/token-info", response_model=SuccessResponse[dict])
 def get_token_information(
@@ -163,9 +252,8 @@ def get_token_information(
     
     return create_success_response({
         "token_info": token_info,
-        "message": "Token expires in 30 minutes from creation"
+        "message": "Token expires in 15 minutes from creation"
     }, "Token information retrieved successfully")
-
 
 @router.get("/check-token-expiration", response_model=SuccessResponse[dict])
 def check_token_expiration(
@@ -187,7 +275,6 @@ def check_token_expiration(
         "is_expired": False,
         "message": "Token is still valid"
     }, "Token validation successful")
-
 
 @router.get("/my-tenants", response_model=SuccessResponse[dict])
 def get_user_tenants(
@@ -214,7 +301,6 @@ def get_user_tenants(
         "tenants": tenant_list,
         "current_tenant_id": user.current_tenant_id
     }, "User tenants retrieved successfully")
-
 
 @router.post("/forgot-password", response_model=SuccessResponse[ForgotPasswordResponse])
 def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
@@ -287,7 +373,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
 @router.post("/reset-password", response_model=SuccessResponse[ResetPasswordResponse])
 def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     """
-    Reset password using reset token
+    Reset password using reset token and revoke all refresh tokens
     """
     # Find valid reset token
     reset_token = db.query(PasswordResetToken).filter(
@@ -321,6 +407,16 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     
     # Mark token as used
     reset_token.used = True
+
+    # Revoke all user's refresh tokens on password change
+    active_rts = db.query(RefreshToken).filter(
+        RefreshToken.user_id == user.id,
+        RefreshToken.revoked == False,
+        RefreshToken.expires_at > datetime.now(timezone.utc)
+    ).all()
+    
+    for token in active_rts:
+        token.revoked = True
     
     db.commit()
     

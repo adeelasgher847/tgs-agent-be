@@ -19,6 +19,7 @@ class TokenResponse(BaseModel):
     tenant_id: Optional[uuid.UUID] = None
     tenant_ids: Optional[List[uuid.UUID]] = None
     role: Optional[RoleInfo] = None
+    refresh_token: Optional[str] = None
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
@@ -40,4 +41,8 @@ class TokenData(BaseModel):
     tenant_id: Optional[uuid.UUID] = None
 
 class SwitchTenantRequest(BaseModel):
-    tenant_id: uuid.UUID 
+    tenant_id: uuid.UUID
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+    access_token: Optional[str] = None
