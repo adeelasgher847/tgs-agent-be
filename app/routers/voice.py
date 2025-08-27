@@ -160,8 +160,8 @@ async def handle_call_events_webhook(
             else:
                 # Default response
                 response = VoiceResponse()
-                response.say("Hello! Thank you for answering our call.", voice="alice")
-                response.say("An agent will be with you shortly.", voice="alice")
+                response.say("Hello! Thank you for answering our call.", voice="")
+                response.say("An agent will be with you shortly.", voice="")
                 return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "in-progress":
@@ -178,7 +178,7 @@ async def handle_call_events_webhook(
                 return HTMLResponse(twiml_response, media_type="application/xml")
             else:
                 response = VoiceResponse()
-                response.say("Your call is now connected. How can we help you today?", voice="alice")
+                response.say("Your call is now connected. How can we help you today?", voice="")
                 return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "completed":
@@ -225,7 +225,7 @@ def _generate_agent_response(agent, call_data: dict) -> str:
         elif voice_type == "female":
             return "en-US-Neural2-E"  # Female voice
         else:
-            return "alice"  # Default voice
+            return ""  # Default voice
     
     # Use agent's name and fallback response
     agent_name = agent.name
@@ -254,7 +254,7 @@ def _generate_agent_response(agent, call_data: dict) -> str:
 def _generate_default_response() -> str:
     """Generate default TwiML response"""
     response = VoiceResponse()
-    response.say("Thank you for calling. An agent will be with you shortly.", voice="alice")
+    response.say("Thank you for calling. An agent will be with you shortly.", voice="")
     response.pause(length=2)
-    response.say("Please hold while we connect you.", voice="alice")
+    response.say("Please hold while we connect you.", voice="")
     return str(response)
