@@ -33,11 +33,5 @@ class ResetPasswordRequest(BaseModel):
 class ResetPasswordResponse(BaseModel):
     message: str
 
-class TokenData(BaseModel):
-    user_id: Optional[uuid.UUID] = None
-    email: Optional[str] = None
-    tenant_ids: List[uuid.UUID] = []
-    tenant_id: Optional[uuid.UUID] = None
-
 class SwitchTenantRequest(BaseModel):
     tenant_id: uuid.UUID 

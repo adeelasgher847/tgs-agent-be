@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str = "AC4071b00aa2ea5985a36201ad45a98ed1"
     TWILIO_AUTH_TOKEN: str = "2940ee281d4991f6fe3169afd470a620"
     TWILIO_PHONE_NUMBER: str = "+1234567890"  # Replace with your actual Twilio phone number
+    ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
     
     # Server Configuration
     HOST: str = "0.0.0.0"
