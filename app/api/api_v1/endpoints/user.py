@@ -161,7 +161,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     3) If refresh_token invalid/expired -> return 401
     """
 
-    # 1) Agar access token hai aur valid hai -> naya token mat banao
+    # 1) if acess token is valid this will not create new acess token
     if req.access_token:
         payload = verify_token(req.access_token)
         if payload and not is_token_expired(req.access_token):
@@ -170,7 +170,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
                 "message": "Access token still valid"
             }
 
-    # 2) Refresh token validate karo
+    # 2) Refresh token validate 
     rt = db.query(RefreshToken).filter(RefreshToken.token == req.refresh_token).first()
     if not rt or rt.revoked or rt.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(
@@ -182,7 +182,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
-    # Tenant aur role info collect karo
+    # collect tenant and role info
     tenant_ids = [t.id for t in user.tenants]
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
@@ -192,7 +192,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
 
-    # 3) Sirf naya access token banao
+    # 3) this will create new acess token
     new_access_token = create_user_token(
         user_id=user.id,
         email=user.email,

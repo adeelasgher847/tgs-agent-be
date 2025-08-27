@@ -133,5 +133,5 @@ def create_refresh_token_value() -> str:
     return secrets.token_urlsafe(48)
 
 def refresh_token_expires_at() -> datetime:
-    """Get refresh token expiration time (from minutes setting)."""
-    return datetime.now(timezone.utc) + timedelta(minutes=settings.REFRESH_TOKEN_EXPIRE_MINUTES)
+    """Get refresh token expiration time (7 days from now)."""
+    return datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
