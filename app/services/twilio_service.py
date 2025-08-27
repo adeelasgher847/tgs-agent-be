@@ -5,12 +5,8 @@ Handles all Twilio-related operations including client management and API calls
 
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioException
-import os
-from dotenv import load_dotenv
+from app.core.config import settings
 from typing import List, Dict, Optional, Any
-
-# Load environment variables
-load_dotenv()
 
 class TwilioService:
     """Service class for handling Twilio operations"""
@@ -21,11 +17,11 @@ class TwilioService:
     def get_client(self):
         """Get or create Twilio client"""
         if self._client is None:
-            account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-            auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+            account_sid = settings.TWILIO_ACCOUNT_SID
+            auth_token = settings.TWILIO_AUTH_TOKEN
             
             if not account_sid or not auth_token:
-                raise Exception("Twilio credentials not found. Please set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in your .env file.")
+                raise Exception("Twilio credentials not found. Please set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in your config.")
             
             self._client = Client(account_sid, auth_token)
         
@@ -58,7 +54,10 @@ class TwilioService:
     
     def get_phone_number(self):
         """Get the configured Twilio phone number"""
-        return os.getenv("TWILIO_PHONE_NUMBER")
+        phone_number = settings.TWILIO_PHONE_NUMBER
+        if not phone_number or phone_number == "+1234567890":
+            raise Exception("Please configure a valid TWILIO_PHONE_NUMBER in your settings")
+        return phone_number
     
     def validate_phone_number(self, phone_number):
         """Validate phone number format"""
@@ -321,7 +320,7 @@ class TwilioService:
         client = self.get_client()
         
         try:
-            account = client.api.accounts(os.getenv("TWILIO_ACCOUNT_SID")).fetch()
+            account = client.api.accounts(settings.TWILIO_ACCOUNT_SID).fetch()
             
             return {
                 'sid': account.sid,

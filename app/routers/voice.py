@@ -1,21 +1,20 @@
-from fastapi import APIRouter, Request, Form, HTTPException, Query, Depends
+from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 
 from app.api.deps import get_db, require_tenant
-from app.schemas.twilio import (
-    CallInitiateRequest, CallInitiateResponse, StatusResponse,
-    CallResponse, MakeCallRequest, AgentRegistrationRequest,
-    AgentRegistrationResponse, AgentListResponse
-)
+from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
 from app.schemas.base import SuccessResponse
 from app.services.twilio_service import twilio_service
-from app.services.voice_agent_service import voice_agent_manager
+from app.services.agent_service import agent_service
+from app.models.agent import Agent
+from app.models.user import User
 from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
 from app.utils.response import create_success_response
 from app.core.config import settings
+import uuid
 
 router = APIRouter()
 
@@ -23,7 +22,7 @@ router = APIRouter()
 @router.post("/call/initiate", response_model=SuccessResponse[CallInitiateResponse])
 async def initiate_call(
     request: CallInitiateRequest,
-    user: dict = Depends(require_tenant),
+    user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
@@ -34,11 +33,20 @@ async def initiate_call(
         "agentId": "agent_12345",
         "userPhoneNumber": "+1234567890"
     }
+    
+    Response:
+    {
+        "callId": "call_abc123",
+        "twilioCallSid": "CAxxxxxxx",
+        "status": "initiated"
+    }
     """
     try:
-        # Validate agent exists
-        agent = voice_agent_manager.get_agent(request.agentId)
-        if not agent:
+        # Validate agent exists in database
+        try:
+            agent_id = uuid.UUID(request.agentId)
+            agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
+        except (ValueError, HTTPException):
             raise HTTPException(status_code=404, detail=f"Agent {request.agentId} not found")
         
         # Validate phone number format
@@ -52,12 +60,9 @@ async def initiate_call(
         call = twilio_service.make_call(
             to_number=request.userPhoneNumber,
             from_number=twilio_service.get_phone_number(),
-            webhook_url=f"{base_url}/api/v1/voice/webhook?agentId={request.agentId}",
-            status_callback_url=f"{base_url}/api/v1/voice/status"
+            webhook_url=f"{base_url}/webhook/call-events?agentId={request.agentId}",
+            status_callback_url=f"{base_url}/webhook/call-events"
         )
-        
-        # Assign call to agent
-        voice_agent_manager.assign_call_to_agent(call.sid, request.agentId)
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -75,57 +80,20 @@ async def initiate_call(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/call", response_model=SuccessResponse[CallResponse])
-async def make_call(
-    request: MakeCallRequest,
-    user: dict = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """Make an outbound call using Twilio (JSON request)"""
-    try:
-        # Validate phone number format
-        if not twilio_service.validate_phone_number(request.to_number):
-            raise HTTPException(status_code=400, detail="Phone number must start with +")
-        
-        # Get base URL for webhooks
-        base_url = f"http://{settings.HOST}:{settings.PORT}"
-        
-        # Use provided webhook URLs or defaults
-        webhook_url = request.webhook_url or f"{base_url}/api/v1/voice/webhook"
-        status_callback_url = request.status_callback_url or f"{base_url}/api/v1/voice/status"
-        
-        # Make the call using the service
-        call = twilio_service.make_call(
-            to_number=request.to_number,
-            from_number=twilio_service.get_phone_number(),
-            webhook_url=webhook_url,
-            status_callback_url=status_callback_url
-        )
-        
-        return create_success_response(
-            CallResponse(
-                success=True,
-                call_sid=call.sid,
-                to_number=request.to_number,
-                from_number=twilio_service.get_phone_number(),
-                status=call.status,
-                message="Call initiated successfully"
-            ),
-            "Call initiated successfully"
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/webhook", response_class=HTMLResponse)
-async def handle_call_events(
+@router.post("/webhook/call-events", response_class=HTMLResponse)
+async def handle_call_events_webhook(
     request: Request,
     agentId: Optional[str] = Query(None),
-    body: str = Depends(get_request_body)
+    body: str = Depends(get_request_body),
+    db: Session = Depends(get_db)
 ):
     """
     Webhook endpoint to receive and handle Twilio or WebRTC voice call events in real time.
+    Endpoint: POST /webhook/call-events
+    
+    - Handles incoming call event, triggers agent logic
+    - Validates Twilio signature or WebRTC auth
+    - Responds with TwiML or JSON for live call handling
     """
     try:
         # Validate request (Twilio signature or WebRTC auth)
@@ -152,19 +120,41 @@ async def handle_call_events(
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
         
-        # Log the call event
-        print(f"Call Event - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
         
-        # Handle different call statuses
+        # Log the call event
+        print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
+        print(f"AgentId from query: {agentId}")
+        
+        # Get agent from database if agentId is provided
+        agent = None
+        if agentId:
+            try:
+                agent_uuid = uuid.UUID(agentId)
+                # Get agent from database
+                agent = db.query(Agent).filter(Agent.id == agent_uuid).first()
+                if agent:
+                    print(f"Found agent: {agent.name} (ID: {agent.id})")
+                else:
+                    print(f"Agent not found in database for ID: {agentId}")
+            except (ValueError, Exception) as e:
+                print(f"Error getting agent: {e}")
+                agent = None
+        else:
+            print("No agentId provided in webhook")
+        
+        # Handle different call statuses and trigger agent logic
+        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
+        
         if call_status == "ringing" and direction == "outbound-api":
-            # Outbound call is ringing
-            if agentId:
-                # Generate agent-specific response
-                twiml_response = voice_agent_manager.generate_agent_response(agentId, {
+            # Outbound call is ringing - trigger agent logic
+            if agent:
+                # Generate agent-specific response using database agent
+                twiml_response = _generate_agent_response(agent, {
                     'call_sid': call_sid,
                     'from_number': from_number,
                     'to_number': to_number,
-                    'status': call_status
+                    'status': call_status,
+                    'event_type': 'call_ringing'
                 })
                 return HTMLResponse(twiml_response, media_type="application/xml")
             else:
@@ -175,134 +165,96 @@ async def handle_call_events(
                 return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "in-progress":
-            # Call is in progress
-            response = VoiceResponse()
-            response.say("Your call is now connected. How can we help you today?", voice="alice")
-            return HTMLResponse(str(response), media_type="application/xml")
+            # Call is in progress - trigger agent logic
+            if agent:
+                # Generate agent-specific response for active call
+                twiml_response = _generate_agent_response(agent, {
+                    'call_sid': call_sid,
+                    'from_number': from_number,
+                    'to_number': to_number,
+                    'status': call_status,
+                    'event_type': 'call_in_progress'
+                })
+                return HTMLResponse(twiml_response, media_type="application/xml")
+            else:
+                response = VoiceResponse()
+                response.say("Your call is now connected. How can we help you today?", voice="alice")
+                return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "completed":
             # Call completed
-            voice_agent_manager.release_agent_from_call(call_sid)
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "failed":
+            # Call failed - handle error
+            print(f"Call failed - SID: {call_sid}")
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "busy":
+            # Call busy - handle busy signal
+            print(f"Call busy - SID: {call_sid}")
             return HTMLResponse("", media_type="application/xml")
         
         else:
             # Default response for other statuses
+            print(f"Unhandled call status: '{call_status}' - using default response")
             response = VoiceResponse()
-            response.say("Thank you for your call.", voice="alice")
+            response.say("Thank you for your call.", voice=agent.name)
             return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
         print(f"Error in call events webhook: {e}")
         # Return a simple response to avoid call failures
         response = VoiceResponse()
-        response.say("Thank you for calling. Please try again later.", voice="alice")
+        response.say("Thank you for calling. Please try again later.", voice=agent.name)
         return HTMLResponse(str(response), media_type="application/xml")
 
 
-@router.post("/gather", response_class=HTMLResponse)
-async def handle_gather_input(request: Request, agentId: str = Query(...)):
-    """Handle user input gathered from the call"""
-    try:
-        form_data = await request.form()
-        speech_result = form_data.get("SpeechResult", "")
-        confidence = form_data.get("Confidence", "0")
-        
-        print(f"Gather Input - Agent: {agentId}, Speech: {speech_result}, Confidence: {confidence}")
-        
-        # Create response based on user input
-        response = VoiceResponse()
-        
-        if speech_result and float(confidence) > 0.5:
-            # Process the speech input
-            response.say(f"I understand you said: {speech_result}", voice="alice")
-            response.say("Let me help you with that.", voice="alice")
-            
-            # Add more sophisticated logic here based on speech content
-            if "help" in speech_result.lower():
-                response.say("I'm here to help you. What specific assistance do you need?", voice="alice")
-            elif "support" in speech_result.lower():
-                response.say("I'll connect you with our support team.", voice="alice")
-            else:
-                response.say("Thank you for your input. An agent will assist you further.", voice="alice")
+def _generate_agent_response(agent, call_data: dict) -> str:
+    """Generate TwiML response based on agent from database"""
+    if not agent:
+        return _generate_default_response()
+    
+    # Create TwiML response
+    response = VoiceResponse()
+    
+    # Map voice_type to Twilio voice names
+    def get_twilio_voice(voice_type):
+        if voice_type == "male":
+            return "en-US-Neural2-F"  # Male voice
+        elif voice_type == "female":
+            return "en-US-Neural2-E"  # Female voice
         else:
-            response.say("I didn't catch that clearly. Let me transfer you to a human agent.", voice="alice")
-        
-        return HTMLResponse(str(response), media_type="application/xml")
+            return "alice"  # Default voice
     
-    except Exception as e:
-        print(f"Error in gather webhook: {e}")
-        response = VoiceResponse()
-        response.say("I'm having trouble processing your request. Let me transfer you.", voice="alice")
-        return HTMLResponse(str(response), media_type="application/xml")
-
-
-@router.post("/transfer", response_class=HTMLResponse)
-async def handle_transfer(request: Request):
-    """Handle call transfer to human agent"""
-    try:
-        response = VoiceResponse()
-        response.say("Transferring you to a human agent. Please hold.", voice="alice")
-        response.pause(length=2)
-        response.say("Thank you for your patience.", voice="alice")
-        return HTMLResponse(str(response), media_type="application/xml")
+    # Use agent's name and fallback response
+    agent_name = agent.name
+    greeting = agent.fallback_response or f"Hello! This is {agent_name} speaking. How can I help you today?"
+    twilio_voice = get_twilio_voice(agent.voice_type)
     
-    except Exception as e:
-        print(f"Error in transfer webhook: {e}")
-        response = VoiceResponse()
-        response.say("Thank you for calling. Goodbye.", voice="alice")
-        return HTMLResponse(str(response), media_type="application/xml")
-
-
-@router.post("/status", response_model=SuccessResponse[StatusResponse])
-async def handle_call_status(request: Request):
-    """Handle call status updates"""
-    try:
-        form_data = await request.form()
-        call_sid = form_data.get("CallSid", "")
-        call_status = form_data.get("CallStatus", "")
-        call_duration = form_data.get("CallDuration", "")
-        
-        print(f"Call Status Update - SID: {call_sid}, Status: {call_status}, Duration: {call_duration}")
-        
-        # Handle call completion
-        if call_status == "completed":
-            voice_agent_manager.release_agent_from_call(call_sid)
-        
-        return create_success_response(
-            StatusResponse(status="received", message=f"Status update processed for call {call_sid}"),
-            "Status update processed"
-        )
+    # Say the greeting with agent's voice
+    response.say(greeting, voice=twilio_voice)
     
-    except Exception as e:
-        print(f"Error in status webhook: {e}")
-        return create_success_response(
-            StatusResponse(status="error", message=str(e)),
-            "Error processing status"
-        )
-
-
-@router.get("/agents", response_model=SuccessResponse[AgentListResponse])
-async def list_agents(user: dict = Depends(require_tenant)):
-    """List all registered agents and their status"""
-    agent_status = voice_agent_manager.get_agent_status()
-    return create_success_response(
-        AgentListResponse(**agent_status),
-        "Agent status retrieved successfully"
+    # Add gather to collect user input
+    gather = response.gather(
+        input='speech',
+        timeout=10,
+        speech_timeout='auto',
+        action=f'/webhook/call-events?agentId={agent.id}',
+        method='POST'
     )
+    gather.say(f"Please tell me how I can assist you.", voice=twilio_voice)
+    
+    # Fallback if no input
+    response.say("I didn't catch that. Let me transfer you to a human agent.", voice=twilio_voice)
+    
+    return str(response)
 
 
-@router.post("/agents/{agent_id}/register", response_model=SuccessResponse[AgentRegistrationResponse])
-async def register_agent(
-    agent_id: str,
-    request: AgentRegistrationRequest,
-    user: dict = Depends(require_tenant)
-):
-    """Register a new agent"""
-    try:
-        voice_agent_manager.register_agent(agent_id, request.capabilities)
-        return create_success_response(
-            AgentRegistrationResponse(success=True, message=f"Agent {agent_id} registered successfully"),
-            f"Agent {agent_id} registered successfully"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def _generate_default_response() -> str:
+    """Generate default TwiML response"""
+    response = VoiceResponse()
+    response.say("Thank you for calling. An agent will be with you shortly.", voice="alice")
+    response.pause(length=2)
+    response.say("Please hold while we connect you.", voice="alice")
+    return str(response)
