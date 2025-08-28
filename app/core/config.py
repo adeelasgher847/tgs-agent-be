@@ -29,7 +29,13 @@ class Settings(BaseSettings):
     
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
-    FRONTEND_URL: str = "http://localhost:3000"  
+    FRONTEND_URL: str = "http://localhost:3000"
+    
+    # OpenAI Configuration
+    OPENAI_API_KEY: str = ""
+    
+    # ElevenLabs Configuration
+    ELEVENLABS_API_KEY: str = ""  
 
     model_config = SettingsConfigDict(env_file=".env")
 

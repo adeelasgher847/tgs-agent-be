@@ -7,13 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
+from app.routers.voice_processing import router as voice_processing_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
-from app.services.agent_service import agent_service
-from app.models.agent import Agent
-from app.api.deps import get_db
-from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
-import uuid
 
 app = FastAPI()
 
@@ -41,4 +37,5 @@ def read_root():
     )
     
 app.include_router(api_router, prefix="/api/v1")
-app.include_router(health_router) 
+app.include_router(health_router)
+app.include_router(voice_processing_router, prefix="/voice") 
