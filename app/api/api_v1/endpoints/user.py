@@ -158,10 +158,11 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     Refresh endpoint:
     1) If access_token is provided and still valid -> return "still valid"
     2) If access_token expired but refresh_token valid -> issue new access_token only
+       (reuse the last generated token if it exists)
     3) If refresh_token invalid/expired -> return 401
     """
 
-    # 1) if acess token is valid this will not create new acess token
+    # 1) If access token is still valid
     if req.access_token:
         payload = verify_token(req.access_token)
         if payload and not is_token_expired(req.access_token):
@@ -170,7 +171,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
                 "message": "Access token still valid"
             }
 
-    # 2) Refresh token validate 
+    # 2) Validate refresh token
     rt = db.query(RefreshToken).filter(RefreshToken.token == req.refresh_token).first()
     if not rt or rt.revoked or rt.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(
@@ -182,7 +183,6 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
-    # collect tenant and role info
     tenant_ids = [t.id for t in user.tenants]
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
@@ -192,12 +192,17 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
 
-    # 3) this will create new acess token
-    new_access_token = create_user_token(
-        user_id=user.id,
-        email=user.email,
-        tenant_id=current_tenant_id
-    )
+    # 3) Check if a new access token was already generated for this refresh token
+    if rt.replaced_access_token and not is_token_expired(rt.replaced_access_token):
+        new_access_token = rt.replaced_access_token
+    else:
+        new_access_token = create_user_token(
+            user_id=user.id,
+            email=user.email,
+            tenant_id=current_tenant_id
+        )
+        rt.replaced_access_token = new_access_token
+        db.add(rt)
 
     db.commit()
 
@@ -214,6 +219,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
             "role": role_info
         }
     }
+
 
 @router.post("/logout", response_model=SuccessResponse[dict])
 def logout(current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):

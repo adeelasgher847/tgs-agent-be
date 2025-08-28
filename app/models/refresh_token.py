@@ -13,5 +13,6 @@ class RefreshToken(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     replaced_by_token = Column(String(255), nullable=True)
+    replaced_access_token = Column(String, nullable=True) # <- new column
 
     user = relationship("User")
