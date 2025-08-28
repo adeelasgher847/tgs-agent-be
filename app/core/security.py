@@ -4,6 +4,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.core.config import settings
 import uuid
+import secrets
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -14,7 +15,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        # Use the configured expiration time (30 minutes by default)
+        # Use the configured expiration time (15 minutes by default)
         expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({"exp": expire})
@@ -29,22 +30,17 @@ def verify_token(token: str) -> Optional[dict]:
     except JWTError:
         return None
 
-def get_token_expiration(token: str) -> Optional[datetime]:
-    """Get token expiration time"""
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        exp_timestamp = payload.get("exp")
-        if exp_timestamp:
-            return datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
-        return None
-    except JWTError:
-        return None
-
 def is_token_expired(token: str) -> bool:
     """Check if token is expired"""
-    exp_time = get_token_expiration(token)
-    if exp_time is None:
+    payload = verify_token(token)
+    if not payload:
         return True
+    
+    exp_timestamp = payload.get("exp")
+    if not exp_timestamp:
+        return True
+    
+    exp_time = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
     return datetime.now(timezone.utc) > exp_time
 
 def get_token_info(token: str) -> Optional[dict]:
@@ -87,7 +83,7 @@ def get_password_hash(password: str) -> str:
 
 def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.UUID] = None):
     """
-    Create JWT token for user with 30-minute expiration
+    Create JWT token for user with 15-minute expiration
     
     Args:
         user_id: User's ID (UUID)
@@ -95,7 +91,7 @@ def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.U
         tenant_id: Current tenant ID (UUID, optional)
     
     Returns:
-        JWT token that expires in 30 minutes
+        JWT token that expires in 15 minutes
     """
     token_data = {
         "user_id": str(user_id),  # Convert UUID to string
@@ -105,6 +101,37 @@ def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.U
         "type": "access"
     }
     
-    # Explicitly set 30-minute expiration
+    # Explicitly set 15-minute expiration
     expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    return create_access_token(data=token_data, expires_delta=expires_delta) 
+    return create_access_token(data=token_data, expires_delta=expires_delta)
+
+def generate_password_reset_token() -> str:
+    """
+    Generate a secure random token for password reset
+    
+    Returns:
+        str: A secure random token
+    """
+    return secrets.token_urlsafe(32)
+
+def create_password_reset_token(user_id: uuid.UUID) -> tuple[str, datetime]:
+    """
+    Create a password reset token with expiration
+    
+    Args:
+        user_id: User's ID (UUID)
+    
+    Returns:
+        tuple: (token, expiration_datetime)
+    """
+    token = generate_password_reset_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)
+    return token, expires_at
+
+def create_refresh_token_value() -> str:
+    """Create secure random refresh token string."""
+    return secrets.token_urlsafe(48)
+
+def refresh_token_expires_at() -> datetime:
+    """Get refresh token expiration time (7 days from now)."""
+    return datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
