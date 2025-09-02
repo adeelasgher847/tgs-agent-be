@@ -4,7 +4,7 @@ class Settings(BaseSettings):
     
     ADMIN_ROLE: str = "admin"
     
-    DATABASE_URL: str = "postgresql+psycopg2://postgres:123456@localhost:5432/voiceagent"
+    DATABASE_URL: str = "postgresql://neondb_owner:npg_O0gvul4bTMPH@ep-raspy-lab-afr28nzh-pooler.c-2.us-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
     SECRET_KEY: str = "supersecretkey"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
