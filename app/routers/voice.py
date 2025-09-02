@@ -16,6 +16,7 @@ from app.utils.twilio_validation import validate_twilio_signature, validate_webr
 from app.utils.response import create_success_response
 from app.core.config import settings
 import uuid
+from datetime import datetime
 
 router = APIRouter()
 
@@ -100,15 +101,18 @@ async def handle_call_events_webhook(
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
-    """
-    Webhook endpoint to receive and handle Twilio or WebRTC voice call events in real time.
-    Endpoint: POST /webhook/call-events
+    print(f"[WEBHOOK] === Call Events Webhook Started ===")
+    print(f"[WEBHOOK] Timestamp: {datetime.now().isoformat()}")
+    print(f"[WEBHOOK] Request method: {request.method}")
+    print(f"[WEBHOOK] Request URL: {request.url}")
+    print(f"[WEBHOOK] Request headers: {dict(request.headers)}")
+    print(f"[WEBHOOK] Query params: agentId={agentId}")
+    print(f"[WEBHOOK] Request body length: {len(body) if body else 0}")
+    print(f"[WEBHOOK] Request body preview: {body[:200] if body else 'None'}...")
+    print(f"[WEBHOOK] Database session: {db}")
     
-    - Handles incoming call event, triggers agent logic
-    - Validates Twilio signature or WebRTC auth
-    - Responds with TwiML or JSON for live call handling
-    """
     try:
+        print(f"[WEBHOOK] Parsing request body...")
         # Validate request (Twilio signature or WebRTC auth)
         is_twilio = 'X-Twilio-Signature' in request.headers
         is_webrtc = 'Authorization' in request.headers
@@ -218,11 +222,13 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        print(f"Error in call events webhook: {e}")
-        # Return a simple response to avoid call failures
-        response = VoiceResponse()
-        response.say("Thank you for calling. Please try again later.", voice="")
-        return HTMLResponse(str(response), media_type="application/xml")
+        print(f"[WEBHOOK] ERROR occurred: {str(e)}")
+        print(f"[WEBHOOK] Error type: {type(e).__name__}")
+        print(f"[WEBHOOK] Error traceback:")
+        import traceback
+        traceback.print_exc()
+        print(f"[WEBHOOK] === Call Events Webhook Failed ===")
+        raise
 
 
 def _generate_agent_response(agent, call_data: dict) -> str:
