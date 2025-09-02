@@ -17,6 +17,17 @@ from app.utils.response import create_success_response
 from app.core.config import settings
 import uuid
 from datetime import datetime
+import logging
+
+# Add this at the top of your file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # This will output to console
+    ]
+)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -101,24 +112,24 @@ async def handle_call_events_webhook(
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
-    print(f"[WEBHOOK] === Call Events Webhook Started ===")
-    print(f"[WEBHOOK] Timestamp: {datetime.now().isoformat()}")
-    print(f"[WEBHOOK] Request method: {request.method}")
-    print(f"[WEBHOOK] Request URL: {request.url}")
-    print(f"[WEBHOOK] Request headers: {dict(request.headers)}")
-    print(f"[WEBHOOK] Query params: agentId={agentId}")
-    print(f"[WEBHOOK] Request body length: {len(body) if body else 0}")
-    print(f"[WEBHOOK] Request body preview: {body[:200] if body else 'None'}...")
-    print(f"[WEBHOOK] Database session: {db}")
+    logger.info(f"[WEBHOOK] === Call Events Webhook Started ===")
+    logger.info(f"[WEBHOOK] Timestamp: {datetime.now().isoformat()}")
+    logger.info(f"[WEBHOOK] Request method: {request.method}")
+    logger.info(f"[WEBHOOK] Request URL: {request.url}")
+    logger.info(f"[WEBHOOK] Request headers: {dict(request.headers)}")
+    logger.info(f"[WEBHOOK] Query params: agentId={agentId}")
+    logger.info(f"[WEBHOOK] Request body length: {len(body) if body else 0}")
+    logger.info(f"[WEBHOOK] Request body preview: {body[:200] if body else 'None'}...")
+    logger.info(f"[WEBHOOK] Database session: {db}")
     
     try:
-        print(f"[WEBHOOK] Parsing request body...")
+        logger.info(f"[WEBHOOK] Parsing request body...")
         # Validate request (Twilio signature or WebRTC auth)
         is_twilio = 'X-Twilio-Signature' in request.headers
         is_webrtc = 'Authorization' in request.headers
         
         if is_twilio:
-            print("Twilio signature found, but skipping validation for testing")
+            logger.info("Twilio signature found, but skipping validation for testing")
             # if not validate_twilio_signature(request, body):
             #     raise HTTPException(status_code=403, detail="Invalid Twilio signature")
         elif is_webrtc:
@@ -126,7 +137,7 @@ async def handle_call_events_webhook(
                 raise HTTPException(status_code=403, detail="Invalid WebRTC authentication")
         else:
             # For testing purposes, allow requests without validation
-            print("Warning: No authentication headers found, allowing for testing")
+            logger.info("Warning: No authentication headers found, allowing for testing")
         
         # Parse form data
         form_data = await request.form()
@@ -140,8 +151,8 @@ async def handle_call_events_webhook(
         
         
         # Log the call event
-        print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
-        print(f"AgentId from query: {agentId}")
+        logger.info(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
+        logger.info(f"AgentId from query: {agentId}")
         
         # Get agent from database if agentId is provided
         agent = None
@@ -151,17 +162,17 @@ async def handle_call_events_webhook(
                 # Get agent from database
                 agent = db.query(Agent).filter(Agent.id == agent_uuid).first()
                 if agent:
-                    print(f"Found agent: {agent.name} (ID: {agent.id})")
+                    logger.info(f"Found agent: {agent.name} (ID: {agent.id})")
                 else:
-                    print(f"Agent not found in database for ID: {agentId}")
+                    logger.info(f"Agent not found in database for ID: {agentId}")
             except (ValueError, Exception) as e:
-                print(f"Error getting agent: {e}")
+                logger.info(f"Error getting agent: {e}")
                 agent = None
         else:
-            print("No agentId provided in webhook")
+            logger.info("No agentId provided in webhook")
         
         # Handle different call statuses and trigger agent logic
-        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
+        logger.info(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "ringing" and direction == "outbound-api":
             # Outbound call is ringing - trigger agent logic
@@ -205,29 +216,29 @@ async def handle_call_events_webhook(
         
         elif call_status == "failed":
             # Call failed - handle error
-            print(f"Call failed - SID: {call_sid}")
+            logger.info(f"Call failed - SID: {call_sid}")
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "busy":
             # Call busy - handle busy signal
-            print(f"Call busy - SID: {call_sid}")
+            logger.info(f"Call busy - SID: {call_sid}")
             return HTMLResponse("", media_type="application/xml")
         
         else:
             # Default response for other statuses
-            print(f"Unhandled call status: '{call_status}' - using default response")
+            logger.info(f"Unhandled call status: '{call_status}' - using default response")
             response = VoiceResponse()
             agent_voice = agent.name if agent else ""
             response.say("Thank you for your call.", voice=agent_voice)
             return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        print(f"[WEBHOOK] ERROR occurred: {str(e)}")
-        print(f"[WEBHOOK] Error type: {type(e).__name__}")
-        print(f"[WEBHOOK] Error traceback:")
+        logger.info(f"[WEBHOOK] ERROR occurred: {str(e)}")
+        logger.info(f"[WEBHOOK] Error type: {type(e).__name__}")
+        logger.info(f"[WEBHOOK] Error traceback:")
         import traceback
-        traceback.print_exc()
-        print(f"[WEBHOOK] === Call Events Webhook Failed ===")
+        traceback.logger.info_exc()
+        logger.info(f"[WEBHOOK] === Call Events Webhook Failed ===")
         raise
 
 
