@@ -233,12 +233,12 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        logger.info(f"[WEBHOOK] ERROR occurred: {str(e)}")
-        logger.info(f"[WEBHOOK] Error type: {type(e).__name__}")
-        logger.info(f"[WEBHOOK] Error traceback:")
+        logger.error(f"[WEBHOOK] ERROR occurred: {str(e)}")
+        logger.error(f"[WEBHOOK] Error type: {type(e).__name__}")
+        logger.error(f"[WEBHOOK] Error traceback:")
         import traceback
-        traceback.logger.info_exc()
-        logger.info(f"[WEBHOOK] === Call Events Webhook Failed ===")
+        logger.error(traceback.format_exc())
+        logger.error(f"[WEBHOOK] === Call Events Webhook Failed ===")
         raise
 
 
