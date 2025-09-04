@@ -11,3 +11,5 @@ pytest
 httpx 
 python-multipart
 pydantic[email]
+twilio
+email-validator
