@@ -61,7 +61,7 @@ async def initiate_call(
             raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
         
         # Get base URL for webhooks
-        base_url = f"http://{settings.HOST}:{settings.PORT}"
+        base_url = settings.WEBHOOK_BASE_URL
         
         # Make the call using Twilio with main call events webhook
         call = twilio_service.make_call(
