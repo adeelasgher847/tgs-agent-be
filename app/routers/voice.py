@@ -63,12 +63,12 @@ async def initiate_call(
         # Get base URL for webhooks
         base_url = f"http://{settings.HOST}:{settings.PORT}"
         
-        # Make the call using Twilio with new voice processing webhooks
+        # Make the call using Twilio with main call events webhook
         call = twilio_service.make_call(
             to_number=request.userPhoneNumber,
             from_number=twilio_service.get_phone_number(),
-            webhook_url=f"{base_url}/voice/webhook/voice-init?agentId={request.agentId}&userId={user.id}",
-            status_callback_url=f"{base_url}/voice/webhook/call-end"
+            webhook_url=f"{base_url}/api/v1/voice/webhook/call-events?agentId={request.agentId}&userId={user.id}",
+            status_callback_url=f"{base_url}/api/v1/voice/webhook/call-events"
         )
         
         # Create call session immediately when call is initiated
