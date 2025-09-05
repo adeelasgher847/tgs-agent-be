@@ -35,7 +35,13 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     
     # ElevenLabs Configuration
-    ELEVENLABS_API_KEY: str = ""  
+    ELEVENLABS_API_KEY: str = ""
+    
+    # Logging Configuration
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    LOG_TO_FILE: bool = False
+    LOG_FILE_PATH: str = "app.log"
 
     model_config = SettingsConfigDict(env_file=".env")
 
