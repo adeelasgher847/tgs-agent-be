@@ -2,9 +2,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from app.core.config import settings
-import logging
-
-logger = logging.getLogger(__name__)
 
 class EmailService:
     def __init__(self):
@@ -61,7 +58,7 @@ class EmailService:
             return self._send_email(msg)
             
         except Exception as e:
-            logger.error(f"Error sending password reset email to {email}: {str(e)}")
+            print(f"Error sending password reset email to {email}: {str(e)}")
             return False
     
     def _send_email(self, msg: MIMEMultipart) -> bool:
@@ -90,11 +87,11 @@ class EmailService:
             server.sendmail(msg['From'], msg['To'], text)
             server.quit()
             
-            logger.info(f"Email sent successfully to {msg['To']}")
+            print(f"Email sent successfully to {msg['To']}")
             return True
             
         except Exception as e:
-            logger.error(f"Error sending email: {str(e)}")
+            print(f"Error sending email: {str(e)}")
             return False
 
 # Create a global instance
