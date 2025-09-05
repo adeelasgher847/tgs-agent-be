@@ -17,11 +17,11 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Your frontend dev server
-        "http://localhost:3000",  # Alternative frontend port
-        "http://127.0.0.1:5173",  # Alternative localhost
-        "http://127.0.0.1:3000",  # Alternative localhost
-        "http://192.168.0.121:5173",  # Your IP with frontend port
+        # "http://localhost:5173",  # Your frontend dev server
+        # "http://localhost:3000",  # Alternative frontend port
+        # "http://127.0.0.1:5173",  # Alternative localhost
+        # "http://127.0.0.1:3000",  # Alternative localhost
+        # "http://192.168.0.121:5173",  # Your IP with frontend port
         "*"  # Allow all origins (for development only)
     ],
     allow_credentials=True,
