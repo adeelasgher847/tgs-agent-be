@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from app.schemas.user import UserCreate, UserOut
+from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
 from app.schemas.auth import RefreshRequest
 from app.schemas.base import SuccessResponse
@@ -429,4 +429,107 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     return create_success_response(
         ResetPasswordResponse(message="Password reset successfully."),
         "Password reset successful"
+    )
+
+
+@router.get("/profile", response_model=SuccessResponse[UserProfile])
+def get_user_profile(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Get complete user profile information including role and tenant details.
+    Requires JWT Bearer token authentication.
+    """
+    # Fetch user with all related data
+    user = db.query(User).filter(User.id == current_user.id).first()
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Create user profile response
+    user_profile = UserProfile(
+        id=user.id,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        email=user.email,
+        phone=user.phone,
+        role_id=user.role_id,
+        current_tenant_id=user.current_tenant_id,
+        join_date=user.join_date,
+        created_at=user.created_at,
+        role=user.role,
+        current_tenant=user.current_tenant,
+        tenants=user.tenants
+    )
+    
+    return create_success_response(
+        user_profile,
+        "User profile retrieved successfully"
+    )
+
+
+@router.put("/profile", response_model=SuccessResponse[UserProfile])
+def update_user_profile(
+    user_update: UserUpdate,
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Update user profile information.
+    Requires JWT Bearer token authentication.
+    Only updates fields that are provided in the request.
+    """
+    # Get the fields to update
+    update_data = user_update.model_dump(exclude_unset=True)
+    
+    # Validate email if it's being updated
+    if "email" in update_data:
+        new_email = update_data["email"]
+        if new_email != current_user.email:
+            existing_user = db.query(User).filter(
+                User.email == new_email,
+                User.id != current_user.id
+            ).first()
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already exists"
+                )
+    
+    for field, value in update_data.items():
+        setattr(current_user, field, value)
+    
+    try:
+        db.commit()
+        db.refresh(current_user)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update profile"
+        )
+    
+    # Create updated user profile response
+    user_profile = UserProfile(
+        id=current_user.id,
+        first_name=current_user.first_name,
+        last_name=current_user.last_name,
+        email=current_user.email,
+        phone=current_user.phone,
+        role_id=current_user.role_id,
+        current_tenant_id=current_user.current_tenant_id,
+        join_date=current_user.join_date,
+        created_at=current_user.created_at,
+        role=current_user.role,
+        current_tenant=current_user.current_tenant,
+        tenants=current_user.tenants
+    )
+    
+    return create_success_response(
+        user_profile,
+        "User profile updated successfully"
     )
