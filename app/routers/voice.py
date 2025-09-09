@@ -173,9 +173,16 @@ async def handle_call_events_webhook(
         # Handle different call statuses and trigger agent logic
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
-        if call_status == "ringing" and direction == "outbound-api":
+        if call_status == "initiated" and direction == "outbound-api":
+            # Call has been initiated - just log and return empty response
+            print(f"Call initiated - SID: {call_sid}")
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "ringing" and direction == "outbound-api":
             # Outbound call is ringing - trigger agent logic
+            print(f"Call is ringing - SID: {call_sid}")
             if agent:
+                print(f"Generating agent response for agent: {agent.name}")
                 # Generate agent-specific response using database agent
                 twiml_response = _generate_agent_response(agent, {
                     'call_sid': call_sid,
@@ -184,8 +191,10 @@ async def handle_call_events_webhook(
                     'status': call_status,
                     'event_type': 'call_ringing'
                 })
+                print(f"Generated TwiML response: {twiml_response[:200]}...")
                 return HTMLResponse(twiml_response, media_type="application/xml")
             else:
+                print("No agent found, using default response")
                 # Default response
                 response = VoiceResponse()
                 response.say("Hello! Thank you for answering our call.", voice="")
