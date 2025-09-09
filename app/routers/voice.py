@@ -106,7 +106,7 @@ async def handle_call_events_webhook(
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
-    logger.info("=== Call Events Webhook Started ===")
+    logger.info("=== Call Events Webhook Started === log check")
     logger.info(f"Timestamp: {datetime.now().isoformat()}")
     logger.info(f"Request method: {request.method}")
     logger.info(f"Request URL: {request.url}")
@@ -115,7 +115,15 @@ async def handle_call_events_webhook(
     logger.info(f"Request body length: {len(body) if body else 0}")
     logger.info(f"Request body preview: {body[:200] if body else 'None'}...")
     logger.info(f"Database session: {db}")
-    
+    print("=== Call Events Webhook Started === print check")
+    print(f"Timestamp: {datetime.now().isoformat()}")
+    print(f"Request method: {request.method}")
+    print(f"Request URL: {request.url}")
+    print(f"Request headers: {dict(request.headers)}")
+    print(f"Query params: agentId={agentId}")
+    print(f"Request body length: {len(body) if body else 0}")
+    print(f"Request body preview: {body[:200] if body else 'None'}...")
+    print(f"Database session: {db}")
     try:
         logger.info("Parsing request body...")
         # Validate request (Twilio signature or WebRTC auth)
