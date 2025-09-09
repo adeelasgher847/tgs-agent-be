@@ -148,6 +148,13 @@ async def handle_call_events_webhook(
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
         
+        # Extract speech input (if any)
+        speech_result = form_data.get("SpeechResult", "")
+        confidence = form_data.get("Confidence", "")
+        speech_duration = form_data.get("SpeechDuration", "")
+        
+        print(f"🎤 Speech input - Result: '{speech_result}', Confidence: {confidence}, Duration: {speech_duration}")
+        
         
         # Log the call event
         print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
@@ -169,6 +176,39 @@ async def handle_call_events_webhook(
                 agent = None
         else:
             print("No agentId provided in webhook")
+        
+        # Handle speech input first (if present)
+        if speech_result:
+            print("=" * 50)
+            print(f"🎤 SPEECH DETECTED: '{speech_result}'")
+            print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
+            print("=" * 50)
+            
+            # Process the speech input
+            response = VoiceResponse()
+            
+            if agent:
+                # Generate response based on speech input
+                agent_response = _process_speech_input(agent, speech_result, call_sid)
+                response.say(agent_response, voice=_get_twilio_voice(agent.voice_type))
+            else:
+                response.say(f"I heard you say: {speech_result}. How can I help you further?", voice="")
+            
+            # Add another gather to continue listening
+            gather = response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                method='POST'
+            )
+            gather.say("Please tell me more about how I can help you.", voice=_get_twilio_voice(agent.voice_type) if agent else "")
+            
+            # Fallback if no input
+            response.say("I didn't catch that. Let me transfer you to a human agent.", voice=_get_twilio_voice(agent.voice_type) if agent else "")
+            
+            print(f"📝 Generated speech response TwiML: {str(response)[:200]}...")
+            return HTMLResponse(str(response), media_type="application/xml")
         
         # Handle different call statuses and trigger agent logic
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
@@ -258,6 +298,34 @@ async def handle_call_events_webhook(
         raise
 
 
+def _get_twilio_voice(voice_type):
+    """Map voice_type to Twilio voice names"""
+    if voice_type == "male":
+        return "en-US-Neural2-F"  # Male voice
+    elif voice_type == "female":
+        return "en-US-Neural2-E"  # Female voice
+    else:
+        return ""  # Default voice
+
+def _process_speech_input(agent, speech_text: str, call_sid: str) -> str:
+    """Process speech input and generate agent response"""
+    if not agent:
+        return f"I heard you say: {speech_text}. How can I help you further?"
+    
+    # Simple keyword-based responses (you can enhance this with AI)
+    speech_lower = speech_text.lower()
+    
+    if any(word in speech_lower for word in ['hello', 'hi', 'hey']):
+        return f"Hello! This is {agent.name}. How can I assist you today?"
+    elif any(word in speech_lower for word in ['help', 'support', 'assistance']):
+        return f"I'm here to help! What specific assistance do you need?"
+    elif any(word in speech_lower for word in ['thank', 'thanks']):
+        return f"You're welcome! Is there anything else I can help you with?"
+    elif any(word in speech_lower for word in ['bye', 'goodbye', 'end']):
+        return f"Thank you for calling! Have a great day!"
+    else:
+        return f"I understand you said: {speech_text}. Let me help you with that. What would you like me to do?"
+
 def _generate_agent_response(agent, call_data: dict) -> str:
     """Generate TwiML response based on agent from database"""
     if not agent:
@@ -266,19 +334,10 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     # Create TwiML response
     response = VoiceResponse()
     
-    # Map voice_type to Twilio voice names
-    def get_twilio_voice(voice_type):
-        if voice_type == "male":
-            return "en-US-Neural2-F"  # Male voice
-        elif voice_type == "female":
-            return "en-US-Neural2-E"  # Female voice
-        else:
-            return ""  # Default voice
-    
     # Use agent's name and fallback response
     agent_name = agent.name
     greeting = agent.fallback_response or f"Hello! This is {agent_name} speaking. How can I help you today?"
-    twilio_voice = get_twilio_voice(agent.voice_type)
+    twilio_voice = _get_twilio_voice(agent.voice_type)
     
     # Say the greeting with agent's voice
     response.say(greeting, voice=twilio_voice)
