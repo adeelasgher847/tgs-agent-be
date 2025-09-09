@@ -64,11 +64,17 @@ async def initiate_call(
         base_url = settings.WEBHOOK_BASE_URL
         
         # Make the call using Twilio with main call events webhook
+        webhook_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}"
+        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}"
+        
+        print(f"Making call with webhook_url: {webhook_url}")
+        print(f"Making call with status_callback_url: {status_callback_url}")
+        
         call = twilio_service.make_call(
             to_number=request.userPhoneNumber,
             from_number=twilio_service.get_phone_number(),
-            webhook_url=f"{base_url}/api/v1/voice/webhook/call-events?agentId={request.agentId}&userId={user.id}",
-            status_callback_url=f"{base_url}/api/v1/voice/webhook/call-events"
+            webhook_url=webhook_url,
+            status_callback_url=status_callback_url
         )
         
         # Create call session immediately when call is initiated
@@ -106,15 +112,6 @@ async def handle_call_events_webhook(
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
-    logger.info("=== Call Events Webhook Started === log check")
-    logger.info(f"Timestamp: {datetime.now().isoformat()}")
-    logger.info(f"Request method: {request.method}")
-    logger.info(f"Request URL: {request.url}")
-    logger.info(f"Request headers: {dict(request.headers)}")
-    logger.info(f"Query params: agentId={agentId}")
-    logger.info(f"Request body length: {len(body) if body else 0}")
-    logger.info(f"Request body preview: {body[:200] if body else 'None'}...")
-    logger.info(f"Database session: {db}")
     print("=== Call Events Webhook Started === print check")
     print(f"Timestamp: {datetime.now().isoformat()}")
     print(f"Request method: {request.method}")
@@ -125,13 +122,13 @@ async def handle_call_events_webhook(
     print(f"Request body preview: {body[:200] if body else 'None'}...")
     print(f"Database session: {db}")
     try:
-        logger.info("Parsing request body...")
+        print("Parsing request body...")
         # Validate request (Twilio signature or WebRTC auth)
         is_twilio = 'X-Twilio-Signature' in request.headers
         is_webrtc = 'Authorization' in request.headers
         
         if is_twilio:
-            logger.info("Twilio signature found, but skipping validation for testing")
+            print("Twilio signature found, but skipping validation for testing")
             # if not validate_twilio_signature(request, body):
             #     raise HTTPException(status_code=403, detail="Invalid Twilio signature")
         elif is_webrtc:
@@ -153,8 +150,8 @@ async def handle_call_events_webhook(
         
         
         # Log the call event
-        logger.info(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
-        logger.info(f"AgentId from query: {agentId}")
+        print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
+        print(f"AgentId from query: {agentId}")
         
         # Get agent from database if agentId is provided
         agent = None
@@ -164,17 +161,17 @@ async def handle_call_events_webhook(
                 # Get agent from database
                 agent = db.query(Agent).filter(Agent.id == agent_uuid).first()
                 if agent:
-                    logger.info(f"Found agent: {agent.name} (ID: {agent.id})")
+                    print(f"Found agent: {agent.name} (ID: {agent.id})")
                 else:
                     logger.warning(f"Agent not found in database for ID: {agentId}")
             except (ValueError, Exception) as e:
-                logger.error(f"Error getting agent: {e}")
+                print(f"Error getting agent: {e}")
                 agent = None
         else:
-            logger.info("No agentId provided in webhook")
+            print("No agentId provided in webhook")
         
         # Handle different call statuses and trigger agent logic
-        logger.info(f"Processing call status: '{call_status}' with direction: '{direction}'")
+        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "ringing" and direction == "outbound-api":
             # Outbound call is ringing - trigger agent logic
@@ -235,12 +232,12 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        logger.error(f"ERROR occurred: {str(e)}")
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error("Error traceback:")
+        print(f"ERROR occurred: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
+        print("Error traceback:")
         import traceback
-        logger.error(traceback.format_exc())
-        logger.error("=== Call Events Webhook Failed ===")
+        print(traceback.format_exc())
+        print("=== Call Events Webhook Failed ===")
         raise
 
 
@@ -274,7 +271,7 @@ def _generate_agent_response(agent, call_data: dict) -> str:
         input='speech',
         timeout=10,
         speech_timeout='auto',
-        action=f'/webhook/call-events?agentId={agent.id}',
+        action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}',
         method='POST'
     )
     gather.say(f"Please tell me how I can assist you.", voice=twilio_voice)

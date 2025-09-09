@@ -10,9 +10,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     # Twilio Configuration
-    TWILIO_ACCOUNT_SID: str = "AC4071b00aa2ea5985a36201ad45a98ed1"
-    TWILIO_AUTH_TOKEN: str = "2940ee281d4991f6fe3169afd470a620"
-    TWILIO_PHONE_NUMBER: str = "+1234567890"  # Replace with your actual Twilio phone number
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_PHONE_NUMBER: str = "+13466602410"  # TODO: Replace with your actual Twilio phone number from Twilio Console
     ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
     
     # Server Configuration
