@@ -336,8 +336,11 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     
     # Use agent's name and fallback response
     agent_name = agent.name
-    greeting = agent.fallback_response or f"Hello! This is {agent_name} speaking. How can I help you today?"
+    greeting = agent.fallback_response if agent.fallback_response and agent.fallback_response.strip() and agent.fallback_response != "string" else f"Hello! This is {agent_name} speaking. How can I help you today?"
     twilio_voice = _get_twilio_voice(agent.voice_type)
+    
+    print(f"🎯 Agent greeting: '{greeting}'")
+    print(f"🎯 Agent voice: '{twilio_voice}'")
     
     # Say the greeting with agent's voice
     response.say(greeting, voice=twilio_voice)
