@@ -180,9 +180,11 @@ async def handle_call_events_webhook(
         
         elif call_status == "ringing" and direction == "outbound-api":
             # Outbound call is ringing - trigger agent logic
-            print(f"Call is ringing - SID: {call_sid}")
+            print("=" * 50)
+            print(f"🔔 CALL IS RINGING - SID: {call_sid}")
+            print("=" * 50)
             if agent:
-                print(f"Generating agent response for agent: {agent.name}")
+                print(f"🤖 Generating agent response for agent: {agent.name}")
                 # Generate agent-specific response using database agent
                 twiml_response = _generate_agent_response(agent, {
                     'call_sid': call_sid,
@@ -191,15 +193,21 @@ async def handle_call_events_webhook(
                     'status': call_status,
                     'event_type': 'call_ringing'
                 })
-                print(f"Generated TwiML response: {twiml_response[:200]}...")
+                print(f"📝 Generated TwiML response (first 300 chars):")
+                print(twiml_response[:300])
+                print("=" * 50)
+                print("✅ RETURNING TwiML RESPONSE TO TWILIO")
+                print("=" * 50)
                 return HTMLResponse(twiml_response, media_type="application/xml")
             else:
-                print("No agent found, using default response")
+                print("❌ No agent found, using default response")
                 # Default response
                 response = VoiceResponse()
                 response.say("Hello! Thank you for answering our call.", voice="")
                 response.say("An agent will be with you shortly.", voice="")
-                return HTMLResponse(str(response), media_type="application/xml")
+                default_twiml = str(response)
+                print(f"📝 Default TwiML response: {default_twiml}")
+                return HTMLResponse(default_twiml, media_type="application/xml")
         
         elif call_status == "in-progress":
             # Call is in progress - trigger agent logic
