@@ -322,7 +322,8 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "message": "Email address not found in our system.",
-                "error_type": "email_not_found"
+                "error_type": "email_not_found",
+                "field":"email"
             }
         )
     
