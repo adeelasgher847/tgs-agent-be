@@ -14,3 +14,4 @@ class Tenant(Base):
     # Relationships
     users = relationship("User", secondary="user_tenant_association", back_populates="tenants") 
     agents = relationship("Agent", back_populates="tenant")
+    call_sessions = relationship("CallSession", back_populates="tenant")

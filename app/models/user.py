@@ -33,3 +33,6 @@ class User(Base):
     
     # Password reset tokens
     password_reset_tokens = relationship("PasswordResetToken", back_populates="user", cascade="all, delete-orphan")
+    
+    # Call sessions
+    call_sessions = relationship("CallSession", back_populates="user")

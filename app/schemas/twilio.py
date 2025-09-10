@@ -68,4 +68,5 @@ class CallInitiateRequest(BaseModel):
 class CallInitiateResponse(BaseModel):
     callId: str
     twilioCallSid: str
+    callSessionId: str
     status: str
