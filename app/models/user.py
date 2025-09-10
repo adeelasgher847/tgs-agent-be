@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Table, ForeignKey, DateTime
+from sqlalchemy import Column, String, Table, ForeignKey, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -30,3 +30,9 @@ class User(Base):
     # Back references for audit trail
     created_agents = relationship("Agent", foreign_keys="Agent.created_by", back_populates="creator")
     updated_agents = relationship("Agent", foreign_keys="Agent.updated_by", back_populates="updater")
+    
+    # Password reset tokens
+    password_reset_tokens = relationship("PasswordResetToken", back_populates="user", cascade="all, delete-orphan")
+    
+    # Call sessions
+    call_sessions = relationship("CallSession", back_populates="user")

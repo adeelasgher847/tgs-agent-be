@@ -1,6 +1,6 @@
 from typing import Any, Optional
 from fastapi import status
-from app.schemas.base import BaseResponse, SuccessResponse, ErrorResponse
+from app.schemas.base import SuccessResponse, ErrorResponse
 
 def create_success_response(
     data: Any, 

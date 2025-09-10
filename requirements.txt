@@ -11,3 +11,8 @@ pytest
 httpx 
 python-multipart
 pydantic[email]
+twilio
+email-validator
+openai
+elevenlabs
+python-dotenv
