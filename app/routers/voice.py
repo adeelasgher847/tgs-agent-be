@@ -17,11 +17,6 @@ from app.utils.response import create_success_response
 from app.core.config import settings
 import uuid
 from datetime import datetime
-import logging
-from app.core.logging_config import get_logger
-
-# Get logger for this module
-logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -136,7 +131,7 @@ async def handle_call_events_webhook(
                 raise HTTPException(status_code=403, detail="Invalid WebRTC authentication")
         else:
             # For testing purposes, allow requests without validation
-            logger.warning("No authentication headers found, allowing for testing")
+            print("No authentication headers found, allowing for testing")
         
         # Parse form data
         form_data = await request.form()
@@ -170,7 +165,7 @@ async def handle_call_events_webhook(
                 if agent:
                     print(f"Found agent: {agent.name} (ID: {agent.id})")
                 else:
-                    logger.warning(f"Agent not found in database for ID: {agentId}")
+                    print(f"Agent not found in database for ID: {agentId}")
             except (ValueError, Exception) as e:
                 print(f"Error getting agent: {e}")
                 agent = None
@@ -272,17 +267,17 @@ async def handle_call_events_webhook(
         
         elif call_status == "failed":
             # Call failed - handle error
-            logger.warning(f"Call failed - SID: {call_sid}")
+            print(f"Call failed - SID: {call_sid}")
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "busy":
             # Call busy - handle busy signal
-            logger.warning(f"Call busy - SID: {call_sid}")
+            print(f"Call busy - SID: {call_sid}")
             return HTMLResponse("", media_type="application/xml")
         
         else:
             # Default response for other statuses
-            logger.warning(f"Unhandled call status: '{call_status}' - using default response")
+            print(f"Unhandled call status: '{call_status}' - using default response")
             response = VoiceResponse()
             agent_voice = agent.name if agent else ""
             response.say("Thank you for your call.", voice=agent_voice)

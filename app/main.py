@@ -10,12 +10,9 @@ from app.routers.health import router as health_router
 from app.routers.voice_processing import router as voice_processing_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
-from app.core.logging_config import setup_logging
 
 app = FastAPI()
 
-# Setup logging
-setup_logging()
 
 # Add CORS middleware
 app.add_middleware(
