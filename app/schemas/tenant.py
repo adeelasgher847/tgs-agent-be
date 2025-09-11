@@ -1,10 +1,10 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 from datetime import datetime
 import uuid
 
 class TenantBase(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=100)
 
 class TenantCreate(TenantBase):
     # Only name required, schema_name will be set automatically
