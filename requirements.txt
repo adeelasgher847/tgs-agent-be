@@ -1,8 +1,14 @@
 fastapi
 uvicorn
 SQLAlchemy
-psycopg2-binary
+psycopg[binary]
 alembic
 python-jose[cryptography]
 passlib[bcrypt]
-pydantic 
+pydantic
+pydantic-settings
+pytest
+httpx 
+python-multipart
+pydantic[email]
+email-validator

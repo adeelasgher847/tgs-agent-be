@@ -1,14 +1,22 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Optional
+from datetime import datetime
+import uuid
 
 class TenantBase(BaseModel):
-    name: str
-    schema_name: str
+    name: str = Field(..., min_length=1, max_length=100)
 
 class TenantCreate(TenantBase):
+    # Only name required, schema_name will be set automatically
     pass
 
 class TenantOut(TenantBase):
-    id: int
+    id: uuid.UUID
+    schema_name: str
+    created_at: datetime
+    
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        orm_mode = True 
+class TenantCreateResponse(BaseModel):
+    tenant_id: uuid.UUID
+    tenant: TenantOut
