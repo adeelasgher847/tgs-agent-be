@@ -462,11 +462,9 @@ def get_user_profile(
         last_name=user.last_name,
         email=user.email,
         phone=user.phone,
-        role_id=user.role_id,
         current_tenant_id=user.current_tenant_id,
         join_date=user.join_date,
         created_at=user.created_at,
-        role=user.role,
         current_tenant=user.current_tenant,
         tenants=user.tenants
     )
