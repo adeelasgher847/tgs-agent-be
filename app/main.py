@@ -16,6 +16,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",  # Alternative localhost
         "http://127.0.0.1:3000",  # Alternative localhost
         "http://192.168.0.121:5173",  # Your IP with frontend port
+        "http://192.168.15.129:5173",
         "*"  # Allow all origins (for development only)
     ],
     allow_credentials=True,

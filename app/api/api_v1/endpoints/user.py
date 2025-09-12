@@ -34,26 +34,11 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
                 "message": "Email already registered",
                 "error_type": "email_already_exists"
             }
-        )
-    
-    role_name = "admin"  
-    
-    # Validate role_id
-    role = db.query(Role).filter(Role.name == role_name).first()
-    if not role:
-        raise HTTPException(
-            status_code=400, 
-            detail={
-                "field": "role",
-                "message": "Default role not found. Please contact administrator.",
-                "error_type": "role_not_found"
-            }
-        )
+        )    
     
     hashed_password = pwd_context.hash(user_in.password)
     db_user = User(
         email=user_in.email,
-        role_id=role.id,
         first_name=user_in.first_name,
         last_name=user_in.last_name,
         phone=user_in.phone,
@@ -439,7 +424,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
 
 @router.get("/profile", response_model=SuccessResponse[UserProfile])
 def get_user_profile(
-    current_user: User = Depends(require_member_or_admin),
+    current_user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
     """
