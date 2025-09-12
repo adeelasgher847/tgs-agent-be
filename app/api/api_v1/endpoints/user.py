@@ -10,7 +10,7 @@ from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
-from app.api.deps import get_db, get_current_user_jwt, security
+from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
 from app.core.security import create_refresh_token_value, refresh_token_expires_at
 from app.core.security import is_token_expired, verify_token
@@ -439,7 +439,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
 
 @router.get("/profile", response_model=SuccessResponse[UserProfile])
 def get_user_profile(
-    current_user: User = Depends(get_current_user_jwt),
+    current_user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db)
 ):
     """

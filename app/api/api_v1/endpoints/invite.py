@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_tenant, require_admin
 from app.services.role_service import is_admin_in_tenant
 from app.services.email_service import email_service
 from app.models.tenant import Tenant
@@ -15,16 +15,13 @@ router = APIRouter()
 @router.post("/invite")
 def invite_team_member(
     email: str,
-    current_user: User = Depends(require_tenant),
+    tenant_user: User = Depends(require_tenant),  # First middleware: tenant validation
+    admin_user: User = Depends(require_admin),    # Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
-    tenant_id = current_user.current_tenant_id
-    
-    if not is_admin_in_tenant(db, current_user.id, tenant_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only admins can invite team members"
-        )
+    # Both tenant_user and admin_user are validated by their respective middleware
+    # We can use either one since they both represent the same user
+    tenant_id = admin_user.current_tenant_id
     
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
@@ -45,7 +42,7 @@ def invite_team_member(
             detail="User already has a pending invitation for this tenant"
         )
     
-    inviter_name = f"{current_user.first_name} {current_user.last_name}"
+    inviter_name = f"{admin_user.first_name} {admin_user.last_name}"
     
     invite_token = secrets.token_urlsafe(32)
     expires_at = datetime.utcnow() + timedelta(days=7)
@@ -53,7 +50,7 @@ def invite_team_member(
     invite = Invite(
         email=email,
         tenant_id=tenant_id,
-        invited_by=current_user.id,
+        invited_by=admin_user.id,
         token=invite_token,
         expires_at=expires_at
     )

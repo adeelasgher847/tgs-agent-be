@@ -2,10 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse, LanguageEnum, VoiceTypeEnum
-from app.api.deps import get_db, get_current_user_jwt
+from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, require_tenant, require_admin
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.schemas.base import SuccessResponse
-from app.api.deps import get_db, require_tenant
 from app.services.agent_service import agent_service
 from app.models.user import User
 from app.utils.response import create_success_response
@@ -17,18 +16,22 @@ router = APIRouter()
 @router.post("/", response_model=SuccessResponse[AgentOut], status_code=status.HTTP_201_CREATED)
 def create_agent(
     agent_in: AgentCreate,
-    user: User = Depends(require_tenant),  # ← Simple tenant enforcement
+    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
+    admin_user: User = Depends(require_admin),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Create a new agent"""
-    agent = agent_service.create_agent(db, agent_in, user.current_tenant_id, user.id)
+    # Both tenant_user and admin_user are validated by their respective middleware
+    # We can use either one since they both represent the same user
+    agent = agent_service.create_agent(db, agent_in, admin_user.current_tenant_id, admin_user.id)
     return create_success_response(agent, "Agent created successfully", status.HTTP_201_CREATED)
 
 
 @router.get("/{agent_id}", response_model=SuccessResponse[AgentOut])
 def get_agent(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),  # ← Simple tenant enforcement
+    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
+    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Get a specific agent by ID"""
@@ -46,7 +49,8 @@ def list_agents(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Records per page"),
     search: Optional[str] = Query(None, description="Search by name"),
-    user: User = Depends(require_tenant),  # ← Simple tenant enforcement
+    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
+    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Get agents with pagination and search"""
@@ -58,29 +62,32 @@ def list_agents(
 def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
-    user: User = Depends(require_tenant),  # ← Simple tenant enforcement
+    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
+    admin_user: User = Depends(require_admin),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Update an agent"""
-    agent = agent_service.update_agent(db, agent_id, agent_update, user.current_tenant_id, user.id)
+    agent = agent_service.update_agent(db, agent_id, agent_update, admin_user.current_tenant_id, admin_user.id)
     return create_success_response(agent, "Agent updated successfully")
 
 
 @router.delete("/{agent_id}", response_model=SuccessResponse[dict])
 def delete_agent(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),  # ← Simple tenant enforcement
+    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
+    admin_user: User = Depends(require_admin),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Delete an agent"""
-    agent_service.delete_agent(db, agent_id, user.current_tenant_id)
+    agent_service.delete_agent(db, agent_id, admin_user.current_tenant_id)
     return create_success_response({"id": str(agent_id)}, "Agent deleted successfully")
 
 
 @router.get("/search/{search_term}", response_model=SuccessResponse[list[AgentOut]])
 def search_agents(
     search_term: str,
-    user: User = Depends(require_tenant),  # ← Simple tenant enforcement
+    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
+    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Search agents by name"""
