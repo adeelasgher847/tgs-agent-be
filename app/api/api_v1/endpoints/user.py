@@ -111,21 +111,25 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         user.current_tenant_id = current_tenant_id
         db.commit()
     
-    # Get role information as object
+    # Get role information for the current tenant
     role_info = None
-    if user.role_id:
-        role = db.query(Role).filter(Role.id == user.role_id).first()
+    current_role = None
+    if current_tenant_id:
+        from app.services.role_service import get_user_role_in_tenant
+        role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         if role:
             role_info = RoleInfo(
                 id=role.id,
                 name=role.name,
                 description=role.description
             )
+            current_role = role.name
     
     access_token = create_user_token(
         user_id=user.id,
         email=user.email,
-        tenant_id=current_tenant_id
+        tenant_id=current_tenant_id,
+        role=current_role
     )
 
     # Create refresh token (valid 7 days)

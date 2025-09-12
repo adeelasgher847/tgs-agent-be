@@ -8,7 +8,8 @@ from app.db.base_class import Base
 user_tenant_association = Table(
     'user_tenant_association', Base.metadata,
     Column('user_id', UUID(as_uuid=True), ForeignKey('user.id')),
-    Column('tenant_id', UUID(as_uuid=True), ForeignKey('tenant.id'))
+    Column('tenant_id', UUID(as_uuid=True), ForeignKey('tenant.id')),
+    Column('role_id', UUID(as_uuid=True), ForeignKey('role.id'), nullable=True)
 )
 
 class User(Base):
@@ -20,11 +21,9 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     join_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    role_id = Column(UUID(as_uuid=True), ForeignKey('role.id'), nullable=True)
     current_tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id'), nullable=True)
     
     tenants = relationship("Tenant", secondary=user_tenant_association, back_populates="users")
-    role = relationship("Role", back_populates="users") 
     current_tenant = relationship("Tenant", foreign_keys=[current_tenant_id])
     
     # Back references for audit trail

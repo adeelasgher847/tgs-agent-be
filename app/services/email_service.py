@@ -96,6 +96,51 @@ class EmailService:
         except Exception as e:
             logger.error(f"Error sending email: {str(e)}")
             return False
+    
+    def send_invite_email(self, email: str, invite_token: str, inviter_name: str, tenant_name: str) -> bool:
+        """
+        Send team invitation email via Gmail
+        
+        Args:
+            email: Invitee's email address
+            invite_token: Invitation token
+            inviter_name: Name of person sending invite
+            tenant_name: Name of the team/tenant
+            
+        Returns:
+            bool: True if email sent successfully, False otherwise
+        """
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = self.smtp_username
+            msg['To'] = email
+            msg['Subject'] = f"You're invited to join {tenant_name} on Voice Agent Platform"
+            
+            invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={invite_token}"
+            
+            body = f"""
+            <html>
+            <body>
+                <h2>You're Invited to Join {tenant_name}!</h2>
+                <p>Hello,</p>
+                <p>{inviter_name} has invited you to join the <strong>{tenant_name}</strong> team on Voice Agent Platform.</p>
+                <p>Click the link below to accept the invitation and create your account:</p>
+                <p><a href="{invite_link}" style="background-color: #28a745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Accept Invitation</a></p>
+                <p>Or copy and paste this link into your browser:</p>
+                <p>{invite_link}</p>
+                <p><strong>This invitation will expire in 7 days.</strong></p>
+                <p>If you don't want to join this team, you can safely ignore this email.</p>
+                <p>Best regards,<br>The Voice Agent Team</p>
+            </body>
+            </html>
+            """
+            
+            msg.attach(MIMEText(body, 'html'))
+            return self._send_email(msg)
+            
+        except Exception as e:
+            logger.error(f"Error sending invite email to {email}: {str(e)}")
+            return False
 
 # Create a global instance
 email_service = EmailService()

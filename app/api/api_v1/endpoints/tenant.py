@@ -11,7 +11,9 @@ from app.core.security import create_user_token
 from app.utils.response import create_success_response
 import re
 from app.core.config import settings
+from app.models.user import user_tenant_association
 
+from sqlalchemy import update
 router = APIRouter()
 
 def generate_schema_name(tenant_name: str) -> str:
@@ -60,9 +62,6 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     db.commit()
     db.refresh(db_tenant)
     
-    # Add user to tenant's users list (many-to-many association)
-    current_user.tenants.append(db_tenant)
-    
     # Get admin role by name
     admin_role = db.query(Role).filter(Role.name == settings.ADMIN_ROLE).first()
     if not admin_role:
@@ -71,11 +70,22 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
             detail="Admin role not found. Please contact administrator."
         )
 
-    # Update user's role to admin
-    current_user.role_id = admin_role.id
+    # Add user to tenant's users list (many-to-many association)
+    current_user.tenants.append(db_tenant)
+    
+    # Commit the association first
+    db.commit()
+    
+    # Update the role_id in the association table
+    stmt = update(user_tenant_association).where(
+        (user_tenant_association.c.user_id == current_user.id) &
+        (user_tenant_association.c.tenant_id == db_tenant.id)
+    ).values(role_id=admin_role.id)
+    
+    db.execute(stmt)
     
     # Set the new tenant as user's current tenant
-    # current_user.current_tenant_id = db_tenant.id
+    current_user.current_tenant_id = db_tenant.id
     
     db.commit()
     db.refresh(current_user)
@@ -116,23 +126,40 @@ def switch_tenant(
     db.commit()
     db.refresh(current_user)
     
-    # Get role information as object
+    # Get role information for the switched tenant
     role_info = None
-    if current_user.role_id:
-        role = db.query(Role).filter(Role.id == current_user.role_id).first()
-        if role:
-            role_info = RoleInfo(
-                id=role.id,
-                name=role.name,
-                description=role.description
-            )
+    current_role = None
+    from app.services.role_service import get_user_role_in_tenant
+    role = get_user_role_in_tenant(db, current_user.id, switch_data.tenant_id)
+    if role:
+        role_info = RoleInfo(
+            id=role.id,
+            name=role.name,
+            description=role.description
+        )
+        current_role = role.name
     
-    # Create new token with updated tenant
+    # Create new token with updated tenant and role
     access_token = create_user_token(
         user_id=current_user.id,
         email=current_user.email,
-        tenant_id=switch_data.tenant_id  
+        tenant_id=switch_data.tenant_id,
+        role=current_role
     )
+
+    # Create refresh token (valid 7 days)
+    from app.core.security import create_refresh_token_value, refresh_token_expires_at
+    from app.models.refresh_token import RefreshToken
+    
+    rt_value = create_refresh_token_value()
+    rt = RefreshToken(
+        user_id=current_user.id,
+        token=rt_value,
+        expires_at=refresh_token_expires_at(),
+        revoked=False
+    )
+    db.add(rt)
+    db.commit()
     
     token_response = TokenResponse(
         access_token=access_token,
@@ -140,7 +167,8 @@ def switch_tenant(
         email=current_user.email,
         tenant_id=switch_data.tenant_id,
         tenant_ids=user_tenant_ids,
-        role=role_info
+        role=role_info,
+        refresh_token=rt_value
     )
     
     return create_success_response(token_response, "Tenant switched successfully")
