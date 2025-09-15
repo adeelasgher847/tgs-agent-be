@@ -25,7 +25,7 @@ def generate_schema_name(tenant_name: str) -> str:
     return f"{schema_name}_schema"
 
 @router.post("/create", response_model=SuccessResponse[TenantCreateResponse])
-def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(require_member_or_admin), db: Session = Depends(get_db)):
+def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
     """
     Create a new tenant organization and associate the creator as its admin.
     
@@ -104,7 +104,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(require_
 @router.post("/switch", response_model=SuccessResponse[TokenResponse])
 def switch_tenant(
     switch_data: SwitchTenantRequest,
-    current_user: User = Depends(require_member_or_admin),
+    current_user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
     """
