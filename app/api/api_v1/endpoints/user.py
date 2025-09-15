@@ -17,6 +17,7 @@ from app.core.security import is_token_expired, verify_token
 from app.services.email_service import email_service
 from app.utils.response import create_success_response
 from datetime import datetime, timezone
+from app.services.role_service import get_user_role_in_tenant
 import uuid
 
 router = APIRouter()
@@ -176,8 +177,8 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
     role_info = None
-    if user.role_id:
-        role = db.query(Role).filter(Role.id == user.role_id).first()
+    if current_tenant_id:
+        role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
 
@@ -440,6 +441,14 @@ def get_user_profile(
             detail="User not found"
         )
     
+    # Get role information for the current tenant
+    role_info = None
+    if user.current_tenant_id:
+        from app.services.role_service import get_user_role_in_tenant
+        role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+        if role:
+            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+    
     # Create user profile response
     user_profile = UserProfile(
         id=user.id,
@@ -447,9 +456,11 @@ def get_user_profile(
         last_name=user.last_name,
         email=user.email,
         phone=user.phone,
+        role_id=role_info.id if role_info else None,
         current_tenant_id=user.current_tenant_id,
         join_date=user.join_date,
         created_at=user.created_at,
+        role=role_info,
         current_tenant=user.current_tenant,
         tenants=user.tenants
     )
@@ -501,6 +512,14 @@ def update_user_profile(
             detail="Failed to update profile"
         )
     
+    # Get role information for the current tenant
+    role_info = None
+    if current_user.current_tenant_id:
+        from app.services.role_service import get_user_role_in_tenant
+        role = get_user_role_in_tenant(db, current_user.id, current_user.current_tenant_id)
+        if role:
+            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+    
     # Create updated user profile response
     user_profile = UserProfile(
         id=current_user.id,
@@ -508,11 +527,11 @@ def update_user_profile(
         last_name=current_user.last_name,
         email=current_user.email,
         phone=current_user.phone,
-        role_id=current_user.role_id,
+        role_id=role_info.id if role_info else None,
         current_tenant_id=current_user.current_tenant_id,
         join_date=current_user.join_date,
         created_at=current_user.created_at,
-        role=current_user.role,
+        role=role_info,
         current_tenant=current_user.current_tenant,
         tenants=current_user.tenants
     )
