@@ -6,3 +6,6 @@ from app.models.agent import Agent
 from app.models.password_reset import PasswordResetToken
 from app.models.refresh_token import RefreshToken
 from app.models.invite import Invite
+from app.models.plan import Plan
+from app.models.subscription import Subscription
+from app.models.usage_record import UsageRecord

@@ -4,7 +4,7 @@ class Settings(BaseSettings):
     
     ADMIN_ROLE: str = "admin"
     
-    DATABASE_URL: str = "postgresql://neondb_owner:npg_O0gvul4bTMPH@ep-raspy-lab-afr28nzh-pooler.c-2.us-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    DATABASE_URL: str = "postgresql+psycopg2://postgres:1234@localhost:5432/voiceagent"
     SECRET_KEY: str = "supersecretkey"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
@@ -21,6 +21,19 @@ class Settings(BaseSettings):
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
     FRONTEND_URL: str = "http://localhost:3000"  
+    
+    # Stripe settings
+    STRIPE_PUBLISHABLE_KEY: str = ""
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_ID_FREE: str = ""
+    STRIPE_PRICE_ID_PRO: str = ""
+    
+    # Billing settings
+    FREE_PLAN_AGENT_LIMIT: int = 2
+    FREE_PLAN_MONTHLY_CALLS: int = 100
+    PRO_PLAN_AGENT_LIMIT: int = 50
+    PRO_PLAN_MONTHLY_CALLS: int = 10000
 
     model_config = SettingsConfigDict(env_file=".env")
 

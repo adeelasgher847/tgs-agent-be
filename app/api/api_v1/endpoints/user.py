@@ -57,6 +57,7 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     User login endpoint that returns JWT token with role information as object.
     Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
+    Automatically assigns admin role if user has no role in current tenant.
     """
     # Find user by email
     user = db.query(User).filter(User.email == login_data.email).first()
@@ -100,8 +101,28 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     role_info = None
     current_role = None
     if current_tenant_id:
-        from app.services.role_service import get_user_role_in_tenant
+        from app.services.role_service import get_user_role_in_tenant, assign_role_to_user_tenant
+        
+        # Check if user has a role in this tenant
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
+        
+        # If no role assigned, automatically assign admin role
+        if not role:
+            # Ensure admin role exists
+            admin_role = db.query(Role).filter(Role.name == "admin").first()
+            if not admin_role:
+                admin_role = Role(
+                    name="admin",
+                    description="Administrator with full access"
+                )
+                db.add(admin_role)
+                db.commit()
+                db.refresh(admin_role)
+            
+            # Assign admin role to user in current tenant
+            assign_role_to_user_tenant(db, user.id, current_tenant_id, "admin")
+            role = admin_role
+        
         if role:
             role_info = RoleInfo(
                 id=role.id,

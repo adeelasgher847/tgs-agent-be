@@ -3,6 +3,7 @@ from sqlalchemy import func
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
+from app.services.billing_service import BillingService
 from fastapi import HTTPException, status
 import uuid
 
@@ -15,6 +16,14 @@ class AgentService:
         """
         Create a new agent with tenant context and audit trail
         """
+        # Check billing limits before creating agent
+        if not BillingService.check_agent_limit(db, tenant_id):
+            usage = BillingService.get_current_usage(db, tenant_id)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Agent limit exceeded. You have {usage['agents_used']}/{usage['agent_limit']} agents. Please upgrade your plan."
+            )
+        
         # Check for duplicate name within tenant
         existing = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
@@ -26,15 +35,13 @@ class AgentService:
                 detail="Agent name must be unique within the tenant."
             )
 
-        agent_data = agent_in.model_dump()
-        agent_data['tenant_id'] = tenant_id
-
         # Sanitize string fields
+        agent_data = agent_in.model_dump()
         for field in ['name', 'system_prompt', 'fallback_response']:
             if field in agent_data and agent_data[field]:
                 agent_data[field] = agent_data[field].strip()
+        
         # Add tenant_id and user audit fields to the agent data
-        agent_data = agent_in.model_dump()
         agent_data['tenant_id'] = tenant_id
         agent_data['created_by'] = user_id
         agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
@@ -43,6 +50,10 @@ class AgentService:
         db.add(db_agent)
         db.commit()
         db.refresh(db_agent)
+        
+        # Increment usage tracking
+        BillingService.increment_agent_usage(db, tenant_id)
+        
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
