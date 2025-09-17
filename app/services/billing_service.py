@@ -6,8 +6,9 @@ from app.models.plan import Plan
 from app.models.usage_record import UsageRecord
 from app.models.agent import Agent
 from app.core.config import settings
-from typing import Optional, Dict, Any
-from datetime import datetime, date
+from app.services.stripe_service import StripeService
+from typing import Optional, Dict, Any, List
+from datetime import datetime, date, timedelta
 import uuid
 
 class BillingService:
@@ -222,4 +223,172 @@ class BillingService:
             },
             'usage': usage,
             'limits_enforcement': BillingService.enforce_limits(db, tenant_id)
+        }
+    
+    @staticmethod
+    def get_usage_history(db: Session, tenant_id: uuid.UUID, months: int = 12) -> List[Dict[str, Any]]:
+        """Get usage history for the past N months"""
+        subscription = BillingService.get_or_create_subscription(db, tenant_id)
+        current_date = datetime.now()
+        
+        usage_history = []
+        for i in range(months):
+            target_date = current_date - timedelta(days=30 * i)
+            month = target_date.month
+            year = target_date.year
+            
+            usage_record = db.query(UsageRecord).filter(
+                and_(
+                    UsageRecord.subscription_id == subscription.id,
+                    UsageRecord.month == month,
+                    UsageRecord.year == year
+                )
+            ).first()
+            
+            if usage_record:
+                usage_history.append({
+                    'month': month,
+                    'year': year,
+                    'calls_used': usage_record.calls_used,
+                    'agents_created': usage_record.agents_created,
+                    'created_at': usage_record.created_at
+                })
+            else:
+                usage_history.append({
+                    'month': month,
+                    'year': year,
+                    'calls_used': 0,
+                    'agents_created': 0,
+                    'created_at': None
+                })
+        
+        return usage_history
+    
+    @staticmethod
+    def get_usage_analytics(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
+        """Get usage analytics and trends"""
+        subscription = BillingService.get_or_create_subscription(db, tenant_id)
+        current_usage = BillingService.get_current_usage(db, tenant_id)
+        usage_history = BillingService.get_usage_history(db, tenant_id, 6)
+        
+        # Calculate trends
+        if len(usage_history) >= 2:
+            current_month = usage_history[0]
+            previous_month = usage_history[1]
+            
+            calls_trend = ((current_month['calls_used'] - previous_month['calls_used']) / 
+                          max(previous_month['calls_used'], 1)) * 100
+            agents_trend = ((current_month['agents_created'] - previous_month['agents_created']) / 
+                           max(previous_month['agents_created'], 1)) * 100
+        else:
+            calls_trend = 0
+            agents_trend = 0
+        
+        # Calculate average usage
+        total_calls = sum(record['calls_used'] for record in usage_history)
+        total_agents = sum(record['agents_created'] for record in usage_history)
+        avg_calls = total_calls / len(usage_history) if usage_history else 0
+        avg_agents = total_agents / len(usage_history) if usage_history else 0
+        
+        return {
+            'current_usage': current_usage,
+            'usage_history': usage_history,
+            'trends': {
+                'calls_trend_percentage': calls_trend,
+                'agents_trend_percentage': agents_trend
+            },
+            'averages': {
+                'monthly_calls': avg_calls,
+                'monthly_agents': avg_agents
+            },
+            'projections': {
+                'estimated_monthly_calls': avg_calls,
+                'estimated_monthly_agents': avg_agents
+            }
+        }
+    
+    @staticmethod
+    def sync_usage_with_stripe(db: Session, tenant_id: uuid.UUID) -> None:
+        """Sync usage data with Stripe for metered billing"""
+        subscription = BillingService.get_or_create_subscription(db, tenant_id)
+        
+        if not subscription.stripe_subscription_id:
+            return
+        
+        try:
+            # Get current usage
+            current_usage = BillingService.get_current_usage(db, tenant_id)
+            
+            # Get Stripe subscription to find subscription items
+            stripe_subscription = StripeService.get_subscription(subscription.stripe_subscription_id)
+            
+            # Update usage for each subscription item
+            for item in stripe_subscription['items']['data']:
+                # Assuming we have a metered price for calls
+                if 'calls' in item['price']['nickname'].lower():
+                    StripeService.create_usage_record(
+                        item['id'],
+                        current_usage['calls_used']
+                    )
+                
+                # Assuming we have a metered price for agents
+                elif 'agents' in item['price']['nickname'].lower():
+                    StripeService.create_usage_record(
+                        item['id'],
+                        current_usage['agents_used']
+                    )
+        
+        except Exception as e:
+            print(f"Error syncing usage with Stripe: {str(e)}")
+    
+    @staticmethod
+    def check_and_enforce_limits(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
+        """Check limits and return enforcement status"""
+        limits = BillingService.enforce_limits(db, tenant_id)
+        
+        if not limits['within_limits']:
+            # Log the violation
+            print(f"Tenant {tenant_id} exceeded limits: {limits}")
+            
+            # Optionally downgrade to free plan if over limits
+            if limits['over_calls_limit'] and limits['usage']['plan_name'] != 'free':
+                print(f"Downgrading tenant {tenant_id} to free plan due to overage")
+                BillingService.downgrade_to_free_plan(db, tenant_id)
+        
+        return limits
+    
+    @staticmethod
+    def get_billing_summary(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
+        """Get comprehensive billing summary"""
+        subscription = BillingService.get_or_create_subscription(db, tenant_id)
+        usage_analytics = BillingService.get_usage_analytics(db, tenant_id)
+        limits = BillingService.enforce_limits(db, tenant_id)
+        
+        # Get upcoming invoice if customer exists
+        upcoming_invoice = None
+        if subscription.stripe_customer_id:
+            try:
+                upcoming_invoice = StripeService.get_upcoming_invoice(subscription.stripe_customer_id)
+            except:
+                pass
+        
+        return {
+            'subscription': {
+                'id': subscription.id,
+                'status': subscription.status,
+                'plan_name': subscription.plan.name,
+                'plan_display_name': subscription.plan.display_name,
+                'current_period_end': subscription.current_period_end,
+                'cancel_at_period_end': subscription.cancel_at_period_end
+            },
+            'usage': usage_analytics['current_usage'],
+            'analytics': usage_analytics,
+            'limits': limits,
+            'upcoming_invoice': upcoming_invoice,
+            'billing_status': {
+                'is_active': subscription.status == 'active',
+                'is_past_due': subscription.status == 'past_due',
+                'is_canceled': subscription.status == 'canceled',
+                'has_stripe_customer': bool(subscription.stripe_customer_id)
+            }
         }

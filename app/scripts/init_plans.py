@@ -39,9 +39,9 @@ def create_simple_plans():
             name="starter", 
             display_name="Starter",
             description="Great for small businesses. $10/month + $0.05/minute.",
-            price_monthly=10,  # $10
+            price_monthly=1,  # $10.00 in cents
             price_per_minute=0.05,
-            agent_limit=1,
+            agent_limit=1,  # As per your edit
             monthly_calls_limit=0,  # No limit, pay per minute
             included_minutes=500,  # 500 free minutes
             is_popular=True
@@ -52,7 +52,7 @@ def create_simple_plans():
             name="pro",
             display_name="Pro", 
             description="For growing businesses. $99/month + $0.05/minute.",
-            price_monthly=2,  # $99
+            price_monthly=2,  # $99.00 in cents
             price_per_minute=0.05,
             agent_limit=50,
             monthly_calls_limit=0,  # No limit, pay per minute
@@ -67,7 +67,7 @@ def create_simple_plans():
         
         print("✅ Created 3 simple plans:")
         print("   📱 Free: $0/month, $0.05/minute, 2 agents")
-        print("   🚀 Starter: $10/month, 500 free minutes, 10 agents (Popular)")
+        print("   🚀 Starter: $10/month, 500 free minutes, 1 agent (Popular)")
         print("   💼 Pro: $99/month, 2000 free minutes, 50 agents")
         
     except Exception as e:

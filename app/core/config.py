@@ -4,7 +4,7 @@ class Settings(BaseSettings):
     
     ADMIN_ROLE: str = "admin"
     
-    DATABASE_URL: str = "postgresql+psycopg2://postgres:1234@localhost:5432/voiceagent"
+    DATABASE_URL: str = "postgresql+psycopg2://postgres:123456@localhost:5432/voiceagent"
     SECRET_KEY: str = "supersecretkey"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
@@ -34,7 +34,15 @@ class Settings(BaseSettings):
     FREE_PLAN_MONTHLY_CALLS: int = 100
     PRO_PLAN_AGENT_LIMIT: int = 50
     PRO_PLAN_MONTHLY_CALLS: int = 10000
+    
+    # Twilio settings
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_PHONE_NUMBER: str = ""
+    
+    # Webhook settings
+    ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()
