@@ -405,3 +405,156 @@ def verify_last_payment(
     
     # Use the existing verify_payment function with the session ID
     return verify_payment(subscription.stripe_session_id, current_user, db)
+
+@router.get("/payment-history")
+def get_payment_history(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Get complete payment history for the current tenant.
+    Returns all payment attempts, failures, refunds, and invoices.
+    """
+    try:
+        if not current_user.current_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No tenant selected"
+            )
+        
+        # Get tenant and subscription
+        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found"
+            )
+        
+        if not tenant.stripe_customer_id:
+            return create_success_response({
+                "payment_history": [],
+                "summary": {
+                    "total_payments": 0,
+                    "successful_payments": 0,
+                    "failed_payments": 0,
+                    "total_amount": 0,
+                    "currency": "usd"
+                }
+            }, "No payment history found")
+        
+        # Import Stripe
+        import stripe
+        from app.core.config import settings
+        
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        
+        payment_history = []
+        
+        # 1. Get all checkout sessions (payment attempts)
+        try:
+            checkout_sessions = stripe.checkout.Session.list(
+                customer=tenant.stripe_customer_id,
+                limit=100
+            )
+            
+            for session in checkout_sessions.data:
+                amount_dollars = session.amount_total / 100 if session.amount_total else 0
+                payment_entry = {
+                    "type": "checkout_session",
+                    "id": session.id,
+                    "status": session.payment_status,
+                    "amount_total": amount_dollars,
+                    "amount_total_cents": session.amount_total,
+                    "amount_formatted": f"${amount_dollars:.2f}",  # Format as USD
+                    "currency": session.currency,
+                    "created": session.created,
+                    "payment_intent": session.payment_intent,
+                    "subscription_id": session.subscription,
+                    "success": session.payment_status == "paid",
+                    "failure_reason": None
+                }
+                
+                # Get failure reason if payment failed
+                if session.payment_status == "unpaid" and session.payment_intent:
+                    try:
+                        payment_intent = stripe.PaymentIntent.retrieve(session.payment_intent)
+                        if payment_intent.last_payment_error:
+                            payment_entry["failure_reason"] = payment_intent.last_payment_error.get("message", "Payment failed")
+                    except:
+                        pass
+                
+                payment_history.append(payment_entry)
+        except Exception as e:
+            print(f"Error getting checkout sessions: {str(e)}")
+        
+        # 2. Get all invoices
+        try:
+            invoices = stripe.Invoice.list(
+                customer=tenant.stripe_customer_id,
+                limit=100
+            )
+            
+            for invoice in invoices.data:
+                amount_dollars = invoice.amount_total / 100 if invoice.amount_total else 0
+                payment_entry = {
+                    "type": "invoice",
+                    "id": invoice.id,
+                    "status": invoice.status,
+                    "amount_total": amount_dollars,
+                    "amount_total_cents": invoice.amount_total,
+                    "amount_formatted": f"${amount_dollars:.2f}",  # Format as USD
+                    "currency": invoice.currency,
+                    "created": invoice.created,
+                    "payment_intent": invoice.payment_intent,
+                    "subscription_id": invoice.subscription,
+                    "success": invoice.status == "paid",
+                    "failure_reason": None,
+                    "invoice_url": invoice.invoice_pdf,
+                    "period_start": invoice.period_start,
+                    "period_end": invoice.period_end
+                }
+                
+                # Get failure reason if invoice failed
+                if invoice.status == "open" and invoice.attempt_count > 0:
+                    payment_entry["failure_reason"] = "Invoice payment failed after multiple attempts"
+                
+                payment_history.append(payment_entry)
+        except Exception as e:
+            print(f"Error getting invoices: {str(e)}")
+        
+        # Sort by creation date (newest first)
+        payment_history.sort(key=lambda x: x["created"], reverse=True)
+        
+        # Calculate summary statistics
+        successful_payments = [p for p in payment_history if p["success"] and p["type"] != "refund"]
+        failed_payments = [p for p in payment_history if not p["success"] and p["type"] != "refund"]
+        total_amount = sum(p["amount_total"] for p in payment_history if p["type"] != "refund")  # Already converted to dollars
+        total_amount_cents = sum(p["amount_total_cents"] for p in payment_history if p["type"] != "refund")
+        
+        summary = {
+            "total_payments": len(payment_history),
+            "successful_payments": len(successful_payments),
+            "failed_payments": len(failed_payments),
+            "total_amount": total_amount,  # In dollars
+            "total_amount_cents": total_amount_cents,  # In cents
+            "total_amount_formatted": f"${total_amount:.2f}",  # Format as USD
+            "currency": "usd" if payment_history else "usd",
+            "refunds_count": len([p for p in payment_history if p["type"] == "refund"]),
+            "last_payment_date": payment_history[0]["created"] if payment_history else None
+        }
+        
+        return create_success_response({
+            "payment_history": payment_history,
+            "summary": summary
+        }, "Payment history retrieved successfully")
+        
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe error: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error: {str(e)}"
+        )
