@@ -152,23 +152,6 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         # Check if user has a role in this tenant
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         
-        # If no role assigned, automatically assign admin role
-        if not role:
-            # Ensure admin role exists
-            admin_role = db.query(Role).filter(Role.name == "admin").first()
-            if not admin_role:
-                admin_role = Role(
-                    name="admin",
-                    description="Administrator with full access"
-                )
-                db.add(admin_role)
-                db.commit()
-                db.refresh(admin_role)
-            
-            # Assign admin role to user in current tenant
-            assign_role_to_user_tenant(db, user.id, current_tenant_id, "admin")
-            role = admin_role
-        
         if role:
             role_info = RoleInfo(
                 id=role.id,
