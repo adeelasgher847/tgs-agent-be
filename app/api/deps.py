@@ -174,3 +174,36 @@ def require_member_or_admin(
         )
     
     return user
+
+
+def require_active_tenant(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+) -> User:
+    """Ensure user's current tenant is active (not pending_payment)."""
+    if not user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant."
+        )
+    
+    # Check tenant status
+    tenant = db.query(Tenant).filter(Tenant.id == user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found"
+        )
+    
+    if tenant.status == "pending_payment":
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Payment required. Please complete your subscription to access this feature."
+        )
+    elif tenant.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Tenant is {tenant.status}. Please contact support."
+        )
+    
+    return user

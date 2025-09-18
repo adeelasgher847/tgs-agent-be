@@ -292,6 +292,13 @@ class StripeService:
         customer_id = session['customer']
         subscription_id = session['subscription']
         
+        # Find tenant by stripe_customer_id and update status to active
+        tenant = db.query(Tenant).filter(Tenant.stripe_customer_id == customer_id).first()
+        if tenant:
+            tenant.status = 'active'
+            tenant.stripe_subscription_id = subscription_id
+            db.commit()
+        
         # Get or create subscription record
         subscription = db.query(Subscription).filter(
             Subscription.tenant_id == tenant_id
