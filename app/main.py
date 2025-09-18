@@ -3,9 +3,19 @@ from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
+from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+# Initialize rate limiter on startup
+@app.on_event("startup")
+async def startup_event():
+    await init_rate_limiter()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await close_rate_limiter()
 
 # Add CORS middleware
 app.add_middleware(
