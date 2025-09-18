@@ -11,6 +11,7 @@ class Subscription(Base):
     plan_id = Column(UUID(as_uuid=True), ForeignKey('plan.id'), nullable=False)
     stripe_subscription_id = Column(String, unique=True, nullable=True, index=True)
     stripe_customer_id = Column(String, nullable=True, index=True)
+    stripe_session_id = Column(String, nullable=True, index=True)
     status = Column(String, nullable=False, default="active")  # active, canceled, past_due, unpaid
     current_period_start = Column(DateTime(timezone=True), nullable=True)
     current_period_end = Column(DateTime(timezone=True), nullable=True)
