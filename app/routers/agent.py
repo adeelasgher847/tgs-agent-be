@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse, LanguageEnum, VoiceTypeEnum
-from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, require_tenant, require_admin
+from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, require_tenant, require_admin_or_owner
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.schemas.base import SuccessResponse
 from app.services.agent_service import agent_service
@@ -17,7 +17,7 @@ router = APIRouter()
 def create_agent(
     agent_in: AgentCreate,
     tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin),    # ← Second middleware: admin validation
+    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Create a new agent"""
@@ -63,7 +63,7 @@ def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
     tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin),    # ← Second middleware: admin validation
+    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Update an agent"""
@@ -75,7 +75,7 @@ def update_agent(
 def delete_agent(
     agent_id: uuid.UUID,
     tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin),    # ← Second middleware: admin validation
+    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Delete an agent"""

@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
 from app.schemas.auth import RefreshRequest
 from app.schemas.base import SuccessResponse
-from app.models.user import User
+from app.models.user import User, user_tenant_association
 from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
@@ -18,6 +19,7 @@ from app.services.email_service import email_service
 from app.utils.response import create_success_response
 from datetime import datetime, timezone
 import uuid
+import re
 
 router = APIRouter()
 
@@ -49,6 +51,47 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    
+    # Create tenant automatically with email as tenant name
+    tenant_name = user_in.email
+    
+    # Generate schema name from tenant name
+    schema_name = re.sub(r'[^a-zA-Z0-9]', '_', tenant_name.lower())
+    schema_name = re.sub(r'_+', '_', schema_name).strip('_')
+    schema_name = f"{schema_name}_schema"
+    
+    # Create new tenant
+    db_tenant = Tenant(
+        name=tenant_name,
+        schema_name=schema_name,
+        status="pending_payment"
+    )
+    
+    db.add(db_tenant)
+    db.commit()
+    db.refresh(db_tenant)
+    
+    # Get owner role (note: "Owner" with capital O)
+    owner_role = db.query(Role).filter(Role.name == "Owner").first()
+    
+    # Add user to tenant with owner role
+    db_user.tenants.append(db_tenant)
+    db.commit()
+    
+    # Update the role_id in the association table
+    stmt = update(user_tenant_association).where(
+        (user_tenant_association.c.user_id == db_user.id) &
+        (user_tenant_association.c.tenant_id == db_tenant.id)
+    ).values(role_id=owner_role.id)
+    
+    db.execute(stmt)
+    
+    # Set the new tenant as user's current tenant
+    db_user.current_tenant_id = db_tenant.id
+    
+    db.commit()
+    db.refresh(db_user)
+    
     return create_success_response(db_user, "User registered successfully", status.HTTP_201_CREATED)
 
 

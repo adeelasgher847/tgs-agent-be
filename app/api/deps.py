@@ -207,3 +207,34 @@ def require_active_tenant(
         )
     
     return user
+
+
+def require_admin_or_owner(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+) -> User:
+    """Ensure user is admin or owner in their current tenant."""
+    if not user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant."
+        )
+    
+    # Get user's role in the current tenant
+    from app.services.role_service import get_user_role_in_tenant
+    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+    
+    if not role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this tenant"
+        )
+    
+    # Check if user is admin or owner
+    if role.name not in ["admin", "Owner"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin or Owner access required for this operation"
+        )
+    
+    return user
