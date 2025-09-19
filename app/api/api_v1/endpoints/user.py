@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import update
-from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate
+from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate, TenantMember
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
 from app.schemas.auth import RefreshRequest
 from app.schemas.base import SuccessResponse
@@ -588,4 +587,56 @@ def update_user_profile(
     return create_success_response(
         user_profile,
         "User profile updated successfully"
+    )
+
+
+@router.get("/tenant-members", response_model=SuccessResponse[list[TenantMember]])
+def get_tenant_members(
+    current_user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all members of the current tenant with their roles.
+    Requires JWT Bearer token authentication and tenant membership.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant."
+        )
+    
+    # Get all users associated with the current tenant
+    tenant_users = db.query(User).join(
+        user_tenant_association
+    ).filter(
+        user_tenant_association.c.tenant_id == current_user.current_tenant_id
+    ).all()
+    
+    # Build the response with role information for each user
+    members = []
+    for user in tenant_users:
+        # Get role information for this user in the current tenant
+        role = get_user_role_in_tenant(db, user.id, current_user.current_tenant_id)
+        role_info = None
+        if role:
+            role_info = RoleInfo(
+                id=role.id,
+                name=role.name,
+                description=role.description
+            )
+        
+        member = TenantMember(
+            id=user.id,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            email=user.email,
+            role=role_info,
+            join_date=user.join_date,
+            created_at=user.created_at
+        )
+        members.append(member)
+    
+    return create_success_response(
+        members,
+        f"Retrieved {len(members)} tenant members successfully"
     )

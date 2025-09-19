@@ -60,3 +60,14 @@ class UserProfile(UserBase):
     
     model_config = ConfigDict(from_attributes=True) 
 
+
+class TenantMember(BaseModel):
+    id: uuid.UUID
+    first_name: str
+    last_name: str
+    email: str
+    role: Optional[RoleInfo] = None
+    join_date: datetime
+    created_at: datetime
+    
+    model_config = ConfigDict(from_attributes=True)
