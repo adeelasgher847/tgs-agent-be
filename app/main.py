@@ -10,19 +10,30 @@ from app.routers.health import router as health_router
 from app.routers.voice_processing import router as voice_processing_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
+from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
+# Initialize rate limiter on startup
+@app.on_event("startup")
+async def startup_event():
+    await init_rate_limiter()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await close_rate_limiter()
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        # "http://localhost:5173",  # Your frontend dev server
-        # "http://localhost:3000",  # Alternative frontend port
-        # "http://127.0.0.1:5173",  # Alternative localhost
-        # "http://127.0.0.1:3000",  # Alternative localhost
-        # "http://192.168.0.121:5173",  # Your IP with frontend port
+        "http://localhost:5173",  # Your frontend dev server
+        "http://localhost:3000",  # Alternative frontend port
+        "http://127.0.0.1:5173",  # Alternative localhost
+        "http://127.0.0.1:3000",  # Alternative localhost
+        "http://192.168.0.121:5173",  # Your IP with frontend port
+        "http://192.168.15.129:5173",
         "*"  # Allow all origins (for development only)
     ],
     allow_credentials=True,

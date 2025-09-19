@@ -1,23 +1,27 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate
+from sqlalchemy import update
+from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate, TenantMember
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
 from app.schemas.auth import RefreshRequest
 from app.schemas.base import SuccessResponse
-from app.models.user import User
+from app.models.user import User, user_tenant_association
 from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
-from app.api.deps import get_db, get_current_user_jwt, security
+from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
 from app.core.security import create_refresh_token_value, refresh_token_expires_at
 from app.core.security import is_token_expired, verify_token
 from app.services.email_service import email_service
 from app.utils.response import create_success_response
+from app.utils.rate_limiter import login_rate_limit
 from datetime import datetime, timezone
+from app.services.role_service import get_user_role_in_tenant
 import uuid
+import re
 
 router = APIRouter()
 
@@ -34,26 +38,11 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
                 "message": "Email already registered",
                 "error_type": "email_already_exists"
             }
-        )
-    
-    role_name = "admin"  
-    
-    # Validate role_id
-    role = db.query(Role).filter(Role.name == role_name).first()
-    if not role:
-        raise HTTPException(
-            status_code=400, 
-            detail={
-                "field": "role",
-                "message": "Default role not found. Please contact administrator.",
-                "error_type": "role_not_found"
-            }
-        )
+        )    
     
     hashed_password = pwd_context.hash(user_in.password)
     db_user = User(
         email=user_in.email,
-        role_id=role.id,
         first_name=user_in.first_name,
         last_name=user_in.last_name,
         phone=user_in.phone,
@@ -64,14 +53,57 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    
+    # Create tenant automatically with email as tenant name
+    tenant_name = user_in.email
+    
+    # Generate schema name from tenant name
+    schema_name = re.sub(r'[^a-zA-Z0-9]', '_', tenant_name.lower())
+    schema_name = re.sub(r'_+', '_', schema_name).strip('_')
+    schema_name = f"{schema_name}_schema"
+    
+    # Create new tenant
+    db_tenant = Tenant(
+        name=tenant_name,
+        schema_name=schema_name,
+        status="pending_payment"
+    )
+    
+    db.add(db_tenant)
+    db.commit()
+    db.refresh(db_tenant)
+    
+    # Get owner role
+    owner_role = db.query(Role).filter(Role.name == "owner").first()
+    
+    # Add user to tenant with owner role
+    db_user.tenants.append(db_tenant)
+    db.commit()
+    
+    # Update the role_id in the association table
+    stmt = update(user_tenant_association).where(
+        (user_tenant_association.c.user_id == db_user.id) &
+        (user_tenant_association.c.tenant_id == db_tenant.id)
+    ).values(role_id=owner_role.id)
+    
+    db.execute(stmt)
+    
+    # Set the new tenant as user's current tenant
+    db_user.current_tenant_id = db_tenant.id
+    
+    db.commit()
+    db.refresh(db_user)
+    
     return create_success_response(db_user, "User registered successfully", status.HTTP_201_CREATED)
 
 
 @router.post("/login", response_model=SuccessResponse[TokenResponse])
+@login_rate_limit()
 def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     User login endpoint that returns JWT token with role information as object.
     Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
+    Automatically assigns admin role if user has no role in current tenant.
     """
     # Find user by email
     user = db.query(User).filter(User.email == login_data.email).first()
@@ -111,21 +143,28 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         user.current_tenant_id = current_tenant_id
         db.commit()
     
-    # Get role information as object
+    # Get role information for the current tenant
     role_info = None
-    if user.role_id:
-        role = db.query(Role).filter(Role.id == user.role_id).first()
+    current_role = None
+    if current_tenant_id:
+        from app.services.role_service import get_user_role_in_tenant, assign_role_to_user_tenant
+        
+        # Check if user has a role in this tenant
+        role = get_user_role_in_tenant(db, user.id, current_tenant_id)
+        
         if role:
             role_info = RoleInfo(
                 id=role.id,
                 name=role.name,
                 description=role.description
             )
+            current_role = role.name
     
     access_token = create_user_token(
         user_id=user.id,
         email=user.email,
-        tenant_id=current_tenant_id
+        tenant_id=current_tenant_id,
+        role=current_role
     )
 
     # Create refresh token (valid 7 days)
@@ -187,8 +226,8 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
     role_info = None
-    if user.role_id:
-        role = db.query(Role).filter(Role.id == user.role_id).first()
+    if current_tenant_id:
+        role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
 
@@ -451,6 +490,14 @@ def get_user_profile(
             detail="User not found"
         )
     
+    # Get role information for the current tenant
+    role_info = None
+    if user.current_tenant_id:
+        from app.services.role_service import get_user_role_in_tenant
+        role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+        if role:
+            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+    
     # Create user profile response
     user_profile = UserProfile(
         id=user.id,
@@ -458,11 +505,11 @@ def get_user_profile(
         last_name=user.last_name,
         email=user.email,
         phone=user.phone,
-        role_id=user.role_id,
+        role_id=role_info.id if role_info else None,
         current_tenant_id=user.current_tenant_id,
         join_date=user.join_date,
         created_at=user.created_at,
-        role=user.role,
+        role=role_info,
         current_tenant=user.current_tenant,
         tenants=user.tenants
     )
@@ -514,6 +561,14 @@ def update_user_profile(
             detail="Failed to update profile"
         )
     
+    # Get role information for the current tenant
+    role_info = None
+    if current_user.current_tenant_id:
+        from app.services.role_service import get_user_role_in_tenant
+        role = get_user_role_in_tenant(db, current_user.id, current_user.current_tenant_id)
+        if role:
+            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+    
     # Create updated user profile response
     user_profile = UserProfile(
         id=current_user.id,
@@ -521,11 +576,11 @@ def update_user_profile(
         last_name=current_user.last_name,
         email=current_user.email,
         phone=current_user.phone,
-        role_id=current_user.role_id,
+        role_id=role_info.id if role_info else None,
         current_tenant_id=current_user.current_tenant_id,
         join_date=current_user.join_date,
         created_at=current_user.created_at,
-        role=current_user.role,
+        role=role_info,
         current_tenant=current_user.current_tenant,
         tenants=current_user.tenants
     )
@@ -533,4 +588,56 @@ def update_user_profile(
     return create_success_response(
         user_profile,
         "User profile updated successfully"
+    )
+
+
+@router.get("/tenant-members", response_model=SuccessResponse[list[TenantMember]])
+def get_tenant_members(
+    current_user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all members of the current tenant with their roles.
+    Requires JWT Bearer token authentication and tenant membership.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant."
+        )
+    
+    # Get all users associated with the current tenant
+    tenant_users = db.query(User).join(
+        user_tenant_association
+    ).filter(
+        user_tenant_association.c.tenant_id == current_user.current_tenant_id
+    ).all()
+    
+    # Build the response with role information for each user
+    members = []
+    for user in tenant_users:
+        # Get role information for this user in the current tenant
+        role = get_user_role_in_tenant(db, user.id, current_user.current_tenant_id)
+        role_info = None
+        if role:
+            role_info = RoleInfo(
+                id=role.id,
+                name=role.name,
+                description=role.description
+            )
+        
+        member = TenantMember(
+            id=user.id,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            email=user.email,
+            role=role_info,
+            join_date=user.join_date,
+            created_at=user.created_at
+        )
+        members.append(member)
+    
+    return create_success_response(
+        members,
+        f"Retrieved {len(members)} tenant members successfully"
     )

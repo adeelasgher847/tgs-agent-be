@@ -81,7 +81,7 @@ def get_password_hash(password: str) -> str:
     """Hash password"""
     return pwd_context.hash(password)
 
-def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.UUID] = None):
+def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.UUID] = None, role: Optional[str] = None):
     """
     Create JWT token for user with 15-minute expiration
     
@@ -89,6 +89,7 @@ def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.U
         user_id: User's ID (UUID)
         email: User's email
         tenant_id: Current tenant ID (UUID, optional)
+        role: User's role in the current tenant (optional)
     
     Returns:
         JWT token that expires in 15 minutes
@@ -97,6 +98,7 @@ def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.U
         "user_id": str(user_id),  # Convert UUID to string
         "email": email,
         "tenant_id": str(tenant_id) if tenant_id else None,  # Convert UUID to string
+        "role": role,  # User's role in the current tenant
         "iat": datetime.now(timezone.utc),  # Issued at
         "type": "access"
     }

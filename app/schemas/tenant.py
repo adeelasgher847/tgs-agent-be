@@ -13,6 +13,9 @@ class TenantCreate(TenantBase):
 class TenantOut(TenantBase):
     id: uuid.UUID
     schema_name: str
+    status: str
+    stripe_customer_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)

@@ -5,14 +5,14 @@ from app.schemas.role import RoleCreate, RoleOut
 from app.schemas.base import SuccessResponse
 from app.models.role import Role
 from app.models.user import User
-from app.api.deps import get_db, get_current_user_jwt
+from app.api.deps import get_db, require_admin
 from app.utils.response import create_success_response
 import uuid
 
 router = APIRouter()
 
 @router.post("/", response_model=SuccessResponse[RoleOut])
-def create_role(role_in: RoleCreate, user: User = Depends(get_current_user_jwt) , db: Session = Depends(get_db)):
+def create_role(role_in: RoleCreate, user: User = Depends(require_admin) , db: Session = Depends(get_db)):
     """Create a new role"""
     # Check if role name already exists
     existing_role = db.query(Role).filter(Role.name == role_in.name).first()
@@ -26,13 +26,13 @@ def create_role(role_in: RoleCreate, user: User = Depends(get_current_user_jwt) 
     return create_success_response(db_role, "Role created successfully", status.HTTP_201_CREATED)
 
 @router.get("/", response_model=SuccessResponse[List[RoleOut]])
-def get_roles(skip: int = 0, limit: int = 100, user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
+def get_roles(skip: int = 0, limit: int = 100, user: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Get all roles"""
     roles = db.query(Role).offset(skip).limit(limit).all()
     return create_success_response(roles, "Roles retrieved successfully")
 
 @router.get("/{role_id}", response_model=SuccessResponse[RoleOut])
-def get_role(role_id: uuid.UUID, user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
+def get_role(role_id: uuid.UUID, user: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Get a specific role by ID"""
     role = db.query(Role).filter(Role.id == role_id).first()
     if not role:
@@ -40,7 +40,7 @@ def get_role(role_id: uuid.UUID, user: User = Depends(get_current_user_jwt), db:
     return create_success_response(role, "Role retrieved successfully")
 
 @router.put("/{role_id}", response_model=SuccessResponse[RoleOut])
-def update_role(role_id: uuid.UUID, role_in: RoleCreate, user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
+def update_role(role_id: uuid.UUID, role_in: RoleCreate, user: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Update a role"""
     role = db.query(Role).filter(Role.id == role_id).first()
     if not role:
@@ -60,7 +60,7 @@ def update_role(role_id: uuid.UUID, role_in: RoleCreate, user: User = Depends(ge
     return create_success_response(role, "Role updated successfully")
 
 @router.delete("/{role_id}", response_model=SuccessResponse[dict])
-def delete_role(role_id: uuid.UUID, user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
+def delete_role(role_id: uuid.UUID, user: User = Depends(require_admin), db: Session = Depends(get_db)):
     """Delete a role"""
     role = db.query(Role).filter(Role.id == role_id).first()
     if not role:

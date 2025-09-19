@@ -41,7 +41,44 @@ class Settings(BaseSettings):
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
     
+    FRONTEND_URL: str = "http://localhost:3000"  
+    
+    # Stripe settings
+    STRIPE_PUBLISHABLE_KEY: str = ""
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_ID_FREE: str = ""
+    STRIPE_PRICE_ID_PRO: str = ""
+    
+    # Billing settings
+    FREE_PLAN_AGENT_LIMIT: int = 2
+    FREE_PLAN_MONTHLY_CALLS: int = 100
+    PRO_PLAN_AGENT_LIMIT: int = 50
+    PRO_PLAN_MONTHLY_CALLS: int = 10000
+    
+    # Twilio settings
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""
+    TWILIO_PHONE_NUMBER: str = ""
+    
+    # Webhook settings
+    ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
+    # Rate limiting settings
+    REDIS_URL: str = "redis://localhost:6379"
+    RATE_LIMIT_ENABLED: bool = True
+    
+    # Login rate limiting (requests per minute)
+    LOGIN_RATE_LIMIT: int = 5
+    LOGIN_RATE_WINDOW: int = 60  # seconds
+    
+    # Webhook rate limiting (requests per minute)
+    WEBHOOK_RATE_LIMIT: int = 100
+    WEBHOOK_RATE_WINDOW: int = 60  # seconds
+    
+    # General API rate limiting (requests per minute)
+    API_RATE_LIMIT: int = 1000
+    API_RATE_WINDOW: int = 60  # seconds
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

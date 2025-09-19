@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.api_v1.endpoints import user, tenant, role
+from app.api.api_v1.endpoints import user, tenant, role, invite, accept_invite, billing, plan
 from app.routers.agent import router as agent_router
 from app.routers.voice import router as voice_router
 from app.routers.phone_numbers import router as phone_numbers_router
@@ -13,3 +13,7 @@ api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Calls"])
 api_router.include_router(phone_numbers_router, prefix="/phone-numbers", tags=["Phone Numbers"])
 api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"]) 
+api_router.include_router(invite.router, prefix="/invites", tags=["invites"])
+api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
+api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
+api_router.include_router(plan.router, prefix="/plans", tags=["plans"])
