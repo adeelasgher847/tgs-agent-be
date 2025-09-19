@@ -36,10 +36,13 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     - Creates Stripe customer and links it to the tenant
     - Returns tenant_id and tenant details with updated token
     """
-    # Check if tenant name already exists
-    existing_tenant = db.query(Tenant).filter(Tenant.name == tenant_in.name).first()
+    # Check if tenant name already exists for this user
+    existing_tenant = db.query(Tenant).join(user_tenant_association).filter(
+        Tenant.name == tenant_in.name,
+        user_tenant_association.c.user_id == current_user.id
+    ).first()
     if existing_tenant:
-        raise HTTPException(status_code=400, detail="Tenant name already exists")
+        raise HTTPException(status_code=400, detail="You already have a tenant with this name")
     
     # Generate unique schema name
     schema_name = generate_schema_name(tenant_in.name)
