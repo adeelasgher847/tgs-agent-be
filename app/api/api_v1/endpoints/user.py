@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate, TenantMember
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
 from app.schemas.auth import RefreshRequest
@@ -72,8 +73,8 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_tenant)
     
-    # Get owner role (note: "Owner" with capital O)
-    owner_role = db.query(Role).filter(Role.name == "Owner").first()
+    # Get owner role
+    owner_role = db.query(Role).filter(Role.name == "owner").first()
     
     # Add user to tenant with owner role
     db_user.tenants.append(db_tenant)

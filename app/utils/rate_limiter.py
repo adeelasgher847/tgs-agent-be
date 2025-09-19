@@ -15,7 +15,8 @@ async def init_rate_limiter():
     global limiter
     try:
         redis_client = redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
-        limiter = FastAPILimiter(redis_client)
+        await FastAPILimiter.init(redis_client)
+        limiter = FastAPILimiter
         logger.info("Rate limiter initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize rate limiter: {e}")
@@ -26,7 +27,7 @@ async def close_rate_limiter():
     """Close the rate limiter connection."""
     global limiter
     if limiter:
-        await limiter.close()
+        await FastAPILimiter.close()
         limiter = None
 
 def get_rate_limiter():

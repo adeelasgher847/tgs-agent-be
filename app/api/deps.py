@@ -231,7 +231,7 @@ def require_admin_or_owner(
         )
     
     # Check if user is admin or owner
-    if role.name not in ["admin", "Owner"]:
+    if role.name not in ["admin", "owner"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin or Owner access required for this operation"
