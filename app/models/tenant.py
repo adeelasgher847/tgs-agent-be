@@ -8,7 +8,7 @@ from app.db.base_class import Base
 class Tenant(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     name = Column(String, index=True, nullable=False)
-    schema_name = Column(String, unique=True, nullable=False)
+    schema_name = Column(String, unique=False, nullable=False)
     status = Column(String, nullable=False, default="pending_payment")  # pending_payment, active, inactive
     stripe_customer_id = Column(String, nullable=True, index=True)
     stripe_subscription_id = Column(String, nullable=True, index=True)

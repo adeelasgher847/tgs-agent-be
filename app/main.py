@@ -11,7 +11,6 @@ from app.routers.voice_processing import router as voice_processing_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
 from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 

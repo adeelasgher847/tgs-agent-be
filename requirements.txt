@@ -17,3 +17,4 @@ elevenlabs
 python-dotenv
 email-validator
 stripe
+fastapi_limiter

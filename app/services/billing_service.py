@@ -30,7 +30,6 @@ class BillingService:
                     display_name="Free Plan",
                     description="Free tier with limited features",
                     price_monthly=0,
-                    price_yearly=0,
                     agent_limit=settings.FREE_PLAN_AGENT_LIMIT,
                     monthly_calls_limit=settings.FREE_PLAN_MONTHLY_CALLS,
                     is_active=True
@@ -217,7 +216,6 @@ class BillingService:
                 'display_name': subscription.plan.display_name,
                 'description': subscription.plan.description,
                 'price_monthly': subscription.plan.price_monthly,
-                'price_yearly': subscription.plan.price_yearly,
                 'agent_limit': subscription.plan.agent_limit,
                 'monthly_calls_limit': subscription.plan.monthly_calls_limit
             },

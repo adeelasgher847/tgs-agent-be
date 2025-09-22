@@ -54,8 +54,18 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
     
-    # Create tenant automatically with email as tenant name
-    tenant_name = user_in.email
+    # Create tenant automatically with user's name as tenant name
+    # Use first name + last name, but make it unique by adding email suffix if needed
+    base_tenant_name = f"{user_in.first_name} {user_in.last_name}".strip()
+    tenant_name = base_tenant_name
+    
+    # Check if tenant name already exists and make it unique
+    counter = 1
+    while db.query(Tenant).filter(Tenant.name == tenant_name).first():
+        tenant_name = f"{base_tenant_name} ({user_in.email.split('@')[0]})"
+        counter += 1
+        if counter > 1:  # If still exists, add a number
+            tenant_name = f"{base_tenant_name} ({user_in.email.split('@')[0]}) {counter}"
     
     # Generate schema name from tenant name
     schema_name = re.sub(r'[^a-zA-Z0-9]', '_', tenant_name.lower())
