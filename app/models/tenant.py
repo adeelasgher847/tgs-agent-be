@@ -18,4 +18,5 @@ class Tenant(Base):
     users = relationship("User", secondary="user_tenant_association", back_populates="tenants") 
     agents = relationship("Agent", back_populates="tenant")
     call_sessions = relationship("CallSession", back_populates="tenant")
+    call_logs = relationship("CallLog", back_populates="tenant")
     subscription = relationship("Subscription", back_populates="tenant", uselist=False)

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, Boolean
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -19,14 +19,29 @@ class CallSession(Base):
     status = Column(String(50), nullable=False, default="active")  # active, completed, failed, busy
     duration = Column(Integer, nullable=True)  # duration in seconds
     
+    # Call type and classification
+    call_type = Column(String(20), nullable=False, server_default="inbound")  # inbound, outbound, web
+    success_evaluation = Column(String(20), nullable=True)  # success, fail, null
+    ended_reason = Column(String(255), nullable=True)  # Customer Ended Call, Call.start.error, etc.
+    
+    # Cost and billing
+    cost = Column(Float, nullable=True, server_default="0.0")  # Cost in USD
+    cost_currency = Column(String(3), nullable=True, server_default="USD")
+    
     # Call content
     call_transcript = Column(JSONB, nullable=True)  # Store as JSON array of messages
     response_times = Column(JSONB, nullable=True)  # Store response times for each interaction
     
-    # Twilio specific fields
+    # Phone numbers and external IDs
     twilio_call_sid = Column(String(255), nullable=True, index=True)
     from_number = Column(String(50), nullable=True)
     to_number = Column(String(50), nullable=True)
+    assistant_phone_number = Column(String(50), nullable=True)  # The phone number assigned to the assistant
+    customer_phone_number = Column(String(50), nullable=True)  # The customer's phone number
+    
+    # Additional metadata
+    call_metadata = Column(JSONB, nullable=True)  # Store additional call metadata
+    transferred = Column(Boolean, nullable=False, server_default="false")  # Whether call was transferred
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -36,6 +51,7 @@ class CallSession(Base):
     user = relationship("User", back_populates="call_sessions")
     agent = relationship("Agent", back_populates="call_sessions")
     tenant = relationship("Tenant", back_populates="call_sessions")
+    call_logs = relationship("CallLog", back_populates="call_session", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<CallSession(id={self.id}, status={self.status})>"

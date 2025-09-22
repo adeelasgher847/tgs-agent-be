@@ -102,6 +102,44 @@ def get_voice_options(
     return {
         "voice_types": [v.value for v in VoiceTypeEnum],
         "languages": [l.value for l in LanguageEnum],
-    }    
-    agent_list = [AgentOut.model_validate(agent) for agent in agents]
-    return create_success_response(agent_list, f"Found {len(agent_list)} agents matching '{search_term}'") 
+    }
+
+
+@router.get("/{agent_id}/talk")
+async def get_talk_to_assistant_link(
+    agent_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the "Talk to Assistant" link for an agent
+    """
+    try:
+        # Validate agent exists and belongs to user's tenant
+        agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found"
+            )
+        
+        # Return the talk link
+        talk_url = f"/api/v1/live-voice/talk/{agent_id}"
+        
+        return create_success_response(
+            {
+                "agent_id": str(agent.id),
+                "agent_name": agent.name,
+                "talk_url": talk_url,
+                "status": "ready"
+            },
+            f"Talk to {agent.name} link generated"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate talk link: {str(e)}"
+        ) 

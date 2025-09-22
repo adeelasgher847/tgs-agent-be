@@ -70,3 +70,76 @@ class CallInitiateResponse(BaseModel):
     twilioCallSid: str
     callSessionId: str
     status: str
+
+
+# Web-based voice chat schemas (Talk to Assistant feature)
+class VoiceChatStartRequest(BaseModel):
+    agent_id: str
+
+
+class VoiceChatStartResponse(BaseModel):
+    session_id: str
+    agent_name: str
+    agent_voice_type: Optional[str] = None
+    status: str
+
+
+class VoiceChatMessageRequest(BaseModel):
+    session_id: str
+    message: str
+    message_type: str = "text"  # "text" or "speech"
+
+
+class VoiceChatMessageResponse(BaseModel):
+    session_id: str
+    agent_response: str
+    response_time: float
+    audio_url: Optional[str] = None  # URL to generated speech audio
+    timestamp: str
+
+
+class VoiceChatHistoryRequest(BaseModel):
+    session_id: str
+
+
+class VoiceChatHistoryResponse(BaseModel):
+    session_id: str
+    messages: List[Dict[str, Any]]
+    agent_info: Dict[str, Any]
+
+
+class VoiceChatEndRequest(BaseModel):
+    session_id: str
+
+
+class VoiceChatEndResponse(BaseModel):
+    session_id: str
+    status: str
+    duration: Optional[float] = None
+    message_count: int
+
+
+# Live Voice Conversation schemas (Talk to Assistant feature)
+class LiveVoiceStartRequest(BaseModel):
+    agent_id: str
+
+
+class LiveVoiceStartResponse(BaseModel):
+    session_id: str
+    agent_name: str
+    agent_voice_type: Optional[str] = None
+    status: str
+
+
+class LiveVoiceMessageRequest(BaseModel):
+    session_id: str
+    message: str
+    message_type: str = "speech"  # "speech" or "text"
+
+
+class LiveVoiceMessageResponse(BaseModel):
+    session_id: str
+    agent_response: str
+    response_time: float
+    timestamp: str
+    should_speak: bool = True
