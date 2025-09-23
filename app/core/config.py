@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     VICIDIAL_USER: str = ""  # Leave empty for no authentication
     VICIDIAL_PASS: str = ""  # Leave empty for no authentication
     
+    # VICIdial Configuration (updated from Vitchi)
+    VICIDIAL_API_URL: str = "http://vicidial-server/agc/api.php"  # VICIdial API endpoint
+    VICIDIAL_API_USER: str = ""  # VICIdial API username
+    VICIDIAL_API_PASS: str = ""  # VICIdial API password
+    
     FRONTEND_URL: str = "http://localhost:3000"  
     
     # Stripe settings
