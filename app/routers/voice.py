@@ -80,34 +80,6 @@ async def initiate_call(
             tenant_id=user.current_tenant_id,
             twilio_call_sid=call.sid,
             from_number=twilio_service.get_phone_number(),
-            to_number=request.userPhoneNumber,
-            call_type="outbound",
-            assistant_phone_number=twilio_service.get_phone_number(),
-            customer_phone_number=request.userPhoneNumber
-        )
-        
-        # Send call data to VICIdial
-        # await _send_to_vicidial(
-        #     phone_number=request.userPhoneNumber,
-        #     campaign_id=agent.name,  # Use agent name as campaign ID
-        #     call_type="outbound",
-        #     call_session_id=str(call_session.id),
-        #     twilio_call_sid=call.sid
-        # )
-        call = twilio_service.make_call(
-            to_number=request.userPhoneNumber,
-            from_number=twilio_service.get_phone_number(),
-            webhook_url=webhook_url,
-            status_callback_url=status_callback_url
-        )
-        # Create call session immediately when call is initiated
-        call_session = call_session_service.create_call_session(
-            db=db,
-            user_id=user.id,
-            agent_id=agent.id,
-            tenant_id=user.current_tenant_id,
-            twilio_call_sid=call.sid,
-            from_number=twilio_service.get_phone_number(),
             to_number=request.userPhoneNumber
         )
         
@@ -123,18 +95,6 @@ async def initiate_call(
             ),
             "Call initiated successfully"
         )
-        # Generate call ID
-        # call_id = f"call_{call.sid[-8:]}"
-        
-        # return create_success_response(
-        #     CallInitiateResponse(
-        #         callId=call_id,
-        #         twilioCallSid=call.sid,
-        #         callSessionId=str(call_session.id),
-        #         status="initiated"
-        #     ),
-        #     "Call initiated successfully"
-        # )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -237,6 +197,7 @@ async def handle_call_events_webhook(
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
                 method='POST'
             )
+            gather.say("Please tell me more about how I can help you.", voice=_get_twilio_voice(agent.voice_type) if agent else "")
             
             # Fallback if no input
             response.say("I didn't catch that. Let me transfer you to a human agent.", voice=_get_twilio_voice(agent.voice_type) if agent else "")
@@ -253,27 +214,19 @@ async def handle_call_events_webhook(
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "ringing" and direction == "outbound-api":
-            # Outbound call is ringing - just log, don't play any audio
+            # Outbound call is ringing - trigger agent logic
             print("=" * 50)
             print(f"🔔 CALL IS RINGING - SID: {call_sid}")
             print("=" * 50)
-            # Return empty response - no audio should play while ringing
-            return HTMLResponse("", media_type="application/xml")
-        
-        elif call_status == "in-progress":
-            # Call is in progress - person answered, play greeting
-            print("=" * 50)
-            print(f"📞 CALL ANSWERED - SID: {call_sid}")
-            print("=" * 50)
             if agent:
                 print(f"🤖 Generating agent response for agent: {agent.name}")
-                # Generate agent-specific response for active call
+                # Generate agent-specific response using database agent
                 twiml_response = _generate_agent_response(agent, {
                     'call_sid': call_sid,
                     'from_number': from_number,
                     'to_number': to_number,
                     'status': call_status,
-                    'event_type': 'call_in_progress'
+                    'event_type': 'call_ringing'
                 })
                 print(f"📝 Generated TwiML response (first 300 chars):")
                 print(twiml_response[:300])
@@ -283,48 +236,43 @@ async def handle_call_events_webhook(
                 return HTMLResponse(twiml_response, media_type="application/xml")
             else:
                 print("❌ No agent found, using default response")
+                # Default response
                 response = VoiceResponse()
                 response.say("Hello! Thank you for answering our call.", voice="")
-                response.pause(length=1)
-                response.say("How can I help you today?", voice="")
-                
-                # Simple gather for speech input
-                response.gather(
-                    input='speech',
-                    timeout=10,
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
-                    method='POST'
-                )
-                
-                # Fallback if no input
-                response.say("I didn't hear anything. Let me transfer you to a human agent.", voice="")
+                response.say("An agent will be with you shortly.", voice="")
                 default_twiml = str(response)
                 print(f"📝 Default TwiML response: {default_twiml}")
                 return HTMLResponse(default_twiml, media_type="application/xml")
         
+        elif call_status == "in-progress":
+            # Call is in progress - trigger agent logic
+            if agent:
+                # Generate agent-specific response for active call
+                twiml_response = _generate_agent_response(agent, {
+                    'call_sid': call_sid,
+                    'from_number': from_number,
+                    'to_number': to_number,
+                    'status': call_status,
+                    'event_type': 'call_in_progress'
+                })
+                return HTMLResponse(twiml_response, media_type="application/xml")
+            else:
+                response = VoiceResponse()
+                response.say("Your call is now connected. How can we help you today?", voice="")
+                return HTMLResponse(str(response), media_type="application/xml")
+        
         elif call_status == "completed":
-            # Call completed - update call session and log
-            print(f"Call completed - SID: {call_sid}")
-            _update_call_session_status(db, call_sid, "completed", "Call completed successfully", "success")
-            # Update VICIdial with call completion
-            await _update_vicidial_call_status(call_sid, "completed", "success")
+            # Call completed
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "failed":
-            # Call failed - handle error and update logs
+            # Call failed - handle error
             print(f"Call failed - SID: {call_sid}")
-            _update_call_session_status(db, call_sid, "failed", "Call failed", "fail")
-            # Update VICIdial with call failure
-            await _update_vicidial_call_status(call_sid, "failed", "fail")
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "busy":
-            # Call busy - handle busy signal and update logs
+            # Call busy - handle busy signal
             print(f"Call busy - SID: {call_sid}")
-            _update_call_session_status(db, call_sid, "busy", "Line busy", "fail")
-            # Update VICIdial with busy status
-            await _update_vicidial_call_status(call_sid, "busy", "fail")
             return HTMLResponse("", media_type="application/xml")
         
         else:
@@ -345,114 +293,14 @@ async def handle_call_events_webhook(
         raise
 
 
-def _update_call_session_status(db: Session, call_sid: str, status: str, ended_reason: str, success_evaluation: str):
-    """Update call session status and associated call log"""
-    try:
-        call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
-        if call_session:
-            call_session_service.update_call_session_status(
-                db=db,
-                session_id=call_session.id,
-                status=status,
-                ended_reason=ended_reason,
-                success_evaluation=success_evaluation
-            )
-            print(f"Updated call session {call_session.id} with status: {status}")
-        else:
-            print(f"No call session found for Twilio SID: {call_sid}")
-    except Exception as e:
-        print(f"Error updating call session status: {e}")
-
-async def _send_to_vicidial(phone_number: str, campaign_id: str, call_type: str, call_session_id: str, twilio_call_sid: str):
-    """Send call data to VICIdial when a call is initiated"""
-    try:
-        import aiohttp
-        from app.core.config import settings
-        
-        # VICIdial server configuration
-        vicidial_url = getattr(settings, 'VICIDIAL_URL', 'http://vicidial-server/agc/api.php')
-        vicidial_user = getattr(settings, 'VICIDIAL_USER', None)
-        vicidial_pass = getattr(settings, 'VICIDIAL_PASS', None)
-        
-        # Prepare VICIdial API parameters
-        params = {
-            'source': 'tgs_agent_be',
-            'function': 'add_call',
-            'phone_number': phone_number,
-            'campaign_id': campaign_id,
-            'call_type': call_type,
-            'notes': f'Session: {call_session_id}, Twilio SID: {twilio_call_sid}'
-        }
-        
-        # Add authentication only if configured
-        if vicidial_user and vicidial_pass:
-            params['user'] = vicidial_user
-            params['pass'] = vicidial_pass
-            print(f"🔐 Using VICIdial authentication: {vicidial_user}")
-        else:
-            print(f"🔓 VICIdial authentication not configured - sending without auth")
-        
-        # Send to VICIdial
-        async with aiohttp.ClientSession() as session:
-            async with session.get(vicidial_url, params=params) as response:
-                if response.status == 200:
-                    result = await response.text()
-                    print(f"✅ VICIdial integration successful: {result}")
-                else:
-                    print(f"❌ VICIdial integration failed: {response.status}")
-                    print(f"Response: {await response.text()}")
-                    
-    except Exception as e:
-        print(f"⚠️ VICIdial integration error: {e}")
-        # Don't fail the call if VICIdial is down
-
-async def _update_vicidial_call_status(call_sid: str, status: str, success_evaluation: str):
-    """Update VICIdial with call status changes"""
-    try:
-        import aiohttp
-        from app.core.config import settings
-        
-        # VICIdial server configuration
-        vicidial_url = getattr(settings, 'VICIDIAL_URL', 'http://vicidial-server/agc/api.php')
-        vicidial_user = getattr(settings, 'VICIDIAL_USER', None)
-        vicidial_pass = getattr(settings, 'VICIDIAL_PASS', None)
-        
-        # Prepare VICIdial API parameters for status update
-        params = {
-            'source': 'tgs_agent_be',
-            'function': 'update_call_status',
-            'call_sid': call_sid,
-            'status': status,
-            'success_evaluation': success_evaluation
-        }
-        
-        # Add authentication only if configured
-        if vicidial_user and vicidial_pass:
-            params['user'] = vicidial_user
-            params['pass'] = vicidial_pass
-        
-        # Send to VICIdial
-        async with aiohttp.ClientSession() as session:
-            async with session.get(vicidial_url, params=params) as response:
-                if response.status == 200:
-                    result = await response.text()
-                    print(f"✅ VICIdial status update successful: {result}")
-                else:
-                    print(f"❌ VICIdial status update failed: {response.status}")
-                    print(f"Response: {await response.text()}")
-                    
-    except Exception as e:
-        print(f"⚠️ VICIdial status update error: {e}")
-        # Don't fail the call if VICIdial is down
-
 def _get_twilio_voice(voice_type):
     """Map voice_type to Twilio voice names"""
     if voice_type == "male":
-        return "en-US-Neural2-M"  # Male voice
+        return "en-US-Neural2-F"  # Male voice
     elif voice_type == "female":
-        return "en-US-Neural2-F"  # Female voice
+        return "en-US-Neural2-E"  # Female voice
     else:
-        return "en-US-Neural2-F"  # Default to female voice
+        return ""  # Default voice
 
 def _process_speech_input(agent, speech_text: str, call_sid: str) -> str:
     """Process speech input and generate agent response"""
@@ -489,26 +337,23 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     print(f"🎯 Agent greeting: '{greeting}'")
     print(f"🎯 Agent voice: '{twilio_voice}'")
     
-    # Smooth call flow: greeting + pause + instruction
+    # Say the greeting with agent's voice
     response.say(greeting, voice=twilio_voice)
-    response.pause(length=1)
-    response.say("Please tell me how I can help you.", voice=twilio_voice)
     
-    # Simple gather for speech input
-    response.gather(
+    # Add gather to collect user input
+    gather = response.gather(
         input='speech',
         timeout=10,
         speech_timeout='auto',
         action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}',
         method='POST'
     )
+    gather.say(f"Please tell me how I can assist you.", voice=twilio_voice)
     
     # Fallback if no input
-    response.say("I didn't hear anything. Let me transfer you to a human agent.", voice=twilio_voice)
+    response.say("I didn't catch that. Let me transfer you to a human agent.", voice=twilio_voice)
     
-    twiml_result = str(response)
-    print(f"📝 Generated SIMPLE TwiML: {twiml_result}")
-    return twiml_result
+    return str(response)
 
 
 def _generate_default_response() -> str:
