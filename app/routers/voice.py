@@ -193,10 +193,10 @@ async def handle_call_events_webhook(
             response.pause(length=2)
             response.say("Please speak again or I will end the call.", voice="en-US-Neural2-F")
             
-            # Continue listening
+            # Continue listening with longer timeout
             response.gather(
                 input='speech',
-                timeout=10,
+                timeout=20,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
                 method='POST'
@@ -211,9 +211,9 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
         
         elif speech_result == "" or speech_result is None:
-            # NO SPEECH DETECTED - HANDLE GRACEFULLY
+            # NO SPEECH DETECTED - KEEP LISTENING, DON'T TERMINATE
             print("=" * 60)
-            print(f"🔇 NO SPEECH DETECTED")
+            print(f"🔇 NO SPEECH DETECTED - KEEPING CALL ALIVE")
             print(f"📞 Call SID: {call_sid}")
             print(f"⏰ Timestamp: {datetime.now()}")
             print(f"🏢 Tenant ID: {agent.tenant_id if agent else 'Unknown'}")
@@ -224,23 +224,36 @@ async def handle_call_events_webhook(
             response.pause(length=1)
             response.say("Please speak clearly into your phone.", voice="en-US-Neural2-F")
             response.pause(length=2)
-            response.say("I will wait for your response.", voice="en-US-Neural2-F")
+            response.say("I am still listening.", voice="en-US-Neural2-F")
             
-            # Try again with longer timeout
+            # Keep listening with longer timeout - NO HANGUP
             response.gather(
                 input='speech',
-                timeout=15,
+                timeout=20,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
                 method='POST'
             )
             
-            # Final fallback
-            response.say("I still didn't hear anything. Thank you for calling. Goodbye!", voice="en-US-Neural2-F")
+            # Keep listening - don't hangup immediately
+            response.say("I am still here and listening. Please speak when you are ready.", voice="en-US-Neural2-F")
+            response.pause(length=2)
+            
+            # Try one more time
+            response.gather(
+                input='speech',
+                timeout=20,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                method='POST'
+            )
+            
+            # Only hangup after multiple attempts
+            response.say("I haven't heard anything for a while. Thank you for calling. Goodbye!", voice="en-US-Neural2-F")
             response.pause(length=1)
             response.hangup()
             
-            print(f"📝 No speech response generated: {str(response)[:200]}...")
+            print(f"📝 Extended listening response: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
         
         # Handle different call statuses and trigger agent logic
@@ -283,19 +296,35 @@ async def handle_call_events_webhook(
             response.pause(length=1)
             response.say("I am listening now.", voice="en-US-Neural2-F")
             
-            # Robust gather for speech input
+            # Extended gather for speech input - LONGER TIMEOUTS
             response.gather(
                 input='speech',
-                timeout=15,
+                timeout=25,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
                 method='POST'
             )
             
-            # Fallback if no input
-            response.say("I didn't hear anything. Let me try one more time.", voice="en-US-Neural2-F")
+            # Fallback if no input - KEEP LISTENING
+            response.say("I didn't hear anything. Let me try again.", voice="en-US-Neural2-F")
             response.pause(length=1)
-            response.say("Please speak now or I will end the call.", voice="en-US-Neural2-F")
+            response.say("Please speak clearly into your phone.", voice="en-US-Neural2-F")
+            response.pause(length=2)
+            response.say("I am still listening.", voice="en-US-Neural2-F")
+            
+            # Try again with even longer timeout
+            response.gather(
+                input='speech',
+                timeout=25,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                method='POST'
+            )
+            
+            # Final attempt before hanging up
+            response.say("I am still here and listening. Please speak when you are ready.", voice="en-US-Neural2-F")
+            response.pause(length=2)
+            response.say("If you don't speak soon, I will end the call.", voice="en-US-Neural2-F")
             response.pause(length=1)
             response.hangup()
             
