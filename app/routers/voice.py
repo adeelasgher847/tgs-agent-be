@@ -448,24 +448,26 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     print(f"🎯 Agent greeting: '{greeting}'")
     print(f"🎯 Agent voice: '{twilio_voice}'")
     
-    # Say the greeting with agent's voice
+    # Simple response - just say greeting and wait
     response.say(greeting, voice=twilio_voice)
+    response.pause(length=2)
+    response.say("Please tell me how I can help you.", voice=twilio_voice)
     
     # Add gather to collect user input
-    gather = response.gather(
+    response.gather(
         input='speech',
         timeout=10,
         speech_timeout='auto',
         action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}',
         method='POST'
     )
-    # Add instruction inside gather
-    gather.say("Please tell me how I can help you.", voice=twilio_voice)
     
     # Fallback if no input is received
     response.say("I didn't catch that. Let me transfer you to a human agent.", voice=twilio_voice)
     
-    return str(response)
+    twiml_result = str(response)
+    print(f"📝 Generated TwiML: {twiml_result}")
+    return twiml_result
 
 
 def _generate_default_response() -> str:
