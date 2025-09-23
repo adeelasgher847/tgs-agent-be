@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
+from datetime import datetime
 
 from app.api.deps import get_db, require_tenant
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
@@ -179,11 +180,35 @@ async def handle_call_events_webhook(
             print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
             print("=" * 50)
             
-            # ABSOLUTE SIMPLEST SPEECH RESPONSE - NO GATHER
+            # SPEECH LOGGING AND CONTINUED CONVERSATION
             response = VoiceResponse()
-            response.say(f"I heard you say: {speech_result}. Thank you for calling!", voice="en-US-Neural2-F")
+            
+            # Log the speech input
+            print("=" * 50)
+            print(f"🎤 SPEECH LOGGED: '{speech_result}'")
+            print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
+            print(f"📞 Call SID: {call_sid}")
+            print(f"⏰ Timestamp: {datetime.now()}")
+            print("=" * 50)
+            
+            # Respond to speech
+            response.say(f"Thank you! I heard you say: {speech_result}.", voice="en-US-Neural2-F")
+            response.pause(length=1)
+            response.say("How else can I help you today?", voice="en-US-Neural2-F")
             response.pause(length=2)
-            response.say("Have a great day!", voice="en-US-Neural2-F")
+            response.say("Please speak again or I will end the call.", voice="en-US-Neural2-F")
+            
+            # Continue listening
+            response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                method='POST'
+            )
+            
+            # Fallback
+            response.say("Thank you for calling. Have a great day!", voice="en-US-Neural2-F")
             response.pause(length=1)
             response.hangup()
             
@@ -212,13 +237,25 @@ async def handle_call_events_webhook(
             print(f"📞 CALL ANSWERED - SID: {call_sid}")
             print("=" * 50)
             
-            # ABSOLUTE SIMPLEST - JUST GREETING, NO GATHER
+            # GREETING WITH SPEECH LOGGING
             response = VoiceResponse()
             response.say("Hello! This is your AI assistant speaking.", voice="en-US-Neural2-F")
             response.pause(length=2)
             response.say("I can help you with any questions you have.", voice="en-US-Neural2-F")
             response.pause(length=2)
-            response.say("Thank you for calling. Have a great day!", voice="en-US-Neural2-F")
+            response.say("Please speak now and I will respond to you.", voice="en-US-Neural2-F")
+            
+            # Simple gather for speech input
+            response.gather(
+                input='speech',
+                timeout=10,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                method='POST'
+            )
+            
+            # Fallback if no input
+            response.say("I didn't hear anything. Thank you for calling. Goodbye!", voice="en-US-Neural2-F")
             response.pause(length=1)
             response.hangup()
             
