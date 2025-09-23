@@ -11,7 +11,7 @@ from app.models.agent import Agent
 from app.schemas.call_log import CallLogCreate
 from typing import List, Dict, Optional, Any
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 class CallSessionService:
@@ -160,7 +160,7 @@ class CallSessionService:
         if call_session:
             call_session.status = status
             if status in ["completed", "failed", "busy"]:
-                call_session.end_time = datetime.utcnow()
+                call_session.end_time = datetime.now(timezone.utc)
                 if call_session.start_time:
                     duration = (call_session.end_time - call_session.start_time).total_seconds()
                     call_session.duration = int(duration)
