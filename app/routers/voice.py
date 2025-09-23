@@ -173,25 +173,19 @@ async def handle_call_events_webhook(
         else:
             print("No agentId provided in webhook")
         
-        # Handle speech input first (if present)
-        if speech_result:
-            print("=" * 50)
+        # Handle speech input - ROBUST MULTI-TENANT LOGGING
+        if speech_result and speech_result.strip():
+            # VALID SPEECH DETECTED - LOG AND RESPOND
+            print("=" * 60)
             print(f"🎤 SPEECH DETECTED: '{speech_result}'")
-            print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
-            print("=" * 50)
-            
-            # SPEECH LOGGING AND CONTINUED CONVERSATION
-            response = VoiceResponse()
-            
-            # Log the speech input
-            print("=" * 50)
-            print(f"🎤 SPEECH LOGGED: '{speech_result}'")
             print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
             print(f"📞 Call SID: {call_sid}")
             print(f"⏰ Timestamp: {datetime.now()}")
-            print("=" * 50)
+            print(f"🏢 Tenant ID: {agent.tenant_id if agent else 'Unknown'}")
+            print(f"🤖 Agent: {agent.name if agent else 'Unknown'}")
+            print("=" * 60)
             
-            # Respond to speech
+            response = VoiceResponse()
             response.say(f"Thank you! I heard you say: {speech_result}.", voice="en-US-Neural2-F")
             response.pause(length=1)
             response.say("How else can I help you today?", voice="en-US-Neural2-F")
@@ -212,7 +206,40 @@ async def handle_call_events_webhook(
             response.pause(length=1)
             response.hangup()
             
-            print(f"📝 BULLETPROOF speech response: {str(response)[:200]}...")
+            print(f"📝 Speech response generated: {str(response)[:200]}...")
+            return HTMLResponse(str(response), media_type="application/xml")
+        
+        elif speech_result == "" or speech_result is None:
+            # NO SPEECH DETECTED - HANDLE GRACEFULLY
+            print("=" * 60)
+            print(f"🔇 NO SPEECH DETECTED")
+            print(f"📞 Call SID: {call_sid}")
+            print(f"⏰ Timestamp: {datetime.now()}")
+            print(f"🏢 Tenant ID: {agent.tenant_id if agent else 'Unknown'}")
+            print("=" * 60)
+            
+            response = VoiceResponse()
+            response.say("I didn't hear anything. Let me try again.", voice="en-US-Neural2-F")
+            response.pause(length=1)
+            response.say("Please speak clearly into your phone.", voice="en-US-Neural2-F")
+            response.pause(length=2)
+            response.say("I will wait for your response.", voice="en-US-Neural2-F")
+            
+            # Try again with longer timeout
+            response.gather(
+                input='speech',
+                timeout=15,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                method='POST'
+            )
+            
+            # Final fallback
+            response.say("I still didn't hear anything. Thank you for calling. Goodbye!", voice="en-US-Neural2-F")
+            response.pause(length=1)
+            response.hangup()
+            
+            print(f"📝 No speech response generated: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
         
         # Handle different call statuses and trigger agent logic
@@ -237,25 +264,37 @@ async def handle_call_events_webhook(
             print(f"📞 CALL ANSWERED - SID: {call_sid}")
             print("=" * 50)
             
-            # GREETING WITH SPEECH LOGGING
+            # MULTI-TENANT GREETING WITH ROBUST SPEECH LOGGING
             response = VoiceResponse()
-            response.say("Hello! This is your AI assistant speaking.", voice="en-US-Neural2-F")
+            
+            # Get agent info for tenant context
+            agent_name = "AI Assistant"
+            if agent:
+                agent_name = agent.name
+                print(f"🏢 Multi-tenant call for tenant: {agent.tenant_id}")
+                print(f"🤖 Agent: {agent_name}")
+            
+            response.say(f"Hello! This is {agent_name} speaking.", voice="en-US-Neural2-F")
             response.pause(length=2)
             response.say("I can help you with any questions you have.", voice="en-US-Neural2-F")
             response.pause(length=2)
-            response.say("Please speak now and I will respond to you.", voice="en-US-Neural2-F")
+            response.say("Please speak clearly and I will respond to you.", voice="en-US-Neural2-F")
+            response.pause(length=1)
+            response.say("I am listening now.", voice="en-US-Neural2-F")
             
-            # Simple gather for speech input
+            # Robust gather for speech input
             response.gather(
                 input='speech',
-                timeout=10,
+                timeout=15,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
                 method='POST'
             )
             
             # Fallback if no input
-            response.say("I didn't hear anything. Thank you for calling. Goodbye!", voice="en-US-Neural2-F")
+            response.say("I didn't hear anything. Let me try one more time.", voice="en-US-Neural2-F")
+            response.pause(length=1)
+            response.say("Please speak now or I will end the call.", voice="en-US-Neural2-F")
             response.pause(length=1)
             response.hangup()
             
