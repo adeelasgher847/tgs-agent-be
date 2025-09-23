@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
     
+    # VICIdial Configuration
+    VICIDIAL_URL: str = "http://vicidial-server/agc/api.php"
+    VICIDIAL_USER: str = ""  # Leave empty for no authentication
+    VICIDIAL_PASS: str = ""  # Leave empty for no authentication
+    
     FRONTEND_URL: str = "http://localhost:3000"  
     
     # Stripe settings

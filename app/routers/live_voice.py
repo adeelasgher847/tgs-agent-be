@@ -219,7 +219,10 @@ async def live_voice_conversation(
             tenant_id=agent.tenant_id,
             twilio_call_sid=f"live_voice_{session_id}",
             from_number="browser_mic",
-            to_number="agent_voice"
+            to_number="agent_voice",
+            call_type="web",
+            assistant_phone_number="web_agent",
+            customer_phone_number="browser_mic"
         )
         
         # Send initial connection message
@@ -256,6 +259,21 @@ async def live_voice_conversation(
     except Exception as e:
         print(f"Live voice WebSocket error: {e}")
     finally:
+        # Update call session status when session ends
+        try:
+            call_session = call_session_service.get_call_session_by_twilio_sid(db, f"live_voice_{session_id}")
+            if call_session:
+                call_session_service.update_call_session_status(
+                    db=db,
+                    session_id=call_session.id,
+                    status="completed",
+                    ended_reason="WebSocket disconnected",
+                    success_evaluation="success"
+                )
+                print(f"Updated live voice call session {call_session.id} to completed")
+        except Exception as e:
+            print(f"Error updating call session on disconnect: {e}")
+        
         manager.disconnect(session_id)
 
 

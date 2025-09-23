@@ -80,7 +80,19 @@ async def initiate_call(
             tenant_id=user.current_tenant_id,
             twilio_call_sid=call.sid,
             from_number=twilio_service.get_phone_number(),
-            to_number=request.userPhoneNumber
+            to_number=request.userPhoneNumber,
+            call_type="outbound",
+            assistant_phone_number=twilio_service.get_phone_number(),
+            customer_phone_number=request.userPhoneNumber
+        )
+        
+        # Send call data to VICIdial
+        await _send_to_vicidial(
+            phone_number=request.userPhoneNumber,
+            campaign_id=agent.name,  # Use agent name as campaign ID
+            call_type="outbound",
+            call_session_id=str(call_session.id),
+            twilio_call_sid=call.sid
         )
         
         # Generate call ID
@@ -262,17 +274,27 @@ async def handle_call_events_webhook(
                 return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "completed":
-            # Call completed
+            # Call completed - update call session and log
+            print(f"Call completed - SID: {call_sid}")
+            _update_call_session_status(db, call_sid, "completed", "Call completed successfully", "success")
+            # Update VICIdial with call completion
+            await _update_vicidial_call_status(call_sid, "completed", "success")
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "failed":
-            # Call failed - handle error
+            # Call failed - handle error and update logs
             print(f"Call failed - SID: {call_sid}")
+            _update_call_session_status(db, call_sid, "failed", "Call failed", "fail")
+            # Update VICIdial with call failure
+            await _update_vicidial_call_status(call_sid, "failed", "fail")
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "busy":
-            # Call busy - handle busy signal
+            # Call busy - handle busy signal and update logs
             print(f"Call busy - SID: {call_sid}")
+            _update_call_session_status(db, call_sid, "busy", "Line busy", "fail")
+            # Update VICIdial with busy status
+            await _update_vicidial_call_status(call_sid, "busy", "fail")
             return HTMLResponse("", media_type="application/xml")
         
         else:
@@ -292,6 +314,106 @@ async def handle_call_events_webhook(
         print("=== Call Events Webhook Failed ===")
         raise
 
+
+def _update_call_session_status(db: Session, call_sid: str, status: str, ended_reason: str, success_evaluation: str):
+    """Update call session status and associated call log"""
+    try:
+        call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+        if call_session:
+            call_session_service.update_call_session_status(
+                db=db,
+                session_id=call_session.id,
+                status=status,
+                ended_reason=ended_reason,
+                success_evaluation=success_evaluation
+            )
+            print(f"Updated call session {call_session.id} with status: {status}")
+        else:
+            print(f"No call session found for Twilio SID: {call_sid}")
+    except Exception as e:
+        print(f"Error updating call session status: {e}")
+
+async def _send_to_vicidial(phone_number: str, campaign_id: str, call_type: str, call_session_id: str, twilio_call_sid: str):
+    """Send call data to VICIdial when a call is initiated"""
+    try:
+        import aiohttp
+        from app.core.config import settings
+        
+        # VICIdial server configuration
+        vicidial_url = getattr(settings, 'VICIDIAL_URL', 'http://vicidial-server/agc/api.php')
+        vicidial_user = getattr(settings, 'VICIDIAL_USER', None)
+        vicidial_pass = getattr(settings, 'VICIDIAL_PASS', None)
+        
+        # Prepare VICIdial API parameters
+        params = {
+            'source': 'tgs_agent_be',
+            'function': 'add_call',
+            'phone_number': phone_number,
+            'campaign_id': campaign_id,
+            'call_type': call_type,
+            'notes': f'Session: {call_session_id}, Twilio SID: {twilio_call_sid}'
+        }
+        
+        # Add authentication only if configured
+        if vicidial_user and vicidial_pass:
+            params['user'] = vicidial_user
+            params['pass'] = vicidial_pass
+            print(f"🔐 Using VICIdial authentication: {vicidial_user}")
+        else:
+            print(f"🔓 VICIdial authentication not configured - sending without auth")
+        
+        # Send to VICIdial
+        async with aiohttp.ClientSession() as session:
+            async with session.get(vicidial_url, params=params) as response:
+                if response.status == 200:
+                    result = await response.text()
+                    print(f"✅ VICIdial integration successful: {result}")
+                else:
+                    print(f"❌ VICIdial integration failed: {response.status}")
+                    print(f"Response: {await response.text()}")
+                    
+    except Exception as e:
+        print(f"⚠️ VICIdial integration error: {e}")
+        # Don't fail the call if VICIdial is down
+
+async def _update_vicidial_call_status(call_sid: str, status: str, success_evaluation: str):
+    """Update VICIdial with call status changes"""
+    try:
+        import aiohttp
+        from app.core.config import settings
+        
+        # VICIdial server configuration
+        vicidial_url = getattr(settings, 'VICIDIAL_URL', 'http://vicidial-server/agc/api.php')
+        vicidial_user = getattr(settings, 'VICIDIAL_USER', None)
+        vicidial_pass = getattr(settings, 'VICIDIAL_PASS', None)
+        
+        # Prepare VICIdial API parameters for status update
+        params = {
+            'source': 'tgs_agent_be',
+            'function': 'update_call_status',
+            'call_sid': call_sid,
+            'status': status,
+            'success_evaluation': success_evaluation
+        }
+        
+        # Add authentication only if configured
+        if vicidial_user and vicidial_pass:
+            params['user'] = vicidial_user
+            params['pass'] = vicidial_pass
+        
+        # Send to VICIdial
+        async with aiohttp.ClientSession() as session:
+            async with session.get(vicidial_url, params=params) as response:
+                if response.status == 200:
+                    result = await response.text()
+                    print(f"✅ VICIdial status update successful: {result}")
+                else:
+                    print(f"❌ VICIdial status update failed: {response.status}")
+                    print(f"Response: {await response.text()}")
+                    
+    except Exception as e:
+        print(f"⚠️ VICIdial status update error: {e}")
+        # Don't fail the call if VICIdial is down
 
 def _get_twilio_voice(voice_type):
     """Map voice_type to Twilio voice names"""

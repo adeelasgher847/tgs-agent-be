@@ -19,3 +19,4 @@ email-validator
 stripe
 fastapi_limiter
 websockets
+aiohttp

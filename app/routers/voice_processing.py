@@ -264,7 +264,10 @@ async def initialize_voice_call(
                     tenant_id=agent.tenant_id,
                     twilio_call_sid=call_sid,
                     from_number=from_number,
-                    to_number=to_number
+                    to_number=to_number,
+                    call_type="inbound",
+                    assistant_phone_number=to_number,
+                    customer_phone_number=from_number
                 )
                 print(f"Created call session: {call_session.id}")
             except (ValueError, Exception) as e:
