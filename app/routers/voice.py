@@ -430,3 +430,332 @@ def _generate_default_response() -> str:
     response.pause(length=2)
     response.say("Please hold while we connect you.", voice="")
     return str(response)
+
+
+# Vitchi Dialer Integration - Separate from current flow
+@router.post("/vitchi/initiate-call")
+async def initiate_vitchi_call(
+    request: CallInitiateRequest,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Initiate a call through Vitchi dialer
+    This is a separate endpoint for Vitchi integration
+    """
+    try:
+        print("=" * 60)
+        print(f"🚀 INITIATING VITCHI DIALER CALL")
+        print(f"📞 To: {request.userPhoneNumber}")
+        print(f"🤖 Agent: {request.agentId}")
+        print(f"👤 User: {user.email}")
+        print(f"🏢 Tenant: {user.current_tenant_id}")
+        print("=" * 60)
+        
+        # Get agent from database
+        try:
+            agent_id = uuid.UUID(request.agentId)
+            agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
+        except (ValueError, HTTPException):
+            raise HTTPException(status_code=404, detail=f"Agent {request.agentId} not found")
+        
+        # Validate phone number format
+        if not twilio_service.validate_phone_number(request.userPhoneNumber):
+            raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
+        
+        # Get base URL for webhooks
+        base_url = settings.WEBHOOK_BASE_URL
+        
+        # Create unique call ID for Vitchi tracking
+        call_id = f"vitchi_{uuid.uuid4().hex[:8]}"
+        
+        # Vitchi-specific webhook URLs
+        webhook_url = f"{base_url}/api/v1/voice/vitchi/webhook/call-events?agentId={agent.id}&userId={user.id}&callId={call_id}"
+        status_callback_url = f"{base_url}/api/v1/voice/vitchi/webhook/status?agentId={agent.id}&userId={user.id}&callId={call_id}"
+        
+        print(f"🔗 Vitchi Webhook URL: {webhook_url}")
+        print(f"📊 Vitchi Status Callback: {status_callback_url}")
+        
+        # Make the call using Twilio (Vitchi uses Twilio backend)
+        call = twilio_service.make_call(
+            to_number=request.userPhoneNumber,
+            from_number=twilio_service.get_phone_number(),
+            webhook_url=webhook_url,
+            status_callback_url=status_callback_url
+        )
+        
+        print(f"✅ Vitchi call initiated - SID: {call.sid}")
+        
+        # Create call session for Vitchi call
+        call_session = call_session_service.create_call_session(
+            db=db,
+            user_id=user.id,
+            agent_id=agent.id,
+            tenant_id=user.current_tenant_id,
+            twilio_call_sid=call.sid,
+            from_number=twilio_service.get_phone_number(),
+            to_number=request.userPhoneNumber,
+            call_type="vitchi_outbound",
+            assistant_phone_number=twilio_service.get_phone_number(),
+            customer_phone_number=request.userPhoneNumber
+        )
+        
+        print(f"📝 Vitchi call session created: {call_session.id}")
+        
+        # Generate call ID for response
+        response_call_id = f"vitchi_call_{call.sid[-8:]}"
+        
+        return create_success_response(
+            CallInitiateResponse(
+                callId=response_call_id,
+                twilioCallSid=call.sid,
+                callSessionId=str(call_session.id),
+                status="initiated"
+            ),
+            "Vitchi dialer call initiated successfully"
+        )
+        
+    except Exception as e:
+        print(f"❌ Vitchi call initiation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initiate Vitchi call: {str(e)}")
+
+
+@router.post("/vitchi/webhook/call-events")
+async def handle_vitchi_call_events(
+    request: Request,
+    agentId: str = Query(..., description="Agent ID"),
+    userId: str = Query(..., description="User ID"),
+    callId: str = Query(..., description="Call ID for tracking"),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle Vitchi dialer call events and recording
+    This is a separate webhook for Vitchi integration
+    """
+    print("=" * 60)
+    print(f"🎤 VITCHI DIALER CALL EVENTS WEBHOOK")
+    print(f"📞 Call ID: {callId}")
+    print(f"🤖 Agent: {agentId}")
+    print(f"👤 User: {userId}")
+    print(f"⏰ Timestamp: {datetime.now()}")
+    print("=" * 60)
+    
+    try:
+        # Parse form data
+        form_data = await request.form()
+        
+        # Extract call information
+        call_sid = form_data.get("CallSid", "")
+        call_status = form_data.get("CallStatus", "")
+        from_number = form_data.get("From", "")
+        to_number = form_data.get("To", "")
+        direction = form_data.get("Direction", "")
+        
+        # Speech recognition results
+        speech_result = form_data.get("SpeechResult", "")
+        confidence = form_data.get("Confidence", "")
+        speech_duration = form_data.get("SpeechDuration", "")
+        
+        # Recording information (Vitchi specific)
+        recording_url = form_data.get("RecordingUrl", "")
+        recording_duration = form_data.get("RecordingDuration", "")
+        recording_sid = form_data.get("RecordingSid", "")
+        
+        print(f"📞 Call SID: {call_sid}")
+        print(f"📊 Status: {call_status}")
+        print(f"📱 From: {from_number} → To: {to_number}")
+        print(f"🎤 Speech: '{speech_result}' (Confidence: {confidence})")
+        print(f"🎙️ Recording URL: {recording_url}")
+        print(f"⏱️ Recording Duration: {recording_duration}")
+        print(f"🎙️ Recording SID: {recording_sid}")
+        
+        # Get agent from database
+        agent = None
+        if agentId:
+            try:
+                agent_uuid = uuid.UUID(agentId)
+                agent = db.query(Agent).filter(Agent.id == agent_uuid).first()
+                if agent:
+                    print(f"🤖 Found agent: {agent.name}")
+                else:
+                    print(f"❌ Agent not found: {agentId}")
+            except Exception as e:
+                print(f"❌ Error getting agent: {e}")
+        
+        # Handle different call statuses for Vitchi
+        if call_status == "initiated":
+            print(f"🚀 Vitchi call initiated - SID: {call_sid}")
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "ringing":
+            print(f"🔔 Vitchi call ringing - SID: {call_sid}")
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "in-progress":
+            print(f"📞 Vitchi call answered - SID: {call_sid}")
+            
+            # Generate TwiML response for Vitchi answered call
+            response = VoiceResponse()
+            
+            if agent:
+                agent_name = agent.name
+                print(f"🤖 Vitchi Agent: {agent_name}")
+                
+                # Start recording for Vitchi
+                response.record(
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/vitchi/webhook/call-events?agentId={agentId}&userId={userId}&callId={callId}',
+                    method='POST',
+                    timeout=30,
+                    finish_on_key='#',
+                    play_beep=True
+                )
+                
+                response.say(f"Hello! This is {agent_name} from Vitchi dialer.", voice="en-US-Neural2-F")
+                response.pause(length=2)
+                response.say("I can help you with any questions you have.", voice="en-US-Neural2-F")
+                response.pause(length=2)
+                response.say("Please speak clearly and I will respond to you.", voice="en-US-Neural2-F")
+                
+                # Gather speech input with recording
+                response.gather(
+                    input='speech',
+                    timeout=15,
+                    speech_timeout='auto',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/vitchi/webhook/call-events?agentId={agentId}&userId={userId}&callId={callId}',
+                    method='POST'
+                )
+                
+                # Fallback
+                response.say("I didn't hear anything. Thank you for calling Vitchi. Goodbye!", voice="en-US-Neural2-F")
+            else:
+                response.say("Hello! Thank you for calling Vitchi dialer.", voice="en-US-Neural2-F")
+                response.say("An agent will be with you shortly.", voice="en-US-Neural2-F")
+            
+            twiml_result = str(response)
+            print(f"📝 Generated Vitchi TwiML: {twiml_result[:200]}...")
+            return HTMLResponse(twiml_result, media_type="application/xml")
+        
+        elif call_status == "completed":
+            print(f"✅ Vitchi call completed - SID: {call_sid}")
+            
+            # Update call session status for Vitchi
+            try:
+                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                if call_session:
+                    call_session_service.update_call_session_status(
+                        db=db,
+                        session_id=call_session.id,
+                        status="completed",
+                        ended_reason="Vitchi call completed successfully",
+                        success_evaluation="success"
+                    )
+                    print(f"📝 Updated Vitchi call session: {call_session.id}")
+            except Exception as e:
+                print(f"⚠️ Error updating Vitchi call session: {e}")
+            
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "failed":
+            print(f"❌ Vitchi call failed - SID: {call_sid}")
+            
+            # Update call session status for Vitchi
+            try:
+                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                if call_session:
+                    call_session_service.update_call_session_status(
+                        db=db,
+                        session_id=call_session.id,
+                        status="failed",
+                        ended_reason="Vitchi call failed",
+                        success_evaluation="fail"
+                    )
+            except Exception as e:
+                print(f"⚠️ Error updating Vitchi call session: {e}")
+            
+            return HTMLResponse("", media_type="application/xml")
+        
+        # Handle speech input for Vitchi
+        elif speech_result:
+            print("=" * 60)
+            print(f"🎤 VITCHI SPEECH RECEIVED: '{speech_result}'")
+            print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
+            print(f"📞 Call SID: {call_sid}")
+            print(f"🏢 Tenant: {agent.tenant_id if agent else 'Unknown'}")
+            print(f"🤖 Agent: {agent.name if agent else 'Unknown'}")
+            print("=" * 60)
+            
+            # Generate response for Vitchi
+            response = VoiceResponse()
+            
+            if agent:
+                # Use your existing speech processing logic
+                response_text = _process_speech_input(agent, speech_result, call_sid)
+                response.say(f"Vitchi: {response_text}", voice="en-US-Neural2-F")
+                
+                # Continue listening with recording
+                response.gather(
+                    input='speech',
+                    timeout=15,
+                    speech_timeout='auto',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/vitchi/webhook/call-events?agentId={agentId}&userId={userId}&callId={callId}',
+                    method='POST'
+                )
+                
+                # Fallback
+                response.say("Thank you for calling Vitchi. Goodbye!", voice="en-US-Neural2-F")
+            else:
+                response.say(f"Vitchi heard you say: {speech_result}. Thank you for calling!", voice="en-US-Neural2-F")
+            
+            twiml_result = str(response)
+            print(f"📝 Vitchi speech response: {twiml_result[:200]}...")
+            return HTMLResponse(twiml_result, media_type="application/xml")
+        
+        # Handle recording completion for Vitchi
+        elif recording_url:
+            print("=" * 60)
+            print(f"🎙️ VITCHI RECORDING COMPLETED")
+            print(f"📞 Call SID: {call_sid}")
+            print(f"🎙️ Recording URL: {recording_url}")
+            print(f"⏱️ Recording Duration: {recording_duration}")
+            print(f"🎙️ Recording SID: {recording_sid}")
+            print("=" * 60)
+            
+            # Store recording information in call session
+            try:
+                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                if call_session:
+                    # Update call session with recording info
+                    call_session.call_metadata = {
+                        "recording_url": recording_url,
+                        "recording_duration": recording_duration,
+                        "recording_sid": recording_sid,
+                        "vitchi_call": True
+                    }
+                    db.commit()
+                    print(f"📝 Updated Vitchi call session with recording: {call_session.id}")
+            except Exception as e:
+                print(f"⚠️ Error updating Vitchi call session with recording: {e}")
+            
+            # Continue the call after recording
+            response = VoiceResponse()
+            response.say("Recording completed. How can I help you further?", voice="en-US-Neural2-F")
+            
+            response.gather(
+                input='speech',
+                timeout=15,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/vitchi/webhook/call-events?agentId={agentId}&userId={userId}&callId={callId}',
+                method='POST'
+            )
+            
+            response.say("Thank you for calling Vitchi. Goodbye!", voice="en-US-Neural2-F")
+            
+            return HTMLResponse(str(response), media_type="application/xml")
+        
+        else:
+            print(f"📊 Vitchi call status: {call_status} - No action needed")
+            return HTMLResponse("", media_type="application/xml")
+            
+    except Exception as e:
+        print(f"❌ Vitchi webhook error: {e}")
+        return HTMLResponse("", media_type="application/xml")
