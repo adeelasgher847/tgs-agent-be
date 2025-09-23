@@ -257,7 +257,20 @@ async def handle_call_events_webhook(
                 print("❌ No agent found, using default response")
                 response = VoiceResponse()
                 response.say("Hello! Thank you for answering our call.", voice="")
+                response.pause(length=2)
                 response.say("How can we help you today?", voice="")
+                
+                # Add gather to collect user input
+                response.gather(
+                    input='speech',
+                    timeout=10,
+                    speech_timeout='auto',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                    method='POST'
+                )
+                
+                # Fallback if no input
+                response.say("I didn't catch that. Let me transfer you to a human agent.", voice="")
                 default_twiml = str(response)
                 print(f"📝 Default TwiML response: {default_twiml}")
                 return HTMLResponse(default_twiml, media_type="application/xml")
@@ -407,11 +420,11 @@ async def _update_vicidial_call_status(call_sid: str, status: str, success_evalu
 def _get_twilio_voice(voice_type):
     """Map voice_type to Twilio voice names"""
     if voice_type == "male":
-        return "en-US-Neural2-F"  # Male voice
+        return "en-US-Neural2-M"  # Male voice
     elif voice_type == "female":
-        return "en-US-Neural2-E"  # Female voice
+        return "en-US-Neural2-F"  # Female voice
     else:
-        return ""  # Default voice
+        return "en-US-Neural2-F"  # Default to female voice
 
 def _process_speech_input(agent, speech_text: str, call_sid: str) -> str:
     """Process speech input and generate agent response"""
@@ -448,7 +461,7 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     print(f"🎯 Agent greeting: '{greeting}'")
     print(f"🎯 Agent voice: '{twilio_voice}'")
     
-    # Simple response - just say greeting and wait
+    # Say greeting and wait for user input
     response.say(greeting, voice=twilio_voice)
     response.pause(length=2)
     response.say("Please tell me how I can help you.", voice=twilio_voice)
@@ -462,11 +475,11 @@ def _generate_agent_response(agent, call_data: dict) -> str:
         method='POST'
     )
     
-    # Fallback if no input is received
+    # Fallback if no input
     response.say("I didn't catch that. Let me transfer you to a human agent.", voice=twilio_voice)
     
     twiml_result = str(response)
-    print(f"📝 Generated TwiML: {twiml_result}")
+    print(f"📝 Generated SIMPLE TwiML: {twiml_result}")
     return twiml_result
 
 
