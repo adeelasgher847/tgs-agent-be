@@ -156,6 +156,7 @@ async def handle_call_events_webhook(
         print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
         print(f"AgentId from query: {agentId}")
         
+        
         # Get agent from database if agentId is provided
         agent = None
         if agentId:
