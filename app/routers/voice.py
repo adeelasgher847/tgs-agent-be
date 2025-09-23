@@ -87,12 +87,28 @@ async def initiate_call(
         )
         
         # Send call data to VICIdial
-        await _send_to_vicidial(
-            phone_number=request.userPhoneNumber,
-            campaign_id=agent.name,  # Use agent name as campaign ID
-            call_type="outbound",
-            call_session_id=str(call_session.id),
-            twilio_call_sid=call.sid
+        # await _send_to_vicidial(
+        #     phone_number=request.userPhoneNumber,
+        #     campaign_id=agent.name,  # Use agent name as campaign ID
+        #     call_type="outbound",
+        #     call_session_id=str(call_session.id),
+        #     twilio_call_sid=call.sid
+        # )
+        call = twilio_service.make_call(
+            to_number=request.userPhoneNumber,
+            from_number=twilio_service.get_phone_number(),
+            webhook_url=webhook_url,
+            status_callback_url=status_callback_url
+        )
+        # Create call session immediately when call is initiated
+        call_session = call_session_service.create_call_session(
+            db=db,
+            user_id=user.id,
+            agent_id=agent.id,
+            tenant_id=user.current_tenant_id,
+            twilio_call_sid=call.sid,
+            from_number=twilio_service.get_phone_number(),
+            to_number=request.userPhoneNumber
         )
         
         # Generate call ID
@@ -107,6 +123,18 @@ async def initiate_call(
             ),
             "Call initiated successfully"
         )
+        # Generate call ID
+        # call_id = f"call_{call.sid[-8:]}"
+        
+        # return create_success_response(
+        #     CallInitiateResponse(
+        #         callId=call_id,
+        #         twilioCallSid=call.sid,
+        #         callSessionId=str(call_session.id),
+        #         status="initiated"
+        #     ),
+        #     "Call initiated successfully"
+        # )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -257,10 +285,10 @@ async def handle_call_events_webhook(
                 print("❌ No agent found, using default response")
                 response = VoiceResponse()
                 response.say("Hello! Thank you for answering our call.", voice="")
-                response.pause(length=2)
-                response.say("How can we help you today?", voice="")
+                response.pause(length=1)
+                response.say("How can I help you today?", voice="")
                 
-                # Add gather to collect user input
+                # Simple gather for speech input
                 response.gather(
                     input='speech',
                     timeout=10,
@@ -270,7 +298,7 @@ async def handle_call_events_webhook(
                 )
                 
                 # Fallback if no input
-                response.say("I didn't catch that. Let me transfer you to a human agent.", voice="")
+                response.say("I didn't hear anything. Let me transfer you to a human agent.", voice="")
                 default_twiml = str(response)
                 print(f"📝 Default TwiML response: {default_twiml}")
                 return HTMLResponse(default_twiml, media_type="application/xml")
@@ -461,12 +489,12 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     print(f"🎯 Agent greeting: '{greeting}'")
     print(f"🎯 Agent voice: '{twilio_voice}'")
     
-    # Say greeting and wait for user input
+    # Smooth call flow: greeting + pause + instruction
     response.say(greeting, voice=twilio_voice)
-    response.pause(length=2)
+    response.pause(length=1)
     response.say("Please tell me how I can help you.", voice=twilio_voice)
     
-    # Add gather to collect user input
+    # Simple gather for speech input
     response.gather(
         input='speech',
         timeout=10,
@@ -476,7 +504,7 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     )
     
     # Fallback if no input
-    response.say("I didn't catch that. Let me transfer you to a human agent.", voice=twilio_voice)
+    response.say("I didn't hear anything. Let me transfer you to a human agent.", voice=twilio_voice)
     
     twiml_result = str(response)
     print(f"📝 Generated SIMPLE TwiML: {twiml_result}")
