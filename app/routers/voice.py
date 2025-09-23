@@ -179,23 +179,13 @@ async def handle_call_events_webhook(
             print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
             print("=" * 50)
             
-            # BULLETPROOF SIMPLE SPEECH RESPONSE
+            # ABSOLUTE SIMPLEST SPEECH RESPONSE - NO GATHER
             response = VoiceResponse()
-            response.say(f"I heard you say: {speech_result}. How can I help you further?", voice="en-US-Neural2-F")
+            response.say(f"I heard you say: {speech_result}. Thank you for calling!", voice="en-US-Neural2-F")
             response.pause(length=2)
-            response.say("Please speak again.", voice="en-US-Neural2-F")
-            
-            # Simple gather
-            response.gather(
-                input='speech',
-                timeout=10,
-                speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
-                method='POST'
-            )
-            
-            # Fallback
-            response.say("Thank you for calling. Goodbye!", voice="en-US-Neural2-F")
+            response.say("Have a great day!", voice="en-US-Neural2-F")
+            response.pause(length=1)
+            response.hangup()
             
             print(f"📝 BULLETPROOF speech response: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
@@ -315,24 +305,14 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     print(f"🎯 Agent greeting: '{greeting}'")
     print(f"🎯 Agent voice: '{twilio_voice}'")
     
-    # DEMO-READY: Simple, clear greeting
+    # ABSOLUTE SIMPLEST - NO GATHER AT ALL
     response.say("Hello! This is your AI assistant speaking.", voice=twilio_voice)
     response.pause(length=2)
     response.say("I can help you with any questions you have.", voice=twilio_voice)
     response.pause(length=2)
-    response.say("Please speak now and I will respond to you.", voice=twilio_voice)
-    
-    # Simple gather for speech input (NO gather.say inside!)
-    response.gather(
-        input='speech',
-        timeout=15,
-        speech_timeout='auto',
-        action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}',
-        method='POST'
-    )
-    
-    # Fallback if no input
-    response.say("I didn't hear anything. Thank you for calling. Goodbye!", voice=twilio_voice)
+    response.say("Thank you for calling. Have a great day!", voice=twilio_voice)
+    response.pause(length=1)
+    response.hangup()
     
     return str(response)
 
