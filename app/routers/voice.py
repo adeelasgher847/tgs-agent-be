@@ -179,30 +179,25 @@ async def handle_call_events_webhook(
             print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
             print("=" * 50)
             
-            # Process the speech input
+            # BULLETPROOF SIMPLE SPEECH RESPONSE
             response = VoiceResponse()
+            response.say(f"I heard you say: {speech_result}. How can I help you further?", voice="en-US-Neural2-F")
+            response.pause(length=2)
+            response.say("Please speak again.", voice="en-US-Neural2-F")
             
-            if agent:
-                # Generate response based on speech input
-                agent_response = _process_speech_input(agent, speech_result, call_sid)
-                response.say(agent_response, voice=_get_twilio_voice(agent.voice_type))
-            else:
-                response.say(f"I heard you say: {speech_result}. How can I help you further?", voice="")
-            
-            # Add another gather to continue listening
-            gather = response.gather(
+            # Simple gather
+            response.gather(
                 input='speech',
                 timeout=10,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
                 method='POST'
             )
-            gather.say("Please tell me more about how I can help you.", voice=_get_twilio_voice(agent.voice_type) if agent else "")
             
-            # Fallback if no input
-            response.say("I didn't catch that. Let me transfer you to a human agent.", voice=_get_twilio_voice(agent.voice_type) if agent else "")
+            # Fallback
+            response.say("Thank you for calling. Goodbye!", voice="en-US-Neural2-F")
             
-            print(f"📝 Generated speech response TwiML: {str(response)[:200]}...")
+            print(f"📝 BULLETPROOF speech response: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
         
         # Handle different call statuses and trigger agent logic
@@ -214,52 +209,35 @@ async def handle_call_events_webhook(
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "ringing" and direction == "outbound-api":
-            # Outbound call is ringing - trigger agent logic
+            # Outbound call is ringing - just log, don't play any audio
             print("=" * 50)
             print(f"🔔 CALL IS RINGING - SID: {call_sid}")
             print("=" * 50)
-            if agent:
-                print(f"🤖 Generating agent response for agent: {agent.name}")
-                # Generate agent-specific response using database agent
-                twiml_response = _generate_agent_response(agent, {
-                    'call_sid': call_sid,
-                    'from_number': from_number,
-                    'to_number': to_number,
-                    'status': call_status,
-                    'event_type': 'call_ringing'
-                })
-                print(f"📝 Generated TwiML response (first 300 chars):")
-                print(twiml_response[:300])
-                print("=" * 50)
-                print("✅ RETURNING TwiML RESPONSE TO TWILIO")
-                print("=" * 50)
-                return HTMLResponse(twiml_response, media_type="application/xml")
-            else:
-                print("❌ No agent found, using default response")
-                # Default response
-                response = VoiceResponse()
-                response.say("Hello! Thank you for answering our call.", voice="")
-                response.say("An agent will be with you shortly.", voice="")
-                default_twiml = str(response)
-                print(f"📝 Default TwiML response: {default_twiml}")
-                return HTMLResponse(default_twiml, media_type="application/xml")
+            # Return empty response - no audio should play while ringing
+            return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "in-progress":
-            # Call is in progress - trigger agent logic
-            if agent:
-                # Generate agent-specific response for active call
-                twiml_response = _generate_agent_response(agent, {
-                    'call_sid': call_sid,
-                    'from_number': from_number,
-                    'to_number': to_number,
-                    'status': call_status,
-                    'event_type': 'call_in_progress'
-                })
-                return HTMLResponse(twiml_response, media_type="application/xml")
-            else:
-                response = VoiceResponse()
-                response.say("Your call is now connected. How can we help you today?", voice="")
-                return HTMLResponse(str(response), media_type="application/xml")
+            # Call is in progress - person answered, play greeting
+            print("=" * 50)
+            print(f"📞 CALL ANSWERED - SID: {call_sid}")
+            print("=" * 50)
+            
+            # ABSOLUTE SIMPLEST - JUST GREETING, NO GATHER
+            response = VoiceResponse()
+            response.say("Hello! This is your AI assistant speaking.", voice="en-US-Neural2-F")
+            response.pause(length=2)
+            response.say("I can help you with any questions you have.", voice="en-US-Neural2-F")
+            response.pause(length=2)
+            response.say("Thank you for calling. Have a great day!", voice="en-US-Neural2-F")
+            response.pause(length=1)
+            response.hangup()
+            
+            twiml_result = str(response)
+            print(f"📝 BULLETPROOF TwiML: {twiml_result}")
+            print("=" * 50)
+            print("✅ RETURNING BULLETPROOF TwiML TO TWILIO")
+            print("=" * 50)
+            return HTMLResponse(twiml_result, media_type="application/xml")
         
         elif call_status == "completed":
             # Call completed
@@ -296,11 +274,11 @@ async def handle_call_events_webhook(
 def _get_twilio_voice(voice_type):
     """Map voice_type to Twilio voice names"""
     if voice_type == "male":
-        return "en-US-Neural2-F"  # Male voice
+        return "en-US-Neural2-M"  # Male voice
     elif voice_type == "female":
-        return "en-US-Neural2-E"  # Female voice
+        return "en-US-Neural2-F"  # Female voice
     else:
-        return ""  # Default voice
+        return "en-US-Neural2-F"  # Default to female voice
 
 def _process_speech_input(agent, speech_text: str, call_sid: str) -> str:
     """Process speech input and generate agent response"""
@@ -337,21 +315,24 @@ def _generate_agent_response(agent, call_data: dict) -> str:
     print(f"🎯 Agent greeting: '{greeting}'")
     print(f"🎯 Agent voice: '{twilio_voice}'")
     
-    # Say the greeting with agent's voice
-    response.say(greeting, voice=twilio_voice)
+    # DEMO-READY: Simple, clear greeting
+    response.say("Hello! This is your AI assistant speaking.", voice=twilio_voice)
+    response.pause(length=2)
+    response.say("I can help you with any questions you have.", voice=twilio_voice)
+    response.pause(length=2)
+    response.say("Please speak now and I will respond to you.", voice=twilio_voice)
     
-    # Add gather to collect user input
-    gather = response.gather(
+    # Simple gather for speech input (NO gather.say inside!)
+    response.gather(
         input='speech',
-        timeout=10,
+        timeout=15,
         speech_timeout='auto',
         action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}',
         method='POST'
     )
-    gather.say(f"Please tell me how I can assist you.", voice=twilio_voice)
     
     # Fallback if no input
-    response.say("I didn't catch that. Let me transfer you to a human agent.", voice=twilio_voice)
+    response.say("I didn't hear anything. Thank you for calling. Goodbye!", voice=twilio_voice)
     
     return str(response)
 
