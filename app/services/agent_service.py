@@ -46,14 +46,28 @@ class AgentService:
         agent_data['created_by'] = user_id
         agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
         
+        agent_data['tenant_id'] = tenant_id
+        agent_data['created_by'] = user_id
+        agent_data['updated_by'] = user_id
+
         db_agent = Agent(**agent_data)
         db.add(db_agent)
         db.commit()
         db.refresh(db_agent)
-        
-        # Increment usage tracking
+
+        # Push to provider dashboard if a model/provider is selected
+        try:
+            from app.services.provider_integration_service import provider_integration_service
+            external_id = provider_integration_service.create_remote_agent(db, db_agent.model_id, db_agent.name)
+            if external_id:
+                db_agent.provider_agent_id = external_id
+                db.commit()
+                db.refresh(db_agent)
+        except Exception:
+            # Swallow provider errors for now; optionally log
+            pass
+
         BillingService.increment_agent_usage(db, tenant_id)
-        
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:

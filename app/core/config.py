@@ -11,10 +11,10 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Email settings for password reset
-    SMTP_HOST: str = "mubeenhussain8@gmail.com"
+    SMTP_HOST: str = "voiceagent3@gmail.com"
     SMTP_PORT: int = 587
     SMTP_USERNAME: str = "voice_agent"
-    SMTP_PASSWORD: str = "luse tpvz rsqb ahij"
+    SMTP_PASSWORD: str = "inydhoeesbkadqux"
     SMTP_TLS: bool = True
     SMTP_SSL: bool = False
     
@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     FREE_PLAN_MONTHLY_CALLS: int = 100
     PRO_PLAN_AGENT_LIMIT: int = 50
     PRO_PLAN_MONTHLY_CALLS: int = 10000
+
+    # GEMINI settings
+    GEMINI_API_KEY: str = ""
     
     # Twilio settings
     TWILIO_ACCOUNT_SID: str = ""
