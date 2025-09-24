@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
     FRONTEND_URL: str = "http://localhost:3000"
     
+    GEMINI_API_KEY: str = ""
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
     

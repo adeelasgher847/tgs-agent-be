@@ -137,3 +137,74 @@ def create_refresh_token_value() -> str:
 def refresh_token_expires_at() -> datetime:
     """Get refresh token expiration time (7 days from now)."""
     return datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+# API Key Encryption Functions using JWT
+def encrypt_api_key(api_key: str) -> str:
+    """
+    Encrypt an API key using JWT
+    
+    Args:
+        api_key: Plain text API key
+        
+    Returns:
+        Encrypted API key as JWT token
+    """
+    if not api_key:
+        return api_key
+    
+    try:
+        # Create a JWT token with the API key as payload
+        payload = {
+            "api_key": api_key,
+            "type": "encrypted_api_key",
+            "iat": datetime.now(timezone.utc)
+        }
+        encrypted_token = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+        return encrypted_token
+    except Exception as e:
+        raise ValueError(f"API key encryption failed: {str(e)}")
+
+def decrypt_api_key(encrypted_api_key: str) -> str:
+    """
+    Decrypt an API key from JWT
+    
+    Args:
+        encrypted_api_key: Encrypted API key as JWT token
+        
+    Returns:
+        Decrypted plain text API key
+    """
+    if not encrypted_api_key:
+        return encrypted_api_key
+    
+    try:
+        # Decode the JWT token to get the API key
+        payload = jwt.decode(encrypted_api_key, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        
+        # Verify it's an API key token
+        if payload.get("type") != "encrypted_api_key":
+            raise ValueError("Invalid token type")
+        
+        return payload.get("api_key", "")
+    except JWTError as e:
+        raise ValueError(f"API key decryption failed: {str(e)}")
+
+def is_api_key_encrypted(api_key: str) -> bool:
+    """
+    Check if an API key appears to be encrypted (JWT format)
+    
+    Args:
+        api_key: API key to check
+        
+    Returns:
+        True if the key appears to be encrypted, False otherwise
+    """
+    if not api_key:
+        return False
+    
+    try:
+        # Try to decode as JWT
+        payload = jwt.decode(api_key, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload.get("type") == "encrypted_api_key"
+    except JWTError:
+        return False

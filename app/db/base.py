@@ -12,3 +12,6 @@ from app.models.invite import Invite
 from app.models.plan import Plan
 from app.models.subscription import Subscription
 from app.models.usage_record import UsageRecord
+from app.models.usage_record import UsageRecord
+from app.models.provider import Provider
+from app.models.model import Model

@@ -3,6 +3,7 @@ from typing import Optional
 from datetime import datetime
 import uuid
 from enum import Enum
+from app.core.config import settings
 
 class LanguageEnum(str, Enum):
     en = "en"
@@ -26,6 +27,7 @@ class AgentBase(BaseModel):
 
 class AgentCreate(AgentBase):
     # tenant_id is automatically added from current tenant context
+    model_id: Optional[uuid.UUID] = None
     pass
 
 
@@ -56,3 +58,24 @@ class AgentListResponse(BaseModel):
     total_pages: int
     has_next: bool
     has_prev: bool
+    
+    
+class GeminiClient:
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key or settings.GEMINI_API_KEY
+
+    def create_agent(self, name: str) -> str:
+        # TODO: Replace with actual Gemini API endpoint payload and headers
+        if not self.api_key:
+            # For now, just simulate and return a fake id if key missing; or raise
+            return f"gemini_{name.lower().replace(' ', '_')}"
+        # Example stub:
+        # url = "https://generativelanguage.googleapis.com/v1/agents"
+        # headers = {"Authorization": f"Bearer {self.api_key}"}
+        # payload = {"displayName": name}
+        # r = httpx.post(url, json=payload, headers=headers, timeout=15)
+        # r.raise_for_status()
+        # return r.json().get("name")  # or appropriate id field
+        return f"gemini_{name.lower().replace(' ', '_')}"
+
+gemini_client = GeminiClient()

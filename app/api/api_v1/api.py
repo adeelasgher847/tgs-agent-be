@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.api_v1.endpoints import user, tenant, role, invite, accept_invite, billing, plan
+from app.api.api_v1.endpoints import user, tenant, role, invite, accept_invite, billing, plan, provider, model
 from app.routers.agent import router as agent_router
 from app.routers.voice import router as voice_router
 from app.routers.live_voice import router as live_voice_router
@@ -23,3 +23,5 @@ api_router.include_router(invite.router, prefix="/invites", tags=["invites"])
 api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 api_router.include_router(plan.router, prefix="/plans", tags=["plans"])
+api_router.include_router(provider.router, prefix="/providers", tags=["providers"])
+api_router.include_router(model.router, prefix="/models", tags=["models"])
