@@ -37,6 +37,7 @@ class AgentUpdate(BaseModel):
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
     fallback_response: Optional[str] = Field(None, max_length=1000)
+    model_id: Optional[uuid.UUID] = None
 
 class AgentOut(AgentBase):
     id: uuid.UUID

@@ -102,7 +102,7 @@ async def process_voice_input(
                     db, call_session.id, "user", speech_result
                 )
             
-            # Process with OpenAI
+            # Process with Gemini AI
             try:
                 # Get conversation history for context
                 conversation_history = []
@@ -116,15 +116,62 @@ async def process_voice_input(
                                 "content": msg["content"]
                             })
                 
-                # Process with OpenAI
-                openai_response = openai_service.process_agent_conversation(
-                    user_input=speech_result,
-                    agent_system_prompt=agent.system_prompt or "You are a helpful assistant.",
-                    conversation_history=conversation_history
-                )
-                
-                ai_response_text = openai_response["response"]
-                response_time = openai_response["response_time"]
+                # Use Gemini if agent has a model_id, otherwise fall back to OpenAI
+                if agent.model_id:
+                    from app.services.gemini_service import gemini_service
+                    from app.services.model_service import model_service
+                    from app.core.security import decrypt_api_key
+                    
+                    # Get the model from database
+                    model = model_service.get_model_by_id(db, agent.model_id)
+                    if model and not model.archive and 'gemini' in model.model_name.lower():
+                        # Use Gemini
+                        model_name = model.model_name
+                        system_prompt = agent.system_prompt or model.system_prompt or "You are a helpful AI assistant for phone calls. Keep responses conversational, natural, and concise for voice interaction."
+                        temperature = (model.temperature / 100.0) if model.temperature else 0.7
+                        max_tokens = model.max_tokens or 200
+                        
+                        # Use model-specific API key if available
+                        api_key = None
+                        if model.api_key:
+                            try:
+                                api_key = decrypt_api_key(model.api_key)
+                            except Exception as e:
+                                print(f"⚠️ Failed to decrypt model API key: {e}")
+                        
+                        # Generate response using Gemini
+                        gemini_response = gemini_service.generate_text(
+                            prompt=speech_result,
+                            system_prompt=system_prompt,
+                            model_name=model_name,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            api_key=api_key
+                        )
+                        
+                        ai_response_text = gemini_response["content"]
+                        response_time = gemini_response["response_time"]
+                        print(f"✅ Used Gemini model: {model_name}")
+                    else:
+                        # Fall back to OpenAI
+                        openai_response = openai_service.process_agent_conversation(
+                            user_input=speech_result,
+                            agent_system_prompt=agent.system_prompt or "You are a helpful assistant.",
+                            conversation_history=conversation_history
+                        )
+                        ai_response_text = openai_response["response"]
+                        response_time = openai_response["response_time"]
+                        print("✅ Used OpenAI (fallback)")
+                else:
+                    # No model_id, use OpenAI
+                    openai_response = openai_service.process_agent_conversation(
+                        user_input=speech_result,
+                        agent_system_prompt=agent.system_prompt or "You are a helpful assistant.",
+                        conversation_history=conversation_history
+                    )
+                    ai_response_text = openai_response["response"]
+                    response_time = openai_response["response_time"]
+                    print("✅ Used OpenAI (no model_id)")
                 
                 # Add AI response to transcript
                 if call_session:

@@ -211,11 +211,12 @@ async def handle_call_events_webhook(
             response = VoiceResponse()
             
             if agent:
-                # Generate intelligent response based on speech
+                # Generate intelligent response based on speech using Gemini
                 response_text = await VoiceLoggingService.generate_agent_response(
                     speech_text=speech_result,
                     confidence=float(confidence) if confidence else 0.0,
-                    agent=agent
+                    agent=agent,
+                    db=db
                 )
                 
                 # Say response naturally

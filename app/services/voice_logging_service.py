@@ -172,15 +172,83 @@ class VoiceLoggingService:
     async def generate_agent_response(
         speech_text: str,
         confidence: float,
-        agent: Optional[Agent] = None
+        agent: Optional[Agent] = None,
+        db: Optional[Session] = None
     ) -> str:
         """
-        Generate agent response based on speech input
+        Generate agent response based on speech input using Gemini AI
         """
         try:
-            print(f"🤖 Generating response for: '{speech_text}'")
+            print(f"🤖 Generating Gemini response for: '{speech_text}'")
             
-            # Simple response generation (can be enhanced with AI)
+            # If no agent or no model_id, fall back to simple responses
+            if not agent or not agent.model_id:
+                print("⚠️ No agent or model_id found, using fallback response")
+                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+            
+            # Import here to avoid circular imports
+            from app.services.gemini_service import gemini_service
+            from app.services.model_service import model_service
+            from app.core.security import decrypt_api_key
+            
+            # Get the model from database
+            model = model_service.get_model_by_id(db, agent.model_id)
+            if not model:
+                print("⚠️ Model not found, using fallback response")
+                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+            
+            # Check if model is active
+            if model.archive:
+                print("⚠️ Model is archived, using fallback response")
+                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+            
+            # Get model details
+            model_name = model.model_name
+            system_prompt = agent.system_prompt or model.system_prompt or "You are a helpful AI assistant for phone calls. Keep responses conversational, natural, and concise for voice interaction."
+            temperature = (model.temperature / 100.0) if model.temperature else 0.7
+            max_tokens = model.max_tokens or 200  # Shorter for voice responses
+            
+            # Use model-specific API key if available
+            api_key = None
+            if model.api_key:
+                try:
+                    api_key = decrypt_api_key(model.api_key)
+                except Exception as e:
+                    print(f"⚠️ Failed to decrypt model API key: {e}")
+                    # Continue with global key
+            
+            # Check if this is a Gemini model
+            if 'gemini' not in model_name.lower():
+                print(f"⚠️ Model {model_name} is not a Gemini model, using fallback response")
+                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+            
+            # Generate response using Gemini
+            gemini_response = gemini_service.generate_text(
+                prompt=speech_text,
+                system_prompt=system_prompt,
+                model_name=model_name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                api_key=api_key
+            )
+            
+            response_text = gemini_response["content"]
+            response_time = gemini_response["response_time"]
+            
+            print(f"✅ Gemini generated response in {response_time:.2f}s: '{response_text}'")
+            return response_text
+            
+        except Exception as e:
+            print(f"❌ Error generating Gemini response: {e}")
+            # Fall back to simple response
+            return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+    
+    @staticmethod
+    async def _generate_fallback_response(speech_text: str, agent: Optional[Agent] = None) -> str:
+        """
+        Generate fallback response when Gemini is not available
+        """
+        try:
             speech_lower = speech_text.lower()
             
             if "hello" in speech_lower or "hi" in speech_lower:
@@ -202,11 +270,11 @@ class VoiceLoggingService:
             if agent and agent.name:
                 response = f"Hello! This is {agent.name}. {response}"
             
-            print(f"✅ Generated response: '{response}'")
+            print(f"✅ Generated fallback response: '{response}'")
             return response
             
         except Exception as e:
-            print(f"❌ Error generating agent response: {e}")
+            print(f"❌ Error generating fallback response: {e}")
             return "I'm sorry, I didn't understand that. Could you please repeat?"
     
     @staticmethod
