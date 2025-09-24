@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Union
 from datetime import datetime
 import uuid
 from enum import Enum
@@ -62,7 +62,7 @@ class AgentListResponse(BaseModel):
     
     
 class GeminiClient:
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.GEMINI_API_KEY
 
     def create_agent(self, name: str) -> str:
