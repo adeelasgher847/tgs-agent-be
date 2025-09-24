@@ -204,9 +204,15 @@ class VoiceLoggingService:
             
             # Get model details
             model_name = model.model_name
-            system_prompt = agent.system_prompt or model.system_prompt or "You are a helpful AI assistant for phone calls. Keep responses conversational, natural, and concise for voice interaction."
-            temperature = (model.temperature / 100.0) if model.temperature else 0.7
-            max_tokens = model.max_tokens or 200  # Shorter for voice responses
+            system_prompt = agent.system_prompt or model.system_prompt or """You are a helpful AI assistant for phone calls. 
+            - Provide clear, conversational responses that are easy to understand when spoken
+            - Be friendly and professional
+            - Give complete answers, not just single words
+            - If you don't understand something, ask for clarification
+            - Keep responses between 1-3 sentences for good voice interaction
+            - Be helpful and try to answer questions thoroughly"""
+            temperature = (model.temperature / 100.0) if model.temperature else 0.8  # Higher for more natural responses
+            max_tokens = model.max_tokens or 300  # Increased for better responses
             
             # Use model-specific API key if available
             api_key = None
@@ -223,6 +229,10 @@ class VoiceLoggingService:
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
             # Generate response using Gemini
+            print(f"🔧 Gemini Config: model={model_name}, temp={temperature}, max_tokens={max_tokens}")
+            print(f"🔧 System Prompt: {system_prompt[:100]}...")
+            print(f"🔧 User Prompt: {speech_text}")
+            
             gemini_response = gemini_service.generate_text(
                 prompt=speech_text,
                 system_prompt=system_prompt,

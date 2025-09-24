@@ -127,9 +127,15 @@ async def process_voice_input(
                     if model and not model.archive and 'gemini' in model.model_name.lower():
                         # Use Gemini
                         model_name = model.model_name
-                        system_prompt = agent.system_prompt or model.system_prompt or "You are a helpful AI assistant for phone calls. Keep responses conversational, natural, and concise for voice interaction."
-                        temperature = (model.temperature / 100.0) if model.temperature else 0.7
-                        max_tokens = model.max_tokens or 200
+                        system_prompt = agent.system_prompt or model.system_prompt or """You are a helpful AI assistant for phone calls. 
+                        - Provide clear, conversational responses that are easy to understand when spoken
+                        - Be friendly and professional
+                        - Give complete answers, not just single words
+                        - If you don't understand something, ask for clarification
+                        - Keep responses between 1-3 sentences for good voice interaction
+                        - Be helpful and try to answer questions thoroughly"""
+                        temperature = (model.temperature / 100.0) if model.temperature else 0.8  # Higher for more natural responses
+                        max_tokens = model.max_tokens or 300  # Increased for better responses
                         
                         # Use model-specific API key if available
                         api_key = None
