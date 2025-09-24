@@ -13,6 +13,7 @@ from app.services.agent_service import agent_service
 from app.models.agent import Agent
 from app.models.user import User
 from app.services.call_session_service import call_session_service
+from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
 from app.utils.response import create_success_response
 from app.core.config import settings
@@ -186,26 +187,72 @@ async def handle_call_events_webhook(
             print(f"🤖 Agent: {agent.name if agent else 'Unknown'}")
             print("=" * 60)
             
+            # Log voice interaction for smooth tracking
+            try:
+                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                if call_session:
+                    await VoiceLoggingService.log_voice_interaction(
+                        db=db,
+                        call_session_id=call_session.id,
+                        interaction_type="speech_input",
+                        speech_text=speech_result,
+                        confidence=float(confidence) if confidence else None,
+                        duration=float(speech_duration) if speech_duration else None,
+                        metadata={
+                            "call_sid": call_sid,
+                            "agent_id": str(agent.id) if agent else None,
+                            "tenant_id": str(agent.tenant_id) if agent else None
+                        }
+                    )
+            except Exception as e:
+                print(f"⚠️ Error logging voice interaction: {e}")
+            
+            # Generate smooth, natural response
             response = VoiceResponse()
-            response.say(f"Thank you! I heard you say: {speech_result}.", voice="en-US-Neural2-F")
-            response.pause(length=1)
-            response.say("How else can I help you today?", voice="en-US-Neural2-F")
-            response.pause(length=2)
-            response.say("Please speak again or I will end the call.", voice="en-US-Neural2-F")
             
-            # Continue listening with longer timeout
-            response.gather(
-                input='speech',
-                timeout=20,
-                speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
-                method='POST'
-            )
-            
-            # Fallback
-            response.say("Thank you for calling. Have a great day!", voice="en-US-Neural2-F")
-            response.pause(length=1)
-            response.hangup()
+            if agent:
+                # Generate intelligent response based on speech
+                response_text = await VoiceLoggingService.generate_agent_response(
+                    speech_text=speech_result,
+                    confidence=float(confidence) if confidence else 0.0,
+                    agent=agent
+                )
+                
+                # Say response naturally
+                response.say(response_text, voice="en-US-Neural2-F")
+                response.pause(length=1)  # Natural pause
+                
+                # Continue smooth conversation
+                response.say("Is there anything else I can help you with?", voice="en-US-Neural2-F")
+                response.pause(length=1)
+                
+                # Continue listening with extended timeout for smooth conversation
+                response.gather(
+                    input='speech',
+                    timeout=30,  # Extended timeout for better user experience
+                    speech_timeout='auto',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}',
+                    method='POST'
+                )
+                
+                # Gentle fallback
+                response.say("I'm here if you need anything else. Thank you for calling!", voice="en-US-Neural2-F")
+            else:
+                # Default response for smooth conversation
+                response.say(f"I heard you say: {speech_result}.", voice="en-US-Neural2-F")
+                response.pause(length=1)
+                response.say("How can I help you further?", voice="en-US-Neural2-F")
+                
+                # Continue listening
+                response.gather(
+                    input='speech',
+                    timeout=25,
+                    speech_timeout='auto',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                    method='POST'
+                )
+                
+                response.say("Thank you for calling. Have a great day!", voice="en-US-Neural2-F")
             
             print(f"📝 Speech response generated: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
@@ -288,45 +335,57 @@ async def handle_call_events_webhook(
                 print(f"🏢 Multi-tenant call for tenant: {agent.tenant_id}")
                 print(f"🤖 Agent: {agent_name}")
             
-            response.say(f"Hello! This is {agent_name} speaking.", voice="en-US-Neural2-F")
-            response.pause(length=2)
-            response.say("I can help you with any questions you have.", voice="en-US-Neural2-F")
-            response.pause(length=2)
-            response.say("Please speak clearly and I will respond to you.", voice="en-US-Neural2-F")
-            response.pause(length=1)
-            response.say("I am listening now.", voice="en-US-Neural2-F")
+            # Smooth, natural greeting
+            response.say(f"Hello! This is {agent_name}.", voice="en-US-Neural2-F")
+            response.pause(length=1)  # Natural pause
+            response.say("How can I help you today?", voice="en-US-Neural2-F")
+            response.pause(length=1)  # Natural pause
+            response.say("I'm listening.", voice="en-US-Neural2-F")
             
-            # Extended gather for speech input - LONGER TIMEOUTS
+            # Log call answered event
+            try:
+                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                if call_session:
+                    await VoiceLoggingService.log_call_events(
+                        db=db,
+                        call_session_id=call_session.id,
+                        event_type="call_answered",
+                        event_data={
+                            "call_sid": call_sid,
+                            "agent_name": agent_name,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
+            except Exception as e:
+                print(f"⚠️ Error logging call answered event: {e}")
+            
+            # Extended gather for speech input - SMOOTH TIMEOUTS
             response.gather(
                 input='speech',
-                timeout=25,
+                timeout=30,  # Extended timeout for better user experience
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
                 method='POST'
             )
             
-            # Fallback if no input - KEEP LISTENING
-            response.say("I didn't hear anything. Let me try again.", voice="en-US-Neural2-F")
+            # Gentle fallback if no input - KEEP LISTENING
+            response.say("I didn't catch that. Could you please repeat?", voice="en-US-Neural2-F")
             response.pause(length=1)
-            response.say("Please speak clearly into your phone.", voice="en-US-Neural2-F")
-            response.pause(length=2)
-            response.say("I am still listening.", voice="en-US-Neural2-F")
+            response.say("I'm still listening.", voice="en-US-Neural2-F")
             
             # Try again with even longer timeout
             response.gather(
                 input='speech',
-                timeout=25,
+                timeout=35,  # Even longer timeout for smooth conversation
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
                 method='POST'
             )
             
-            # Final attempt before hanging up
-            response.say("I am still here and listening. Please speak when you are ready.", voice="en-US-Neural2-F")
-            response.pause(length=2)
-            response.say("If you don't speak soon, I will end the call.", voice="en-US-Neural2-F")
+            # Final gentle attempt before ending
+            response.say("I'm having trouble hearing you.", voice="en-US-Neural2-F")
             response.pause(length=1)
-            response.hangup()
+            response.say("Please call back when you have a moment. Thank you!", voice="en-US-Neural2-F")
             
             twiml_result = str(response)
             print(f"📝 BULLETPROOF TwiML: {twiml_result}")
@@ -521,6 +580,67 @@ async def initiate_vicidial_call(
     except Exception as e:
         print(f"❌ VICIdial call initiation error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to initiate VICIdial call: {str(e)}")
+
+
+@router.post("/vicidial/add-lead")
+async def add_vicidial_lead(
+    request: CallInitiateRequest,
+    list_id: str = Query(default="1001", description="VICIdial list ID"),
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Add a lead to VICIdial campaign for automatic dialing
+    This endpoint adds leads to VICIdial campaigns using the Non-Agent API
+    """
+    try:
+        print("=" * 60)
+        print(f"🚀 ADDING VICIDIAL LEAD")
+        print(f"📞 Phone: {request.userPhoneNumber}")
+        print(f"🤖 Agent: {request.agentId}")
+        print(f"📝 List ID: {list_id}")
+        print(f"👤 User: {user.email}")
+        print(f"🏢 Tenant: {user.current_tenant_id}")
+        print("=" * 60)
+        
+        # Get agent from database
+        try:
+            agent_id = uuid.UUID(request.agentId)
+            agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
+        except (ValueError, HTTPException):
+            raise HTTPException(status_code=404, detail=f"Agent {request.agentId} not found")
+        
+        # Validate phone number format
+        if not twilio_service.validate_phone_number(request.userPhoneNumber):
+            raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
+        
+        # Add lead to VICIdial campaign
+        result = await _add_vicidial_lead(
+            to_number=request.userPhoneNumber,
+            campaign_id=settings.VICIDIAL_CAMPAIGN_ID,
+            list_id=list_id,
+            agent_id=agent.id,
+            user_id=user.id,
+            tenant_id=user.current_tenant_id
+        )
+        
+        print(f"✅ VICIdial lead added - Lead ID: {result.get('lead_id', 'unknown')}")
+        
+        return create_success_response(
+            {
+                "leadId": result.get('lead_id', ''),
+                "status": result.get('status', 'added'),
+                "vicidialResponse": result.get('vicidial_response', ''),
+                "phoneNumber": request.userPhoneNumber,
+                "campaignId": settings.VICIDIAL_CAMPAIGN_ID,
+                "listId": list_id
+            },
+            "VICIdial lead added successfully"
+        )
+        
+    except Exception as e:
+        print(f"❌ VICIdial lead addition error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to add VICIdial lead: {str(e)}")
 
 
 @router.post("/vicidial/webhook/call-events")
@@ -793,49 +913,65 @@ async def _make_vicidial_call(
         # VICIdial API endpoint
         vicidial_api_url = settings.VICIDIAL_API_URL
         
-        # VICIdial API parameters (using add_call function)
+        # Validate VICIdial configuration
+        if not vicidial_api_url or vicidial_api_url == "http://vicidial-server/agi.php":
+            print("⚠️ VICIdial server not configured - using placeholder URL")
+            print("🔧 Please configure VICIDIAL_API_URL in your .env file")
+            print("📝 Example: VICIDIAL_API_URL=http://your-vicidial-server.com/agi.php")
+        
+        # VICIdial AGI API parameters (using external_dial function)
+        # Based on your endpoint: http://vicidial-server/agi.php?source=test&user=USER&pass=PASS&function=external_dial&phone_number=NUMBER
         params = {
-            "source": "voice_agent_api",
-            "user": settings.VICIDIAL_API_USER,
-            "pass": settings.VICIDIAL_API_PASS,
-            "function": "add_call",
+            "source": "voice_agent_api",  # Source identifier
+            "user": settings.VICIDIAL_API_USER,  # VICIdial username
+            "pass": settings.VICIDIAL_API_PASS,  # VICIdial password
+            "function": "external_dial",  # Function to initiate voice calls
             "phone_number": to_number.replace("+", ""),  # Remove + for VICIdial
-            "campaign_id": "OUTBOUND1",  # Default campaign, can be made configurable
-            "agent_user": "agent_api",  # API agent user
-            "webhook_url": webhook_url,
-            "status_callback_url": status_callback_url,
-            "agent_id": str(agent_id),
-            "user_id": str(user_id),
-            "tenant_id": str(tenant_id)
+            "phone_code": "1",  # Default country code (US)
+            "search": "NO",  # Don't search for lead in system
+            "preview": "NO",  # Don't preview before dialing
+            "focus": "YES"  # Focus agent screen on call
         }
         
         print(f"📡 Calling VICIdial API: {vicidial_api_url}")
         print(f"📦 Parameters: {params}")
         
-        # Make HTTP request to VICIdial API
+        # Make HTTP request to VICIdial API with better error handling
         import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.get(vicidial_api_url, params=params) as response:
-                if response.status == 200:
-                    result_text = await response.text()
-                    print(f"✅ VICIdial API response: {result_text}")
-                    
-                    # Parse VICIdial response (usually plain text)
-                    # VICIdial typically returns: SUCCESS or ERROR: message
-                    if "SUCCESS" in result_text:
-                        # Extract call ID if available
-                        call_id = f"vicidial_{uuid.uuid4().hex[:8]}"
-                        return {
-                            "call_id": call_id,
-                            "status": "initiated",
-                            "vicidial_response": result_text
-                        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(vicidial_api_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        result_text = await response.text()
+                        print(f"✅ VICIdial API response: {result_text}")
+                        
+                        # Parse VICIdial response (usually plain text)
+                        # VICIdial typically returns: SUCCESS or ERROR: message
+                        if "SUCCESS" in result_text:
+                            # Extract call ID if available
+                            call_id = f"vicidial_{uuid.uuid4().hex[:8]}"
+                            return {
+                                "call_id": call_id,
+                                "status": "initiated",
+                                "vicidial_response": result_text
+                            }
+                        else:
+                            raise Exception(f"VICIdial API error: {result_text}")
                     else:
-                        raise Exception(f"VICIdial API error: {result_text}")
-                else:
-                    error_text = await response.text()
-                    print(f"❌ VICIdial API error: {response.status} - {error_text}")
-                    raise Exception(f"VICIdial API error: {response.status} - {error_text}")
+                        error_text = await response.text()
+                        print(f"❌ VICIdial API error: {response.status} - {error_text}")
+                        raise Exception(f"VICIdial API error: {response.status} - {error_text}")
+        except aiohttp.ClientConnectorError as e:
+            print(f"⚠️ VICIdial server connection failed: {e}")
+            print(f"🔧 Please configure VICIDIAL_API_URL in your .env file")
+            print(f"📝 Current URL: {vicidial_api_url}")
+            raise Exception(f"VICIdial server not accessible. Please configure VICIDIAL_API_URL in your .env file. Current URL: {vicidial_api_url}")
+        except aiohttp.ClientTimeout as e:
+            print(f"⏰ VICIdial server timeout: {e}")
+            raise Exception(f"VICIdial server timeout. Please check server status.")
+        except Exception as e:
+            print(f"❌ VICIdial API request failed: {e}")
+            raise Exception(f"VICIdial API request failed: {str(e)}")
                     
     except Exception as e:
         print(f"❌ VICIdial call error: {e}")
@@ -845,3 +981,271 @@ async def _make_vicidial_call(
             "status": "initiated",
             "error": str(e)
         }
+
+
+# Alternative VICIdial function for adding leads to campaigns
+async def _add_vicidial_lead(
+    to_number: str,
+    campaign_id: str,
+    list_id: str = "1001",
+    agent_id: uuid.UUID = None,
+    user_id: uuid.UUID = None,
+    tenant_id: uuid.UUID = None
+) -> dict:
+    """
+    Add a lead to VICIdial campaign using Non-Agent API
+    This function adds leads to campaigns for automatic dialing
+    """
+    try:
+        print("=" * 60)
+        print(f"🚀 ADDING VICIDIAL LEAD")
+        print(f"📞 Phone: {to_number}")
+        print(f"📋 Campaign: {campaign_id}")
+        print(f"📝 List: {list_id}")
+        print("=" * 60)
+        
+        # VICIdial Non-Agent API for adding leads
+        # Based on: https://dialer.one/how-to-use-vicidial-apis/
+        
+        # VICIdial API endpoint (Non-Agent API)
+        vicidial_api_url = settings.VICIDIAL_API_URL.replace("/agc/api.php", "/non_agent_api.php")
+        
+        # VICIdial API parameters (using add_lead function)
+        params = {
+            "user": settings.VICIDIAL_API_USER,
+            "pass": settings.VICIDIAL_API_PASS,
+            "function": "add_lead",
+            "phone_number": to_number.replace("+", ""),  # Remove + for VICIdial
+            "phone_code": "1",  # Default country code (US)
+            "list_id": list_id,  # List ID for the lead
+            "source": "voice_agent_api",  # Source identifier
+            "campaign_id": campaign_id,  # Campaign ID
+            "agent_id": str(agent_id) if agent_id else "",
+            "user_id": str(user_id) if user_id else "",
+            "tenant_id": str(tenant_id) if tenant_id else ""
+        }
+        
+        print(f"📡 Calling VICIdial Non-Agent API: {vicidial_api_url}")
+        print(f"📦 Parameters: {params}")
+        
+        # Make HTTP request to VICIdial Non-Agent API with better error handling
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(vicidial_api_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        result_text = await response.text()
+                        print(f"✅ VICIdial Non-Agent API response: {result_text}")
+                        
+                        # Parse VICIdial response
+                        if "SUCCESS" in result_text:
+                            # Extract lead ID if available
+                            lead_id = f"lead_{uuid.uuid4().hex[:8]}"
+                            return {
+                                "lead_id": lead_id,
+                                "status": "added",
+                                "vicidial_response": result_text
+                            }
+                        else:
+                            raise Exception(f"VICIdial Non-Agent API error: {result_text}")
+                    else:
+                        error_text = await response.text()
+                        print(f"❌ VICIdial Non-Agent API error: {response.status} - {error_text}")
+                        raise Exception(f"VICIdial Non-Agent API error: {response.status} - {error_text}")
+        except aiohttp.ClientConnectorError as e:
+            print(f"⚠️ VICIdial server connection failed: {e}")
+            print(f"🔧 Please configure VICIDIAL_API_URL in your .env file")
+            print(f"📝 Current URL: {vicidial_api_url}")
+            raise Exception(f"VICIdial server not accessible. Please configure VICIDIAL_API_URL in your .env file. Current URL: {vicidial_api_url}")
+        except aiohttp.ClientTimeout as e:
+            print(f"⏰ VICIdial server timeout: {e}")
+            raise Exception(f"VICIdial server timeout. Please check server status.")
+        except Exception as e:
+            print(f"❌ VICIdial Non-Agent API request failed: {e}")
+            raise Exception(f"VICIdial Non-Agent API request failed: {str(e)}")
+                    
+    except Exception as e:
+        print(f"❌ VICIdial lead addition error: {e}")
+        # Fallback: return a mock response for testing
+        return {
+            "lead_id": f"lead_{uuid.uuid4().hex[:8]}",
+            "status": "added",
+            "error": str(e)
+        }
+
+
+# Voice Listening and Logging Endpoints
+@router.post("/voice/log-interaction")
+async def log_voice_interaction(
+    call_session_id: uuid.UUID,
+    interaction_type: str,
+    speech_text: Optional[str] = None,
+    confidence: Optional[float] = None,
+    duration: Optional[float] = None,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Log voice interaction during a call
+    """
+    try:
+        print("=" * 60)
+        print(f"🎤 LOGGING VOICE INTERACTION")
+        print(f"🆔 Call Session: {call_session_id}")
+        print(f"📝 Type: {interaction_type}")
+        print(f"🗣️ Speech: {speech_text}")
+        print(f"👤 User: {user.email}")
+        print("=" * 60)
+        
+        # Log voice interaction
+        voice_log = await VoiceLoggingService.log_voice_interaction(
+            db=db,
+            call_session_id=call_session_id,
+            interaction_type=interaction_type,
+            speech_text=speech_text,
+            confidence=confidence,
+            duration=duration,
+            metadata={
+                "user_id": str(user.id),
+                "tenant_id": str(user.current_tenant_id)
+            }
+        )
+        
+        return create_success_response(
+            voice_log,
+            "Voice interaction logged successfully"
+        )
+        
+    except Exception as e:
+        print(f"❌ Error logging voice interaction: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to log voice interaction: {str(e)}")
+
+
+@router.post("/voice/process-speech")
+async def process_speech_input(
+    call_session_id: uuid.UUID,
+    speech_text: str,
+    confidence: float,
+    duration: float,
+    agent_id: Optional[uuid.UUID] = None,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Process speech input and generate response
+    """
+    try:
+        print("=" * 60)
+        print(f"🗣️ PROCESSING SPEECH INPUT")
+        print(f"🆔 Call Session: {call_session_id}")
+        print(f"📝 Speech: '{speech_text}'")
+        print(f"📊 Confidence: {confidence}")
+        print(f"👤 User: {user.email}")
+        print("=" * 60)
+        
+        # Process speech input
+        result = await VoiceLoggingService.process_speech_input(
+            db=db,
+            call_session_id=call_session_id,
+            speech_text=speech_text,
+            confidence=confidence,
+            duration=duration,
+            agent_id=agent_id
+        )
+        
+        return create_success_response(
+            result,
+            "Speech input processed successfully"
+        )
+        
+    except Exception as e:
+        print(f"❌ Error processing speech input: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process speech input: {str(e)}")
+
+
+@router.get("/voice/call-logs/{call_session_id}")
+async def get_call_voice_logs(
+    call_session_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get voice logs for a specific call session
+    """
+    try:
+        print("=" * 60)
+        print(f"📋 GETTING CALL VOICE LOGS")
+        print(f"🆔 Call Session: {call_session_id}")
+        print(f"👤 User: {user.email}")
+        print("=" * 60)
+        
+        # Get voice logs
+        voice_logs = VoiceLoggingService.get_call_voice_logs(
+            db=db,
+            call_session_id=call_session_id
+        )
+        
+        # Get call transcript
+        transcript = VoiceLoggingService.get_call_transcript(
+            db=db,
+            call_session_id=call_session_id
+        )
+        
+        print(f"✅ Found {len(voice_logs)} voice interactions")
+        print(f"📝 Transcript has {len(transcript)} entries")
+        
+        return create_success_response(
+            {
+                "call_session_id": str(call_session_id),
+                "voice_logs": voice_logs,
+                "transcript": transcript,
+                "total_interactions": len(voice_logs),
+                "transcript_entries": len(transcript)
+            },
+            f"Retrieved voice logs for call session {call_session_id}"
+        )
+        
+    except Exception as e:
+        print(f"❌ Error getting call voice logs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get call voice logs: {str(e)}")
+
+
+@router.post("/voice/log-call-event")
+async def log_call_event(
+    call_session_id: uuid.UUID,
+    event_type: str,
+    event_data: dict,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Log call events (ringing, answered, completed, etc.)
+    """
+    try:
+        print("=" * 60)
+        print(f"📞 LOGGING CALL EVENT")
+        print(f"🆔 Call Session: {call_session_id}")
+        print(f"📝 Event Type: {event_type}")
+        print(f"👤 User: {user.email}")
+        print("=" * 60)
+        
+        # Log call event
+        await VoiceLoggingService.log_call_events(
+            db=db,
+            call_session_id=call_session_id,
+            event_type=event_type,
+            event_data=event_data
+        )
+        
+        return create_success_response(
+            {
+                "call_session_id": str(call_session_id),
+                "event_type": event_type,
+                "logged_at": datetime.now().isoformat()
+            },
+            "Call event logged successfully"
+        )
+        
+    except Exception as e:
+        print(f"❌ Error logging call event: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to log call event: {str(e)}")

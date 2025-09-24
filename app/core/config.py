@@ -42,14 +42,10 @@ class Settings(BaseSettings):
     ELEVENLABS_API_KEY: str = ""
     
     # VICIdial Configuration
-    VICIDIAL_URL: str = "http://vicidial-server/agc/api.php"
-    VICIDIAL_USER: str = ""  # Leave empty for no authentication
-    VICIDIAL_PASS: str = ""  # Leave empty for no authentication
-    
-    # VICIdial Configuration (updated from Vitchi)
-    VICIDIAL_API_URL: str = "http://vicidial-server/agc/api.php"  # VICIdial API endpoint
-    VICIDIAL_API_USER: str = ""  # VICIdial API username
-    VICIDIAL_API_PASS: str = ""  # VICIdial API password
+    VICIDIAL_API_URL: str = "http://demo.vicidial.com/agi.php"  # VICIdial demo server
+    VICIDIAL_API_USER: str = "demo"  # VICIdial demo username
+    VICIDIAL_API_PASS: str = "demo"  # VICIdial demo password
+    VICIDIAL_CAMPAIGN_ID: str = "DEMO"  # Demo campaign ID
     
     FRONTEND_URL: str = "http://localhost:3000"  
     
