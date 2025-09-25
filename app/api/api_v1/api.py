@@ -6,7 +6,6 @@ from app.routers.live_voice import router as live_voice_router
 from app.routers.phone_numbers import router as phone_numbers_router
 from app.routers.call_sessions import router as call_sessions_router
 from app.routers.call_logs import router as call_logs_router
-from app.routers.vicidial_api import router as vicidial_api_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -18,7 +17,6 @@ api_router.include_router(live_voice_router, prefix="/live-voice", tags=["Live V
 api_router.include_router(phone_numbers_router, prefix="/phone-numbers", tags=["Phone Numbers"])
 api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"])
 api_router.include_router(call_logs_router, prefix="/call-logs", tags=["Call Logs"])
-api_router.include_router(vicidial_api_router, prefix="/vicidial", tags=["VICIdial API"])
 api_router.include_router(invite.router, prefix="/invites", tags=["invites"])
 api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])

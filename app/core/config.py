@@ -42,11 +42,6 @@ class Settings(BaseSettings):
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
     
-    # VICIdial Configuration
-    VICIDIAL_API_URL: str = "http://demo.vicidial.com/agi.php"  # VICIdial demo server
-    VICIDIAL_API_USER: str = "demo"  # VICIdial demo username
-    VICIDIAL_API_PASS: str = "demo"  # VICIdial demo password
-    VICIDIAL_CAMPAIGN_ID: str = "DEMO"  # Demo campaign ID
     
     FRONTEND_URL: str = "http://localhost:3000"  
     

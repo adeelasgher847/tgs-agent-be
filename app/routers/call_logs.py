@@ -28,7 +28,7 @@ async def get_call_logs(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     
     # Filters
-    call_type: Optional[str] = Query(None, description="Filter by call type (inbound, outbound, web, vicidial_outbound)"),
+    call_type: Optional[str] = Query(None, description="Filter by call type (inbound, outbound, web)"),
     success_evaluation: Optional[str] = Query(None, description="Filter by success (success, fail, null)"),
     agent_id: Optional[uuid.UUID] = Query(None, description="Filter by agent ID"),
     date_from: Optional[datetime] = Query(None, description="Filter from date"),
