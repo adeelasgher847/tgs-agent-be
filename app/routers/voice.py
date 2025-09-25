@@ -664,39 +664,18 @@ async def handle_inbound_call(
         
         print(f"Inbound call - SID: {call_sid}, From: {from_number}, To: {to_number}")
         
-        # Get the first available agent for the tenant
-        # You can modify this logic to select agents based on:
-        # - Phone number mapping
-        # - Agent availability
-        # - Round-robin selection
-        # - Specific agent preferences
+        # For inbound calls, we need to get the agent from the phone number
+        # This is a simplified version - you might want to map phone numbers to agents
         
-        # For now, get the first active agent
-        agent = db.query(Agent).filter(
-            Agent.archive == False,
-            Agent.model_id.isnot(None)  # Only agents with models
-        ).first()
+        # Simple greeting for inbound calls
+        response = VoiceResponse()
+        response.say("Hello! Thank you for calling. Please hold while I connect you to an agent.", voice="en-US-Neural2-F")
+        response.pause(length=2)
+        response.say("I'm sorry, but I need to be configured with a specific agent. Please call back later.", voice="en-US-Neural2-F")
         
-        if agent:
-            print(f"✅ Found agent: {agent.name} (ID: {agent.id})")
-            
-            # Redirect to the main webhook with the agent ID
-            response = VoiceResponse()
-            response.redirect(f"/api/v1/voice/webhook/call-events?agentId={agent.id}")
-            
-            twiml_result = str(response)
-            print(f"📝 Redirecting to main webhook with agent: {agent.id}")
-            return HTMLResponse(twiml_result, media_type="application/xml")
-        else:
-            print("⚠️ No agents available")
-            
-            # No agent available
-            response = VoiceResponse()
-            response.say("Hello! Thank you for calling. I'm sorry, but no agents are available right now. Please try again later.", voice="en-US-Neural2-F")
-            
-            twiml_result = str(response)
-            print(f"📝 No agent available response: {twiml_result}")
-            return HTMLResponse(twiml_result, media_type="application/xml")
+        twiml_result = str(response)
+        print(f"📝 Inbound call TwiML: {twiml_result}")
+        return HTMLResponse(twiml_result, media_type="application/xml")
         
     except Exception as e:
         print(f"ERROR in inbound call handler: {str(e)}")
@@ -769,3 +748,8 @@ def _generate_default_response() -> str:
     response.pause(length=2)
     response.say("Please hold while we connect you.", voice="")
     return str(response)
+
+
+
+
+# VICIdial integration removed - file cleaned
