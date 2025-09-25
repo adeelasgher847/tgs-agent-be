@@ -39,11 +39,9 @@ class TwilioService:
             status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
             status_callback_method='POST',
             # Add timeout settings for better reliability
-            timeout=30,  # Wait up to 30 seconds for answer
-            record=False,  # Don't record calls
-            # Add retry settings
+            # timeout=30,  # Wait up to 30 seconds for answer
             # Add webhook timeout
-            webhook_timeout=60  # Wait up to 10 seconds for webhook response
+            # webhook_timeout=60  # Wait up to 10 seconds for webhook response
         )
         
         return call
