@@ -64,11 +64,11 @@ async def get_models(
     """
     try:
         if provider_id:
-            models = model_service.get_models_by_provider(db, provider_id)
+            models = model_service.get_models_by_provider_safe(db, provider_id)
         elif active_only:
-            models = model_service.get_active_models(db)
+            models = model_service.get_active_models_safe(db)
         else:
-            models = model_service.get_all_models(db, skip, limit)
+            models = model_service.get_models_safe(db, skip, limit)
         
         return create_success_response(
             {
@@ -92,7 +92,7 @@ async def get_model(
     """
     Get a specific model by ID
     """
-    model = model_service.get_model_by_id(db, model_id)
+    model = model_service.get_model_by_id_safe(db, model_id)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
     
@@ -173,7 +173,7 @@ async def get_models_by_provider(
     Get all models for a specific provider
     """
     try:
-        models = model_service.get_models_by_provider(db, provider_id)
+        models = model_service.get_models_by_provider_safe(db, provider_id)
         return create_success_response(
             {
                 "models": models,

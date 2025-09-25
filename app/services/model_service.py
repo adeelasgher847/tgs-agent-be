@@ -125,6 +125,43 @@ class ModelService:
                 model_dict["api_key"] = None  # Failed to decrypt
         
         return model_dict
+    
+    def model_to_safe_dict(self, model: Model) -> dict:
+        """Convert model to dictionary without API key for safe API responses"""
+        return {
+            "id": model.id,
+            "provider_id": model.provider_id,
+            "model_name": model.model_name,
+            "description": model.description,
+            "system_prompt": model.system_prompt,
+            "temperature": model.temperature,
+            "max_tokens": model.max_tokens,
+            "archive": model.archive,
+            "created_at": model.created_at,
+            "updated_at": model.updated_at
+        }
+    
+    def get_models_safe(self, db: Session, skip: int = 0, limit: int = 100) -> List[dict]:
+        """Get all models as safe dictionaries (no API keys)"""
+        models = self.get_all_models(db, skip, limit)
+        return [self.model_to_safe_dict(model) for model in models]
+    
+    def get_active_models_safe(self, db: Session) -> List[dict]:
+        """Get active models as safe dictionaries (no API keys)"""
+        models = self.get_active_models(db)
+        return [self.model_to_safe_dict(model) for model in models]
+    
+    def get_models_by_provider_safe(self, db: Session, provider_id: uuid.UUID) -> List[dict]:
+        """Get models by provider as safe dictionaries (no API keys)"""
+        models = self.get_models_by_provider(db, provider_id)
+        return [self.model_to_safe_dict(model) for model in models]
+    
+    def get_model_by_id_safe(self, db: Session, model_id: uuid.UUID) -> Optional[dict]:
+        """Get model by ID as safe dictionary (no API key)"""
+        model = self.get_model_by_id(db, model_id)
+        if not model:
+            return None
+        return self.model_to_safe_dict(model)
 
 
 # Create service instance

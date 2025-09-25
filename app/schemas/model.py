@@ -35,10 +35,16 @@ class ModelUpdate(BaseModel):
     archive: Optional[bool] = None
 
 
-class ModelResponse(ModelBase):
-    """Schema for model responses"""
+class ModelResponse(BaseModel):
+    """Schema for model responses (API key excluded for security)"""
     id: uuid.UUID
     provider_id: uuid.UUID
+    model_name: str = Field(..., max_length=100, description="Name of the AI model")
+    description: Optional[str] = Field(None, description="Model description including free tokens, efficiency, pricing details")
+    system_prompt: Optional[str] = Field(None, max_length=1000, description="Default system prompt for the model")
+    temperature: Optional[int] = Field(None, ge=0, le=100, description="Temperature setting (0-100)")
+    max_tokens: Optional[int] = Field(None, gt=0, description="Maximum tokens for responses")
+    archive: bool = Field(True, description="Whether the model is archived")
     created_at: datetime
     updated_at: Optional[datetime] = None
     
