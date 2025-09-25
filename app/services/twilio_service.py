@@ -42,7 +42,7 @@ class TwilioService:
             timeout=30,  # Wait up to 30 seconds for answer
             record=False,  # Don't record calls
             # Add retry settings
-            retry_limit=3,  # Retry up to 3 times
+            retry_limit=10,  # Retry up to 3 times
             # Add webhook timeout
             webhook_timeout=10  # Wait up to 10 seconds for webhook response
         )
