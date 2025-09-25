@@ -25,6 +25,18 @@ class AgentService:
                 detail=f"Agent limit exceeded. You have {usage['agents_used']}/{usage['agent_limit']} agents. Please upgrade your plan."
             )
         
+        # Validate model_id if provided
+        if agent_in.model_id:
+            model = db.query(Model).filter(
+                Model.id == agent_in.model_id,
+                Model.archive == False  # Only allow active models
+            ).first()
+            if not model:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid model_id. Model not found or is archived."
+                )
+
         # Check for duplicate name within tenant
         existing = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
@@ -41,6 +53,23 @@ class AgentService:
         for field in ['name', 'system_prompt', 'fallback_response']:
             if field in agent_data and agent_data[field]:
                 agent_data[field] = agent_data[field].strip()
+        
+        # Validate agent-specific model configuration fields
+        if "agent_temperature" in agent_data and agent_data["agent_temperature"] is not None:
+            temp = agent_data["agent_temperature"]
+            if not (0 <= temp <= 100):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent temperature must be between 0 and 100."
+                )
+        
+        if "agent_max_tokens" in agent_data and agent_data["agent_max_tokens"] is not None:
+            tokens = agent_data["agent_max_tokens"]
+            if tokens <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent max tokens must be greater than 0."
+                )
         
         # Add tenant_id and user audit fields to the agent data
         agent_data['tenant_id'] = tenant_id
@@ -140,6 +169,18 @@ class AgentService:
         
         update_dict = agent_update.model_dump(exclude_unset=True)
 
+        # Validate model_id if being updated
+        if "model_id" in update_dict and update_dict["model_id"] is not None:
+            model = db.query(Model).filter(
+                Model.id == update_dict["model_id"],
+                Model.archive == False  # Only allow active models
+            ).first()
+            if not model:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid model_id. Model not found or is archived."
+                )
+
         # If name is being updated, check for duplicates
         if "name" in update_dict and update_dict["name"]:
             new_name = update_dict["name"].strip()
@@ -159,6 +200,23 @@ class AgentService:
         for field in ['system_prompt', 'fallback_response']:
             if field in update_dict and update_dict[field]:
                 update_dict[field] = update_dict[field].strip()
+
+        # Validate agent-specific model configuration fields
+        if "agent_temperature" in update_dict and update_dict["agent_temperature"] is not None:
+            temp = update_dict["agent_temperature"]
+            if not (0 <= temp <= 100):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent temperature must be between 0 and 100."
+                )
+        
+        if "agent_max_tokens" in update_dict and update_dict["agent_max_tokens"] is not None:
+            tokens = update_dict["agent_max_tokens"]
+            if tokens <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent max tokens must be greater than 0."
+                )
 
         for field, value in update_dict.items():
             setattr(agent, field, value)
