@@ -12,6 +12,7 @@ from app.utils.response import create_success_response
 import re
 from app.core.config import settings
 from app.models.user import user_tenant_association
+from app.services.billing_service import BillingService  
 
 from sqlalchemy import update
 router = APIRouter()
@@ -108,11 +109,21 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     
     db.execute(stmt)
     
-    # Set the new tenant as user's current tenant
+        # Set the new tenant as user's current tenant
     current_user.current_tenant_id = db_tenant.id
     
     db.commit()
     db.refresh(current_user)
+    
+    # Ensure a subscription exists for this tenant (default to free plan)
+    try:
+        subscription = BillingService.get_or_create_subscription(db, db_tenant.id)
+        if db_tenant.stripe_customer_id and not subscription.stripe_customer_id:
+            subscription.stripe_customer_id = db_tenant.stripe_customer_id
+            db.commit()
+    except Exception:
+        # Don't block tenant creation if subscription init fails
+        pass
     
     # Convert SQLAlchemy model to Pydantic model
     tenant_out = TenantOut.model_validate(db_tenant)

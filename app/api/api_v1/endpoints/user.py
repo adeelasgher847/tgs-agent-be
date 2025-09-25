@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from app.services.role_service import get_user_role_in_tenant
 import uuid
 import re
+from app.services.billing_service import BillingService 
 
 router = APIRouter()
 
@@ -73,6 +74,25 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_tenant)
     
+    # Create Stripe customer and link it to the tenant
+    from app.services.stripe_service import StripeService     
+    try:
+        stripe_customer_id = StripeService.create_customer(
+            tenant=db_tenant,
+            email=db_user.email,
+            user=db_user
+        )
+        db_tenant.stripe_customer_id = stripe_customer_id
+        db.commit()
+    except Exception as e:
+        # If Stripe customer creation fails, delete the tenant and abort
+        db.delete(db_tenant)
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create Stripe customer: {str(e)}"
+        )
+
     # Get owner role (note: "Owner" with capital O)
     owner_role = db.query(Role).filter(Role.name == "Owner").first()
     
@@ -93,6 +113,14 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     
     db.commit()
     db.refresh(db_user)
+
+      # Ensure a subscription exists for this tenant (default to free plan)
+    try:
+        BillingService.get_or_create_subscription(db, db_tenant.id)
+    except Exception:
+        # Don't block user registration if subscription init fails
+        pass
+
     
     return create_success_response(db_user, "User registered successfully", status.HTTP_201_CREATED)
 
