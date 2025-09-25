@@ -202,17 +202,28 @@ class VoiceLoggingService:
                 print("⚠️ Model is archived, using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
-            # Get model details
+            # Get model details with agent-specific overrides
             model_name = model.model_name
-            system_prompt = agent.system_prompt or model.system_prompt or """You are a helpful AI assistant for phone calls. 
+            # Use agent system prompt if set, otherwise fall back to model default
+            system_prompt = (
+                agent.system_prompt or 
+                model.system_prompt or 
+                """You are a helpful AI assistant for phone calls. 
             - Provide clear, conversational responses that are easy to understand when spoken
             - Be friendly and professional
             - Give complete answers, not just single words
             - If you don't understand something, ask for clarification
             - Keep responses between 1-3 sentences for good voice interaction
             - Be helpful and try to answer questions thoroughly"""
-            temperature = (model.temperature / 100.0) if model.temperature else 0.8  # Higher for more natural responses
-            max_tokens = model.max_tokens or 300  # Increased for better responses
+            )
+            # Use agent-specific temperature if set, otherwise fall back to model default
+            temperature = (
+                (agent.agent_temperature / 100.0) if agent.agent_temperature is not None 
+                else (model.temperature / 100.0) if model.temperature 
+                else 0.8
+            )
+            # Use agent-specific max tokens if set, otherwise fall back to model default
+            max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 300)
             
             # Use model-specific API key if available
             api_key = None

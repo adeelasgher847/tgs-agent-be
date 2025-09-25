@@ -1,7 +1,8 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
+from app.models.model import Model
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.services.billing_service import BillingService
 from fastapi import HTTPException, status
@@ -202,5 +203,46 @@ class AgentService:
             Agent.tenant_id == tenant_id,
             func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
+    
+    def get_agent_effective_model_config(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Dict[str, Any]:
+        """
+        Get the effective model configuration for an agent.
+        Returns agent-specific values if set, otherwise falls back to model defaults.
+        """
+        agent = db.query(Agent).options(joinedload(Agent.model)).filter(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant_id
+        ).first()
+        
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found"
+            )
+        
+        # If no model is assigned, return None
+        if not agent.model:
+            return {
+                "model_id": None,
+                "model_name": None,
+                "temperature": None,
+                "max_tokens": None,
+                "system_prompt": agent.system_prompt
+            }
+        
+        # Use agent-specific values if set, otherwise fall back to model defaults
+        effective_config = {
+            "model_id": agent.model_id,
+            "model_name": agent.model.model_name,
+            "temperature": agent.agent_temperature if agent.agent_temperature is not None else agent.model.temperature,
+            "max_tokens": agent.agent_max_tokens if agent.agent_max_tokens is not None else agent.model.max_tokens,
+            "system_prompt": (
+                agent.system_prompt or 
+                agent.model.system_prompt or 
+                "You are a helpful AI assistant for phone calls."
+            )
+        }
+        
+        return effective_config
 
 agent_service = AgentService() 

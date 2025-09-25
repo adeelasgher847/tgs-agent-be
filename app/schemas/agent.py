@@ -23,6 +23,9 @@ class AgentBase(BaseModel):
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
     fallback_response: Optional[str] = Field(None, max_length=1000)
+    # Agent-specific model configuration
+    agent_temperature: Optional[int] = Field(None, ge=0, le=100, description="Agent-specific temperature (0-100)")
+    agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
 
 
 class AgentCreate(AgentBase):
@@ -38,6 +41,9 @@ class AgentUpdate(BaseModel):
     voice_type: Optional[VoiceTypeEnum] = None
     fallback_response: Optional[str] = Field(None, max_length=1000)
     model_id: Optional[uuid.UUID] = None
+    # Agent-specific model configuration
+    agent_temperature: Optional[int] = Field(None, ge=0, le=100, description="Agent-specific temperature (0-100)")
+    agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
 
 class AgentOut(AgentBase):
     id: uuid.UUID

@@ -105,6 +105,31 @@ def get_voice_options(
     }
 
 
+@router.get("/{agent_id}/model-config")
+def get_agent_model_config(
+    agent_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the effective model configuration for an agent.
+    Returns agent-specific values if set, otherwise falls back to model defaults.
+    """
+    try:
+        config = agent_service.get_agent_effective_model_config(db, agent_id, user.current_tenant_id)
+        return create_success_response(
+            config,
+            "Agent model configuration retrieved successfully"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get agent model configuration: {str(e)}"
+        )
+
+
 @router.get("/{agent_id}/talk")
 async def get_talk_to_assistant_link(
     agent_id: uuid.UUID,
