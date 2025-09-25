@@ -275,8 +275,103 @@ async def handle_call_events_webhook(
         else:
             print("No agentId provided in webhook")
         
+        # Handle different call statuses first
+        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
+        
+        if call_status == "initiated" and direction == "outbound-api":
+            # Call has been initiated - just log and return empty response
+            print(f"Call initiated - SID: {call_sid}")
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "ringing" and direction == "outbound-api":
+            # Outbound call is ringing - just log, don't play any audio
+            print("=" * 50)
+            print(f"🔔 CALL IS RINGING - SID: {call_sid}")
+            print("=" * 50)
+            # Return empty response - no audio should play while ringing
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "completed":
+            # Call completed - just log
+            print(f"Call completed - SID: {call_sid}")
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "in-progress":
+            # Call is in progress - person answered, play greeting
+            print("=" * 50)
+            print(f"📞 CALL ANSWERED - SID: {call_sid}")
+            print("=" * 50)
+            
+            # MULTI-TENANT GREETING WITH ROBUST SPEECH LOGGING
+            response = VoiceResponse()
+            
+            # Get agent info for tenant context
+            agent_name = "AI Assistant"
+            if agent:
+                agent_name = agent.name
+                print(f"🏢 Multi-tenant call for tenant: {agent.tenant_id}")
+                print(f"🤖 Agent: {agent_name}")
+            
+            # Smooth, natural greeting with agent-specific voice
+            agent_voice = get_agent_voice(agent)
+            response.say(f"Hello! This is {agent_name}.", voice=agent_voice)
+            response.pause(length=1)  # Natural pause
+            response.say("How can I help you today?", voice=agent_voice)
+            response.pause(length=1)  # Natural pause
+            response.say("I'm listening.", voice=agent_voice)
+            
+            # Log call answered event
+            try:
+                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                if call_session:
+                    await VoiceLoggingService.log_call_events(
+                        db=db,
+                        call_session_id=call_session.id,
+                        event_type="call_answered",
+                        event_data={
+                            "call_sid": call_sid,
+                            "agent_name": agent_name,
+                            "agent_id": str(agent.id) if agent else None,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
+            except Exception as e:
+                print(f"⚠️ Error logging call answered event: {e}")
+            
+            # Use main webhook for conversation flow
+            response.gather(
+                input='speech',
+                timeout=15,  # Reasonable timeout for initial greeting
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                method='POST'
+            )
+            
+            # Gentle fallback if no input
+            response.say("I didn't catch that. Could you please repeat?", voice=agent_voice)
+            response.pause(length=1)
+            
+            # Try main webhook again
+            response.gather(
+                input='speech',
+                timeout=20,
+                speech_timeout='auto',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                method='POST'
+            )
+            
+            # Final gentle attempt
+            response.say("I'm having trouble hearing you. Please call back when you have a moment. Thank you!", voice=agent_voice)
+            
+            twiml_result = str(response)
+            print(f"📝 BULLETPROOF TwiML: {twiml_result}")
+            print("=" * 50)
+            print("✅ RETURNING BULLETPROOF TwiML TO TWILIO")
+            print("=" * 50)
+            return HTMLResponse(twiml_result, media_type="application/xml")
+        
         # Handle speech input - ROBUST MULTI-TENANT LOGGING
-        if speech_result and speech_result.strip():
+        elif speech_result and speech_result.strip():
             # VALID SPEECH DETECTED - LOG AND RESPOND
             print("=" * 60)
             print(f"🎤 SPEECH DETECTED: '{speech_result}'")
@@ -402,131 +497,18 @@ async def handle_call_events_webhook(
             print(f"📝 Extended listening response: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
         
-        # Handle different call statuses and trigger agent logic
-        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
-        
-        if call_status == "initiated" and direction == "outbound-api":
-            # Call has been initiated - just log and return empty response
-            print(f"Call initiated - SID: {call_sid}")
-            return HTMLResponse("", media_type="application/xml")
-        
-        elif call_status == "ringing" and direction == "outbound-api":
-            # Outbound call is ringing - just log, don't play any audio
-            print("=" * 50)
-            print(f"🔔 CALL IS RINGING - SID: {call_sid}")
-            print("=" * 50)
-            # Return empty response - no audio should play while ringing
-            return HTMLResponse("", media_type="application/xml")
-        
-        elif call_status == "in-progress":
-            # Call is in progress - person answered, play greeting
-            print("=" * 50)
-            print(f"📞 CALL ANSWERED - SID: {call_sid}")
-            print("=" * 50)
-            
-            # MULTI-TENANT GREETING WITH ROBUST SPEECH LOGGING
-            response = VoiceResponse()
-            
-            # Get agent info from database using agentId from query params
-            agent = None
-            agent_name = "AI Assistant"
-            if agentId:
-                try:
-                    # Get call session to get tenant_id
-                    call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
-                    if call_session:
-                        # Fetch agent from database
-                        agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
-                        if agent:
-                            agent_name = agent.name
-                            print(f"🏢 Multi-tenant call for tenant: {agent.tenant_id}")
-                            print(f"🤖 Agent: {agent_name}")
-                        else:
-                            print(f"⚠️ Agent {agentId} not found in tenant {call_session.tenant_id}")
-                    else:
-                        print(f"⚠️ Call session not found for SID: {call_sid}")
-                except Exception as e:
-                    print(f"⚠️ Error fetching agent: {e}")
-                    agent = None
-            
-            # Smooth, natural greeting with agent-specific voice
-            agent_voice = get_agent_voice(agent)
-            response.say(f"Hello! This is {agent_name}.", voice=agent_voice)
-            response.pause(length=1)  # Natural pause
-            response.say("How can I help you today?", voice=agent_voice)
-            response.pause(length=1)  # Natural pause
-            response.say("I'm listening.", voice=agent_voice)
-            
-            # Log call answered event
-            try:
-                if call_session:
-                    await VoiceLoggingService.log_call_events(
-                        db=db,
-                        call_session_id=call_session.id,
-                        event_type="call_answered",
-                        event_data={
-                            "call_sid": call_sid,
-                            "agent_name": agent_name,
-                            "agent_id": str(agent.id) if agent else None,
-                            "timestamp": datetime.now().isoformat()
-                        }
-                    )
-            except Exception as e:
-                print(f"⚠️ Error logging call answered event: {e}")
-            
-            # Use main webhook for conversation flow
-            response.gather(
-                input='speech',
-                timeout=15,  # Reasonable timeout for initial greeting
-                speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
-                method='POST'
-            )
-            
-            # Gentle fallback if no input
-            response.say("I didn't catch that. Could you please repeat?", voice=agent_voice)
-            response.pause(length=1)
-            
-            # Try main webhook again
-            response.gather(
-                input='speech',
-                timeout=20,
-                speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
-                method='POST'
-            )
-            
-            # Final gentle attempt
-            response.say("I'm having trouble hearing you. Please call back when you have a moment. Thank you!", voice=agent_voice)
-            
-            twiml_result = str(response)
-            print(f"📝 BULLETPROOF TwiML: {twiml_result}")
-            print("=" * 50)
-            print("✅ RETURNING BULLETPROOF TwiML TO TWILIO")
-            print("=" * 50)
-            return HTMLResponse(twiml_result, media_type="application/xml")
-        
-        elif call_status == "completed":
-            # Call completed
-            return HTMLResponse("", media_type="application/xml")
-        
-        elif call_status == "failed":
-            # Call failed - handle error
-            print(f"Call failed - SID: {call_sid}")
-            return HTMLResponse("", media_type="application/xml")
-        
-        elif call_status == "busy":
-            # Call busy - handle busy signal
-            print(f"Call busy - SID: {call_sid}")
-            return HTMLResponse("", media_type="application/xml")
-        
-        else:
-            # Default response for other statuses
-            print(f"Unhandled call status: '{call_status}' - using default response")
-            response = VoiceResponse()
-            agent_voice = agent.name if agent else ""
-            response.say("Thank you for your call.", voice=agent_voice)
-            return HTMLResponse(str(response), media_type="application/xml")
+        # Call status handling already done above - this is a fallback for unexpected cases
+        print(f"⚠️ Unexpected call status: '{call_status}' - returning empty response")
+        return HTMLResponse("", media_type="application/xml")
+    
+    except Exception as e:
+        print(f"ERROR occurred: {str(e)}")
+        print(f"Error type: {type(e).__name__}")
+        print("Error traceback:")
+        import traceback
+        print(traceback.format_exc())
+        print("=== Call Events Webhook Failed ===")
+        raise
     
     except Exception as e:
         print(f"ERROR occurred: {str(e)}")
