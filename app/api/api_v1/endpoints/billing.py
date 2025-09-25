@@ -2,9 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.schemas.base import SuccessResponse
 from app.models.user import User
-from app.api.deps import get_db, get_current_user_jwt
+from app.api.deps import get_db
 from app.services.stripe_service import StripeService
-from app.utils.response import create_success_response
 
 router = APIRouter()
 
