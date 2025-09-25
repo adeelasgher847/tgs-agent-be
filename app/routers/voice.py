@@ -34,10 +34,10 @@ def get_agent_voice(agent) -> str:
     
     # Voice mapping based on language and gender
     voice_map = {
-        # English voices
+        # English voices - try different female voices
         "en": {
             "male": "en-US-Neural2-M",
-            "female": "en-US-Neural2-F"
+            "female": "en-US-Neural2-F"  # This should be female
         },
         # Spanish voices
         "es": {
@@ -78,6 +78,20 @@ def get_agent_voice(agent) -> str:
     selected_voice = voice_map.get(language, voice_map["en"]).get(voice_type, "en-US-Neural2-F")
     
     print(f"🎤 Agent voice selection: language={language}, voice_type={voice_type}, selected_voice={selected_voice}")
+    
+    # Validate voice selection
+    if voice_type == "female" and "M" in selected_voice:
+        print(f"⚠️ WARNING: Female voice type but male voice selected: {selected_voice}")
+        # Force female voice
+        selected_voice = "en-US-Neural2-F"
+        print(f"🔧 Corrected to female voice: {selected_voice}")
+    elif voice_type == "male" and "F" in selected_voice:
+        print(f"⚠️ WARNING: Male voice type but female voice selected: {selected_voice}")
+        # Force male voice
+        selected_voice = "en-US-Neural2-M"
+        print(f"🔧 Corrected to male voice: {selected_voice}")
+    
+    print(f"✅ Final voice selection: {selected_voice}")
     
     return selected_voice
 
@@ -336,6 +350,7 @@ async def handle_call_events_webhook(
                 
                 # Say response naturally but keep it shorter for better conversation flow
                 agent_voice = get_agent_voice(agent)
+                print(f"🔊 Using voice for response: {agent_voice}")
                 response.say(response_text, voice=agent_voice)
                 response.pause(length=0.5)  # Shorter pause for more natural flow
                 
@@ -415,6 +430,7 @@ async def handle_call_events_webhook(
             
             # Simple greeting with agent-specific voice
             agent_voice = get_agent_voice(agent)
+            print(f"🔊 Using voice for greeting: {agent_voice}")
             response.say(f"Hello! This is {agent_name}. How can I help you today?", voice=agent_voice)
             response.pause(length=2)  # Longer pause to let user process
             
@@ -549,6 +565,38 @@ async def handle_status_callback(
 async def test_webhook():
     """Test endpoint to verify webhook is accessible"""
     return {"status": "webhook accessible", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/test/voice")
+async def test_voice_selection():
+    """Test voice selection logic"""
+    # Test different voice combinations
+    test_cases = [
+        {"voice_type": "female", "language": "en"},
+        {"voice_type": "male", "language": "en"},
+        {"voice_type": "female", "language": "es"},
+        {"voice_type": "male", "language": "es"}
+    ]
+    
+    results = []
+    for case in test_cases:
+        # Create a mock agent object
+        class MockAgent:
+            def __init__(self, voice_type, language):
+                self.voice_type = voice_type
+                self.language = language
+        
+        mock_agent = MockAgent(case["voice_type"], case["language"])
+        selected_voice = get_agent_voice(mock_agent)
+        
+        results.append({
+            "input": case,
+            "selected_voice": selected_voice,
+            "is_female": "F" in selected_voice,
+            "is_male": "M" in selected_voice
+        })
+    
+    return {"voice_tests": results, "timestamp": datetime.now().isoformat()}
 
 
 @router.post("/webhook/inbound-call", response_class=HTMLResponse)
