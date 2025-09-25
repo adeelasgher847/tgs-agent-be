@@ -301,7 +301,10 @@ async def handle_call_events_webhook(
         # If this is a status update, redirect to status callback
         if call_status in ["initiated", "ringing", "completed", "failed", "busy"]:
             print(f"⚠️ Status update received in main webhook: {call_status} - this should go to status-callback")
-            return HTMLResponse("", media_type="application/xml")
+            # Return minimal TwiML to prevent call hanging
+            response = VoiceResponse()
+            response.say("Connecting...", voice="en-US-Neural2-F")
+            return HTMLResponse(str(response), media_type="application/xml")
         
         # MAIN CONVERSATION FLOW - Handle speech input or initial greeting
         if speech_result and speech_result.strip():
@@ -477,8 +480,18 @@ async def handle_call_events_webhook(
             return HTMLResponse(twiml_result, media_type="application/xml")
         
         # Speech input handling already done above - this is a fallback for unexpected cases
-        print(f"⚠️ Unexpected speech input: '{speech_result}' - returning empty response")
-        return HTMLResponse("", media_type="application/xml")
+        print(f"⚠️ Unexpected speech input: '{speech_result}' - returning fallback response")
+        # Return fallback TwiML to prevent call hanging
+        response = VoiceResponse()
+        response.say("I'm here to help. Please speak clearly.", voice="en-US-Neural2-F")
+        response.gather(
+            input='speech',
+            timeout=30,
+            speech_timeout='auto',
+            action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+            method='POST'
+        )
+        return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
         print(f"ERROR occurred: {str(e)}")

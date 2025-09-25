@@ -204,17 +204,36 @@ class VoiceLoggingService:
             
             # Get model details with agent-specific overrides
             model_name = model.model_name
-            # Use agent system prompt if set, otherwise fall back to model default
+            
+            # Create personalized system prompt with agent information
+            agent_name = agent.name if agent.name else "AI Assistant"
+            agent_language = agent.language if agent.language else "English"
+            
+            # Build personalized system prompt
+            personalized_system_prompt = f"""You are {agent_name}, a professional AI assistant for phone calls.
+
+Your role:
+- You are {agent_name}, not a generic system or assistant
+- You speak {agent_language} and should respond naturally in that language
+- You are having a phone conversation with a real person
+- Be friendly, professional, and conversational
+
+Guidelines for phone conversations:
+- Provide clear, conversational responses that are easy to understand when spoken
+- Be friendly and professional
+- Give complete answers, not just single words
+- If you don't understand something, ask for clarification
+- Keep responses between 1-3 sentences for good voice interaction
+- Be helpful and try to answer questions thoroughly
+- Remember you are {agent_name} - introduce yourself and refer to yourself by name when appropriate
+
+Always respond as {agent_name}, not as a system or generic assistant."""
+            
+            # Use agent system prompt if set, otherwise use personalized prompt
             system_prompt = (
                 agent.system_prompt or 
                 model.system_prompt or 
-                """You are a helpful AI assistant for phone calls. 
-            - Provide clear, conversational responses that are easy to understand when spoken
-            - Be friendly and professional
-            - Give complete answers, not just single words
-            - If you don't understand something, ask for clarification
-            - Keep responses between 1-3 sentences for good voice interaction
-            - Be helpful and try to answer questions thoroughly"""
+                personalized_system_prompt
             )
             # Use agent-specific temperature if set, otherwise fall back to model default
             temperature = (
@@ -241,7 +260,8 @@ class VoiceLoggingService:
             
             # Generate response using Gemini
             print(f"🔧 Gemini Config: model={model_name}, temp={temperature}, max_tokens={max_tokens}")
-            print(f"🔧 System Prompt: {system_prompt[:100]}...")
+            print(f"🔧 Agent: {agent_name} (Language: {agent_language})")
+            print(f"🔧 System Prompt: {system_prompt[:200]}...")
             print(f"🔧 User Prompt: {speech_text}")
             
             gemini_response = gemini_service.generate_text(
@@ -289,14 +309,23 @@ class VoiceLoggingService:
             
             # Add agent name if available
             if agent and agent.name:
-                response = f"Hello! This is {agent.name}. {response}"
+                # Don't add "Hello! This is" for every response, just use the agent name naturally
+                if "hello" in speech_lower or "hi" in speech_lower:
+                    response = f"Hello! This is {agent.name}. {response}"
+                else:
+                    # For other responses, just use the agent name naturally
+                    response = f"{response} This is {agent.name}."
             
             print(f"✅ Generated fallback response: '{response}'")
             return response
             
         except Exception as e:
             print(f"❌ Error generating fallback response: {e}")
-            return "I'm sorry, I didn't understand that. Could you please repeat?"
+            # Use agent name in error response if available
+            if agent and agent.name:
+                return f"I'm sorry, I didn't understand that. This is {agent.name}. Could you please repeat?"
+            else:
+                return "I'm sorry, I didn't understand that. Could you please repeat?"
     
     @staticmethod
     async def log_call_events(
