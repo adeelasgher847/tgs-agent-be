@@ -211,35 +211,6 @@ async def handle_call_events_webhook(
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
-    """Handle call events webhook with timeout protection"""
-    import asyncio
-    
-    # Set a timeout for the entire webhook processing
-    try:
-        return await asyncio.wait_for(
-            _process_call_events_webhook(request, agentId, body, db),
-            timeout=30.0  # 30 second timeout
-        )
-    except asyncio.TimeoutError:
-        print("⏰ Webhook processing timed out after 30 seconds")
-        # Return emergency TwiML to prevent call hanging
-        response = VoiceResponse()
-        response.say("I'm sorry, there was a technical issue. Please try again later.", voice="en-US-Neural2-F")
-        return HTMLResponse(str(response), media_type="application/xml")
-    except Exception as e:
-        print(f"❌ Webhook error: {e}")
-        # Return emergency TwiML
-        response = VoiceResponse()
-        response.say("I'm sorry, there was a technical issue. Please try again later.", voice="en-US-Neural2-F")
-        return HTMLResponse(str(response), media_type="application/xml")
-
-
-async def _process_call_events_webhook(
-    request: Request,
-    agentId: Optional[str],
-    body: str,
-    db: Session
-):
     print("=" * 80)
     print("🎯 MAIN WEBHOOK CALLED - CONVERSATION FLOW")
     print("=" * 80)
@@ -327,20 +298,18 @@ async def _process_call_events_webhook(
         agent = None
         if agentId:
             try:
-                print(f"🔍 Fetching agent from database: {agentId}")
                 agent_uuid = uuid.UUID(agentId)
-                # Get agent from database with timeout protection
+                # Get agent from database
                 agent = db.query(Agent).filter(Agent.id == agent_uuid).first()
                 if agent:
-                    print(f"✅ Found agent: {agent.name} (ID: {agent.id})")
+                    print(f"Found agent: {agent.name} (ID: {agent.id})")
                 else:
-                    print(f"⚠️ Agent not found in database for ID: {agentId}")
+                    print(f"Agent not found in database for ID: {agentId}")
             except (ValueError, Exception) as e:
-                print(f"❌ Error getting agent: {e}")
-                print(f"🔍 Error type: {type(e).__name__}")
+                print(f"Error getting agent: {e}")
                 agent = None
         else:
-            print("⚠️ No agentId provided in webhook")
+            print("No agentId provided in webhook")
         
         # This webhook is only for conversation flow, not status updates
         # Status updates are handled by the separate status-callback webhook
@@ -639,12 +608,6 @@ async def health_check():
     }
 
 
-@router.get("/ping")
-async def ping():
-    """Simple ping endpoint to check server responsiveness"""
-    return {"pong": datetime.now().isoformat()}
-
-
 @router.get("/test/voice")
 async def test_voice_selection():
     """Test voice selection logic"""
@@ -785,8 +748,3 @@ def _generate_default_response() -> str:
     response.pause(length=2)
     response.say("Please hold while we connect you.", voice="")
     return str(response)
-
-
-
-
-# VICIdial integration removed - file cleaned
