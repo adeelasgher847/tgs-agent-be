@@ -28,7 +28,7 @@ class TwilioService:
         return self._client
     
     def make_call(self, to_number, from_number, webhook_url, status_callback_url):
-        """Make an outbound call"""
+        """Make an outbound call with improved reliability"""
         client = self.get_client()
         
         call = client.calls.create(
@@ -37,7 +37,14 @@ class TwilioService:
             url=webhook_url,
             status_callback=status_callback_url,
             status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
-            status_callback_method='POST'
+            status_callback_method='POST',
+            # Add timeout settings for better reliability
+            timeout=30,  # Wait up to 30 seconds for answer
+            record=False,  # Don't record calls
+            # Add retry settings
+            retry_limit=3,  # Retry up to 3 times
+            # Add webhook timeout
+            webhook_timeout=10  # Wait up to 10 seconds for webhook response
         )
         
         return call

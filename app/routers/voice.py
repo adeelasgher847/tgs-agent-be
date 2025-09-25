@@ -147,21 +147,34 @@ async def initiate_call(
         call = None
         for attempt in range(max_retries):
             try:
+                print(f"🔄 Call initiation attempt {attempt + 1}/{max_retries}")
+                print(f"📞 Calling: {request.userPhoneNumber}")
+                print(f"📞 From: {twilio_service.get_phone_number()}")
+                print(f"🔗 Webhook: {webhook_url}")
+                print(f"📊 Status Callback: {status_callback_url}")
+                
                 call = twilio_service.make_call(
                     to_number=request.userPhoneNumber,
                     from_number=twilio_service.get_phone_number(),
                     webhook_url=webhook_url,
                     status_callback_url=status_callback_url
                 )
+                
                 print(f"✅ Call initiated successfully on attempt {attempt + 1}")
+                print(f"📞 Call SID: {call.sid}")
+                print(f"📊 Call Status: {call.status}")
                 break
             except Exception as e:
                 print(f"⚠️ Call initiation attempt {attempt + 1} failed: {e}")
+                print(f"🔍 Error type: {type(e).__name__}")
                 if attempt == max_retries - 1:
+                    print(f"❌ All {max_retries} attempts failed")
                     raise HTTPException(status_code=500, detail=f"Failed to initiate call after {max_retries} attempts")
-                # Wait before retry
+                # Wait before retry with exponential backoff
                 import time
-                time.sleep(1)
+                wait_time = (attempt + 1) * 2  # 2, 4, 6 seconds
+                print(f"⏳ Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
         
         # Create call session immediately when call is initiated
         call_session = call_session_service.create_call_session(
@@ -212,6 +225,10 @@ async def handle_call_events_webhook(
     try:
         print("✅ Main webhook is accessible and processing request")
         print("Parsing request body...")
+        
+        # Immediate response to prevent Twilio timeout
+        # This ensures Twilio gets a response quickly
+        print("⚡ Sending immediate response to prevent timeout")
         
         # Fetch agent information from database using agentId
         agent = None
@@ -578,6 +595,17 @@ async def handle_status_callback(
 async def test_webhook():
     """Test endpoint to verify webhook is accessible"""
     return {"status": "webhook accessible", "timestamp": datetime.now().isoformat()}
+
+
+@router.get("/health")
+async def health_check():
+    """Health check endpoint for Twilio webhook validation"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "webhook_url": f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events",
+        "status_callback_url": f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/status-callback"
+    }
 
 
 @router.get("/test/voice")
