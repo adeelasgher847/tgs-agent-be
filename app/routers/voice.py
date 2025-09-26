@@ -126,26 +126,14 @@ async def initiate_call(
         print(f"Making call with webhook_url: {webhook_url}")
         print(f"Making call with status_callback_url: {status_callback_url}")
         
-        # Add retry logic for call initiation to prevent double dialing
-        max_retries = 3
-        call = None
-        for attempt in range(max_retries):
-            try:
-                call = twilio_service.make_call(
-                    to_number=request.userPhoneNumber,
-                    from_number=twilio_service.get_phone_number(),
-                    webhook_url=webhook_url,
-                    status_callback_url=status_callback_url
-                )
-                print(f"✅ Call initiated successfully on attempt {attempt + 1}")
-                break
-            except Exception as e:
-                print(f"⚠️ Call initiation attempt {attempt + 1} failed: {e}")
-                if attempt == max_retries - 1:
-                    raise HTTPException(status_code=500, detail=f"Failed to initiate call after {max_retries} attempts")
-                # Wait before retry
-                import time
-                time.sleep(1)
+        # Make the call using Twilio
+        call = twilio_service.make_call(
+            to_number=request.userPhoneNumber,
+            from_number=twilio_service.get_phone_number(),
+            webhook_url=webhook_url,
+            status_callback_url=status_callback_url
+        )
+        print(f"✅ Call initiated successfully")
         
         # Create call session immediately when call is initiated
         call_session = call_session_service.create_call_session(
