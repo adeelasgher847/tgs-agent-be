@@ -31,6 +31,7 @@ class CallSession(Base):
     # Call content
     call_transcript = Column(JSONB, nullable=True)  # Store as JSON array of messages
     response_times = Column(JSONB, nullable=True)  # Store response times for each interaction
+    recording_url = Column(String(500), nullable=True)  # URL to the call recording
     
     # Phone numbers and external IDs
     twilio_call_sid = Column(String(255), nullable=True, index=True)

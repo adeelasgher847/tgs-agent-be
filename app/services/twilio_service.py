@@ -27,9 +27,12 @@ class TwilioService:
         
         return self._client
     
-    def make_call(self, to_number, from_number, webhook_url, status_callback_url):
-        """Make an outbound call with improved reliability"""
+    def make_call(self, to_number, from_number, webhook_url, status_callback_url, record=True):
+        """Make an outbound call with improved reliability and optional recording"""
         client = self.get_client()
+        
+        # Set up recording status callback URL
+        recording_status_callback_url = f"{webhook_url.split('/webhook/')[0]}/webhook/recording-status"
         
         call = client.calls.create(
             to=to_number,
@@ -38,6 +41,9 @@ class TwilioService:
             status_callback=status_callback_url,
             status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
             status_callback_method='POST',
+            record=record,  # Enable call recording
+            recording_channels='dual',  # Record both channels
+            recording_status_callback=recording_status_callback_url,  # Get recording status updates
             # Add timeout settings for better reliability
             # timeout=30,  # Wait up to 30 seconds for answer
             # Add webhook timeout
@@ -55,6 +61,48 @@ class TwilioService:
         """Get a specific call by SID"""
         client = self.get_client()
         return client.calls(call_sid).fetch()
+    
+    def get_call_recordings(self, call_sid):
+        """Get recordings for a specific call"""
+        client = self.get_client()
+        return client.calls(call_sid).recordings.list()
+    
+    def has_call_recordings(self, call_sid):
+        """Check if a call has recordings"""
+        try:
+            recordings = self.get_call_recordings(call_sid)
+            return len(recordings) > 0
+        except Exception:
+            return False
+    
+    def get_recording_url(self, recording_sid):
+        """Get the URL for a specific recording"""
+        client = self.get_client()
+        recording = client.recordings(recording_sid).fetch()
+        
+        # Check if recording is ready
+        if recording.status != 'completed':
+            return {
+                'sid': recording.sid,
+                'url': None,
+                'duration': recording.duration,
+                'channels': recording.channels,
+                'status': recording.status,
+                'date_created': recording.date_created,
+                'date_updated': recording.date_updated,
+                'message': f"Recording is {recording.status}. URL will be available when processing is complete."
+            }
+        
+        # Recording is completed, return the URL
+        return {
+            'sid': recording.sid,
+            'url': f"https://api.twilio.com{recording.uri.replace('.json', '.mp3')}",
+            'duration': recording.duration,
+            'channels': recording.channels,
+            'status': recording.status,
+            'date_created': recording.date_created,
+            'date_updated': recording.date_updated
+        }
     
     def get_phone_number(self):
         """Get the configured Twilio phone number"""
