@@ -17,6 +17,7 @@ class Subscription(Base):
     current_period_end = Column(DateTime(timezone=True), nullable=True)
     cancel_at_period_end = Column(Boolean, default=False, nullable=False)
     canceled_at = Column(DateTime(timezone=True), nullable=True)
+    credits_updated = Column(Boolean, default=False, nullable=False)  # Track if credits have been updated for this subscription
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     

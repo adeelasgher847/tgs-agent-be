@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import update
-from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate, TenantMember
+from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate, TenantMember, CreditInfo
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
 from app.schemas.auth import RefreshRequest
 from app.schemas.base import SuccessResponse
@@ -16,6 +16,7 @@ from app.core.security import verify_password, create_user_token, pwd_context, c
 from app.core.security import create_refresh_token_value, refresh_token_expires_at
 from app.core.security import is_token_expired, verify_token
 from app.services.email_service import email_service
+from app.services.credit_service import credit_service
 from app.utils.response import create_success_response
 from app.utils.rate_limiter import login_rate_limit
 from datetime import datetime, timezone
@@ -508,6 +509,28 @@ def get_user_profile(
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
     
+    # Get credit information for the current tenant
+    credit_info = None
+    if user.current_tenant_id:
+        try:
+            credit_balance = credit_service.get_credit_balance(db, user.current_tenant_id)
+            plan_pricing = credit_service.get_plan_pricing(db, user.current_tenant_id)
+            
+            credit_info = CreditInfo(
+                credit_balance=credit_balance.credit_balance,
+                plan_credits=credit_balance.plan_credits,
+                plan_name=credit_balance.plan_name,
+                plan_pricing={
+                    "price_per_minute": plan_pricing["price_per_minute"],
+                    "plan_id": plan_pricing["plan_id"],
+                    "has_plan": plan_pricing["has_plan"]
+                },
+                can_make_call=credit_balance.credit_balance >= 1
+            )
+        except Exception as e:
+            # If credit info fails, continue without it
+            print(f"Warning: Could not fetch credit info for user {user.id}: {str(e)}")
+    
     # Create user profile response
     user_profile = UserProfile(
         id=user.id,
@@ -521,7 +544,8 @@ def get_user_profile(
         created_at=user.created_at,
         role=role_info,
         current_tenant=user.current_tenant,
-        tenants=user.tenants
+        tenants=user.tenants,
+        credit_info=credit_info
     )
     
     return create_success_response(
@@ -579,6 +603,28 @@ def update_user_profile(
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
     
+    # Get credit information for the current tenant
+    credit_info = None
+    if current_user.current_tenant_id:
+        try:
+            credit_balance = credit_service.get_credit_balance(db, current_user.current_tenant_id)
+            plan_pricing = credit_service.get_plan_pricing(db, current_user.current_tenant_id)
+            
+            credit_info = CreditInfo(
+                credit_balance=credit_balance.credit_balance,
+                plan_credits=credit_balance.plan_credits,
+                plan_name=credit_balance.plan_name,
+                plan_pricing={
+                    "price_per_minute": plan_pricing["price_per_minute"],
+                    "plan_id": plan_pricing["plan_id"],
+                    "has_plan": plan_pricing["has_plan"]
+                },
+                can_make_call=credit_balance.credit_balance >= 1
+            )
+        except Exception as e:
+            # If credit info fails, continue without it
+            print(f"Warning: Could not fetch credit info for user {current_user.id}: {str(e)}")
+    
     # Create updated user profile response
     user_profile = UserProfile(
         id=current_user.id,
@@ -592,7 +638,8 @@ def update_user_profile(
         created_at=current_user.created_at,
         role=role_info,
         current_tenant=current_user.current_tenant,
-        tenants=current_user.tenants
+        tenants=current_user.tenants,
+        credit_info=credit_info
     )
     
     return create_success_response(

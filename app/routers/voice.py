@@ -13,8 +13,10 @@ from app.services.agent_service import agent_service
 from app.models.agent import Agent
 from app.models.user import User
 from app.models.call_session import CallSession
+from app.models.tenant import Tenant
 from app.services.call_session_service import call_session_service
 from app.services.voice_logging_service import VoiceLoggingService
+from app.services.credit_service import credit_service
 from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
 from app.utils.response import create_success_response
 from app.core.config import settings
@@ -137,6 +139,20 @@ async def initiate_call(
         if not twilio_service.validate_phone_number(request.userPhoneNumber):
             raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
         
+        # Check tenant credit balance before initiating call
+        try:
+            credit_balance = credit_service.get_credit_balance(db, user.current_tenant_id)
+            if credit_balance.credit_balance < 1:  # Minimum 1 credit required for any call
+                raise HTTPException(
+                    status_code=402, 
+                    detail=f"Insufficient credits. Current balance: {credit_balance.credit_balance} credits. Minimum 1 credit required to make a call."
+                )
+            print(f"✅ Credit check passed. Tenant has {credit_balance.credit_balance} credits available")
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Credit validation failed: {str(e)}")
+        
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL
         
@@ -230,6 +246,40 @@ async def handle_call_events_webhook(
                             if call_session.start_time:
                                 duration = (call_session.end_time - call_session.start_time).total_seconds()
                                 call_session.duration = int(duration)
+                                
+                                # Deduct credits based on call duration and plan pricing
+                                try:
+                                    # Get tenant's current plan pricing
+                                    tenant = db.query(Tenant).filter(Tenant.id == call_session.tenant_id).first()
+                                    price_per_minute = 0.05  # Default fallback
+                                    
+                                    if tenant and tenant.subscription and tenant.subscription.plan:
+                                        price_per_minute = tenant.subscription.plan.price_per_minute
+                                        plan_name = tenant.subscription.plan.display_name
+                                        print(f"📊 Using plan pricing: {plan_name} - ${price_per_minute}/minute")
+                                    else:
+                                        print(f"⚠️ No active plan found, using default pricing: ${price_per_minute}/minute")
+                                    
+                                    # Calculate credit cost based on actual plan pricing
+                                    # 1 credit = $1, so cost = (duration_minutes * price_per_minute) credits
+                                    duration_minutes = duration / 60.0
+                                    cost_dollars = duration_minutes * price_per_minute
+                                    credit_cost = max(1, int(cost_dollars + 0.5))  # Round up to nearest credit
+                                    
+                                    # Deduct credits from tenant balance
+                                    credit_service.use_credits(
+                                        db, 
+                                        call_session.tenant_id, 
+                                        credit_cost, 
+                                        f"Voice call to {call_session.to_number} (Duration: {int(duration)}s, Cost: ${cost_dollars:.2f}, Credits: {credit_cost})"
+                                    )
+                                    
+                                    print(f"✅ Deducted {credit_cost} credits for call duration: {int(duration)} seconds (${cost_dollars:.2f} at ${price_per_minute}/min)")
+                                    
+                                except ValueError as e:
+                                    print(f"⚠️ Credit deduction failed: {str(e)}")
+                                except Exception as e:
+                                    print(f"⚠️ Credit deduction error: {str(e)}")
                             
                             # Save transcript to database when call completes
                             if call_session.call_transcript:
@@ -835,6 +885,109 @@ async def get_call_recordings(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get call recordings: {str(e)}")
+
+
+@router.post("/add-credits", response_model=SuccessResponse[dict])
+async def add_credits(
+    request: dict,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually add credits to tenant balance (admin only).
+    """
+    try:
+        amount = request.get("amount", 0)
+        description = request.get("description", "Manual credit addition")
+        
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+        
+        # Add credits to tenant balance
+        credit_service.add_credits(db, user.current_tenant_id, amount, description)
+        
+        # Get updated balance
+        credit_balance = credit_service.get_credit_balance(db, user.current_tenant_id)
+        
+        response_data = {
+            "tenant_id": str(credit_balance.tenant_id),
+            "credit_balance": credit_balance.credit_balance,
+            "plan_credits": credit_balance.plan_credits,
+            "plan_name": credit_balance.plan_name,
+            "credits_added": amount,
+            "description": description,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        return create_success_response(
+            response_data,
+            f"Successfully added {amount} credits to tenant {user.current_tenant_id}"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add credits: {str(e)}")
+
+
+@router.get("/credit-balance", response_model=SuccessResponse[dict])
+async def get_credit_balance(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get current credit balance for the tenant.
+    """
+    try:
+        credit_balance = credit_service.get_credit_balance(db, user.current_tenant_id)
+        plan_pricing = credit_service.get_plan_pricing(db, user.current_tenant_id)
+        
+        response_data = {
+            "tenant_id": str(credit_balance.tenant_id),
+            "credit_balance": credit_balance.credit_balance,
+            "plan_credits": credit_balance.plan_credits,
+            "plan_name": credit_balance.plan_name,
+            "plan_pricing": {
+                "price_per_minute": plan_pricing["price_per_minute"],
+                "plan_id": plan_pricing["plan_id"],
+                "has_plan": plan_pricing["has_plan"]
+            },
+            "can_make_call": credit_balance.credit_balance >= 1,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        return create_success_response(
+            response_data,
+            f"Retrieved credit balance for tenant {user.current_tenant_id}"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get credit balance: {str(e)}")
+
+
+@router.get("/credit-debug", response_model=SuccessResponse[dict])
+async def get_credit_debug_info(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get detailed credit debugging information for the tenant.
+    This endpoint provides comprehensive information to help debug credit balance issues.
+    """
+    try:
+        detailed_info = credit_service.get_detailed_credit_info(db, user.current_tenant_id)
+        
+        return create_success_response(
+            detailed_info,
+            f"Retrieved detailed credit debug info for tenant {user.current_tenant_id}"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get credit debug info: {str(e)}")
 
 
 @router.get("/call-session/{session_id}/recording", response_model=SuccessResponse[dict])

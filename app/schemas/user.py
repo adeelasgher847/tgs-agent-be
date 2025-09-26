@@ -48,6 +48,17 @@ class TenantInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CreditInfo(BaseModel):
+    """Credit information for the user's current tenant"""
+    credit_balance: int
+    plan_credits: int
+    plan_name: str
+    plan_pricing: dict
+    can_make_call: bool
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserProfile(UserBase):
     id: uuid.UUID
     role_id: Optional[uuid.UUID] = None
@@ -57,6 +68,7 @@ class UserProfile(UserBase):
     role: Optional[RoleInfo] = None
     current_tenant: Optional[TenantInfo] = None
     tenants: list[TenantInfo] = []
+    credit_info: Optional[CreditInfo] = None
     
     model_config = ConfigDict(from_attributes=True) 
 

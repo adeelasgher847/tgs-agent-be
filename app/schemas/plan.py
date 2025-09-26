@@ -12,6 +12,9 @@ class PlanBase(BaseModel):
     price_monthly: Optional[int] = None  # Price in cents (0 for free)
     price_per_minute: float = Field(default=0.05, ge=0)  # $0.05 per minute
     
+    # Simple Credit System
+    credits: Optional[int] = Field(default=0, ge=0)  # Credits included with this plan
+    
     # Simple Limits
     agent_limit: int = Field(default=0, ge=0)  # Max agents
     monthly_calls_limit: int = Field(default=0, ge=0)  # Keep existing
@@ -32,6 +35,7 @@ class PlanUpdate(BaseModel):
     description: Optional[str] = None
     price_monthly: Optional[int] = None
     price_per_minute: Optional[float] = None
+    credits: Optional[int] = None
     agent_limit: Optional[int] = None
     monthly_calls_limit: Optional[int] = None
     included_minutes: Optional[int] = None

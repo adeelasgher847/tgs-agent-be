@@ -30,6 +30,7 @@ class BillingService:
                     display_name="Free Plan",
                     description="Free tier with limited features",
                     price_monthly=0,
+                    credits=0,  # Free plan gets 0 credits
                     agent_limit=settings.FREE_PLAN_AGENT_LIMIT,
                     monthly_calls_limit=settings.FREE_PLAN_MONTHLY_CALLS,
                     is_active=True
@@ -46,6 +47,14 @@ class BillingService:
             db.add(subscription)
             db.commit()
             db.refresh(subscription)
+            
+            # Initialize credits for the free plan
+            try:
+                from app.services.credit_service import credit_service
+                credit_service.initialize_tenant_credits(db, tenant_id)
+                print(f"✅ Initialized credits for new tenant {tenant_id} with free plan")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize credits for new tenant {tenant_id}: {str(e)}")
         
         return subscription
     

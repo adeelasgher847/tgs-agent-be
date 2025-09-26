@@ -15,6 +15,9 @@ class Plan(Base):
     price_monthly = Column(Integer, nullable=True)  # Price in cents (0 for free)
     price_per_minute = Column(Float, default=0.05)  # $0.05 per minute (Vapi's rate)
     
+    # Simple Credit System
+    credits = Column(Integer, nullable=True, default=0)  # Credits included with this plan
+    
     # Simple Limits
     agent_limit = Column(Integer, default=0)  # Max agents
     monthly_calls_limit = Column(Integer, default=0)  # Keep existing column

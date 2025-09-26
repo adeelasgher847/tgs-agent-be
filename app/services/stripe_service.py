@@ -287,10 +287,18 @@ class StripeService:
     def handle_checkout_completed(event_data: Dict[str, Any], db: Session) -> None:
         """Handle checkout.session.completed event"""
         session = event_data['data']['object']
-        tenant_id = session['metadata']['tenant_id']
-        plan_id = session['metadata']['plan_id']
+        tenant_id_str = session['metadata']['tenant_id']
+        plan_id_str = session['metadata']['plan_id']
         customer_id = session['customer']
         subscription_id = session['subscription']
+        
+        # Convert string IDs to UUID objects
+        try:
+            tenant_id = uuid.UUID(tenant_id_str)
+            plan_id = uuid.UUID(plan_id_str)
+        except ValueError as e:
+            print(f"❌ Invalid UUID format in webhook metadata: {str(e)}")
+            return
         
         # Find tenant by stripe_customer_id and update status to active
         tenant = db.query(Tenant).filter(Tenant.stripe_customer_id == customer_id).first()
@@ -320,6 +328,22 @@ class StripeService:
             subscription.status = 'active'
         
         db.commit()
+        
+        # Initialize credits for the tenant based on the plan
+        try:
+            from app.services.credit_service import credit_service
+            success = credit_service.initialize_tenant_credits(db, tenant_id)
+            if success:
+                # Mark credits as updated for this subscription
+                subscription.credits_updated = True
+                db.commit()
+                print(f"✅ Initialized credits for tenant {tenant_id} after plan purchase and marked credits_updated=True")
+            else:
+                print(f"⚠️ No credits to initialize for tenant {tenant_id} (plan may have 0 credits)")
+        except Exception as e:
+            print(f"❌ Failed to initialize credits for tenant {tenant_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     @staticmethod
     def handle_invoice_paid(event_data: Dict[str, Any], db: Session) -> None:
@@ -335,6 +359,31 @@ class StripeService:
             if subscription:
                 subscription.status = 'active'
                 db.commit()
+                
+                # Add credits for recurring payment (monthly renewal)
+                try:
+                    from app.services.credit_service import credit_service
+                    plan_credits = subscription.plan.credits or 0
+                    if plan_credits > 0:
+                        success = credit_service.add_credits(
+                            db, 
+                            subscription.tenant_id, 
+                            plan_credits, 
+                            f"Monthly plan renewal - {subscription.plan.display_name}"
+                        )
+                        if success:
+                            # Mark credits as updated for this subscription
+                            subscription.credits_updated = True
+                            db.commit()
+                            print(f"✅ Added {plan_credits} credits for monthly renewal for tenant {subscription.tenant_id} and marked credits_updated=True")
+                        else:
+                            print(f"⚠️ Failed to add credits for monthly renewal for tenant {subscription.tenant_id}")
+                    else:
+                        print(f"ℹ️ No credits to add for monthly renewal (plan has 0 credits) for tenant {subscription.tenant_id}")
+                except Exception as e:
+                    print(f"❌ Failed to add credits for monthly renewal for tenant {subscription.tenant_id}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
     
     @staticmethod
     def handle_invoice_payment_failed(event_data: Dict[str, Any], db: Session) -> None:

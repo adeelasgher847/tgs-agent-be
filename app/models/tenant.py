@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime
+from sqlalchemy import Column, String, DateTime, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -12,6 +12,10 @@ class Tenant(Base):
     status = Column(String, nullable=False, default="pending_payment")  # pending_payment, active, inactive
     stripe_customer_id = Column(String, nullable=True, index=True)
     stripe_subscription_id = Column(String, nullable=True, index=True)
+    
+    # Simple Credit System
+    credit_balance = Column(Integer, default=0)  # Current credit balance
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     
     # Relationships

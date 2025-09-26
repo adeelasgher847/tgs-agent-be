@@ -150,6 +150,39 @@ def switch_tenant(
     db.commit()
     db.refresh(current_user)
     
+    # One-time credit sync for the switched tenant
+    try:
+        from app.models.tenant import Tenant
+        from app.models.subscription import Subscription
+        
+        # Get the tenant and check if credits need to be synced
+        tenant = db.query(Tenant).filter(Tenant.id == switch_data.tenant_id).first()
+        if tenant and tenant.subscription:
+            subscription = tenant.subscription
+            
+            # Check if this is a one-time sync (only if credits haven't been updated for this subscription)
+            if (not subscription.credits_updated and 
+                subscription.status == "active" and 
+                subscription.plan and 
+                subscription.plan.credits and 
+                subscription.plan.credits > 0):
+                
+                # Update credits based on plan
+                old_balance = tenant.credit_balance
+                tenant.credit_balance = subscription.plan.credits
+                subscription.credits_updated = True  # Mark as updated
+                db.commit()
+                
+                print(f"✅ One-time credit sync for tenant {switch_data.tenant_id}: {old_balance} → {tenant.credit_balance} credits (credits_updated=True)")
+            else:
+                if subscription.credits_updated:
+                    print(f"ℹ️ Credit sync skipped for tenant {switch_data.tenant_id}: credits already updated for this subscription")
+                else:
+                    print(f"ℹ️ Credit sync skipped for tenant {switch_data.tenant_id}: status={subscription.status if subscription else 'no subscription'}")
+    except Exception as e:
+        print(f"⚠️ Credit sync failed for tenant {switch_data.tenant_id}: {str(e)}")
+        # Don't fail the tenant switch if credit sync fails
+    
     # Get role information for the switched tenant
     role_info = None
     current_role = None
@@ -560,4 +593,105 @@ def get_payment_history(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error: {str(e)}"
+        )
+
+
+@router.post("/sync-credits", response_model=SuccessResponse[dict])
+def sync_tenant_credits(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    One-time sync of tenant credits based on their current subscription.
+    This will only update credits if the tenant has 0 credits and an active subscription.
+    """
+    try:
+        from app.models.tenant import Tenant
+        from app.models.subscription import Subscription
+        
+        # Get the tenant ID from the current user
+        tenant_id = current_user.current_tenant_id
+        if not tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No tenant associated with current user"
+            )
+        
+        # Get the tenant and check if credits need to be synced
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found"
+            )
+        
+        sync_result = {
+            "tenant_id": str(tenant_id),
+            "tenant_name": tenant.name,
+            "before_sync": {
+                "credit_balance": tenant.credit_balance,
+                "subscription_status": None,
+                "plan_name": "No Plan",
+                "plan_credits": 0
+            },
+            "after_sync": {
+                "credit_balance": tenant.credit_balance,
+                "subscription_status": None,
+                "plan_name": "No Plan",
+                "plan_credits": 0
+            },
+            "action_taken": "No action needed",
+            "success": False
+        }
+        
+        if tenant.subscription:
+            subscription = tenant.subscription
+            sync_result["before_sync"]["subscription_status"] = subscription.status
+            sync_result["after_sync"]["subscription_status"] = subscription.status
+            
+            if subscription.plan:
+                plan = subscription.plan
+                plan_credits = plan.credits or 0
+                sync_result["before_sync"]["plan_name"] = plan.display_name
+                sync_result["before_sync"]["plan_credits"] = plan_credits
+                sync_result["after_sync"]["plan_name"] = plan.display_name
+                sync_result["after_sync"]["plan_credits"] = plan_credits
+                
+                # One-time sync logic: only update if credits haven't been updated for this subscription
+                if (not subscription.credits_updated and 
+                    subscription.status == "active" and 
+                    plan_credits > 0):
+                    
+                    # Update credits based on plan
+                    tenant.credit_balance = plan_credits
+                    subscription.credits_updated = True  # Mark as updated
+                    db.commit()
+                    
+                    sync_result["after_sync"]["credit_balance"] = plan_credits
+                    sync_result["action_taken"] = f"Updated credits to {plan_credits} based on active plan (credits_updated=True)"
+                    sync_result["success"] = True
+                    
+                    print(f"✅ One-time credit sync: {tenant_id} → {plan_credits} credits (credits_updated=True)")
+                else:
+                    if subscription.credits_updated:
+                        sync_result["action_taken"] = f"Credits already updated for this subscription (credits_updated=True)"
+                    elif subscription.status != "active":
+                        sync_result["action_taken"] = f"Subscription not active (status: {subscription.status})"
+                    else:
+                        sync_result["action_taken"] = "Plan has no credits to sync"
+                    sync_result["success"] = True
+            else:
+                sync_result["action_taken"] = "No plan associated with subscription"
+        else:
+            sync_result["action_taken"] = "No subscription found"
+        
+        return create_success_response(
+            sync_result,
+            f"Credit sync completed for tenant {tenant_id}"
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error syncing credits: {str(e)}"
         )
