@@ -12,6 +12,7 @@ from app.services.twilio_service import twilio_service
 from app.services.agent_service import agent_service
 from app.models.agent import Agent
 from app.models.user import User
+from app.models.call_session import CallSession
 from app.services.call_session_service import call_session_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
@@ -21,6 +22,26 @@ import uuid
 from datetime import datetime
 
 router = APIRouter()
+
+
+def _add_to_transcript(call_session, message_type: str, content: str, timestamp: datetime = None):
+    """Add a message to the call session transcript"""
+    if timestamp is None:
+        timestamp = datetime.now()
+    
+    # Initialize transcript if it doesn't exist
+    if not call_session.call_transcript:
+        call_session.call_transcript = []
+    
+    # Add new message to transcript
+    message = {
+        "type": message_type,  # "user_speech" or "agent_response"
+        "content": content,
+        "timestamp": timestamp.isoformat()
+    }
+    
+    call_session.call_transcript.append(message)
+    print(f"📝 Added to transcript: {message_type} - {content[:50]}...")
 
 
 def get_agent_voice(agent) -> str:
@@ -193,6 +214,29 @@ async def handle_call_events_webhook(
                 # Get call session to get tenant_id
                 call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
                 if call_session:
+                    # Update call session status if call_status is provided
+                    call_status = form_data.get("CallStatus", "")
+                    if call_status:
+                        call_session.status = call_status
+                        
+                        # Set start time when call becomes in-progress
+                        if call_status == "in-progress" and not call_session.start_time:
+                            call_session.start_time = datetime.now()
+                        
+                        # Set end time and calculate duration when call completes
+                        if call_status == "completed":
+                            call_session.end_time = datetime.now()
+                            if call_session.start_time:
+                                duration = (call_session.end_time - call_session.start_time).total_seconds()
+                                call_session.duration = int(duration)
+                            
+                            # Save transcript to database when call completes
+                            if call_session.call_transcript:
+                                print(f"📝 Saving transcript with {len(call_session.call_transcript)} messages")
+                        
+                        db.commit()
+                        print(f"✅ Updated call session {call_session.id} status to: {call_status}")
+                    
                     # Fetch agent from database
                     agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
                     if agent:
@@ -279,6 +323,9 @@ async def handle_call_events_webhook(
             try:
                 call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
                 if call_session:
+                    # Add user speech to transcript
+                    _add_to_transcript(call_session, "user_speech", speech_result)
+                    
                     await VoiceLoggingService.log_voice_interaction(
                         db=db,
                         call_session_id=call_session.id,
@@ -306,6 +353,10 @@ async def handle_call_events_webhook(
                     agent=agent,
                     db=db
                 )
+                
+                # Add agent response to transcript
+                if call_session:
+                    _add_to_transcript(call_session, "agent_response", response_text)
                 
                 # Say response naturally but keep it shorter for better conversation flow
                 agent_voice = get_agent_voice(agent)
@@ -439,11 +490,16 @@ async def handle_call_events_webhook(
             
             # Smooth, natural greeting with agent-specific voice
             agent_voice = get_agent_voice(agent)
+            greeting_text = f"Hello! This is {agent_name}. How can I help you today? I'm listening."
             response.say(f"Hello! This is {agent_name}.", voice=agent_voice)
             response.pause(length=1)  # Natural pause
             response.say("How can I help you today?", voice=agent_voice)
             response.pause(length=1)  # Natural pause
             response.say("I'm listening.", voice=agent_voice)
+            
+            # Add initial greeting to transcript
+            if call_session:
+                _add_to_transcript(call_session, "agent_response", greeting_text)
             
             # Log call answered event
             try:
@@ -526,66 +582,66 @@ async def handle_call_events_webhook(
         raise
 
 
-def _get_twilio_voice(voice_type):
-    """Map voice_type to Twilio voice names"""
-    if voice_type == "male":
-        return "en-US-Neural2-M"  # Male voice
-    elif voice_type == "female":
-        return "en-US-Neural2-F"  # Female voice
-    else:
-        return "en-US-Neural2-F"  # Default to female voice
+# def _get_twilio_voice(voice_type):
+#     """Map voice_type to Twilio voice names"""
+#     if voice_type == "male":
+#         return "en-US-Neural2-M"  # Male voice
+#     elif voice_type == "female":
+#         return "en-US-Neural2-F"  # Female voice
+#     else:
+#         return "en-US-Neural2-F"  # Default to female voice
 
-def _process_speech_input(agent, speech_text: str, call_sid: str) -> str:
-    """Process speech input and generate agent response"""
-    if not agent:
-        return f"I heard you say: {speech_text}. How can I help you further?"
+# def _process_speech_input(agent, speech_text: str, call_sid: str) -> str:
+#     """Process speech input and generate agent response"""
+#     if not agent:
+#         return f"I heard you say: {speech_text}. How can I help you further?"
     
-    # Simple keyword-based responses (you can enhance this with AI)
-    speech_lower = speech_text.lower()
+#     # Simple keyword-based responses (you can enhance this with AI)
+#     speech_lower = speech_text.lower()
     
-    if any(word in speech_lower for word in ['hello', 'hi', 'hey']):
-        return f"Hello! This is {agent.name}. How can I assist you today?"
-    elif any(word in speech_lower for word in ['help', 'support', 'assistance']):
-        return f"I'm here to help! What specific assistance do you need?"
-    elif any(word in speech_lower for word in ['thank', 'thanks']):
-        return f"You're welcome! Is there anything else I can help you with?"
-    elif any(word in speech_lower for word in ['bye', 'goodbye', 'end']):
-        return f"Thank you for calling! Have a great day!"
-    else:
-        return f"I understand you said: {speech_text}. Let me help you with that. What would you like me to do?"
+#     if any(word in speech_lower for word in ['hello', 'hi', 'hey']):
+#         return f"Hello! This is {agent.name}. How can I assist you today?"
+#     elif any(word in speech_lower for word in ['help', 'support', 'assistance']):
+#         return f"I'm here to help! What specific assistance do you need?"
+#     elif any(word in speech_lower for word in ['thank', 'thanks']):
+#         return f"You're welcome! Is there anything else I can help you with?"
+#     elif any(word in speech_lower for word in ['bye', 'goodbye', 'end']):
+#         return f"Thank you for calling! Have a great day!"
+#     else:
+#         return f"I understand you said: {speech_text}. Let me help you with that. What would you like me to do?"
 
-def _generate_agent_response(agent, call_data: dict) -> str:
-    """Generate TwiML response based on agent from database"""
-    if not agent:
-        return _generate_default_response()
+# def _generate_agent_response(agent, call_data: dict) -> str:
+#     """Generate TwiML response based on agent from database"""
+#     if not agent:
+#         return _generate_default_response()
     
-    # Create TwiML response
-    response = VoiceResponse()
+#     # Create TwiML response
+#     response = VoiceResponse()
     
-    # Use agent's name and fallback response
-    agent_name = agent.name
-    greeting = agent.fallback_response if agent.fallback_response and agent.fallback_response.strip() and agent.fallback_response != "string" else f"Hello! This is {agent_name} speaking. How can I help you today?"
-    twilio_voice = _get_twilio_voice(agent.voice_type)
+#     # Use agent's name and fallback response
+#     agent_name = agent.name
+#     greeting = agent.fallback_response if agent.fallback_response and agent.fallback_response.strip() and agent.fallback_response != "string" else f"Hello! This is {agent_name} speaking. How can I help you today?"
+#     twilio_voice = _get_twilio_voice(agent.voice_type)
     
-    print(f"🎯 Agent greeting: '{greeting}'")
-    print(f"🎯 Agent voice: '{twilio_voice}'")
+#     print(f"🎯 Agent greeting: '{greeting}'")
+#     print(f"🎯 Agent voice: '{twilio_voice}'")
     
-    # ABSOLUTE SIMPLEST - NO GATHER AT ALL
-    response.say("Hello! This is your AI assistant speaking.", voice=twilio_voice)
-    response.pause(length=2)
-    response.say("I can help you with any questions you have.", voice=twilio_voice)
-    response.pause(length=2)
-    response.say("Thank you for calling. Have a great day!", voice=twilio_voice)
-    response.pause(length=1)
-    response.hangup()
+#     # ABSOLUTE SIMPLEST - NO GATHER AT ALL
+#     response.say("Hello! This is your AI assistant speaking.", voice=twilio_voice)
+#     response.pause(length=2)
+#     response.say("I can help you with any questions you have.", voice=twilio_voice)
+#     response.pause(length=2)
+#     response.say("Thank you for calling. Have a great day!", voice=twilio_voice)
+#     response.pause(length=1)
+#     response.hangup()
     
-    return str(response)
+#     return str(response)
 
 
-def _generate_default_response() -> str:
-    """Generate default TwiML response"""
-    response = VoiceResponse()
-    response.say("Thank you for calling. An agent will be with you shortly.", voice="")
-    response.pause(length=2)
-    response.say("Please hold while we connect you.", voice="")
-    return str(response)
+# def _generate_default_response() -> str:
+#     """Generate default TwiML response"""
+#     response = VoiceResponse()
+#     response.say("Thank you for calling. An agent will be with you shortly.", voice="")
+#     response.pause(length=2)
+#     response.say("Please hold while we connect you.", voice="")
+#     return str(response)
