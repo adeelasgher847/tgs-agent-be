@@ -164,7 +164,8 @@ async def initiate_call(
             tenant_id=user.current_tenant_id,
             twilio_call_sid=call.sid,
             from_number=twilio_service.get_phone_number(),
-            to_number=request.userPhoneNumber
+            to_number=request.userPhoneNumber,
+            call_type="outbound"  # Agent is initiating the call, so it's outbound
         )
         
         # Generate call ID
@@ -637,6 +638,128 @@ async def handle_call_events_webhook(
 #     response.hangup()
     
 #     return str(response)
+
+
+@router.get("/dashboard/analytics", response_model=SuccessResponse[dict])
+async def get_dashboard_analytics(
+    agent_id: Optional[str] = Query(None, description="Filter by specific agent ID"),
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get dashboard analytics for the current tenant.
+    Returns call statistics including number of calls and average duration.
+    Optionally filter by specific agent ID.
+    """
+    try:
+        tenant_id = user.current_tenant_id
+        
+        # Build base query for call sessions
+        base_query = db.query(CallSession).filter(CallSession.tenant_id == tenant_id)
+        
+        # Apply agent filter if provided
+        if agent_id:
+            try:
+                agent_uuid = uuid.UUID(agent_id)
+                base_query = base_query.filter(CallSession.agent_id == agent_uuid)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid agent ID format")
+        
+        # Get all call sessions for the tenant (with optional agent filter)
+        call_sessions = base_query.all()
+        
+        # Calculate statistics
+        total_calls = len(call_sessions)
+        
+        # Filter completed calls for duration calculation
+        completed_calls = [call for call in call_sessions if call.status == "completed" and call.duration is not None]
+        
+        # Calculate average duration
+        if completed_calls:
+            total_duration = sum(call.duration for call in completed_calls)
+            average_duration = total_duration / len(completed_calls)
+        else:
+            average_duration = 0
+        
+        # Get calls by status
+        status_counts = {}
+        for call in call_sessions:
+            status = call.status
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        # Get calls by type
+        type_counts = {}
+        for call in call_sessions:
+            call_type = call.call_type
+            type_counts[call_type] = type_counts.get(call_type, 0) + 1
+        
+        # Get agent-wise statistics (only if not filtering by specific agent)
+        agent_stats = {}
+        if not agent_id:
+            # Get all agents for this tenant
+            agents = db.query(Agent).filter(Agent.tenant_id == tenant_id).all()
+            
+            for agent in agents:
+                agent_calls = [call for call in call_sessions if call.agent_id == agent.id]
+                agent_completed = [call for call in agent_calls if call.status == "completed" and call.duration is not None]
+                
+                agent_avg_duration = 0
+                if agent_completed:
+                    agent_total_duration = sum(call.duration for call in agent_completed)
+                    agent_avg_duration = agent_total_duration / len(agent_completed)
+                
+                agent_stats[str(agent.id)] = {
+                    "agent_name": agent.name,
+                    "total_calls": len(agent_calls),
+                    "completed_calls": len(agent_completed),
+                    "average_duration_seconds": round(agent_avg_duration, 2),
+                    "average_duration_minutes": round(agent_avg_duration / 60, 2)
+                }
+        
+        # Get recent calls (last 10)
+        recent_calls = base_query.order_by(CallSession.created_at.desc()).limit(10).all()
+        
+        # Format recent calls data
+        recent_calls_data = []
+        for call in recent_calls:
+            recent_calls_data.append({
+                "id": str(call.id),
+                "call_sid": call.twilio_call_sid,
+                "agent_name": call.agent.name if call.agent else "Unknown",
+                "status": call.status,
+                "call_type": call.call_type,
+                "duration": call.duration,
+                "start_time": call.start_time.isoformat() if call.start_time else None,
+                "end_time": call.end_time.isoformat() if call.end_time else None,
+                "from_number": call.from_number,
+                "to_number": call.to_number,
+                "cost": call.cost
+            })
+        
+        # Prepare analytics data
+        analytics_data = {
+            "tenant_id": str(tenant_id),
+            "filtered_by_agent": agent_id is not None,
+            "agent_id": agent_id,
+            "total_calls": total_calls,
+            "completed_calls": len(completed_calls),
+            "average_duration_seconds": round(average_duration, 2),
+            "average_duration_minutes": round(average_duration / 60, 2),
+            "status_breakdown": status_counts,
+            "call_type_breakdown": type_counts,
+            "agent_statistics": agent_stats,
+            "recent_calls": recent_calls_data,
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        message = f"Retrieved dashboard analytics for tenant {tenant_id}"
+        if agent_id:
+            message += f" filtered by agent {agent_id}"
+        
+        return create_success_response(analytics_data, message)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get dashboard analytics: {str(e)}")
 
 
 # def _generate_default_response() -> str:
