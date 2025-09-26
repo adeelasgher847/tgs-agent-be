@@ -19,11 +19,25 @@ class PhoneNumberBase(BaseModel):
 class PhoneNumberCreate(PhoneNumberBase):
     tenant_id: uuid.UUID = Field(..., description="Tenant ID")
     assistant_id: Optional[uuid.UUID] = Field(None, description="Optional assistant to assign to this number")
+    
+    @validator('assistant_id', pre=True)
+    def validate_assistant_id(cls, v):
+        # Convert empty string to None
+        if v == "" or v is None:
+            return None
+        return v
 
 class PhoneNumberUpdate(BaseModel):
     label: Optional[str] = None
     status: Optional[str] = None
     assistant_id: Optional[uuid.UUID] = None
+    
+    @validator('assistant_id', pre=True)
+    def validate_assistant_id(cls, v):
+        # Convert empty string to None
+        if v == "" or v is None:
+            return None
+        return v
 
 class PhoneNumberResponse(PhoneNumberBase):
     id: uuid.UUID
@@ -42,6 +56,13 @@ class CreatePhoneNumberRequest(BaseModel):
     phone_number: str = Field(..., description="Phone number to create")
     label: Optional[str] = Field(None, description="Custom label")
     assistant_id: Optional[uuid.UUID] = Field(None, description="Assistant to assign")
+    
+    @validator('assistant_id', pre=True)
+    def validate_assistant_id(cls, v):
+        # Convert empty string to None
+        if v == "" or v is None:
+            return None
+        return v
 
 class CreatePhoneNumberResponse(BaseModel):
     id: uuid.UUID

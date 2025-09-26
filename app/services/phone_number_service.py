@@ -14,13 +14,14 @@ class PhoneNumberService:
     
     def create_phone_number(self, db: Session, phone_number_data: PhoneNumberCreate) -> PhoneNumber:
         """Create a new phone number"""
-        # Check if phone number already exists
+        # Check if phone number already exists within the same tenant
         existing = db.query(PhoneNumber).filter(
-            PhoneNumber.phone_number == phone_number_data.phone_number
+            PhoneNumber.phone_number == phone_number_data.phone_number,
+            PhoneNumber.tenant_id == phone_number_data.tenant_id
         ).first()
         
         if existing:
-            raise ValueError(f"Phone number {phone_number_data.phone_number} already exists")
+            raise ValueError(f"Phone number {phone_number_data.phone_number} already exists in this tenant")
         
         # Create phone number
         phone_number = PhoneNumber(**phone_number_data.dict())

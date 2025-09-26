@@ -15,7 +15,7 @@ import uuid
 router = APIRouter()
 
 
-@router.post("/", response_model=SuccessResponse[ModelResponse])
+@router.post("/", response_model=SuccessResponse[ModelResponse],include_in_schema=False)
 async def create_model(
     model_data: ModelCreate,
     user = Depends(require_tenant),
@@ -83,7 +83,7 @@ async def get_models(
         raise HTTPException(status_code=500, detail=f"Failed to get models: {str(e)}")
 
 
-@router.get("/{model_id}", response_model=SuccessResponse[ModelResponse])
+@router.get("/{model_id}", response_model=SuccessResponse[ModelResponse],include_in_schema=False)
 async def get_model(
     model_id: uuid.UUID,
     user = Depends(require_tenant),
@@ -102,7 +102,7 @@ async def get_model(
     )
 
 
-@router.put("/{model_id}", response_model=SuccessResponse[ModelResponse])
+@router.put("/{model_id}", response_model=SuccessResponse[ModelResponse],include_in_schema=False)
 async def update_model(
     model_id: uuid.UUID,
     model_data: ModelUpdate,
@@ -133,7 +133,7 @@ async def update_model(
         raise HTTPException(status_code=500, detail=f"Failed to update model: {str(e)}")
 
 
-@router.delete("/{model_id}", response_model=SuccessResponse[dict])
+@router.delete("/{model_id}", response_model=SuccessResponse[dict],include_in_schema=False)
 async def delete_model(
     model_id: uuid.UUID,
     hard_delete: bool = Query(False, description="Perform hard delete instead of soft delete"),
@@ -163,7 +163,7 @@ async def delete_model(
         raise HTTPException(status_code=500, detail=f"Failed to delete model: {str(e)}")
 
 
-@router.get("/provider/{provider_id}", response_model=SuccessResponse[ModelList])
+@router.get("/provider/{provider_id}", response_model=SuccessResponse[ModelList],include_in_schema=False)
 async def get_models_by_provider(
     provider_id: uuid.UUID,
     user = Depends(require_tenant),

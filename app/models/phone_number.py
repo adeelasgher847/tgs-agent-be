@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Integer, ForeignKey
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -12,7 +12,7 @@ class PhoneNumber(Base):
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False, index=True)
     
     # Basic phone number info
-    phone_number = Column(String(20), nullable=False, unique=True, index=True)  # +1234567890
+    phone_number = Column(String(20), nullable=False, index=True)  # +1234567890
     label = Column(String(100), nullable=True)  # Custom label
     status = Column(String(20), nullable=False, default="active")  # active, inactive
     
@@ -28,6 +28,11 @@ class PhoneNumber(Base):
     
     # Relationships
     tenant = relationship("Tenant", back_populates="phone_numbers")
+    
+    # Composite unique constraint: phone_number must be unique within each tenant
+    __table_args__ = (
+        UniqueConstraint('tenant_id', 'phone_number', name='uq_phone_number_per_tenant'),
+    )
     
     def __repr__(self):
         return f"<PhoneNumber(id={self.id}, number={self.phone_number}, label={self.label})>"

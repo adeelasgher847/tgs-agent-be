@@ -11,7 +11,7 @@ import uuid
 
 router = APIRouter()
 
-@router.post("/", response_model=SuccessResponse[RoleOut])
+@router.post("/", response_model=SuccessResponse[RoleOut],include_in_schema=False)
 def create_role(role_in: RoleCreate, user: User = Depends(require_admin_or_owner) , db: Session = Depends(get_db)):
     """Create a new role"""
     # Check if role name already exists
@@ -25,7 +25,7 @@ def create_role(role_in: RoleCreate, user: User = Depends(require_admin_or_owner
     db.refresh(db_role)
     return create_success_response(db_role, "Role created successfully", status.HTTP_201_CREATED)
 
-@router.get("/", response_model=SuccessResponse[List[RoleOut]])
+@router.get("/", response_model=SuccessResponse[List[RoleOut]],include_in_schema=False)
 def get_roles(skip: int = 0, limit: int = 100, user: User = Depends(require_admin_or_owner), db: Session = Depends(get_db)):
     """Get all roles"""
     roles = db.query(Role).offset(skip).limit(limit).all()
@@ -39,7 +39,7 @@ def get_role(role_id: uuid.UUID, user: User = Depends(require_admin_or_owner), d
         raise HTTPException(status_code=404, detail="Role not found")
     return create_success_response(role, "Role retrieved successfully")
 
-@router.put("/{role_id}", response_model=SuccessResponse[RoleOut])
+@router.put("/{role_id}", response_model=SuccessResponse[RoleOut],include_in_schema=False)
 def update_role(role_id: uuid.UUID, role_in: RoleCreate, user: User = Depends(require_admin_or_owner), db: Session = Depends(get_db)):
     """Update a role"""
     role = db.query(Role).filter(Role.id == role_id).first()
@@ -59,7 +59,7 @@ def update_role(role_id: uuid.UUID, role_in: RoleCreate, user: User = Depends(re
     db.refresh(role)
     return create_success_response(role, "Role updated successfully")
 
-@router.delete("/{role_id}", response_model=SuccessResponse[dict])
+@router.delete("/{role_id}", response_model=SuccessResponse[dict],include_in_schema=False)
 def delete_role(role_id: uuid.UUID, user: User = Depends(require_admin_or_owner), db: Session = Depends(get_db)):
     """Delete a role"""
     role = db.query(Role).filter(Role.id == role_id).first()

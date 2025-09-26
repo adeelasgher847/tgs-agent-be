@@ -163,7 +163,7 @@ async def initiate_call(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/webhook/call-events", response_class=HTMLResponse)
+@router.post("/webhook/call-events", response_class=HTMLResponse,include_in_schema=False)
 async def handle_call_events_webhook(
     request: Request,
     agentId: Optional[str] = Query(None),

@@ -10,13 +10,14 @@ from app.schemas.phone_number import (
     CreatePhoneNumberRequest, CreatePhoneNumberResponse,
     PhoneNumberUpdate
 )
+from app.schemas.base import SuccessResponse
 from app.services.phone_number_service import phone_number_service
 from app.services.twilio_service import twilio_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
 
-@router.get("/", response_model=PhoneNumberList)
+@router.get("/", response_model=SuccessResponse[PhoneNumberList])
 async def get_phone_numbers(
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
@@ -39,15 +40,18 @@ async def get_phone_numbers(
                 updated_at=pn.updated_at
             ))
         
-        return PhoneNumberList(
-            phone_numbers=phone_number_responses,
-            total=len(phone_number_responses)
+        return create_success_response(
+            PhoneNumberList(
+                phone_numbers=phone_number_responses,
+                total=len(phone_number_responses)
+            ),
+            f"Retrieved {len(phone_number_responses)} phone numbers"
         )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/", response_model=CreatePhoneNumberResponse)
+@router.post("/", response_model=SuccessResponse[CreatePhoneNumberResponse])
 async def create_phone_number(
     request: CreatePhoneNumberRequest,
     user: User = Depends(require_tenant),
@@ -79,13 +83,16 @@ async def create_phone_number(
         
         phone_number = phone_number_service.create_phone_number(db, phone_number_data)
         
-        return CreatePhoneNumberResponse(
-            id=phone_number.id,
-            phone_number=phone_number.phone_number,
-            label=phone_number.label,
-            status=phone_number.status,
-            created_at=phone_number.created_at,
-            message="Phone number created successfully"
+        return create_success_response(
+            CreatePhoneNumberResponse(
+                id=phone_number.id,
+                phone_number=phone_number.phone_number,
+                label=phone_number.label,
+                status=phone_number.status,
+                created_at=phone_number.created_at,
+                message="Phone number created successfully"
+            ),
+            "Phone number created successfully"
         )
         
     except HTTPException:
@@ -95,91 +102,8 @@ async def create_phone_number(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/{phone_number_id}", response_model=PhoneNumberResponse)
-async def get_phone_number(
-    phone_number_id: uuid.UUID,
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """Get a specific phone number"""
-    try:
-        phone_number = phone_number_service.get_phone_number_by_id(db, phone_number_id, user.current_tenant_id)
-        
-        if not phone_number:
-            raise HTTPException(status_code=404, detail="Phone number not found")
-        
-        return PhoneNumberResponse(
-            id=phone_number.id,
-            tenant_id=phone_number.tenant_id,
-            phone_number=phone_number.phone_number,
-            label=phone_number.label,
-            status=phone_number.status,
-            assistant_id=phone_number.assistant_id,
-            twilio_phone_number_sid=phone_number.twilio_phone_number_sid,
-            created_at=phone_number.created_at,
-            updated_at=phone_number.updated_at
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.put("/{phone_number_id}", response_model=PhoneNumberResponse)
-async def update_phone_number(
-    phone_number_id: uuid.UUID,
-    request: PhoneNumberUpdate,
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """Update a phone number"""
-    try:
-        phone_number = phone_number_service.update_phone_number(db, phone_number_id, user.current_tenant_id, request)
-        
-        if not phone_number:
-            raise HTTPException(status_code=404, detail="Phone number not found")
-        
-        return PhoneNumberResponse(
-            id=phone_number.id,
-            tenant_id=phone_number.tenant_id,
-            phone_number=phone_number.phone_number,
-            label=phone_number.label,
-            status=phone_number.status,
-            assistant_id=phone_number.assistant_id,
-            twilio_phone_number_sid=phone_number.twilio_phone_number_sid,
-            created_at=phone_number.created_at,
-            updated_at=phone_number.updated_at
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/{phone_number_id}")
-async def delete_phone_number(
-    phone_number_id: uuid.UUID,
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """Delete a phone number"""
-    try:
-        success = phone_number_service.delete_phone_number(db, phone_number_id, user.current_tenant_id)
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Phone number not found")
-        
-        return create_success_response(
-            {"message": "Phone number deleted successfully"},
-            "Phone number deleted successfully"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/twilio/available",include_in_schema=False)
+# Specific routes must come before parameterized routes
+@router.get("/twilio/available", include_in_schema=False)
 async def get_available_phone_numbers(
     country_code: str = Query(default="US", description="Country code (e.g., US, CA, GB)"),
     area_code: Optional[str] = Query(default=None, description="Specific area code to search for"),
@@ -251,7 +175,7 @@ async def get_owned_phone_numbers(
         print(f"❌ Error fetching owned numbers: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch owned numbers: {str(e)}")
 
-@router.get("/twilio/account-info",include_in_schema=False)
+@router.get("/twilio/account-info", include_in_schema=False)
 async def get_twilio_account_info(
     user: User = Depends(require_tenant)
 ):
@@ -274,7 +198,7 @@ async def get_twilio_account_info(
         print(f"❌ Error fetching account info: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch account info: {str(e)}")
 
-@router.post("/twilio/purchase",include_in_schema=False)
+@router.post("/twilio/purchase", include_in_schema=False)
 async def purchase_phone_number(
     phone_number: str = Query(..., description="Phone number to purchase (e.g., +1234567890)"),
     webhook_url: Optional[str] = Query(default=None, description="Webhook URL for incoming calls"),
@@ -313,7 +237,7 @@ async def purchase_phone_number(
         print(f"❌ Error purchasing phone number: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to purchase phone number: {str(e)}")
 
-@router.get("/twilio/verified",include_in_schema=False)
+@router.get("/twilio/verified", include_in_schema=False)
 async def get_verified_phone_numbers(
     user: User = Depends(require_tenant)
 ):
@@ -349,3 +273,93 @@ async def get_verified_phone_numbers(
     except Exception as e:
         print(f"❌ Error fetching verified numbers: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch verified numbers: {str(e)}")
+
+@router.get("/{phone_number_id}", response_model=SuccessResponse[PhoneNumberResponse])
+async def get_phone_number(
+    phone_number_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """Get a specific phone number"""
+    try:
+        phone_number = phone_number_service.get_phone_number_by_id(db, phone_number_id, user.current_tenant_id)
+        
+        if not phone_number:
+            raise HTTPException(status_code=404, detail="Phone number not found")
+        
+        return create_success_response(
+            PhoneNumberResponse(
+                id=phone_number.id,
+                tenant_id=phone_number.tenant_id,
+                phone_number=phone_number.phone_number,
+                label=phone_number.label,
+                status=phone_number.status,
+                assistant_id=phone_number.assistant_id,
+                twilio_phone_number_sid=phone_number.twilio_phone_number_sid,
+                created_at=phone_number.created_at,
+                updated_at=phone_number.updated_at
+            ),
+            "Phone number retrieved successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/{phone_number_id}", response_model=SuccessResponse[PhoneNumberResponse])
+async def update_phone_number(
+    phone_number_id: uuid.UUID,
+    request: PhoneNumberUpdate,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """Update a phone number"""
+    try:
+        phone_number = phone_number_service.update_phone_number(db, phone_number_id, user.current_tenant_id, request)
+        
+        if not phone_number:
+            raise HTTPException(status_code=404, detail="Phone number not found")
+        
+        return create_success_response(
+            PhoneNumberResponse(
+                id=phone_number.id,
+                tenant_id=phone_number.tenant_id,
+                phone_number=phone_number.phone_number,
+                label=phone_number.label,
+                status=phone_number.status,
+                assistant_id=phone_number.assistant_id,
+                twilio_phone_number_sid=phone_number.twilio_phone_number_sid,
+                created_at=phone_number.created_at,
+                updated_at=phone_number.updated_at
+            ),
+            "Phone number updated successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/{phone_number_id}", response_model=SuccessResponse[dict])
+async def delete_phone_number(
+    phone_number_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """Delete a phone number"""
+    try:
+        success = phone_number_service.delete_phone_number(db, phone_number_id, user.current_tenant_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Phone number not found")
+        
+        return create_success_response(
+            {"message": "Phone number deleted successfully"},
+            "Phone number deleted successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

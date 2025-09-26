@@ -199,13 +199,13 @@ class TwilioService:
                     'sid': number.sid,
                     'phone_number': number.phone_number,
                     'friendly_name': number.friendly_name,
-                    'voice_url': number.voice_url,
-                    'voice_method': number.voice_method,
-                    'status_callback': number.status_callback,
-                    'status_callback_method': number.status_callback_method,
-                    'capabilities': number.capabilities,
-                    'date_created': str(number.date_created),
-                    'date_updated': str(number.date_updated)
+                    # 'voice_url': number.voice_url,
+                    # 'voice_method': number.voice_method,
+                    # 'status_callback': number.status_callback,
+                    # 'status_callback_method': number.status_callback_method,
+                    # 'capabilities': number.capabilities,
+                    # 'date_created': str(number.date_created),
+                    # 'date_updated': str(number.date_updated)
                 })
             
             return results
