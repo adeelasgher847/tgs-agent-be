@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.api.deps import get_db, require_tenant
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
@@ -19,7 +19,7 @@ from app.utils.twilio_validation import validate_twilio_signature, validate_webr
 from app.utils.response import create_success_response
 from app.core.config import settings
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -27,7 +27,7 @@ router = APIRouter()
 def _add_to_transcript(call_session, message_type: str, content: str, timestamp: datetime = None):
     """Add a message to the call session transcript"""
     if timestamp is None:
-        timestamp = datetime.now()
+        timestamp = datetime.now(timezone.utc)
     
     # Initialize transcript if it doesn't exist
     if not call_session.call_transcript:
@@ -192,7 +192,7 @@ async def handle_call_events_webhook(
     db: Session = Depends(get_db)
 ):
     print("=== Call Events Webhook Started === print check")
-    print(f"Timestamp: {datetime.now().isoformat()}")
+    print(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
     print(f"Request method: {request.method}")
     print(f"Request URL: {request.url}")
     print(f"Request headers: {dict(request.headers)}")
@@ -221,11 +221,11 @@ async def handle_call_events_webhook(
                         
                         # Set start time when call becomes in-progress
                         if call_status == "in-progress" and not call_session.start_time:
-                            call_session.start_time = datetime.now()
+                            call_session.start_time = datetime.now(timezone.utc)
                         
                         # Set end time and calculate duration when call completes
                         if call_status == "completed":
-                            call_session.end_time = datetime.now()
+                            call_session.end_time = datetime.now(timezone.utc)
                             if call_session.start_time:
                                 duration = (call_session.end_time - call_session.start_time).total_seconds()
                                 call_session.duration = int(duration)
@@ -233,6 +233,7 @@ async def handle_call_events_webhook(
                             # Save transcript to database when call completes
                             if call_session.call_transcript:
                                 print(f"📝 Saving transcript with {len(call_session.call_transcript)} messages")
+                                print(f"📝 Transcript content: {call_session.call_transcript}")
                         
                         db.commit()
                         print(f"✅ Updated call session {call_session.id} status to: {call_status}")
@@ -314,7 +315,7 @@ async def handle_call_events_webhook(
             print(f"🎤 SPEECH DETECTED: '{speech_result}'")
             print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
             print(f"📞 Call SID: {call_sid}")
-            print(f"⏰ Timestamp: {datetime.now()}")
+            print(f"⏰ Timestamp: {datetime.now(timezone.utc)}")
             print(f"🏢 Tenant ID: {agent.tenant_id if agent else 'Unknown'}")
             print(f"🤖 Agent: {agent.name if agent else 'Unknown'}")
             print("=" * 60)
@@ -400,7 +401,7 @@ async def handle_call_events_webhook(
             print("=" * 60)
             print(f"🔇 NO SPEECH DETECTED - KEEPING CALL ALIVE")
             print(f"📞 Call SID: {call_sid}")
-            print(f"⏰ Timestamp: {datetime.now()}")
+            print(f"⏰ Timestamp: {datetime.now(timezone.utc)}")
             print(f"🏢 Tenant ID: {agent.tenant_id if agent else 'Unknown'}")
             print("=" * 60)
             
@@ -512,7 +513,7 @@ async def handle_call_events_webhook(
                             "call_sid": call_sid,
                             "agent_name": agent_name,
                             "agent_id": str(agent.id) if agent else None,
-                            "timestamp": datetime.now().isoformat()
+                            "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     )
             except Exception as e:
