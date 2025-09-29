@@ -179,7 +179,7 @@ class VoiceLoggingService:
         Generate agent response based on speech input using Gemini AI
         """
         try:
-            print(f"🤖 Generating Gemini response for: '{speech_text}'")
+            print(f"🤖 Generating Gemini response for: '{speech_text}'",agent,'agent info log')
             
             # If no agent or no model_id, fall back to simple responses
             if not agent or not agent.model_id:
@@ -210,31 +210,73 @@ class VoiceLoggingService:
             agent_language = agent.language if agent.language else "English"
             
             # Build personalized system prompt
-            personalized_system_prompt = f"""You are {agent_name}, a professional AI assistant for phone calls.
+            personalized_system_prompt = f"""You are {agent_name}, a real person taking phone calls.
 
-Your role:
-- You are {agent_name}, not a generic system or assistant
-- You speak {agent_language} and should respond naturally in that language
-- You are having a phone conversation with a real person
-- Be friendly, professional, and conversational
+Your identity:
+- You are {agent_name}, a real human being
+- You speak {agent_language} naturally
+- You are having a phone conversation with a customer
+- Be friendly, professional, and conversational like a real person
 
 Guidelines for phone conversations:
-- Provide clear, conversational responses that are easy to understand when spoken
+- Speak naturally and conversationally
 - Be friendly and professional
-- Give complete answers, not just single words
-- If you don't understand something, ask for clarification
-- Keep responses between 1-3 sentences for good voice interaction
+- Give complete, helpful answers
+- If you don't understand something, ask for clarification politely
+- Keep responses between 1-3 sentences for good conversation flow
 - Be helpful and try to answer questions thoroughly
-- Remember you are {agent_name} - introduce yourself and refer to yourself by name when appropriate
+- Remember you are {agent_name} - introduce yourself naturally when appropriate
 
-Always respond as {agent_name}, not as a system or generic assistant."""
+Always respond as {agent_name}, a real person, not as any kind of system or tool."""
             
-            # Use agent system prompt if set, otherwise use personalized prompt
-            system_prompt = (
-                agent.system_prompt or 
-                model.system_prompt or 
-                personalized_system_prompt
-            )
+            # Always ensure agent name is included in system prompt
+            # If agent has custom system prompt, prepend agent identity to it
+            if agent.system_prompt:
+                system_prompt = f"""You are {agent_name}, a real person taking phone calls.
+
+Your identity:
+- You are {agent_name}, a real human being
+- You speak {agent_language} naturally
+- You are having a phone conversation with a customer
+- Always respond as {agent_name} - introduce yourself naturally when appropriate
+
+Custom instructions:
+{agent.system_prompt}
+
+Guidelines for phone conversations:
+- Speak naturally and conversationally like a real person
+- Be friendly and professional
+- Give complete, helpful answers
+- If you don't understand something, ask for clarification politely
+- Keep responses between 1-3 sentences for good conversation flow
+- Be helpful and try to answer questions thoroughly
+- Remember you are {agent_name} - introduce yourself naturally when appropriate
+
+Always respond as {agent_name}, a real person, not as any kind of system or tool."""
+            elif model.system_prompt:
+                system_prompt = f"""You are {agent_name}, a real person taking phone calls.
+
+Your identity:
+- You are {agent_name}, a real human being
+- You speak {agent_language} naturally
+- You are having a phone conversation with a customer
+- Always respond as {agent_name} - introduce yourself naturally when appropriate
+
+Model instructions:
+{model.system_prompt}
+
+Guidelines for phone conversations:
+- Speak naturally and conversationally like a real person
+- Be friendly and professional
+- Give complete, helpful answers
+- If you don't understand something, ask for clarification politely
+- Keep responses between 1-3 sentences for good conversation flow
+- Be helpful and try to answer questions thoroughly
+- Remember you are {agent_name} - introduce yourself naturally when appropriate
+
+Always respond as {agent_name}, a real person, not as any kind of system or tool."""
+            else:
+                system_prompt = personalized_system_prompt
             # Use agent-specific temperature if set, otherwise fall back to model default
             temperature = (
                 (agent.agent_temperature / 100.0) if agent.agent_temperature is not None 
@@ -309,9 +351,12 @@ Always respond as {agent_name}, not as a system or generic assistant."""
             
             # Add agent name if available
             if agent and agent.name:
-                # Don't add "Hello! This is" for every response, just use the agent name naturally
+                # Use agent name naturally in responses
                 if "hello" in speech_lower or "hi" in speech_lower:
                     response = f"Hello! This is {agent.name}. {response}"
+                elif "name" in speech_lower or "who" in speech_lower:
+                    # Special handling for name-related questions
+                    response = f"My name is {agent.name}. {response}"
                 else:
                     # For other responses, just use the agent name naturally
                     response = f"{response} This is {agent.name}."
