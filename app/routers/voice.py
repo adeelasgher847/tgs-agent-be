@@ -814,7 +814,7 @@ async def handle_recording_status_webhook(
         return HTMLResponse("", media_type="application/xml")
 
 
-@router.get("/recording/{call_session_id}/access")
+@router.get("/recording/{call_session_id}/access", response_model=SuccessResponse[dict])
 async def get_recording_access(
     call_session_id: str,
     user: User = Depends(require_tenant),
@@ -822,7 +822,7 @@ async def get_recording_access(
 ):
     """
     Get direct access to call recording for authenticated users.
-    Validates user access and redirects to Twilio recording URL.
+    Returns the authenticated Twilio recording URL.
     """
     try:
         # Get call session and verify user has access
@@ -849,9 +849,15 @@ async def get_recording_access(
         # Create authenticated Twilio URL
         authenticated_url = f"https://{account_sid}:{auth_token}@api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
         
-        # Redirect to the authenticated URL
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=authenticated_url, status_code=302)
+        # Return the URL in JSON response instead of redirecting
+        return create_success_response(
+            {
+                "call_session_id": call_session_id,
+                "recording_url": authenticated_url,
+                "message": "Use the recording_url to access the call recording directly"
+            },
+            "Recording access URL generated successfully"
+        )
         
     except HTTPException:
         raise
