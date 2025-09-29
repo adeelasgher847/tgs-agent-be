@@ -764,145 +764,6 @@ async def get_dashboard_analytics(
         raise HTTPException(status_code=500, detail=f"Failed to get dashboard analytics: {str(e)}")
 
 
-@router.get("/call-recordings/{call_sid}", response_model=SuccessResponse[dict])
-async def get_call_recordings(
-    call_sid: str,
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """
-    Get call recordings for a specific call SID.
-    Returns recording URLs and metadata.
-    """
-    try:
-        # Verify the call belongs to the user's tenant
-        call_session = db.query(CallSession).filter(
-            CallSession.twilio_call_sid == call_sid,
-            CallSession.tenant_id == user.current_tenant_id
-        ).first()
-        
-        if not call_session:
-            raise HTTPException(status_code=404, detail="Call not found or access denied")
-        
-        # Check if call has recordings
-        has_recordings = twilio_service.has_call_recordings(call_sid)
-        
-        if not has_recordings:
-            return create_success_response(
-                {
-                    "call_sid": call_sid,
-                    "call_session_id": str(call_session.id),
-                    "recordings": [],
-                    "total_recordings": 0,
-                    "message": "No recordings found for this call. Recordings may not be available yet or recording was not enabled.",
-                    "generated_at": datetime.now(timezone.utc).isoformat()
-                },
-                f"No recordings found for call {call_sid}"
-            )
-        
-        # Get recordings from Twilio
-        recordings = twilio_service.get_call_recordings(call_sid)
-        
-        # Format recording data
-        recording_data = []
-        for recording in recordings:
-            recording_info = twilio_service.get_recording_url(recording.sid)
-            recording_data.append(recording_info)
-        
-        # Update call session with recording URL if available and completed
-        if recording_data and not call_session.recording_url:
-            # Use the first completed recording URL
-            for recording_info in recording_data:
-                if recording_info.get('url'):
-                    call_session.recording_url = recording_info['url']
-                    db.commit()
-                    break
-        
-        response_data = {
-            "call_sid": call_sid,
-            "call_session_id": str(call_session.id),
-            "recordings": recording_data,
-            "total_recordings": len(recording_data),
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
-        
-        return create_success_response(
-            response_data,
-            f"Retrieved {len(recording_data)} recordings for call {call_sid}"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get call recordings: {str(e)}")
-
-
-@router.get("/call-session/{session_id}/recording", response_model=SuccessResponse[dict])
-async def get_call_session_recording(
-    session_id: str,
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """
-    Get recording URL for a specific call session.
-    """
-    try:
-        # Get call session
-        call_session = db.query(CallSession).filter(
-            CallSession.id == session_id,
-            CallSession.tenant_id == user.current_tenant_id
-        ).first()
-        
-        if not call_session:
-            raise HTTPException(status_code=404, detail="Call session not found")
-        
-        if not call_session.twilio_call_sid:
-            raise HTTPException(status_code=404, detail="No Twilio call SID found for this session")
-        
-        # Check if call has recordings
-        has_recordings = twilio_service.has_call_recordings(call_session.twilio_call_sid)
-        
-        if not has_recordings:
-            return create_success_response(
-                {
-                    "recording_url": None, 
-                    "message": "No recordings found for this call. Recordings may not be available yet or recording was not enabled.",
-                    "recording_status": "not_available"
-                },
-                "No recordings available for this call session"
-            )
-        
-        # Get recordings from Twilio
-        recordings = twilio_service.get_call_recordings(call_session.twilio_call_sid)
-        
-        # Get the first recording info
-        recording_info = twilio_service.get_recording_url(recordings[0].sid)
-        
-        # Update call session with recording URL if not already set and recording is completed
-        if not call_session.recording_url and recording_info.get('url'):
-            call_session.recording_url = recording_info['url']
-            db.commit()
-        
-        response_data = {
-            "call_session_id": str(call_session.id),
-            "call_sid": call_session.twilio_call_sid,
-            "recording_url": recording_info['url'],
-            "recording_duration": recording_info['duration'],
-            "recording_status": recording_info['status'],
-            "recording_channels": recording_info['channels']
-        }
-        
-        return create_success_response(
-            response_data,
-            f"Retrieved recording for call session {session_id}"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get call session recording: {str(e)}")
-
-
 @router.post("/webhook/recording-status")
 async def handle_recording_status_webhook(
     request: Request,
@@ -951,6 +812,51 @@ async def handle_recording_status_webhook(
     except Exception as e:
         print(f"⚠️ Error handling recording status webhook: {e}")
         return HTMLResponse("", media_type="application/xml")
+
+
+@router.get("/recording/{call_session_id}/access")
+async def get_recording_access(
+    call_session_id: str,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get direct access to call recording for authenticated users.
+    Validates user access and redirects to Twilio recording URL.
+    """
+    try:
+        # Get call session and verify user has access
+        call_session = db.query(CallSession).filter(
+            CallSession.id == call_session_id,
+            CallSession.tenant_id == user.current_tenant_id
+        ).first()
+        
+        if not call_session:
+            raise HTTPException(status_code=404, detail="Call session not found or access denied")
+        
+        if not call_session.recording_url:
+            raise HTTPException(status_code=404, detail="No recording available for this call")
+        
+        # Get Twilio credentials to create authenticated URL
+        from app.services.twilio_service import twilio_service
+        client = twilio_service.get_client()
+        account_sid = client.username
+        auth_token = client.password
+        
+        # Extract recording SID from the URL
+        recording_sid = call_session.recording_url.split('/')[-1].replace('.mp3', '')
+        
+        # Create authenticated Twilio URL
+        authenticated_url = f"https://{account_sid}:{auth_token}@api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
+        
+        # Redirect to the authenticated URL
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=authenticated_url, status_code=302)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to access recording: {str(e)}")
 
 
 # def _generate_default_response() -> str:
