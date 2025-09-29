@@ -47,43 +47,43 @@ def _add_to_transcript(call_session, message_type: str, content: str, timestamp:
 def get_agent_voice(agent) -> str:
     """Get the appropriate Twilio voice based on agent's voice type and language"""
     if not agent:
-        return "en-US-Neural2-F"  # Default female voice
+        return "Polly.Joanna"  # Default female voice
     
     # Get voice type and language from agent
     voice_type = agent.voice_type
     language = agent.language
     
-    # Voice mapping based on language and gender
+    # Voice mapping based on language and gender using correct Twilio voice names
     voice_map = {
         # English voices
         "en": {
-            "male": "en-US-Neural2-M",
-            "female": "en-US-Neural2-F"
+            "male": "Polly.Matthew",
+            "female": "Polly.Joanna"
         },
         # Spanish voices
         "es": {
-            "male": "es-US-Neural2-M",
-            "female": "es-US-Neural2-F"
+            "male": "Polly.Miguel",
+            "female": "Polly.Penelope"
         },
         # Hindi voices
         "hi": {
-            "male": "hi-IN-Neural2-M",
-            "female": "hi-IN-Neural2-F"
+            "male": "Polly.Aditi",
+            "female": "Polly.Aditi"
         },
         # Arabic voices
         "ar": {
-            "male": "ar-XA-Neural2-M",
-            "female": "ar-XA-Neural2-F"
+            "male": "Polly.Zeina",
+            "female": "Polly.Zeina"
         },
         # Chinese voices
         "zh": {
-            "male": "zh-CN-Neural2-M",
-            "female": "zh-CN-Neural2-F"
+            "male": "Polly.Zhiyu",
+            "female": "Polly.Zhiyu"
         },
         # Urdu voices
         "ur": {
-            "male": "ur-PK-Neural2-M",
-            "female": "ur-PK-Neural2-F"
+            "male": "Polly.Aditi",
+            "female": "Polly.Aditi"
         }
     }
     
@@ -96,7 +96,7 @@ def get_agent_voice(agent) -> str:
         voice_type = "female"
     
     # Get the voice from the mapping
-    selected_voice = voice_map.get(language, voice_map["en"]).get(voice_type, "en-US-Neural2-F")
+    selected_voice = voice_map.get(language, voice_map["en"]).get(voice_type, "Polly.Joanna")
     
     print(f"🎤 Agent voice selection: language={language}, voice_type={voice_type}, selected_voice={selected_voice}")
     
@@ -408,11 +408,11 @@ async def handle_call_events_webhook(
             
             response = VoiceResponse()
             agent_voice = get_agent_voice(agent)
-            response.say("I didn't hear anything. Let me try again.", voice=agent_voice)
+            response.say("Sorry, I didn't catch that.", voice=agent_voice)
+            response.pause(length=0.5)
+            response.say("Could you speak a bit louder?", voice=agent_voice)
             response.pause(length=1)
-            response.say("Please speak clearly into your phone.", voice=agent_voice)
-            response.pause(length=2)
-            response.say("I am still listening.", voice=agent_voice)
+            response.say("I'm still here.", voice=agent_voice)
             
             # Keep listening with single gather - no multiple attempts
             response.gather(
@@ -424,8 +424,8 @@ async def handle_call_events_webhook(
             )
             
             # Gentle reminder only
-            response.say("I'm still listening. Please speak when ready.", voice=agent_voice)
-            response.pause(length=2)
+            response.say("I'm still listening. Go ahead when you're ready.", voice=agent_voice)
+            response.pause(length=1)
             
             # Final attempt with longer timeout
             response.gather(
@@ -437,7 +437,7 @@ async def handle_call_events_webhook(
             )
             
             # Only hangup after very long silence
-            response.say("I haven't heard anything for a while. Thank you for calling!", voice=agent_voice)
+            response.say("I haven't heard anything for a while. Thanks for calling!", voice=agent_voice)
             response.hangup()
             
             print(f"📝 Extended listening response: {str(response)[:200]}...")
@@ -490,14 +490,14 @@ async def handle_call_events_webhook(
                     print(f"⚠️ Error fetching agent: {e}")
                     agent = None
             
-            # Smooth, natural greeting with agent-specific voice
+            # Natural, conversational greeting with agent-specific voice
             agent_voice = get_agent_voice(agent)
-            greeting_text = f"Hello! This is {agent_name}. How can I help you today? I'm listening."
-            response.say(f"Hello! This is {agent_name}.", voice=agent_voice)
-            response.pause(length=1)  # Natural pause
-            response.say("How can I help you today?", voice=agent_voice)
-            response.pause(length=1)  # Natural pause
-            response.say("I'm listening.", voice=agent_voice)
+            greeting_text = f"Hi! This is {agent_name}. How are you doing today? What can I help you with?"
+            response.say(f"Hi! This is {agent_name}.", voice=agent_voice)
+            response.pause(length=0.5)  # Natural pause
+            response.say("How are you doing today?", voice=agent_voice)
+            response.pause(length=0.5)  # Natural pause
+            response.say("What can I help you with?", voice=agent_voice)
             
             # Add initial greeting to transcript
             if call_session:

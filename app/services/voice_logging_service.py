@@ -335,25 +335,25 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
             speech_lower = speech_text.lower()
             
             if "hello" in speech_lower or "hi" in speech_lower:
-                response = "Hello! How can I help you today?"
+                response = "Hi! How are you doing today?"
             elif "help" in speech_lower:
-                response = "I'm here to help you. What do you need assistance with?"
+                response = "I'm here to help! What do you need?"
             elif "thank" in speech_lower:
-                response = "You're welcome! Is there anything else I can help you with?"
+                response = "You're welcome! Anything else I can help with?"
             elif "goodbye" in speech_lower or "bye" in speech_lower:
-                response = "Thank you for calling. Have a great day!"
+                response = "Thanks for calling! Have a great day!"
             elif "price" in speech_lower or "cost" in speech_lower:
-                response = "I can help you with pricing information. What product or service are you interested in?"
+                response = "I can help with pricing info. What are you looking for?"
             elif "support" in speech_lower:
-                response = "I'm here to provide support. What issue are you experiencing?"
+                response = "I'm here to help! What's going on?"
             else:
-                response = f"I understand you said '{speech_text}'. Let me help you with that."
+                response = f"Got it, you said '{speech_text}'. How can I help with that?"
             
             # Add agent name if available
             if agent and agent.name:
                 # Use agent name naturally in responses
                 if "hello" in speech_lower or "hi" in speech_lower:
-                    response = f"Hello! This is {agent.name}. {response}"
+                    response = f"Hi! This is {agent.name}. {response}"
                 elif "name" in speech_lower or "who" in speech_lower:
                     # Special handling for name-related questions
                     response = f"My name is {agent.name}. {response}"
@@ -368,9 +368,9 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
             print(f"❌ Error generating fallback response: {e}")
             # Use agent name in error response if available
             if agent and agent.name:
-                return f"I'm sorry, I didn't understand that. This is {agent.name}. Could you please repeat?"
+                return f"Sorry, I didn't catch that. This is {agent.name}. Could you repeat that?"
             else:
-                return "I'm sorry, I didn't understand that. Could you please repeat?"
+                return "Sorry, I didn't catch that. Could you repeat that?"
     
     @staticmethod
     async def log_call_events(

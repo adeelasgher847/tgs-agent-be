@@ -271,10 +271,10 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                     action=f'/voice/webhook/voice-process?agentId={agent.id}&sessionId={call_session.id if call_session else ""}',
                     method='POST'
                 )
-                gather.say("How else can I help you?", voice=tts_voice)
+                gather.say("What else can I help you with?", voice=tts_voice)
                 
                 # Fallback if no input
-                response.say("I didn't hear anything. Please let me know if you need anything else.", voice=tts_voice)
+                response.say("Sorry, I didn't catch that. Let me know if you need anything else.", voice=tts_voice)
                 
                 return HTMLResponse(str(response), media_type="application/xml")
                 
@@ -282,7 +282,7 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                 print(f"Error processing with OpenAI: {e}")
                 # Fallback response
                 response = VoiceResponse()
-                response.say("I'm sorry, but I'm having trouble processing your request right now. Please try again.", voice="")
+                response.say("Sorry, I'm having some trouble right now. Could you try again?", voice="Polly.Joanna")
                 
                 # Add gather for retry
                 gather = response.gather(
@@ -476,8 +476,8 @@ def _map_voice_type_to_tts(voice_type: str) -> str:
         TTS voice identifier
     """
     voice_mapping = {
-        "male": "en-US-Neural2-F",  # Male voice
-        "female": "en-US-Neural2-E",  # Female voice
+        "male": "Polly.Matthew",  # Male voice
+        "female": "Polly.Joanna",  # Female voice
         "alloy": "alloy",  # OpenAI TTS
         "echo": "echo",  # OpenAI TTS
         "fable": "fable",  # OpenAI TTS
@@ -486,4 +486,4 @@ def _map_voice_type_to_tts(voice_type: str) -> str:
         "shimmer": "shimmer"  # OpenAI TTS
     }
     
-    return voice_mapping.get(voice_type.lower(), "alloy")
+    return voice_mapping.get(voice_type.lower(), "Polly.Joanna")

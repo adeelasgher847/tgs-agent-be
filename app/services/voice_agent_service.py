@@ -44,7 +44,7 @@ class VoiceAgentManager:
             return True
         return False
     
-    def generate_agent_response(self, agent_id: str, call_data: Dict[str, Any]) -> str:
+    def generate_agent_response(self, agent_id: str, call_data: Dict[str, Any], agent_obj=None) -> str:
         """Generate TwiML response based on agent logic"""
         agent = self.get_agent(agent_id)
         if not agent:
@@ -53,8 +53,23 @@ class VoiceAgentManager:
         # Create TwiML response
         response = VoiceResponse()
         
-        # Agent-specific greeting
-        response.say(f"Hello! This is agent {agent_id} speaking. How can I help you today?", voice="alice")
+        # Get agent voice and name from passed agent object
+        agent_voice = "Polly.Joanna"  # Default voice
+        agent_name = agent_id  # Default to agent_id
+        
+        if agent_obj:
+            try:
+                from app.routers.voice import get_agent_voice
+                
+                agent_name = agent_obj.name
+                agent_voice = get_agent_voice(agent_obj)
+                print(f"🎤 Using agent voice: {agent_voice} for agent: {agent_name}")
+                    
+            except Exception as e:
+                print(f"⚠️ Error processing agent object: {e}")
+        
+        # Agent-specific greeting - natural and conversational
+        response.say(f"Hi there! This is {agent_name}. How are you doing today?", voice=agent_voice)
         
         # Add gather to collect user input
         gather = response.gather(
@@ -64,10 +79,10 @@ class VoiceAgentManager:
             action=f'/api/v1/voice/gather?agentId={agent_id}',
             method='POST'
         )
-        gather.say("Please tell me how I can assist you.", voice="alice")
+        gather.say("What can I help you with?", voice=agent_voice)
         
         # Fallback if no input
-        response.say("I didn't catch that. Let me transfer you to a human agent.", voice="alice")
+        response.say("Sorry, I didn't catch that. Could you repeat that for me?", voice=agent_voice)
         response.redirect('/api/v1/voice/transfer')
         
         return str(response)
@@ -75,9 +90,9 @@ class VoiceAgentManager:
     def _generate_default_response(self) -> str:
         """Generate default TwiML response"""
         response = VoiceResponse()
-        response.say("Thank you for calling. An agent will be with you shortly.", voice="alice")
+        response.say("Thanks for calling! Someone will be with you in just a moment.", voice="Polly.Joanna")
         response.pause(length=2)
-        response.say("Please hold while we connect you.", voice="alice")
+        response.say("Please hold on.", voice="Polly.Joanna")
         return str(response)
     
     def get_agent_status(self) -> Dict[str, Any]:
