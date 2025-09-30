@@ -173,10 +173,11 @@ class VoiceLoggingService:
         speech_text: str,
         confidence: float,
         agent: Optional[Agent] = None,
-        db: Optional[Session] = None
+        db: Optional[Session] = None,
+        call_session_id: Optional[uuid.UUID] = None
     ) -> str:
         """
-        Generate agent response based on speech input using Gemini AI
+        Generate agent response based on speech input using Gemini AI with conversation context
         """
         try:
             print(f"🤖 Generating Gemini response for: '{speech_text}'",agent,'agent info log')
@@ -209,7 +210,24 @@ class VoiceLoggingService:
             agent_name = agent.name if agent.name else "AI Assistant"
             agent_language = agent.language if agent.language else "English"
             
-            # Build personalized system prompt
+            # Get conversation context if call_session_id is provided
+            conversation_context = ""
+            if call_session_id and db:
+                try:
+                    call_session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+                    if call_session and call_session.call_transcript:
+                        # Get last few interactions for context
+                        recent_interactions = call_session.call_transcript[-6:]  # Last 6 interactions
+                        if recent_interactions:
+                            conversation_context = "\n\nPrevious conversation context:\n"
+                            for interaction in recent_interactions:
+                                speaker = "Customer" if interaction.get("speaker") == "customer" else "You"
+                                text = interaction.get("text", "")
+                                conversation_context += f"{speaker}: {text}\n"
+                except Exception as e:
+                    print(f"⚠️ Error getting conversation context: {e}")
+            
+            # Build personalized system prompt with conversation context
             personalized_system_prompt = f"""You are {agent_name}, a real person taking phone calls.
 
 Your identity:
@@ -219,15 +237,19 @@ Your identity:
 - Be friendly, professional, and conversational like a real person
 
 Guidelines for phone conversations:
-- Speak naturally and conversationally
-- Be friendly and professional
-- Give complete, helpful answers
+- Speak naturally and conversationally like a real person
+- Be friendly and engaging
+- Have natural conversations, not customer service interactions
 - If you don't understand something, ask for clarification politely
 - Keep responses between 1-3 sentences for good conversation flow
-- Be helpful and try to answer questions thoroughly
+- Be conversational and engaging, not robotic or service-oriented
 - Remember you are {agent_name} - introduce yourself naturally when appropriate
+- Use the conversation context to provide relevant, personalized responses
+- Build on previous topics naturally
+- Don't repeat information you've already shared unless asked
+- Talk like a friend, not like a helper or assistant
 
-Always respond as {agent_name}, a real person, not as any kind of system or tool."""
+Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             
             # Always ensure agent name is included in system prompt
             # If agent has custom system prompt, prepend agent identity to it
@@ -245,14 +267,18 @@ Custom instructions:
 
 Guidelines for phone conversations:
 - Speak naturally and conversationally like a real person
-- Be friendly and professional
-- Give complete, helpful answers
+- Be friendly and engaging
+- Have natural conversations, not customer service interactions
 - If you don't understand something, ask for clarification politely
 - Keep responses between 1-3 sentences for good conversation flow
-- Be helpful and try to answer questions thoroughly
+- Be conversational and engaging, not robotic or service-oriented
 - Remember you are {agent_name} - introduce yourself naturally when appropriate
+- Use the conversation context to provide relevant, personalized responses
+- Build on previous topics naturally
+- Don't repeat information you've already shared unless asked
+- Talk like a friend, not like a helper or assistant
 
-Always respond as {agent_name}, a real person, not as any kind of system or tool."""
+Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             elif model.system_prompt:
                 system_prompt = f"""You are {agent_name}, a real person taking phone calls.
 
@@ -267,14 +293,18 @@ Model instructions:
 
 Guidelines for phone conversations:
 - Speak naturally and conversationally like a real person
-- Be friendly and professional
-- Give complete, helpful answers
+- Be friendly and engaging
+- Have natural conversations, not customer service interactions
 - If you don't understand something, ask for clarification politely
 - Keep responses between 1-3 sentences for good conversation flow
-- Be helpful and try to answer questions thoroughly
+- Be conversational and engaging, not robotic or service-oriented
 - Remember you are {agent_name} - introduce yourself naturally when appropriate
+- Use the conversation context to provide relevant, personalized responses
+- Build on previous topics naturally
+- Don't repeat information you've already shared unless asked
+- Talk like a friend, not like a helper or assistant
 
-Always respond as {agent_name}, a real person, not as any kind of system or tool."""
+Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             else:
                 system_prompt = personalized_system_prompt
             # Use agent-specific temperature if set, otherwise fall back to model default
@@ -333,33 +363,28 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
         """
         try:
             speech_lower = speech_text.lower()
+            agent_name = agent.name if agent and agent.name else "AI Assistant"
             
             if "hello" in speech_lower or "hi" in speech_lower:
-                response = "Hi! How are you doing today?"
+                response = f"Hi there! This is {agent_name}. How are you doing today?"
             elif "help" in speech_lower:
-                response = "I'm here to help! What do you need?"
+                response = f"Sure! What's going on?"
             elif "thank" in speech_lower:
-                response = "You're welcome! Anything else I can help with?"
+                response = "You're welcome! What else would you like to talk about?"
             elif "goodbye" in speech_lower or "bye" in speech_lower:
-                response = "Thanks for calling! Have a great day!"
+                response = "Thanks for calling! Take care!"
             elif "price" in speech_lower or "cost" in speech_lower:
-                response = "I can help with pricing info. What are you looking for?"
+                response = "I can talk about pricing info. What are you looking for?"
             elif "support" in speech_lower:
-                response = "I'm here to help! What's going on?"
+                response = "Sure! What's going on?"
+            elif "name" in speech_lower or "who" in speech_lower:
+                response = f"My name is {agent_name}. What would you like to talk about?"
+            elif "how are you" in speech_lower:
+                response = f"I'm doing great, thank you for asking! How are you doing today?"
+            elif "what" in speech_lower and "do" in speech_lower:
+                response = f"I'm {agent_name}, and I'm here to chat with you. What's on your mind?"
             else:
-                response = f"Got it, you said '{speech_text}'. How can I help with that?"
-            
-            # Add agent name if available
-            if agent and agent.name:
-                # Use agent name naturally in responses
-                if "hello" in speech_lower or "hi" in speech_lower:
-                    response = f"Hi! This is {agent.name}. {response}"
-                elif "name" in speech_lower or "who" in speech_lower:
-                    # Special handling for name-related questions
-                    response = f"My name is {agent.name}. {response}"
-                else:
-                    # For other responses, just use the agent name naturally
-                    response = f"{response} This is {agent.name}."
+                response = f"Got it! What else would you like to talk about?"
             
             print(f"✅ Generated fallback response: '{response}'")
             return response
@@ -368,9 +393,9 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
             print(f"❌ Error generating fallback response: {e}")
             # Use agent name in error response if available
             if agent and agent.name:
-                return f"Sorry, I didn't catch that. This is {agent.name}. Could you repeat that?"
+                return f"Sorry, I didn't quite catch that. This is {agent.name}. Could you repeat that?"
             else:
-                return "Sorry, I didn't catch that. Could you repeat that?"
+                return "Sorry, I didn't quite catch that. Could you repeat that?"
     
     @staticmethod
     async def log_call_events(
