@@ -501,7 +501,7 @@ async def handle_call_events_webhook(
             
             # Get agent info
             agent = None
-            agent_name = "AI Assistant"
+            agent_name = "AI"
             if agentId:
                 try:
                     agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
@@ -528,15 +528,15 @@ async def handle_call_events_webhook(
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
-                # More natural greeting
-                response.say(f"Hi there! This is {agent_name}.", voice=agent_voice)
-                response.pause(length=0.5)
-                response.say("How are you doing today?", voice=agent_voice)
-                response.pause(length=0.5)
-                response.say("What's on your mind?", voice=agent_voice)
+                # More natural greeting - introduce name only once
+                response.say(f"Hey! This is {agent_name}.", voice=agent_voice)
+                response.pause(length=0.3)
+                response.say("How's it going?", voice=agent_voice)
+                response.pause(length=0.3)
+                response.say("What's up?", voice=agent_voice)
                 
                 # Add initial greeting to transcript
-                greeting_text = f"Hi there! This is {agent_name}. How are you doing today? What's on your mind?"
+                greeting_text = f"Hey! This is {agent_name}. How's it going? What's up?"
                 _add_to_transcript(call_session, "agent_response", greeting_text)
                 
                 # Log call answered event
