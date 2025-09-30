@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Table, ForeignKey, DateTime, Boolean
+from sqlalchemy import Column, String, Table, ForeignKey, DateTime, Boolean, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -23,6 +23,10 @@ class User(Base):
     join_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     current_tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id'), nullable=True)
+        # OAuth provider fields (for Google, etc.)
+    provider = Column(String, nullable=True, index=True)
+    provider_user_id = Column(String, nullable=True, index=True)
+    provider_profile = Column(JSON, nullable=True)  # JSON as string
     
     tenants = relationship("Tenant", secondary=user_tenant_association, back_populates="users")
     current_tenant = relationship("Tenant", foreign_keys=[current_tenant_id])
