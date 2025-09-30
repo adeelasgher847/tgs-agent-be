@@ -243,11 +243,12 @@ Guidelines for phone conversations:
 - If you don't understand something, ask for clarification politely
 - Keep responses between 1-3 sentences for good conversation flow
 - Be conversational and engaging, not robotic or service-oriented
-- Remember you are {agent_name} - introduce yourself naturally when appropriate
+- Remember you are {agent_name} - only mention your name when specifically asked or in the initial greeting
 - Use the conversation context to provide relevant, personalized responses
 - Build on previous topics naturally
 - Don't repeat information you've already shared unless asked
 - Talk like a friend, not like a helper or assistant
+- Don't constantly repeat your name - just talk naturally
 
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             
@@ -272,11 +273,12 @@ Guidelines for phone conversations:
 - If you don't understand something, ask for clarification politely
 - Keep responses between 1-3 sentences for good conversation flow
 - Be conversational and engaging, not robotic or service-oriented
-- Remember you are {agent_name} - introduce yourself naturally when appropriate
+- Remember you are {agent_name} - only mention your name when specifically asked or in the initial greeting
 - Use the conversation context to provide relevant, personalized responses
 - Build on previous topics naturally
 - Don't repeat information you've already shared unless asked
 - Talk like a friend, not like a helper or assistant
+- Don't constantly repeat your name - just talk naturally
 
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             elif model.system_prompt:
@@ -298,11 +300,12 @@ Guidelines for phone conversations:
 - If you don't understand something, ask for clarification politely
 - Keep responses between 1-3 sentences for good conversation flow
 - Be conversational and engaging, not robotic or service-oriented
-- Remember you are {agent_name} - introduce yourself naturally when appropriate
+- Remember you are {agent_name} - only mention your name when specifically asked or in the initial greeting
 - Use the conversation context to provide relevant, personalized responses
 - Build on previous topics naturally
 - Don't repeat information you've already shared unless asked
 - Talk like a friend, not like a helper or assistant
+- Don't constantly repeat your name - just talk naturally
 
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             else:
@@ -366,9 +369,9 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             agent_name = agent.name if agent and agent.name else "AI Assistant"
             
             if "hello" in speech_lower or "hi" in speech_lower:
-                response = f"Hi there! This is {agent_name}. How are you doing today?"
+                response = "Hi there! How are you doing today?"
             elif "help" in speech_lower:
-                response = f"Sure! What's going on?"
+                response = "Sure! What's going on?"
             elif "thank" in speech_lower:
                 response = "You're welcome! What else would you like to talk about?"
             elif "goodbye" in speech_lower or "bye" in speech_lower:
@@ -380,11 +383,11 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             elif "name" in speech_lower or "who" in speech_lower:
                 response = f"My name is {agent_name}. What would you like to talk about?"
             elif "how are you" in speech_lower:
-                response = f"I'm doing great, thank you for asking! How are you doing today?"
+                response = "I'm doing great, thank you for asking! How are you doing today?"
             elif "what" in speech_lower and "do" in speech_lower:
-                response = f"I'm {agent_name}, and I'm here to chat with you. What's on your mind?"
+                response = "I'm here to chat with you. What's on your mind?"
             else:
-                response = f"Got it! What else would you like to talk about?"
+                response = "Got it! What else would you like to talk about?"
             
             print(f"✅ Generated fallback response: '{response}'")
             return response
