@@ -1,8 +1,10 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
+from app.models.model import Model
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
+from app.services.billing_service import BillingService
 from fastapi import HTTPException, status
 import uuid
 
@@ -15,6 +17,26 @@ class AgentService:
         """
         Create a new agent with tenant context and audit trail
         """
+        # Check billing limits before creating agent
+        if not BillingService.check_agent_limit(db, tenant_id):
+            usage = BillingService.get_current_usage(db, tenant_id)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Agent limit exceeded. You have {usage['agents_used']}/{usage['agent_limit']} agents. Please upgrade your plan."
+            )
+        
+        # Validate model_id if provided
+        if agent_in.model_id:
+            model = db.query(Model).filter(
+                Model.id == agent_in.model_id,
+                Model.archive == False  # Only allow active models
+            ).first()
+            if not model:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid model_id. Model not found or is archived."
+                )
+
         # Check for duplicate name within tenant
         existing = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
@@ -26,15 +48,30 @@ class AgentService:
                 detail="Agent name must be unique within the tenant."
             )
 
-        agent_data = agent_in.model_dump()
-        agent_data['tenant_id'] = tenant_id
-
         # Sanitize string fields
+        agent_data = agent_in.model_dump()
         for field in ['name', 'system_prompt', 'fallback_response']:
             if field in agent_data and agent_data[field]:
                 agent_data[field] = agent_data[field].strip()
+        
+        # Validate agent-specific model configuration fields
+        if "agent_temperature" in agent_data and agent_data["agent_temperature"] is not None:
+            temp = agent_data["agent_temperature"]
+            if not (0 <= temp <= 100):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent temperature must be between 0 and 100."
+                )
+        
+        if "agent_max_tokens" in agent_data and agent_data["agent_max_tokens"] is not None:
+            tokens = agent_data["agent_max_tokens"]
+            if tokens <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent max tokens must be greater than 0."
+                )
+        
         # Add tenant_id and user audit fields to the agent data
-        agent_data = agent_in.model_dump()
         agent_data['tenant_id'] = tenant_id
         agent_data['created_by'] = user_id
         agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
@@ -43,6 +80,10 @@ class AgentService:
         db.add(db_agent)
         db.commit()
         db.refresh(db_agent)
+        
+        # Increment usage tracking
+        BillingService.increment_agent_usage(db, tenant_id)
+        
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
@@ -128,6 +169,18 @@ class AgentService:
         
         update_dict = agent_update.model_dump(exclude_unset=True)
 
+        # Validate model_id if being updated
+        if "model_id" in update_dict and update_dict["model_id"] is not None:
+            model = db.query(Model).filter(
+                Model.id == update_dict["model_id"],
+                Model.archive == False  # Only allow active models
+            ).first()
+            if not model:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid model_id. Model not found or is archived."
+                )
+
         # If name is being updated, check for duplicates
         if "name" in update_dict and update_dict["name"]:
             new_name = update_dict["name"].strip()
@@ -147,6 +200,23 @@ class AgentService:
         for field in ['system_prompt', 'fallback_response']:
             if field in update_dict and update_dict[field]:
                 update_dict[field] = update_dict[field].strip()
+
+        # Validate agent-specific model configuration fields
+        if "agent_temperature" in update_dict and update_dict["agent_temperature"] is not None:
+            temp = update_dict["agent_temperature"]
+            if not (0 <= temp <= 100):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent temperature must be between 0 and 100."
+                )
+        
+        if "agent_max_tokens" in update_dict and update_dict["agent_max_tokens"] is not None:
+            tokens = update_dict["agent_max_tokens"]
+            if tokens <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Agent max tokens must be greater than 0."
+                )
 
         for field, value in update_dict.items():
             setattr(agent, field, value)
@@ -191,5 +261,46 @@ class AgentService:
             Agent.tenant_id == tenant_id,
             func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
+    
+    def get_agent_effective_model_config(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Dict[str, Any]:
+        """
+        Get the effective model configuration for an agent.
+        Returns agent-specific values if set, otherwise falls back to model defaults.
+        """
+        agent = db.query(Agent).options(joinedload(Agent.model)).filter(
+            Agent.id == agent_id,
+            Agent.tenant_id == tenant_id
+        ).first()
+        
+        if not agent:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found"
+            )
+        
+        # If no model is assigned, return None
+        if not agent.model:
+            return {
+                "model_id": None,
+                "model_name": None,
+                "temperature": None,
+                "max_tokens": None,
+                "system_prompt": agent.system_prompt
+            }
+        
+        # Use agent-specific values if set, otherwise fall back to model defaults
+        effective_config = {
+            "model_id": agent.model_id,
+            "model_name": agent.model.model_name,
+            "temperature": agent.agent_temperature if agent.agent_temperature is not None else agent.model.temperature,
+            "max_tokens": agent.agent_max_tokens if agent.agent_max_tokens is not None else agent.model.max_tokens,
+            "system_prompt": (
+                agent.system_prompt or 
+                agent.model.system_prompt or 
+                "You are a helpful AI assistant for phone calls."
+            )
+        }
+        
+        return effective_config
 
 agent_service = AgentService() 
