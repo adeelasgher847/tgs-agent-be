@@ -4,14 +4,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import update
 from app.schemas.user import UserCreate, UserOut, UserProfile, UserUpdate, TenantMember
 from app.schemas.auth import LoginRequest, TokenResponse, RoleInfo, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ResetPasswordResponse
-from app.schemas.auth import RefreshRequest
+from app.schemas.auth import RefreshRequest, GoogleLoginRequest
 from app.schemas.base import SuccessResponse
 from app.models.user import User, user_tenant_association
 from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
-from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security
+from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security, issue_tokens_for_user
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
 from app.core.security import create_refresh_token_value, refresh_token_expires_at
 from app.core.security import is_token_expired, verify_token
@@ -20,6 +20,10 @@ from app.utils.response import create_success_response
 from app.utils.rate_limiter import login_rate_limit
 from datetime import datetime, timezone
 from app.services.role_service import get_user_role_in_tenant
+import secrets
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport.requests import Request as GoogleRequest
+from app.core.config import settings
 import uuid
 import re
 
@@ -200,6 +204,174 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     
     return create_success_response(token_response, "Login successful")
 
+
+@router.post("/login/google", response_model=SuccessResponse[TokenResponse])
+def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
+    try:
+        print('Google token received:', req.google_token)
+        idinfo = google_id_token.verify_oauth2_token(
+            req.google_token,
+            GoogleRequest(),
+            settings.GOOGLE_CLIENT_ID
+        )
+        print(idinfo)
+        # Fields we care about from Google
+        sub = idinfo.get("sub")  # stable Google user id
+        email = idinfo.get("email")
+        email_verified = idinfo.get("email_verified")
+        picture = idinfo.get("picture")
+        given_name = idinfo.get("given_name")
+        family_name = idinfo.get("family_name")
+        name = idinfo.get("name")
+
+        if not sub or not email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Google token missing required fields"
+            )
+    except Exception as e:
+        print("Google token decode error:", e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google token"
+        )
+
+    # Prefer matching by provider_user_id for stability
+    user = db.query(User).filter(
+        User.provider == "google",
+        User.provider_user_id == sub
+    ).first()
+
+    # If not found, try link by email (first-time social login)
+    if not user:
+        user = db.query(User).filter(User.email == email).first()
+
+    if not user:
+        # Create new user
+        # Always prefer provider-provided names. Fallback: split full name.
+        first_name = given_name or (name.split()[0] if name else None)
+        last_name = family_name or (" ".join(name.split()[1:]) if name and len(name.split()) > 1 else None)
+        hashed_password = get_password_hash(secrets.token_urlsafe(32))  # placeholder for social
+
+        db_user = User(
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            phone=None,
+            hashed_password="",  # provider-based user; no password stored
+            join_date=datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc),
+            provider="google",
+            provider_user_id=sub,
+            provider_profile={
+                "name": name,
+                "given_name": given_name,
+                "family_name": family_name,
+                "email": email,
+                "picture": picture
+            },
+        )
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+
+        # Create a personal tenant (same as normal register)
+        tenant_name = email
+        schema_name = re.sub(r'[^a-zA-Z0-9]', '_', tenant_name.lower())
+        schema_name = re.sub(r'_+', '_', schema_name).strip('_')
+        schema_name = f"{schema_name}_schema"
+
+        db_tenant = Tenant(
+            name=tenant_name,
+            schema_name=schema_name,
+            status="pending_payment"
+        )
+        db.add(db_tenant)
+        db.commit()
+        db.refresh(db_tenant)
+
+        # Create Stripe customer for the owner's tenant
+        try:
+            from app.services.stripe_service import StripeService
+            stripe_customer_id = StripeService.create_customer(
+                tenant=db_tenant,
+                email=email,
+                user=db_user
+            )
+            db_tenant.stripe_customer_id = stripe_customer_id
+            db.commit()
+        except Exception:
+            # Non-blocking: proceed without Stripe on failure
+            pass
+
+        owner_role = db.query(Role).filter(Role.name == "owner").first()
+
+        db_user.tenants.append(db_tenant)
+        db.commit()
+
+        stmt = update(user_tenant_association).where(
+            (user_tenant_association.c.user_id == db_user.id) &
+            (user_tenant_association.c.tenant_id == db_tenant.id)
+        ).values(role_id=owner_role.id)
+        db.execute(stmt)
+
+        db_user.current_tenant_id = db_tenant.id
+        db.commit()
+        db.refresh(db_user)
+
+        user = db_user
+    else:
+        # Update social fields if they were missing/outdated
+        updated = False
+        if user.provider != "google":
+            user.provider = "google"; updated = True
+        if not user.provider_user_id and sub:
+            user.provider_user_id = sub; updated = True
+        # Keep names synced from provider when available (no email-based fallback)
+        if given_name and user.first_name != given_name:
+            user.first_name = given_name; updated = True
+        if family_name and user.last_name != family_name:
+            user.last_name = family_name; updated = True
+        elif (not family_name) and name:
+            parts = name.split()
+            if len(parts) > 1 and user.last_name != " ".join(parts[1:]):
+                user.last_name = " ".join(parts[1:]); updated = True
+        # light profile snapshot
+        profile = user.provider_profile or {}
+        new_profile = { "name": name, "given_name": given_name, "family_name": family_name, "email": email, "picture": picture }
+        if any(profile.get(k) != v for k, v in new_profile.items()):
+            user.provider_profile = { **profile, **new_profile }; updated = True
+        if updated:
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+    # Tenant context and role resolution
+    tenant_ids = [t.id for t in user.tenants]
+    current_tenant_id = None
+    if user.current_tenant_id and user.current_tenant_id in tenant_ids:
+        current_tenant_id = user.current_tenant_id
+    elif tenant_ids:
+        current_tenant_id = tenant_ids[0]
+        user.current_tenant_id = current_tenant_id
+        db.commit()
+
+    role_info = None
+    current_role = None
+    if current_tenant_id:
+        role = get_user_role_in_tenant(db, user.id, current_tenant_id)
+        if role:
+            role_info = RoleInfo(
+                id=role.id,
+                name=role.name,
+                description=role.description
+            )
+            current_role = role.name
+
+    # Issue tokens (provider-based; no password needed)
+    token_response = issue_tokens_for_user(db, user, current_tenant_id, role_info)
+
+    return create_success_response(token_response, "Login successful via Google")
 
 @router.post("/refresh")
 def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
