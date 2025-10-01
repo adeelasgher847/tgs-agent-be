@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
+import random
 
 from app.api.deps import get_db, require_tenant
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
@@ -22,6 +23,34 @@ import uuid
 from datetime import datetime, timezone
 
 router = APIRouter()
+
+# Array of human-like "didn't catch that" response phrases
+DIDNT_CATCH_RESPONSES = [
+    "Hmm, I missed that—mind saying it again?",
+    "Didn't quite get that, can you repeat?",
+    "I didn't hear you clearly, would you mind repeating?",
+    "Can you say that again real quick?",
+    "I might've misheard—could you repeat that?"
+]
+
+# Array of follow-up phrases for when the agent didn't catch something
+FOLLOW_UP_RESPONSES = [
+    "Could you repeat that for me?",
+    "Mind saying that one more time?",
+    "Can you try that again?",
+    "Would you mind repeating that?",
+    "Could you say that again?"
+]
+
+
+def _get_random_didnt_catch_response() -> str:
+    """Get a random 'didn't catch that' response to make interactions feel more human"""
+    return random.choice(DIDNT_CATCH_RESPONSES)
+
+
+def _get_random_follow_up_response() -> str:
+    """Get a random follow-up response to make interactions feel more human"""
+    return random.choice(FOLLOW_UP_RESPONSES)
 
 
 def _add_to_transcript(call_session, message_type: str, content: str, timestamp: datetime = None):
@@ -434,9 +463,9 @@ async def handle_call_events_webhook(
             agent_voice = get_agent_voice(agent)
             
             # More natural "didn't catch that" response
-            response.say("Sorry, I didn't quite catch that.", voice=agent_voice)
+            response.say(_get_random_didnt_catch_response(), voice=agent_voice)
             response.pause(length=0.3)
-            response.say("Could you repeat that for me?", voice=agent_voice)
+            response.say(_get_random_follow_up_response(), voice=agent_voice)
             
             # Keep listening with reasonable timeout
             response.gather(
@@ -565,7 +594,7 @@ async def handle_call_events_webhook(
                 )
                 
                 # Gentle fallback if no input
-                response.say("Sorry, I didn't catch that. Could you repeat that for me?", voice=agent_voice)
+                response.say(_get_random_didnt_catch_response(), voice=agent_voice)
                 response.pause(length=0.5)
                 
                 # Try main webhook again
