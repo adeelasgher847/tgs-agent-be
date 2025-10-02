@@ -193,19 +193,51 @@ async def call_session_websocket(
             await websocket.close(code=4000, reason="Invalid call session ID")
             return
         
-        # TODO: Add proper authentication for WebSocket connections
-        # For now, we'll allow connections but this should be secured
-        # You can pass the JWT token as a query parameter: ws://localhost:8000/api/v1/call-sessions/ws/{call_session_id}?token=your_jwt_token
+        # Validate JWT token for WebSocket connections
         user_id = None
         if token:
-            # Here you would validate the JWT token and get the user
-            # For now, we'll skip authentication but log the attempt
-            print(f"WebSocket connection attempt with token: {token[:20]}...")
+            try:
+                from app.core.security import verify_token
+                from app.models.user import User
+                
+                # Verify the JWT token
+                payload = verify_token(token)
+                if payload:
+                    user_id = payload.get("sub")
+                    print(f"✅ WebSocket authenticated for user: {user_id}")
+                    
+                    # Verify user exists and has access to this call session
+                    user = db.query(User).filter(User.id == user_id).first()
+                    if not user:
+                        await websocket.close(code=4001, reason="User not found")
+                        return
+                        
+                    # Check if user has access to this call session (same tenant)
+                    if call_session.tenant_id != user.current_tenant_id:
+                        await websocket.close(code=4003, reason="Access denied to this call session")
+                        return
+                        
+                else:
+                    await websocket.close(code=4001, reason="Invalid token")
+                    return
+            except Exception as e:
+                print(f"❌ WebSocket authentication error: {e}")
+                await websocket.close(code=4001, reason="Authentication failed")
+                return
+        else:
+            await websocket.close(code=4001, reason="Token required")
+            return
         
         # Connect to the call session
         print(f"🔌 Connecting WebSocket to call session: {call_session_id}")
+        print(f"🔌 User ID: {user_id}")
+        print(f"🔌 Call session status: {call_session.status}")
+        print(f"🔌 Call session tenant: {call_session.tenant_id}")
+        
         await websocket_manager.connect(websocket, call_session_id, user_id)
         print(f"🔌 WebSocket connected successfully to session: {call_session_id}")
+        print(f"🔌 Total active connections: {len(websocket_manager.active_connections)}")
+        print(f"🔌 Active sessions: {list(websocket_manager.active_connections.keys())}")
         
         # Send initial call session data
         await websocket_manager.send_to_websocket(websocket, {
@@ -326,6 +358,10 @@ async def broadcast_call_status_update(call_session_id: str, status: str, metada
 
 async def broadcast_transcript_update(call_session_id: str, transcript: list, new_messages: list = None):
     """Broadcast transcript update to all connected WebSockets"""
+    print(f"🔔 BROADCASTING transcript update for session {call_session_id}")
+    print(f"🔔 Active connections: {list(websocket_manager.active_connections.keys())}")
+    print(f"🔔 Connected to this session: {call_session_id in websocket_manager.active_connections}")
+    
     await websocket_manager.send_to_session(call_session_id, {
         "type": "transcript_update",
         "call_session_id": call_session_id,
@@ -345,6 +381,10 @@ async def broadcast_call_metadata_update(call_session_id: str, metadata: dict):
 
 async def broadcast_call_ended(call_session_id: str, reason: str = None, final_data: dict = None):
     """Broadcast call ended event to all connected WebSockets"""
+    print(f"🔔 BROADCASTING call ended event for session {call_session_id}")
+    print(f"🔔 Active connections: {list(websocket_manager.active_connections.keys())}")
+    print(f"🔔 Connected to this session: {call_session_id in websocket_manager.active_connections}")
+    
     await websocket_manager.send_to_session(call_session_id, {
         "type": "call_ended",
         "call_session_id": call_session_id,
