@@ -53,8 +53,8 @@ def _get_random_follow_up_response() -> str:
     return random.choice(FOLLOW_UP_RESPONSES)
 
 
-def _add_to_transcript(call_session, message_type: str, content: str, timestamp: datetime = None):
-    """Add a message to the call session transcript"""
+async def _add_to_transcript(call_session, message_type: str, content: str, timestamp: datetime = None):
+    """Add a message to the call session transcript and broadcast to WebSocket"""
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
     
@@ -71,6 +71,18 @@ def _add_to_transcript(call_session, message_type: str, content: str, timestamp:
     
     call_session.call_transcript.append(message)
     print(f"📝 Added to transcript: {message_type} - {content[:50]}...")
+    
+    # Broadcast transcript update to WebSocket
+    try:
+        from app.routers.call_session_websocket import broadcast_transcript_update
+        await broadcast_transcript_update(
+            call_session_id=str(call_session.id),
+            transcript=call_session.call_transcript,
+            new_messages=[message]
+        )
+        print(f"✅ Broadcasted transcript update for session {call_session.id}")
+    except Exception as e:
+        print(f"❌ Failed to broadcast transcript update: {e}")
 
 
 def _get_conversation_state(call_session):
@@ -276,6 +288,41 @@ async def handle_call_events_webhook(
                                 duration = (call_session.end_time - call_session.start_time).total_seconds()
                                 call_session.duration = int(duration)
                             
+                            # Broadcast call ended event
+                            try:
+                                from app.routers.call_session_websocket import broadcast_call_ended
+                                await broadcast_call_ended(
+                                    call_session_id=str(call_session.id),
+                                    reason="Call completed",
+                                    final_data={
+                                        "call_sid": call_sid,
+                                        "duration": call_session.duration,
+                                        "end_time": call_session.end_time.isoformat(),
+                                        "transcript": call_session.call_transcript or []
+                                    }
+                                )
+                                print(f"✅ Broadcasted call ended event for session {call_session.id}")
+                            except Exception as e:
+                                print(f"❌ Failed to broadcast call ended event: {e}")
+                        
+                        # Broadcast status update to WebSocket
+                        try:
+                            from app.routers.call_session_websocket import broadcast_call_status_update
+                            await broadcast_call_status_update(
+                                call_session_id=str(call_session.id),
+                                status=call_status,
+                                metadata={
+                                    "call_sid": call_sid,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                                    "duration": call_session.duration
+                                }
+                            )
+                            print(f"✅ Broadcasted call status update: {call_status} for session {call_session.id}")
+                        except Exception as e:
+                            print(f"❌ Failed to broadcast call status update: {e}")
+                            
                             # Save transcript to database when call completes
                             if call_session.call_transcript:
                                 print(f"📝 Saving transcript with {len(call_session.call_transcript)} messages")
@@ -371,7 +418,7 @@ async def handle_call_events_webhook(
                 call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
                 if call_session:
                     # Add user speech to transcript
-                    _add_to_transcript(call_session, "user_speech", speech_result)
+                    await _add_to_transcript(call_session, "user_speech", speech_result)
                     
                     # Update conversation state with interaction count
                     conversation_state = _get_conversation_state(call_session)
@@ -411,7 +458,7 @@ async def handle_call_events_webhook(
                 
                 # Add agent response to transcript
                 if call_session:
-                    _add_to_transcript(call_session, "agent_response", response_text)
+                    await _add_to_transcript(call_session, "agent_response", response_text)
                 
                 # Say response naturally with conversational flow
                 agent_voice = get_agent_voice(agent)
@@ -566,7 +613,7 @@ async def handle_call_events_webhook(
                 
                 # Add initial greeting to transcript
                 greeting_text = f"Hey! This is {agent_name}. How's it going? What's up?"
-                _add_to_transcript(call_session, "agent_response", greeting_text)
+                await _add_to_transcript(call_session, "agent_response", greeting_text)
                 
                 # Log call answered event
                 try:

@@ -13,6 +13,7 @@ from typing import List, Dict, Optional, Any
 import uuid
 from datetime import datetime, timezone
 import json
+import asyncio
 
 class CallSessionService:
     """Service class for handling call session operations"""
@@ -63,6 +64,18 @@ class CallSessionService:
         
         # Create associated call log
         self._create_call_log_for_session(db, call_session)
+        
+        # Broadcast call session created event
+        asyncio.create_task(self._broadcast_call_event(
+            str(call_session.id), 
+            "call_session_created", 
+            {
+                "call_session_id": str(call_session.id),
+                "status": call_session.status,
+                "call_type": call_session.call_type,
+                "start_time": call_session.start_time.isoformat() if call_session.start_time else None
+            }
+        ))
         
         return call_session
     
@@ -312,6 +325,38 @@ class CallSessionService:
             "average_response_time": avg_response_time,
             "total_response_time_entries": len(call_session.response_times) if call_session.response_times else 0
         }
+    
+    async def _broadcast_call_event(self, call_session_id: str, event_type: str, event_data: dict):
+        """Broadcast a call event to WebSocket connections"""
+        try:
+            from app.routers.call_session_websocket import broadcast_call_event
+            await broadcast_call_event(call_session_id, event_type, event_data)
+        except Exception as e:
+            print(f"Error broadcasting call event: {e}")
+    
+    async def _broadcast_status_update(self, call_session_id: str, status: str, metadata: dict = None):
+        """Broadcast call status update to WebSocket connections"""
+        try:
+            from app.routers.call_session_websocket import broadcast_call_status_update
+            await broadcast_call_status_update(call_session_id, status, metadata)
+        except Exception as e:
+            print(f"Error broadcasting status update: {e}")
+    
+    async def _broadcast_transcript_update(self, call_session_id: str, transcript: list, new_messages: list = None):
+        """Broadcast transcript update to WebSocket connections"""
+        try:
+            from app.routers.call_session_websocket import broadcast_transcript_update
+            await broadcast_transcript_update(call_session_id, transcript, new_messages)
+        except Exception as e:
+            print(f"Error broadcasting transcript update: {e}")
+    
+    async def _broadcast_metadata_update(self, call_session_id: str, metadata: dict):
+        """Broadcast call metadata update to WebSocket connections"""
+        try:
+            from app.routers.call_session_websocket import broadcast_call_metadata_update
+            await broadcast_call_metadata_update(call_session_id, metadata)
+        except Exception as e:
+            print(f"Error broadcasting metadata update: {e}")
 
 # Global instance
 call_session_service = CallSessionService()

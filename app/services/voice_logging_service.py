@@ -443,23 +443,37 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             call_session.call_metadata["call_events"].append(event_log)
             
             # Update call session status based on event
-            if event_type == "call_answered":
-                call_session.status = "active"
-            elif event_type == "call_completed":
+            if event_type == "call_started":
+                call_session.status = "in-progress"
+            elif event_type == "call_ended":
                 call_session.status = "completed"
                 call_session.end_time = datetime.now(timezone.utc)
+                if call_session.start_time:
+                    duration = (call_session.end_time - call_session.start_time).total_seconds()
+                    call_session.duration = int(duration)
             elif event_type == "call_failed":
                 call_session.status = "failed"
                 call_session.end_time = datetime.now(timezone.utc)
             
             db.commit()
             
-            print(f"✅ Call event logged successfully")
+            # Broadcast the event to WebSocket connections
+            try:
+                from app.routers.call_session_websocket import broadcast_call_event
+                import asyncio
+                asyncio.create_task(broadcast_call_event(
+                    str(call_session_id), 
+                    event_type, 
+                    event_data
+                ))
+            except Exception as e:
+                print(f"Error broadcasting call event: {e}")
+            
+            print(f"✅ Logged call event: {event_type} for session {call_session_id}")
             
         except Exception as e:
             print(f"❌ Error logging call event: {e}")
-            db.rollback()
-            raise e
+            raise
     
     @staticmethod
     def get_call_voice_logs(
