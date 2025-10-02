@@ -421,7 +421,9 @@ async def handle_call_events_webhook(
                 call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
                 if call_session:
                     # Add user speech to transcript
+                    print(f"📝 Adding user speech to transcript for session {call_session.id}")
                     await _add_to_transcript(call_session, "user_speech", speech_result)
+                    print(f"✅ User speech added to transcript for session {call_session.id}")
                     
                     # Update conversation state with interaction count
                     conversation_state = _get_conversation_state(call_session)
@@ -461,7 +463,9 @@ async def handle_call_events_webhook(
                 
                 # Add agent response to transcript
                 if call_session:
+                    print(f"📝 Adding agent response to transcript for session {call_session.id}")
                     await _add_to_transcript(call_session, "agent_response", response_text)
+                    print(f"✅ Agent response added to transcript for session {call_session.id}")
                 
                 # Say response naturally with conversational flow
                 agent_voice = get_agent_voice(agent)
@@ -552,6 +556,24 @@ async def handle_call_events_webhook(
         if call_status == "initiated" and direction == "outbound-api":
             # Call has been initiated - just log and return empty response
             print(f"Call initiated - SID: {call_sid}")
+            
+            # Broadcast call initiated event
+            if call_session:
+                try:
+                    from app.routers.call_session_websocket import broadcast_call_status_update
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="initiated",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call initiated event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call initiated event: {e}")
+            
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "ringing" and direction == "outbound-api":
@@ -559,6 +581,24 @@ async def handle_call_events_webhook(
             print("=" * 50)
             print(f"🔔 CALL IS RINGING - SID: {call_sid}")
             print("=" * 50)
+            
+            # Broadcast call ringing event
+            if call_session:
+                try:
+                    from app.routers.call_session_websocket import broadcast_call_status_update
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="ringing",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call ringing event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call ringing event: {e}")
+            
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
         
@@ -567,6 +607,23 @@ async def handle_call_events_webhook(
             print("=" * 50)
             print(f"📞 CALL IN PROGRESS - SID: {call_sid}")
             print("=" * 50)
+            
+            # Broadcast call in-progress event
+            if call_session:
+                try:
+                    from app.routers.call_session_websocket import broadcast_call_status_update
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call in-progress event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call in-progress event: {e}")
             
             # Get call session to check conversation state
             call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
@@ -617,6 +674,22 @@ async def handle_call_events_webhook(
                 # Add initial greeting to transcript
                 greeting_text = f"Hey! This is {agent_name}. How's it going? What's up?"
                 await _add_to_transcript(call_session, "agent_response", greeting_text)
+                
+                # Broadcast greeting event
+                try:
+                    from app.routers.call_session_websocket import broadcast_call_event
+                    await broadcast_call_event(
+                        call_session_id=str(call_session.id),
+                        event_type="greeting",
+                        event_data={
+                            "agent_name": agent_name,
+                            "greeting_text": greeting_text,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted greeting event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast greeting event: {e}")
                 
                 # Log call answered event
                 try:
@@ -686,16 +759,57 @@ async def handle_call_events_webhook(
         
         elif call_status == "completed":
             # Call completed
+            print(f"📞 CALL COMPLETED - SID: {call_sid}")
+            
+            # Broadcast call completed event (this is already handled above in the status update section)
+            # The broadcast_call_ended is already called in the status update section above
+            
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "failed":
             # Call failed - handle error
             print(f"Call failed - SID: {call_sid}")
+            
+            # Broadcast call failed event
+            if call_session:
+                try:
+                    from app.routers.call_session_websocket import broadcast_call_status_update
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="failed",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call failed event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call failed event: {e}")
+            
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "busy":
             # Call busy - handle busy signal
             print(f"Call busy - SID: {call_sid}")
+            
+            # Broadcast call busy event
+            if call_session:
+                try:
+                    from app.routers.call_session_websocket import broadcast_call_status_update
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="busy",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call busy event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call busy event: {e}")
+            
             return HTMLResponse("", media_type="application/xml")
         
         else:

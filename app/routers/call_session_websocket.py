@@ -88,9 +88,12 @@ class CallSessionWebSocketManager:
         """Send a message to all WebSockets connected to a call session"""
         print(f"📡 send_to_session called for {call_session_id}")
         print(f"📡 Message type: {message.get('type', 'unknown')}")
+        print(f"📡 All active sessions: {list(self.active_connections.keys())}")
+        print(f"📡 Total active connections: {sum(len(conns) for conns in self.active_connections.values())}")
         
         if call_session_id not in self.active_connections:
             print(f"❌ No active connections for session {call_session_id}")
+            print(f"❌ Available sessions: {list(self.active_connections.keys())}")
             return
         
         connection_count = len(self.active_connections[call_session_id])
@@ -200,6 +203,8 @@ async def call_session_websocket(
                 from app.core.security import verify_token
                 from app.models.user import User
                 
+                print(f"🔐 Validating JWT token: {token[:20]}...")
+                
                 # Verify the JWT token
                 payload = verify_token(token)
                 if payload:
@@ -209,22 +214,31 @@ async def call_session_websocket(
                     # Verify user exists and has access to this call session
                     user = db.query(User).filter(User.id == user_id).first()
                     if not user:
+                        print(f"❌ User not found: {user_id}")
                         await websocket.close(code=4001, reason="User not found")
                         return
                         
+                    print(f"✅ User found: {user.email}, current_tenant: {user.current_tenant_id}")
+                    print(f"✅ Call session tenant: {call_session.tenant_id}")
+                    
                     # Check if user has access to this call session (same tenant)
                     if call_session.tenant_id != user.current_tenant_id:
+                        print(f"❌ Tenant mismatch: user tenant {user.current_tenant_id} != call session tenant {call_session.tenant_id}")
                         await websocket.close(code=4003, reason="Access denied to this call session")
                         return
                         
                 else:
+                    print(f"❌ Invalid JWT token payload")
                     await websocket.close(code=4001, reason="Invalid token")
                     return
             except Exception as e:
                 print(f"❌ WebSocket authentication error: {e}")
+                import traceback
+                traceback.print_exc()
                 await websocket.close(code=4001, reason="Authentication failed")
                 return
         else:
+            print(f"❌ No JWT token provided")
             await websocket.close(code=4001, reason="Token required")
             return
         
@@ -271,6 +285,7 @@ async def call_session_websocket(
                 await handle_websocket_message(websocket, call_session_id, message_data, db)
                 
             except WebSocketDisconnect:
+                print(f"🔌 WebSocket disconnected for session {call_session_id}")
                 break
             except json.JSONDecodeError:
                 await websocket_manager.send_to_websocket(websocket, {
@@ -300,6 +315,7 @@ async def handle_websocket_message(websocket: WebSocket, call_session_id: str, m
                 "type": "pong",
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
+            print(f"💓 Heartbeat received from session {call_session_id}")
         elif message_type == "subscribe":
             # Handle subscription to specific event types
             event_types = message_data.get("event_types", [])
@@ -416,6 +432,38 @@ async def get_active_sessions(
         ),
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
+
+@router.get("/debug/connections")
+async def debug_connections():
+    """Debug endpoint to check WebSocket connections"""
+    return {
+        "active_connections": len(websocket_manager.active_connections),
+        "active_sessions": list(websocket_manager.active_connections.keys()),
+        "session_metadata": websocket_manager.session_metadata,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@router.post("/debug/test-broadcast/{call_session_id}")
+async def test_broadcast(call_session_id: str):
+    """Test endpoint to manually trigger a broadcast"""
+    try:
+        await broadcast_call_status_update(
+            call_session_id=call_session_id,
+            status="test",
+            metadata={"test": True, "timestamp": datetime.now(timezone.utc).isoformat()}
+        )
+        return {
+            "success": True,
+            "message": f"Test broadcast sent to session {call_session_id}",
+            "active_connections": len(websocket_manager.active_connections.get(call_session_id, [])),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
 
 @router.get("/sessions/{call_session_id}/info")
 async def get_session_info(
