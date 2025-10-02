@@ -279,68 +279,6 @@ async def handle_call_events_webhook(
                 # Get call session to get tenant_id
                 call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
                 if call_session:
-                    # Update call session status if call_status is provided
-                    call_status = form_data.get("CallStatus", "")
-                    if call_status:
-                        call_session.status = call_status
-                        
-                        # Set start time when call becomes in-progress
-                        if call_status == "in-progress" and not call_session.start_time:
-                            call_session.start_time = datetime.now(timezone.utc)
-                        
-                        # Set end time and calculate duration when call completes
-                        if call_status == "completed":
-                            call_session.end_time = datetime.now(timezone.utc)
-                            if call_session.start_time:
-                                duration = (call_session.end_time - call_session.start_time).total_seconds()
-                                call_session.duration = int(duration)
-                            
-                            # Broadcast call ended event
-                            try:
-                                from app.routers.call_session_websocket import broadcast_call_ended
-                                await broadcast_call_ended(
-                                    call_session_id=str(call_session.id),
-                                    reason="Call completed",
-                                    final_data={
-                                        "call_sid": call_sid,
-                                        "duration": call_session.duration,
-                                        "end_time": call_session.end_time.isoformat(),
-                                        "transcript": call_session.call_transcript or []
-                                    }
-                                )
-                                print(f"✅ Broadcasted call ended event for session {call_session.id}")
-                            except Exception as e:
-                                print(f"❌ Failed to broadcast call ended event: {e}")
-                        
-                        # Broadcast status update to WebSocket
-                        try:
-                            print(f"🚀 ATTEMPTING to broadcast call status update: {call_status} for session {call_session.id}")
-                            from app.routers.call_session_websocket import broadcast_call_status_update
-                            await broadcast_call_status_update(
-                                call_session_id=str(call_session.id),
-                                status=call_status,
-                                metadata={
-                                    "call_sid": call_sid,
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                                    "duration": call_session.duration
-                                }
-                            )
-                            print(f"✅ Successfully broadcasted call status update: {call_status} for session {call_session.id}")
-                        except Exception as e:
-                            print(f"❌ Failed to broadcast call status update: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            
-                            # Save transcript to database when call completes
-                            if call_session.call_transcript:
-                                print(f"📝 Saving transcript with {len(call_session.call_transcript)} messages")
-                                print(f"📝 Transcript content: {call_session.call_transcript}")
-                        
-                        db.commit()
-                        print(f"✅ Updated call session {call_session.id} status to: {call_status}")
-                    
                     # Fetch agent from database
                     agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
                     if agent:
@@ -413,6 +351,96 @@ async def handle_call_events_webhook(
         # Log the call event
         print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
         print(f"AgentId from query: {agentId}")
+        
+        # Test WebSocket connection if we have a call session
+        if call_session:
+            try:
+                from app.routers.call_session_websocket import broadcast_call_status_update
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status="webhook_test",
+                    metadata={
+                        "message": "Webhook is working",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "call_sid": call_sid
+                    }
+                )
+                print(f"✅ Test broadcast sent to WebSocket for session {call_session.id}")
+            except Exception as e:
+                print(f"❌ Test broadcast failed: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Update call session status if we have a call session and status
+        if call_session and call_status:
+            print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
+            call_session.status = call_status
+            
+            # Set start time when call becomes in-progress
+            if call_status == "in-progress" and not call_session.start_time:
+                call_session.start_time = datetime.now(timezone.utc)
+                print(f"⏰ Set start time for session {call_session.id}")
+            
+            # Set end time and calculate duration when call completes
+            if call_status == "completed":
+                call_session.end_time = datetime.now(timezone.utc)
+                if call_session.start_time:
+                    duration = (call_session.end_time - call_session.start_time).total_seconds()
+                    call_session.duration = int(duration)
+                    print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+            
+            # Commit the status update
+            db.commit()
+            print(f"✅ Updated call session {call_session.id} status to: {call_status}")
+            
+            # Broadcast status update to WebSocket
+            try:
+                print(f"🚀 ATTEMPTING to broadcast call status update: {call_status} for session {call_session.id}")
+                from app.routers.call_session_websocket import broadcast_call_status_update
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status=call_status,
+                    metadata={
+                        "call_sid": call_sid,
+                        "from_number": from_number,
+                        "to_number": to_number,
+                        "direction": direction,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                        "duration": call_session.duration
+                    }
+                )
+                print(f"✅ Successfully broadcasted call status update: {call_status} for session {call_session.id}")
+            except Exception as e:
+                print(f"❌ Failed to broadcast call status update: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Broadcast call ended event if call completed
+            if call_status == "completed":
+                try:
+                    from app.routers.call_session_websocket import broadcast_call_ended
+                    await broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="Call completed",
+                        final_data={
+                            "call_sid": call_sid,
+                            "duration": call_session.duration,
+                            "end_time": call_session.end_time.isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
+                    )
+                    print(f"✅ Broadcasted call ended event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call ended event: {e}")
+                    import traceback
+                    traceback.print_exc()
+        else:
+            if not call_session:
+                print(f"⚠️ No call session found - cannot update status or broadcast")
+            if not call_status:
+                print(f"⚠️ No call status provided - cannot update status or broadcast")
         
         # Get agent from database if agentId is provided
         agent = None
