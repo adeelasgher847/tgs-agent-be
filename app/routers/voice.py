@@ -445,7 +445,7 @@ async def handle_call_events_webhook(
             
             # Log voice interaction for smooth tracking
             try:
-                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                # Use the call session we already fetched (should be available from query param)
                 if call_session:
                     # Add user speech to transcript
                     print(f"📝 Adding user speech to transcript for session {call_session.id}")
@@ -504,7 +504,7 @@ async def handle_call_events_webhook(
                     input='speech',
                     timeout=12,  # Shorter timeout for more natural conversation
                     speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
                 
@@ -522,7 +522,7 @@ async def handle_call_events_webhook(
                     input='speech',
                     timeout=15,
                     speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                     method='POST'
                 )
                 
@@ -553,7 +553,7 @@ async def handle_call_events_webhook(
                 input='speech',
                 timeout=15,
                 speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                 method='POST'
             )
             
@@ -566,7 +566,7 @@ async def handle_call_events_webhook(
                 input='speech',
                 timeout=20,
                 speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}',
+                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                 method='POST'
             )
             
@@ -739,7 +739,7 @@ async def handle_call_events_webhook(
                     input='speech',
                     timeout=15,
                     speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
                 
@@ -752,7 +752,7 @@ async def handle_call_events_webhook(
                     input='speech',
                     timeout=20,
                     speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
                 
@@ -773,7 +773,7 @@ async def handle_call_events_webhook(
                     input='speech',
                     timeout=15,
                     speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
                 
