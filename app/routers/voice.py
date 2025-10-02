@@ -197,9 +197,21 @@ async def initiate_call(
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL
         
-        # Make the call using Twilio with main call events webhook
-        webhook_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}"
-        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}"
+        # Create call session first so we can include the ID in webhook URLs
+        call_session = call_session_service.create_call_session(
+            db=db,
+            user_id=user.id,
+            agent_id=agent.id,
+            tenant_id=user.current_tenant_id,
+            twilio_call_sid="",  # Will be updated after call is made
+            from_number=twilio_service.get_phone_number(),
+            to_number=request.userPhoneNumber,
+            call_type="outbound"  # Agent is initiating the call, so it's outbound
+        )
+        
+        # Make the call using Twilio with call session ID in webhook URLs
+        webhook_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
+        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
         
         print(f"Making call with webhook_url: {webhook_url}")
         print(f"Making call with status_callback_url: {status_callback_url}")
@@ -213,17 +225,10 @@ async def initiate_call(
         )
         print(f"✅ Call initiated successfully")
         
-        # Create call session immediately when call is initiated
-        call_session = call_session_service.create_call_session(
-            db=db,
-            user_id=user.id,
-            agent_id=agent.id,
-            tenant_id=user.current_tenant_id,
-            twilio_call_sid=call.sid,
-            from_number=twilio_service.get_phone_number(),
-            to_number=request.userPhoneNumber,
-            call_type="outbound"  # Agent is initiating the call, so it's outbound
-        )
+        # Update call session with Twilio SID
+        call_session.twilio_call_sid = call.sid
+        db.commit()
+        print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -246,6 +251,8 @@ async def initiate_call(
 async def handle_call_events_webhook(
     request: Request,
     agentId: Optional[str] = Query(None),
+    userId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -254,7 +261,7 @@ async def handle_call_events_webhook(
     print(f"Request method: {request.method}")
     print(f"Request URL: {request.url}")
     print(f"Request headers: {dict(request.headers)}")
-    print(f"Query params: agentId={agentId}")
+    print(f"Query params: agentId={agentId}, userId={userId}, callSessionId={callSessionId}")
     print(f"Request body length: {len(body) if body else 0}")
     print(f"Request body preview: {body[:200] if body else 'None'}...")
     print(f"Database session: {db}")
@@ -381,11 +388,31 @@ async def handle_call_events_webhook(
         
         print(f"🎤 Speech input - Result: '{speech_result}', Confidence: {confidence}, Duration: {speech_duration}")
         
+        # Get call session for this webhook call (prefer callSessionId from query param)
+        call_session = None
+        if callSessionId:
+            try:
+                session_uuid = uuid.UUID(callSessionId)
+                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+                if call_session:
+                    print(f"✅ Found call session: {call_session.id} from query parameter")
+                else:
+                    print(f"⚠️ No call session found for ID: {callSessionId}")
+            except ValueError:
+                print(f"⚠️ Invalid call session ID format: {callSessionId}")
+        elif call_sid:
+            # Fallback to finding by Twilio SID
+            call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+            if call_session:
+                print(f"✅ Found call session: {call_session.id} for SID: {call_sid}")
+            else:
+                print(f"⚠️ No call session found for SID: {call_sid}")
+        else:
+            print(f"⚠️ No call session ID or SID provided")
         
         # Log the call event
         print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
         print(f"AgentId from query: {agentId}")
-        
         
         # Get agent from database if agentId is provided
         agent = None
