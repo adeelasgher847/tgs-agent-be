@@ -307,6 +307,7 @@ async def handle_call_events_webhook(
                         
                         # Broadcast status update to WebSocket
                         try:
+                            print(f"🚀 ATTEMPTING to broadcast call status update: {call_status} for session {call_session.id}")
                             from app.routers.call_session_websocket import broadcast_call_status_update
                             await broadcast_call_status_update(
                                 call_session_id=str(call_session.id),
@@ -319,9 +320,11 @@ async def handle_call_events_webhook(
                                     "duration": call_session.duration
                                 }
                             )
-                            print(f"✅ Broadcasted call status update: {call_status} for session {call_session.id}")
+                            print(f"✅ Successfully broadcasted call status update: {call_status} for session {call_session.id}")
                         except Exception as e:
                             print(f"❌ Failed to broadcast call status update: {e}")
+                            import traceback
+                            traceback.print_exc()
                             
                             # Save transcript to database when call completes
                             if call_session.call_transcript:

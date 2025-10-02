@@ -86,8 +86,15 @@ class CallSessionWebSocketManager:
     
     async def send_to_session(self, call_session_id: str, message: dict):
         """Send a message to all WebSockets connected to a call session"""
+        print(f"📡 send_to_session called for {call_session_id}")
+        print(f"📡 Message type: {message.get('type', 'unknown')}")
+        
         if call_session_id not in self.active_connections:
+            print(f"❌ No active connections for session {call_session_id}")
             return
+        
+        connection_count = len(self.active_connections[call_session_id])
+        print(f"📡 Sending to {connection_count} connections for session {call_session_id}")
         
         # Update session metadata
         if call_session_id in self.session_metadata:
@@ -96,11 +103,14 @@ class CallSessionWebSocketManager:
         
         # Send to all connected WebSockets
         disconnected_websockets = []
-        for websocket in self.active_connections[call_session_id]:
+        for i, websocket in enumerate(self.active_connections[call_session_id]):
             try:
-                await websocket.send_text(json.dumps(message))
+                message_json = json.dumps(message)
+                await websocket.send_text(message_json)
+                print(f"✅ Message sent to WebSocket #{i+1} for session {call_session_id}")
+                print(f"📤 Message content: {message_json[:100]}...")
             except Exception as e:
-                print(f"Error sending message to WebSocket: {e}")
+                print(f"❌ Error sending message to WebSocket #{i+1}: {e}")
                 disconnected_websockets.append(websocket)
         
         # Clean up disconnected WebSockets
@@ -193,7 +203,9 @@ async def call_session_websocket(
             print(f"WebSocket connection attempt with token: {token[:20]}...")
         
         # Connect to the call session
+        print(f"🔌 Connecting WebSocket to call session: {call_session_id}")
         await websocket_manager.connect(websocket, call_session_id, user_id)
+        print(f"🔌 WebSocket connected successfully to session: {call_session_id}")
         
         # Send initial call session data
         await websocket_manager.send_to_websocket(websocket, {
@@ -300,6 +312,10 @@ async def handle_websocket_message(websocket: WebSocket, call_session_id: str, m
 # Event broadcasting functions for use by other services
 async def broadcast_call_status_update(call_session_id: str, status: str, metadata: dict = None):
     """Broadcast call status update to all connected WebSockets"""
+    print(f"🔔 BROADCASTING call status update: {status} for session {call_session_id}")
+    print(f"🔔 Active connections: {list(websocket_manager.active_connections.keys())}")
+    print(f"🔔 Connected to this session: {call_session_id in websocket_manager.active_connections}")
+    
     await websocket_manager.send_to_session(call_session_id, {
         "type": "call_status_update",
         "call_session_id": call_session_id,
