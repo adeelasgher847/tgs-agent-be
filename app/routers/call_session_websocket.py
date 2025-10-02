@@ -212,7 +212,7 @@ async def call_session_websocket(
                 # Verify the JWT token
                 payload = verify_token(token)
                 if payload:
-                    user_id = payload.get("sub")
+                    user_id = payload.get("user_id")
                     print(f"✅ WebSocket authenticated for user: {user_id}")
                     
                     # Verify user exists and has access to this call session
