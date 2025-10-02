@@ -7,11 +7,12 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
 from app.api.deps import get_db, get_current_user_jwt, require_admin, require_member_or_admin
-from app.core.security import create_user_token
+from app.core.security import create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.utils.response import create_success_response
 import re
 from app.core.config import settings
 from app.models.user import user_tenant_association
+from app.models.refresh_token import RefreshToken
 
 from sqlalchemy import update
 router = APIRouter()
@@ -24,7 +25,7 @@ def generate_schema_name(tenant_name: str) -> str:
     schema_name = re.sub(r'_+', '_', schema_name).strip('_')
     return f"{schema_name}_schema"
 
-@router.post("/create", response_model=SuccessResponse[TenantCreateResponse])
+@router.post("/create", response_model=SuccessResponse[TokenResponse])
 def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
     """
     Create a new tenant organization and associate the creator as its admin.
@@ -109,20 +110,56 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     db.execute(stmt)
     
     # Set the new tenant as user's current tenant
-    # current_user.current_tenant_id = db_tenant.id
+    current_user.current_tenant_id = db_tenant.id
     
     db.commit()
     db.refresh(current_user)
     
-    # Convert SQLAlchemy model to Pydantic model
-    tenant_out = TenantOut.model_validate(db_tenant)
+    # Get role information for the new tenant
+    role_info = None
+    current_role = None
+    if admin_role:
+        role_info = RoleInfo(
+            id=admin_role.id,
+            name=admin_role.name,
+            description=admin_role.description
+        )
+        current_role = admin_role.name
     
-    tenant_response = TenantCreateResponse(
+    # Create new token with updated tenant and role
+    access_token = create_user_token(
+        user_id=current_user.id,
+        email=current_user.email,
         tenant_id=db_tenant.id,
-        tenant=tenant_out
+        role=current_role
+    )
+
+    # Create refresh token (valid 7 days)
+    
+    rt_value = create_refresh_token_value()
+    rt = RefreshToken(
+        user_id=current_user.id,
+        token=rt_value,
+        expires_at=refresh_token_expires_at(),
+        revoked=False
+    )
+    db.add(rt)
+    db.commit()
+    
+    # Get user's updated tenant IDs
+    user_tenant_ids = [tenant.id for tenant in current_user.tenants]
+    
+    token_response = TokenResponse(
+        access_token=access_token,
+        user_id=current_user.id,
+        email=current_user.email,
+        tenant_id=db_tenant.id,
+        tenant_ids=user_tenant_ids,
+        role=role_info,
+        refresh_token=rt_value
     )
     
-    return create_success_response(tenant_response, "Tenant created successfully", status.HTTP_201_CREATED)
+    return create_success_response(token_response, "Tenant created successfully", status.HTTP_201_CREATED)
 
 
 @router.post("/switch", response_model=SuccessResponse[TokenResponse])
