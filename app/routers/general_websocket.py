@@ -407,8 +407,11 @@ async def test_broadcast():
 async def get_test_page():
     """Serve the custom HTML test page"""
     try:
-        # Read the HTML file
-        html_file_path = "/Users/macbookpro/Desktop/branch-code/tgs-agent-be/call_session_websocket_test.html"
+        import os
+        # Get the current directory and navigate to the HTML file
+        current_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        html_file_path = os.path.join(current_dir, "call_session_websocket_test.html")
+        
         with open(html_file_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
