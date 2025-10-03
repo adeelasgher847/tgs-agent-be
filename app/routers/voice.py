@@ -5,6 +5,7 @@ from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
 import random
+import uuid
 
 from app.api.deps import get_db, require_tenant
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
@@ -19,8 +20,12 @@ from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
 from app.utils.response import create_success_response
 from app.core.config import settings
-import uuid
-from datetime import datetime, timezone
+from app.routers.call_session_websocket import (
+    broadcast_transcript_update,
+    broadcast_call_status_update,
+    broadcast_call_ended,
+    broadcast_call_event
+)
 
 router = APIRouter()
 
@@ -74,7 +79,6 @@ async def _add_to_transcript(call_session, message_type: str, content: str, time
     
     # Broadcast transcript update to WebSocket
     try:
-        from app.routers.call_session_websocket import broadcast_transcript_update
         await broadcast_transcript_update(
             call_session_id=str(call_session.id),
             transcript=call_session.call_transcript,
@@ -355,7 +359,6 @@ async def handle_call_events_webhook(
         # Test WebSocket connection if we have a call session
         if call_session:
             try:
-                from app.routers.call_session_websocket import broadcast_call_status_update
                 await broadcast_call_status_update(
                     call_session_id=str(call_session.id),
                     status="webhook_test",
@@ -396,7 +399,6 @@ async def handle_call_events_webhook(
             # Broadcast status update to WebSocket
             try:
                 print(f"🚀 ATTEMPTING to broadcast call status update: {call_status} for session {call_session.id}")
-                from app.routers.call_session_websocket import broadcast_call_status_update
                 await broadcast_call_status_update(
                     call_session_id=str(call_session.id),
                     status=call_status,
@@ -420,7 +422,6 @@ async def handle_call_events_webhook(
             # Broadcast call ended event if call completed
             if call_status == "completed":
                 try:
-                    from app.routers.call_session_websocket import broadcast_call_ended
                     await broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="Call completed",
@@ -615,7 +616,6 @@ async def handle_call_events_webhook(
             # Broadcast call initiated event
             if call_session:
                 try:
-                    from app.routers.call_session_websocket import broadcast_call_status_update
                     await broadcast_call_status_update(
                         call_session_id=str(call_session.id),
                         status="initiated",
@@ -640,7 +640,6 @@ async def handle_call_events_webhook(
             # Broadcast call ringing event
             if call_session:
                 try:
-                    from app.routers.call_session_websocket import broadcast_call_status_update
                     await broadcast_call_status_update(
                         call_session_id=str(call_session.id),
                         status="ringing",
@@ -666,7 +665,6 @@ async def handle_call_events_webhook(
             # Broadcast call in-progress event
             if call_session:
                 try:
-                    from app.routers.call_session_websocket import broadcast_call_status_update
                     await broadcast_call_status_update(
                         call_session_id=str(call_session.id),
                         status="in-progress",
@@ -719,20 +717,15 @@ async def handle_call_events_webhook(
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
-                # More natural greeting - introduce name only once
-                response.say(f"Hey! This is {agent_name}.", voice=agent_voice)
-                response.pause(length=0.3)
-                response.say("How's it going?", voice=agent_voice)
-                response.pause(length=0.3)
-                response.say("What's up?", voice=agent_voice)
+                # Professional, concise greeting
+                response.say(f"Hello! This is {agent_name}. How can I help you today?", voice=agent_voice)
                 
                 # Add initial greeting to transcript
-                greeting_text = f"Hey! This is {agent_name}. How's it going? What's up?"
+                greeting_text = f"Hello! This is {agent_name}. How can I help you today?"
                 await _add_to_transcript(call_session, "agent_response", greeting_text)
                 
                 # Broadcast greeting event
                 try:
-                    from app.routers.call_session_websocket import broadcast_call_event
                     await broadcast_call_event(
                         call_session_id=str(call_session.id),
                         event_type="greeting",
@@ -828,7 +821,6 @@ async def handle_call_events_webhook(
             # Broadcast call failed event
             if call_session:
                 try:
-                    from app.routers.call_session_websocket import broadcast_call_status_update
                     await broadcast_call_status_update(
                         call_session_id=str(call_session.id),
                         status="failed",
@@ -851,7 +843,6 @@ async def handle_call_events_webhook(
             # Broadcast call busy event
             if call_session:
                 try:
-                    from app.routers.call_session_websocket import broadcast_call_status_update
                     await broadcast_call_status_update(
                         call_session_id=str(call_session.id),
                         status="busy",
@@ -884,61 +875,6 @@ async def handle_call_events_webhook(
         print("=== Call Events Webhook Failed ===")
         raise
 
-
-# def _get_twilio_voice(voice_type):
-#     """Map voice_type to Twilio voice names"""
-#     if voice_type == "male":
-#         return "en-US-Neural2-M"  # Male voice
-#     elif voice_type == "female":
-#         return "en-US-Neural2-F"  # Female voice
-#     else:
-#         return "en-US-Neural2-F"  # Default to female voice
-
-# def _process_speech_input(agent, speech_text: str, call_sid: str) -> str:
-#     """Process speech input and generate agent response"""
-#     if not agent:
-#         return f"I heard you say: {speech_text}. How can I help you further?"
-    
-#     # Simple keyword-based responses (you can enhance this with AI)
-#     speech_lower = speech_text.lower()
-    
-#     if any(word in speech_lower for word in ['hello', 'hi', 'hey']):
-#         return f"Hello! This is {agent.name}. How can I assist you today?"
-#     elif any(word in speech_lower for word in ['help', 'support', 'assistance']):
-#         return f"I'm here to help! What specific assistance do you need?"
-#     elif any(word in speech_lower for word in ['thank', 'thanks']):
-#         return f"You're welcome! Is there anything else I can help you with?"
-#     elif any(word in speech_lower for word in ['bye', 'goodbye', 'end']):
-#         return f"Thank you for calling! Have a great day!"
-#     else:
-#         return f"I understand you said: {speech_text}. Let me help you with that. What would you like me to do?"
-
-# def _generate_agent_response(agent, call_data: dict) -> str:
-#     """Generate TwiML response based on agent from database"""
-#     if not agent:
-#         return _generate_default_response()
-    
-#     # Create TwiML response
-#     response = VoiceResponse()
-    
-#     # Use agent's name and fallback response
-#     agent_name = agent.name
-#     greeting = agent.fallback_response if agent.fallback_response and agent.fallback_response.strip() and agent.fallback_response != "string" else f"Hello! This is {agent_name} speaking. How can I help you today?"
-#     twilio_voice = _get_twilio_voice(agent.voice_type)
-    
-#     print(f"🎯 Agent greeting: '{greeting}'")
-#     print(f"🎯 Agent voice: '{twilio_voice}'")
-    
-#     # ABSOLUTE SIMPLEST - NO GATHER AT ALL
-#     response.say("Hello! This is your AI assistant speaking.", voice=twilio_voice)
-#     response.pause(length=2)
-#     response.say("I can help you with any questions you have.", voice=twilio_voice)
-#     response.pause(length=2)
-#     response.say("Thank you for calling. Have a great day!", voice=twilio_voice)
-#     response.pause(length=1)
-#     response.hangup()
-    
-#     return str(response)
 
 
 @router.get("/dashboard/analytics", response_model=SuccessResponse[dict])
@@ -1139,7 +1075,6 @@ async def get_recording_access(
             raise HTTPException(status_code=404, detail="No recording available for this call")
         
         # Get Twilio credentials to create authenticated URL
-        from app.services.twilio_service import twilio_service
         client = twilio_service.get_client()
         account_sid = client.username
         auth_token = client.password
