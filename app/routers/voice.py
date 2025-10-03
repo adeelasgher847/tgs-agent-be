@@ -24,7 +24,8 @@ from app.routers.general_websocket import (
     broadcast_transcript_update,
     broadcast_call_status_update,
     broadcast_call_ended,
-    broadcast_call_event
+    broadcast_call_event,
+    broadcast_system_notification
 )
 
 router = APIRouter()
@@ -284,6 +285,22 @@ async def handle_call_events_webhook(
     print(f"Request body length: {len(body) if body else 0}")
     print(f"Request body preview: {body[:200] if body else 'None'}...")
     print(f"Database session: {db}")
+    
+    # Test WebSocket broadcast at the start of webhook
+    try:
+        await broadcast_system_notification(
+            notification_type="webhook_started",
+            message=f"Webhook started for call session {callSessionId}",
+            metadata={
+                "agent_id": agentId,
+                "user_id": userId,
+                "call_session_id": callSessionId,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        )
+        print(f"✅ Test broadcast sent at webhook start")
+    except Exception as e:
+        print(f"❌ Test broadcast failed at webhook start: {e}")
     try:
         print("Parsing request body...")
         
@@ -496,6 +513,22 @@ async def handle_call_events_webhook(
                     await _add_to_transcript(call_session, "client", speech_result, db)
                     print(f"✅ User speech added to transcript for session {call_session.id}")
                     
+                    # Also broadcast speech input event directly
+                    try:
+                        await broadcast_call_event(
+                            call_session_id=str(call_session.id),
+                            event_type="speech_input",
+                            event_data={
+                                "speech_text": speech_result,
+                                "confidence": float(confidence) if confidence else None,
+                                "duration": float(speech_duration) if speech_duration else None,
+                                "call_sid": call_sid
+                            }
+                        )
+                        print(f"✅ Broadcasted speech input event for session {call_session.id}")
+                    except Exception as e:
+                        print(f"❌ Failed to broadcast speech input event: {e}")
+                    
                     # Update conversation state with interaction count
                     conversation_state = _get_conversation_state(call_session)
                     interaction_count = conversation_state.get("interaction_count", 0) + 1
@@ -537,6 +570,22 @@ async def handle_call_events_webhook(
                     print(f"📝 Adding agent response to transcript for session {call_session.id}")
                     await _add_to_transcript(call_session, "agent", response_text, db)
                     print(f"✅ Agent response added to transcript for session {call_session.id}")
+                    
+                    # Also broadcast agent response event directly
+                    try:
+                        await broadcast_call_event(
+                            call_session_id=str(call_session.id),
+                            event_type="agent_response",
+                            event_data={
+                                "response_text": response_text,
+                                "agent_id": str(agent.id) if agent else None,
+                                "agent_name": agent.name if agent else None,
+                                "call_sid": call_sid
+                            }
+                        )
+                        print(f"✅ Broadcasted agent response event for session {call_session.id}")
+                    except Exception as e:
+                        print(f"❌ Failed to broadcast agent response event: {e}")
                 
                 # Say response naturally with conversational flow
                 agent_voice = get_agent_voice(agent)

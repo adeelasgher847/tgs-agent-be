@@ -296,6 +296,9 @@ async def general_websocket(
 # Broadcast functions for use by other parts of the application
 async def broadcast_call_status_update(call_session_id: str, status: str, metadata: dict = None):
     """Broadcast call status update to all connected clients"""
+    print(f"🔔 broadcast_call_status_update called: session={call_session_id}, status={status}")
+    print(f"🔔 Active connections: {len(websocket_manager.active_connections)}")
+    
     message = {
         "type": "call_status_update",
         "call_session_id": call_session_id,
@@ -303,10 +306,20 @@ async def broadcast_call_status_update(call_session_id: str, status: str, metada
         "metadata": metadata or {},
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
-    await websocket_manager.broadcast_to_all(message, "call_status_update")
+    
+    try:
+        await websocket_manager.broadcast_to_all(message, "call_status_update")
+        print(f"✅ broadcast_call_status_update completed successfully")
+    except Exception as e:
+        print(f"❌ broadcast_call_status_update failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 async def broadcast_transcript_update(call_session_id: str, transcript: list, new_messages: list = None):
     """Broadcast transcript update to all connected clients"""
+    print(f"💬 broadcast_transcript_update called: session={call_session_id}, new_messages={len(new_messages or [])}")
+    print(f"💬 Active connections: {len(websocket_manager.active_connections)}")
+    
     message = {
         "type": "transcript_update",
         "call_session_id": call_session_id,
@@ -314,7 +327,14 @@ async def broadcast_transcript_update(call_session_id: str, transcript: list, ne
         "new_messages": new_messages or [],
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
-    await websocket_manager.broadcast_to_all(message, "transcript_update")
+    
+    try:
+        await websocket_manager.broadcast_to_all(message, "transcript_update")
+        print(f"✅ broadcast_transcript_update completed successfully")
+    except Exception as e:
+        print(f"❌ broadcast_transcript_update failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 async def broadcast_call_ended(call_session_id: str, reason: str, final_data: dict = None):
     """Broadcast call ended event to all connected clients"""
@@ -1082,3 +1102,16 @@ async def websocket_test_page():
 async def get_websocket_stats():
     """Get WebSocket connection statistics"""
     return websocket_manager.get_connection_stats()
+
+@router.post("/test-broadcast")
+async def test_broadcast():
+    """Test endpoint to send a test message to all connected WebSocket clients"""
+    try:
+        await broadcast_system_notification(
+            notification_type="test",
+            message="This is a test broadcast message!",
+            metadata={"test": True, "timestamp": datetime.now(timezone.utc).isoformat()}
+        )
+        return {"status": "success", "message": "Test broadcast sent", "connections": len(websocket_manager.active_connections)}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "connections": len(websocket_manager.active_connections)}
