@@ -196,14 +196,17 @@ async def general_websocket(
         if token:
             try:
                 # Decode JWT token to get user info
-                from app.core.security import decode_access_token
-                token_data = decode_access_token(token)
-                user_id = token_data.get("sub")
-                user_info = {
-                    "email": token_data.get("email"),
-                    "tenant_id": token_data.get("tenant_id")
-                }
-                print(f"✅ JWT token validated for user: {user_id}")
+                from app.core.security import verify_token
+                token_data = verify_token(token)
+                if token_data:
+                    user_id = token_data.get("user_id")
+                    user_info = {
+                        "email": token_data.get("email"),
+                        "tenant_id": token_data.get("tenant_id")
+                    }
+                    print(f"✅ JWT token validated for user: {user_id}")
+                else:
+                    raise Exception("Invalid token")
             except Exception as e:
                 print(f"⚠️ JWT token validation failed: {e}")
                 # For testing, allow connection without valid token
