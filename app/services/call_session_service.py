@@ -329,7 +329,7 @@ class CallSessionService:
     async def _broadcast_call_event(self, call_session_id: str, event_type: str, event_data: dict):
         """Broadcast a call event to WebSocket connections"""
         try:
-            from app.routers.call_session_websocket import broadcast_call_event
+            from app.routers.general_websocket import broadcast_call_event
             await broadcast_call_event(call_session_id, event_type, event_data)
         except Exception as e:
             print(f"Error broadcasting call event: {e}")
@@ -337,7 +337,7 @@ class CallSessionService:
     async def _broadcast_status_update(self, call_session_id: str, status: str, metadata: dict = None):
         """Broadcast call status update to WebSocket connections"""
         try:
-            from app.routers.call_session_websocket import broadcast_call_status_update
+            from app.routers.general_websocket import broadcast_call_status_update
             await broadcast_call_status_update(call_session_id, status, metadata)
         except Exception as e:
             print(f"Error broadcasting status update: {e}")
@@ -345,7 +345,7 @@ class CallSessionService:
     async def _broadcast_transcript_update(self, call_session_id: str, transcript: list, new_messages: list = None):
         """Broadcast transcript update to WebSocket connections"""
         try:
-            from app.routers.call_session_websocket import broadcast_transcript_update
+            from app.routers.general_websocket import broadcast_transcript_update
             await broadcast_transcript_update(call_session_id, transcript, new_messages)
         except Exception as e:
             print(f"Error broadcasting transcript update: {e}")
@@ -353,7 +353,7 @@ class CallSessionService:
     async def _broadcast_metadata_update(self, call_session_id: str, metadata: dict):
         """Broadcast call metadata update to WebSocket connections"""
         try:
-            from app.routers.call_session_websocket import broadcast_call_metadata_update
+            from app.routers.general_websocket import broadcast_call_metadata_update
             await broadcast_call_metadata_update(call_session_id, metadata)
         except Exception as e:
             print(f"Error broadcasting metadata update: {e}")

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
 from app.routers.voice_processing import router as voice_processing_router
-from app.routers.call_session_websocket import router as call_session_websocket_router
+# Removed old call_session_websocket import - now using general_websocket via api_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
 from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
@@ -50,4 +50,4 @@ def read_root():
     
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(health_router)
-app.include_router(call_session_websocket_router, prefix="/api/v1/call-sessions")
+# General WebSocket is now included via api_router at /api/v1/general

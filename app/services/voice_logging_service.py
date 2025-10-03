@@ -71,18 +71,8 @@ class VoiceLoggingService:
             
             call_session.call_metadata["voice_interactions"].append(voice_log)
             
-            # Update call transcript
-            if speech_text:
-                if not call_session.call_transcript:
-                    call_session.call_transcript = []
-                
-                call_session.call_transcript.append({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "speaker": "customer" if interaction_type == "speech_input" else "agent",
-                    "text": speech_text,
-                    "confidence": confidence,
-                    "duration": duration
-                })
+            # Note: Transcript is now handled by _add_to_transcript function in voice.py
+            # This prevents duplicate transcript entries with different formats
             
             db.commit()
             
@@ -459,7 +449,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             
             # Broadcast the event to WebSocket connections
             try:
-                from app.routers.call_session_websocket import broadcast_call_event
+                from app.routers.general_websocket import broadcast_call_event
                 import asyncio
                 asyncio.create_task(broadcast_call_event(
                     str(call_session_id), 

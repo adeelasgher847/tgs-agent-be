@@ -20,7 +20,7 @@ from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
 from app.utils.response import create_success_response
 from app.core.config import settings
-from app.routers.call_session_websocket import (
+from app.routers.general_websocket import (
     broadcast_transcript_update,
     broadcast_call_status_update,
     broadcast_call_ended,
@@ -58,8 +58,16 @@ def _get_random_follow_up_response() -> str:
     return random.choice(FOLLOW_UP_RESPONSES)
 
 
-async def _add_to_transcript(call_session, message_type: str, content: str, timestamp: datetime = None):
-    """Add a message to the call session transcript and broadcast to WebSocket"""
+async def _add_to_transcript(call_session, role: str, message: str, db: Session, timestamp: datetime = None):
+    """Add a message to the call session transcript and broadcast to WebSocket
+    
+    Args:
+        call_session: The call session object
+        role: Either "agent" or "client" 
+        message: The message content
+        db: Database session for committing changes
+        timestamp: Optional timestamp, defaults to current time
+    """
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
     
@@ -67,22 +75,29 @@ async def _add_to_transcript(call_session, message_type: str, content: str, time
     if not call_session.call_transcript:
         call_session.call_transcript = []
     
-    # Add new message to transcript
-    message = {
-        "type": message_type,  # "user_speech" or "agent_response"
-        "content": content,
+    # Add new message to transcript in role-based format
+    transcript_entry = {
+        "role": role,  # "agent" or "client"
+        "message": message,
         "timestamp": timestamp.isoformat()
     }
     
-    call_session.call_transcript.append(message)
-    print(f"📝 Added to transcript: {message_type} - {content[:50]}...")
+    call_session.call_transcript.append(transcript_entry)
+    print(f"📝 Added to transcript: {role} - {message[:50]}...")
+    
+    # Commit the transcript changes to database
+    try:
+        db.commit()
+        print(f"✅ Committed transcript changes to database for session {call_session.id}")
+    except Exception as e:
+        print(f"❌ Failed to commit transcript changes: {e}")
     
     # Broadcast transcript update to WebSocket
     try:
         await broadcast_transcript_update(
             call_session_id=str(call_session.id),
             transcript=call_session.call_transcript,
-            new_messages=[message]
+            new_messages=[transcript_entry]
         )
         print(f"✅ Broadcasted transcript update for session {call_session.id}")
     except Exception as e:
@@ -478,7 +493,7 @@ async def handle_call_events_webhook(
                 if call_session:
                     # Add user speech to transcript
                     print(f"📝 Adding user speech to transcript for session {call_session.id}")
-                    await _add_to_transcript(call_session, "user_speech", speech_result)
+                    await _add_to_transcript(call_session, "client", speech_result, db)
                     print(f"✅ User speech added to transcript for session {call_session.id}")
                     
                     # Update conversation state with interaction count
@@ -520,7 +535,7 @@ async def handle_call_events_webhook(
                 # Add agent response to transcript
                 if call_session:
                     print(f"📝 Adding agent response to transcript for session {call_session.id}")
-                    await _add_to_transcript(call_session, "agent_response", response_text)
+                    await _add_to_transcript(call_session, "agent", response_text, db)
                     print(f"✅ Agent response added to transcript for session {call_session.id}")
                 
                 # Say response naturally with conversational flow
@@ -722,7 +737,7 @@ async def handle_call_events_webhook(
                 
                 # Add initial greeting to transcript
                 greeting_text = f"Hello! This is {agent_name}. How can I help you today?"
-                await _add_to_transcript(call_session, "agent_response", greeting_text)
+                await _add_to_transcript(call_session, "agent", greeting_text, db)
                 
                 # Broadcast greeting event
                 try:
