@@ -464,6 +464,10 @@ async def websocket_test_page():
             button:disabled { background: #ccc; cursor: not-allowed; }
             button.danger { background: #dc3545; }
             button.danger:hover { background: #c82333; }
+            button.info { background: #17a2b8; }
+            button.info:hover { background: #138496; }
+            button.warning { background: #ffc107; color: #212529; }
+            button.warning:hover { background: #e0a800; }
             button.success { background: #28a745; }
             button.success:hover { background: #218838; }
             
@@ -698,7 +702,7 @@ async def websocket_test_page():
                     </div>
                     <div>
                         <label>WebSocket URL:</label><br>
-                        <input type="text" id="wsUrl" value="ws://localhost:8000/api/v1/general/ws" readonly style="width: 100%;">
+                        <input type="text" id="wsUrl" value="wss://voiceagentapi.site/api/v1/general/ws" readonly style="width: 100%;">
                     </div>
                 </div>
             </div>
@@ -711,6 +715,8 @@ async def websocket_test_page():
                     <button onclick="clearEvents()">🗑️ Clear Events</button>
                     <button onclick="getStats()">📊 Get Stats</button>
                     <button onclick="clearTranscript()">🗑️ Clear Transcript</button>
+                    <button onclick="testBroadcast()" class="info">🧪 Test Broadcast</button>
+                    <button onclick="testCallEvents()" class="warning">📞 Test Call Flow</button>
                 </div>
             </div>
             
@@ -1071,6 +1077,40 @@ async def websocket_test_page():
                     ws.send(JSON.stringify({ type: 'get_stats' }));
                 } else {
                     addEvent('Not connected', 'error');
+                }
+            }
+            
+            async function testBroadcast() {
+                try {
+                    const response = await fetch('/api/v1/general/test-broadcast', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    const result = await response.json();
+                    console.log('Test broadcast result:', result);
+                    alert(`Test broadcast sent! Connections: ${result.connections}`);
+                } catch (error) {
+                    console.error('Test broadcast failed:', error);
+                    alert('Test broadcast failed: ' + error.message);
+                }
+            }
+
+            async function testCallEvents() {
+                try {
+                    const response = await fetch('/api/v1/general/test-call-events', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    const result = await response.json();
+                    console.log('Test call events result:', result);
+                    alert(`Test call events sent! Events: ${result.events_sent}, Connections: ${result.connections}`);
+                } catch (error) {
+                    console.error('Test call events failed:', error);
+                    alert('Test call events failed: ' + error.message);
                 }
             }
             
