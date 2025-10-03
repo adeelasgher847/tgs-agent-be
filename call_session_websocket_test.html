@@ -280,7 +280,7 @@
 
             <div class="input-group">
                 <label for="wsUrl">WebSocket URL:</label>
-                <input type="text" id="wsUrl" placeholder="wss://voiceagentapi.site/api/v1/general/ws" readonly>
+                <input type="text" id="wsUrl" placeholder="ws://voiceagentapi.site/api/v1/general/ws" readonly>
             </div>
 
             <div class="button-group">
@@ -364,7 +364,7 @@
                 }
 
                 this.currentSessionId = sessionId;
-                const wsUrl = `wss://voiceagentapi.site/api/v1/general/ws?token=${encodeURIComponent(token)}`;
+                const wsUrl = `ws://localhost:8000/api/v1/general/ws?token=${encodeURIComponent(token)}`;
                 
                 updateStatus('connecting', 'Connecting...');
                 this.logEvent('connection_attempt', { sessionId, timestamp: new Date().toISOString() });
@@ -643,7 +643,7 @@
 
         async function testBroadcast() {
             try {
-                const response = await fetch('https://voiceagentapi.site/api/v1/general/test-broadcast', {
+                const response = await fetch('http://localhost:8000/api/v1/general/test-broadcast', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -660,7 +660,7 @@
 
         async function testCallEvents() {
             try {
-                const response = await fetch('https://voiceagentapi.site/api/v1/general/test-call-events', {
+                const response = await fetch('http://localhost:8000/api/v1/general/test-call-events', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -679,7 +679,7 @@
         function updateWebSocketUrl() {
             const token = localStorage.getItem('jwt_token');
             if (token) {
-                const wsUrl = `wss://voiceagentapi.site/api/v1/general/ws?token=${encodeURIComponent(token)}`;
+                const wsUrl = `ws://localhost:8000/api/v1/general/ws?token=${encodeURIComponent(token)}`;
                 document.getElementById('wsUrl').value = wsUrl;
             }
         }
@@ -691,7 +691,7 @@
                 return;
             }
 
-            const wsUrl = `wss://voiceagentapi.site/api/v1/general/ws?token=${encodeURIComponent(token)}`;
+            const wsUrl = `ws://localhost:8000/api/v1/general/ws?token=${encodeURIComponent(token)}`;
             document.getElementById('wsUrl').value = wsUrl;
             
             // Connect to general WebSocket (no call session ID needed)
