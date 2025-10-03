@@ -403,6 +403,19 @@ async def test_broadcast():
     except Exception as e:
         return {"status": "error", "message": str(e), "connections": len(websocket_manager.active_connections)}
 
+@router.get("/test-page")
+async def get_test_page():
+    """Serve the custom HTML test page"""
+    try:
+        # Read the HTML file
+        html_file_path = "/Users/macbookpro/Desktop/branch-code/tgs-agent-be/call_session_websocket_test.html"
+        with open(html_file_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        return HTMLResponse(content=html_content, media_type="text/html")
+    except Exception as e:
+        return HTMLResponse(f"Error loading test page: {str(e)}", status_code=500)
+
 @router.post("/test-call-events")
 async def test_call_events():
     """Test endpoint to simulate a complete call flow for testing WebSocket events"""
