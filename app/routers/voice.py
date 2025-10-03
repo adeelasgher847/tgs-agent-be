@@ -445,12 +445,12 @@ async def handle_call_events_webhook(
                     await broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="completed",
-                        duration=call_session.duration,
-                        metadata={
+                        final_data={
                             "call_sid": call_sid,
                             "from_number": from_number,
                             "to_number": to_number,
                             "direction": direction,
+                            "duration": call_session.duration,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     )
