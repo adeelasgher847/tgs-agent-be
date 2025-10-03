@@ -444,6 +444,63 @@ async def handle_call_events_webhook(
                 import traceback
                 traceback.print_exc()
         
+        # Broadcast specific status updates for ringing, in-progress and completed
+        if call_session and call_status:
+            if call_status == "ringing":
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="ringing",
+                        metadata={
+                            "message": "Call is ringing",
+                            "call_sid": call_sid,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted ringing status for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast ringing status: {e}")
+            
+            elif call_status == "in-progress":
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "message": "Call is now in progress",
+                            "call_sid": call_sid,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted in-progress status for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast in-progress status: {e}")
+            
+            elif call_status == "completed":
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="completed",
+                        metadata={
+                            "message": "Call has been completed",
+                            "call_sid": call_sid,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "direction": direction,
+                            "duration": call_session.duration if call_session.duration else 0,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted completed status for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast completed status: {e}")
+        
         # Update call session status if we have a call session and status
         if call_session and call_status:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
