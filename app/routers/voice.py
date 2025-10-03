@@ -797,6 +797,7 @@ async def handle_call_events_webhook(
                         call_session_id=str(call_session.id),
                         status="initiated",
                         metadata={
+                            "check":"just checking",
                             "call_sid": call_sid,
                             "direction": direction,
                             "timestamp": datetime.now(timezone.utc).isoformat()
