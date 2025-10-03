@@ -342,32 +342,46 @@ async def handle_call_events_webhook(
     try:
         print("Parsing request body...")
         
-        # Fetch agent information from database using agentId
+        # Parse form data to get call information
+        form_data = await request.form()
+        call_sid = form_data.get("CallSid", "")
+        call_status = form_data.get("CallStatus", "")
+        from_number = form_data.get("From", "")
+        to_number = form_data.get("To", "")
+        direction = form_data.get("Direction", "")
+        
+        # Extract speech input (if any)
+        speech_result = form_data.get("SpeechResult", "")
+        confidence = form_data.get("Confidence", "")
+        speech_duration = form_data.get("SpeechDuration", "")
+        
+        print(f"🎤 Speech input - Result: '{speech_result}', Confidence: {confidence}, Duration: {speech_duration}")
+        
+        # Get call session using callSessionId from query parameters (OPTIMIZED)
+        call_session = None
         agent = None
-        if agentId:
+        
+        if callSessionId:
             try:
-                # Parse form data to get call information
-                form_data = await request.form()
-                call_sid = form_data.get("CallSid", "")
-                
-                # Get call session to get tenant_id
-                call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+                session_uuid = uuid.UUID(callSessionId)
+                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
                 if call_session:
-                    # Fetch agent from database
-                    agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
-                    if agent:
-                        print(f"✅ Agent fetched: {agent.name} (ID: {agent.id})")
-                        print(f"🏢 Tenant: {agent.tenant_id}")
-                        print(f"🎤 Voice type: {agent.voice_type}, Language: {agent.language}")
-                    else:
-                        print(f"⚠️ Agent {agentId} not found in tenant {call_session.tenant_id}")
+                    print(f"✅ Found call session: {call_session.id} from query parameter")
+                    
+                    # Fetch agent using call session's tenant_id
+                    if agentId:
+                        agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
+                        if agent:
+                            print(f"✅ Agent fetched: {agent.name} (ID: {agent.id})")
+                            print(f"🏢 Tenant: {agent.tenant_id}")
+                        else:
+                            print(f"⚠️ Agent {agentId} not found in tenant {call_session.tenant_id}")
                 else:
-                    print(f"⚠️ Call session not found for SID: {call_sid}")
-            except Exception as e:
-                print(f"⚠️ Error fetching agent: {e}")
-                agent = None
+                    print(f"⚠️ No call session found for ID: {callSessionId}")
+            except ValueError:
+                print(f"⚠️ Invalid call session ID format: {callSessionId}")
         else:
-            print("⚠️ No agentId provided in query parameters")
+            print(f"⚠️ No callSessionId provided in query parameters")
         
         # Validate request (Twilio signature or WebRTC auth)
         is_twilio = 'X-Twilio-Signature' in request.headers
@@ -383,44 +397,6 @@ async def handle_call_events_webhook(
         else:
             # For testing purposes, allow requests without validation
             print("No authentication headers found, allowing for testing")
-        
-        # Form data already parsed above for agent fetching
-        
-        # Extract call information from form data
-        call_sid = form_data.get("CallSid", "")
-        call_status = form_data.get("CallStatus", "")
-        from_number = form_data.get("From", "")
-        to_number = form_data.get("To", "")
-        direction = form_data.get("Direction", "")
-        
-        # Extract speech input (if any)
-        speech_result = form_data.get("SpeechResult", "")
-        confidence = form_data.get("Confidence", "")
-        speech_duration = form_data.get("SpeechDuration", "")
-        
-        print(f"🎤 Speech input - Result: '{speech_result}', Confidence: {confidence}, Duration: {speech_duration}")
-        
-        # Get call session for this webhook call (prefer callSessionId from query param)
-        call_session = None
-        if callSessionId:
-            try:
-                session_uuid = uuid.UUID(callSessionId)
-                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
-                if call_session:
-                    print(f"✅ Found call session: {call_session.id} from query parameter")
-                else:
-                    print(f"⚠️ No call session found for ID: {callSessionId}")
-            except ValueError:
-                print(f"⚠️ Invalid call session ID format: {callSessionId}")
-        elif call_sid:
-            # Fallback to finding by Twilio SID
-            call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
-            if call_session:
-                print(f"✅ Found call session: {call_session.id} for SID: {call_sid}")
-            else:
-                print(f"⚠️ No call session found for SID: {call_sid}")
-        else:
-            print(f"⚠️ No call session ID or SID provided")
         
         # Log the call event
         print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
@@ -444,62 +420,7 @@ async def handle_call_events_webhook(
                 import traceback
                 traceback.print_exc()
         
-        # Broadcast specific status updates for ringing, in-progress and completed
-        if call_session and call_status:
-            if call_status == "ringing":
-                try:
-                    await broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="ringing",
-                        metadata={
-                            "message": "Call is ringing",
-                            "call_sid": call_sid,
-                            "from_number": from_number,
-                            "to_number": to_number,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    )
-                    print(f"✅ Broadcasted ringing status for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast ringing status: {e}")
-            
-            elif call_status == "in-progress":
-                try:
-                    await broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "message": "Call is now in progress",
-                            "call_sid": call_sid,
-                            "from_number": from_number,
-                            "to_number": to_number,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    )
-                    print(f"✅ Broadcasted in-progress status for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast in-progress status: {e}")
-            
-            elif call_status == "completed":
-                try:
-                    await broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="completed",
-                        metadata={
-                            "message": "Call has been completed",
-                            "call_sid": call_sid,
-                            "from_number": from_number,
-                            "to_number": to_number,
-                            "direction": direction,
-                            "duration": call_session.duration if call_session.duration else 0,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    )
-                    print(f"✅ Broadcasted completed status for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast completed status: {e}")
+        # Status broadcasts will be handled in the main status update section below
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
@@ -541,32 +462,39 @@ async def handle_call_events_webhook(
             db.commit()
             print(f"✅ Updated call session {call_session.id} status to: {call_status}")
             
-            # Broadcast status update to WebSocket
+            # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
             try:
-                print(f"🚀 ATTEMPTING to broadcast call status update: {call_status} for session {call_session.id}")
+                print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
+                
+                # Prepare comprehensive metadata
+                metadata = {
+                    "call_sid": call_sid,
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "direction": direction,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                    "duration": call_session.duration
+                }
+                
+                # Add status-specific messages
+                if call_status == "ringing":
+                    metadata["message"] = "Call is ringing"
+                elif call_status == "in-progress":
+                    metadata["message"] = "Call is now in progress"
+                elif call_status == "completed":
+                    metadata["message"] = "Call has been completed"
+                
                 await broadcast_call_status_update(
                     call_session_id=str(call_session.id),
                     status=call_status,
-                    metadata={
-                        "call_sid": call_sid,
-                        "from_number": from_number,
-                        "to_number": to_number,
-                        "direction": direction,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                        "duration": call_session.duration
-                    }
+                    metadata=metadata
                 )
                 print(f"✅ Successfully broadcasted call status update: {call_status} for session {call_session.id}")
-            except Exception as e:
-                print(f"❌ Failed to broadcast call status update: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            # Broadcast call ended event if call completed
-            if call_status == "completed":
-                try:
+                
+                # Also broadcast call ended event for completed calls
+                if call_status == "completed":
                     await broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="Call completed",
@@ -578,32 +506,18 @@ async def handle_call_events_webhook(
                         }
                     )
                     print(f"✅ Broadcasted call ended event for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call ended event: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    
+            except Exception as e:
+                print(f"❌ Failed to broadcast call status update: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
             if not call_status:
                 print(f"⚠️ No call status provided - cannot update status or broadcast")
         
-        # Get agent from database if agentId is provided
-        agent = None
-        if agentId:
-            try:
-                agent_uuid = uuid.UUID(agentId)
-                # Get agent from database
-                agent = db.query(Agent).filter(Agent.id == agent_uuid).first()
-                if agent:
-                    print(f"Found agent: {agent.name} (ID: {agent.id})")
-                else:
-                    print(f"Agent not found in database for ID: {agentId}")
-            except (ValueError, Exception) as e:
-                print(f"Error getting agent: {e}")
-                agent = None
-        else:
-            print("No agentId provided in webhook")
+        # Agent already fetched above using callSessionId - no need to fetch again
         
         # Handle speech input - ROBUST MULTI-TENANT LOGGING
         if speech_result and speech_result.strip():
