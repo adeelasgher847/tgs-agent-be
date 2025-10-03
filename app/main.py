@@ -15,14 +15,21 @@ from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
 
 app = FastAPI()
 
-# Initialize rate limiter on startup
+# Initialize rate limiter on startup (temporarily disabled due to Redis connection issues)
 @app.on_event("startup")
 async def startup_event():
-    await init_rate_limiter()
+    try:
+        await init_rate_limiter()
+    except Exception as e:
+        print(f"⚠️ Rate limiter initialization failed: {e}")
+        print("⚠️ Continuing without rate limiting...")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await close_rate_limiter()
+    try:
+        await close_rate_limiter()
+    except Exception as e:
+        print(f"⚠️ Rate limiter cleanup failed: {e}")
 
 # Add CORS middleware
 app.add_middleware(
@@ -50,4 +57,3 @@ def read_root():
     
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(health_router)
-# General WebSocket is now included via api_router at /api/v1/general

@@ -311,7 +311,8 @@ async def handle_call_events_webhook(
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
-    print("=== Call Events Webhook Started === print check")
+    print("🔥🔥🔥 WEBHOOK CALLED! 🔥🔥🔥")
+    print("=== Call Events Webhook Started ===")
     print(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
     print(f"Request method: {request.method}")
     print(f"Request URL: {request.url}")
@@ -460,6 +461,24 @@ async def handle_call_events_webhook(
                     duration = (call_session.end_time - call_session.start_time).total_seconds()
                     call_session.duration = int(duration)
                     print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+                
+                # Broadcast call ended event
+                try:
+                    await broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="completed",
+                        duration=call_session.duration,
+                        metadata={
+                            "call_sid": call_sid,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call ended event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call ended event: {e}")
             
             # Commit the status update
             db.commit()
@@ -932,6 +951,19 @@ async def handle_call_events_webhook(
                         }
                     )
                     print(f"✅ Broadcasted call failed event for session {call_session.id}")
+                    
+                    # Also broadcast call ended event for failed calls
+                    await broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="failed",
+                        duration=0,
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call ended (failed) event for session {call_session.id}")
                 except Exception as e:
                     print(f"❌ Failed to broadcast call failed event: {e}")
             
@@ -954,8 +986,56 @@ async def handle_call_events_webhook(
                         }
                     )
                     print(f"✅ Broadcasted call busy event for session {call_session.id}")
+                    
+                    # Also broadcast call ended event for busy calls
+                    await broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="busy",
+                        duration=0,
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call ended (busy) event for session {call_session.id}")
                 except Exception as e:
                     print(f"❌ Failed to broadcast call busy event: {e}")
+            
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "no-answer":
+            # Call no-answer - handle no answer
+            print(f"Call no-answer - SID: {call_sid}")
+            
+            # Broadcast call no-answer event
+            if call_session:
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="no-answer",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call no-answer event for session {call_session.id}")
+                    
+                    # Also broadcast call ended event for no-answer calls
+                    await broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="no-answer",
+                        duration=0,
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    )
+                    print(f"✅ Broadcasted call ended (no-answer) event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call no-answer event: {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
