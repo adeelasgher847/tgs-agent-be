@@ -236,6 +236,23 @@ async def initiate_call(
         print(f"Making call with webhook_url: {webhook_url}")
         print(f"Making call with status_callback_url: {status_callback_url}")
         
+        # Broadcast call initiating event BEFORE making the call
+        try:
+            await broadcast_call_status_update(
+                call_session_id=str(call_session.id),
+                status="initiating",
+                metadata={
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "to_number": request.userPhoneNumber,
+                    "from_number": twilio_service.get_phone_number(),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            print(f"✅ Broadcasted call initiating event for session {call_session.id}")
+        except Exception as e:
+            print(f"❌ Failed to broadcast call initiating event: {e}")
+        
         # Make the call using Twilio
         call = twilio_service.make_call(
             to_number=request.userPhoneNumber,
@@ -249,6 +266,24 @@ async def initiate_call(
         call_session.twilio_call_sid = call.sid
         db.commit()
         print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
+        
+        # Broadcast call initiated event AFTER Twilio confirms
+        try:
+            await broadcast_call_status_update(
+                call_session_id=str(call_session.id),
+                status="initiated",
+                metadata={
+                    "call_sid": call.sid,
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "to_number": request.userPhoneNumber,
+                    "from_number": twilio_service.get_phone_number(),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            print(f"✅ Broadcasted call initiated event for session {call_session.id}")
+        except Exception as e:
+            print(f"❌ Failed to broadcast call initiated event: {e}")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -301,6 +336,8 @@ async def handle_call_events_webhook(
         print(f"✅ Test broadcast sent at webhook start")
     except Exception as e:
         print(f"❌ Test broadcast failed at webhook start: {e}")
+        import traceback
+        traceback.print_exc()
     try:
         print("Parsing request body...")
         

@@ -61,6 +61,7 @@ class GeneralWebSocketManager:
         self.global_metadata["last_activity"] = datetime.now(timezone.utc).isoformat()
         
         print(f"✅ WebSocket connected for general monitoring. Total connections: {len(self.active_connections)}")
+        print(f"✅ WebSocket manager ID: {id(self)}")
         
         # Send initial connection confirmation
         await self.send_to_websocket(websocket, {
@@ -107,18 +108,33 @@ class GeneralWebSocketManager:
         """Broadcast a message to all connected WebSockets"""
         print(f"📡 Broadcasting to {len(self.active_connections)} connections")
         print(f"📡 Message type: {message.get('type', 'unknown')}")
+        print(f"📡 Event type: {event_type}")
+        print(f"📡 WebSocket manager ID: {id(self)}")
+        
+        if len(self.active_connections) == 0:
+            print(f"⚠️ No active WebSocket connections to broadcast to!")
+            return
         
         disconnected_websockets = []
+        messages_sent = 0
         
         for websocket in self.active_connections:
             try:
                 # Check if websocket is subscribed to this event type
                 subscriptions = self.websocket_subscriptions.get(websocket, ["all"])
+                print(f"📡 WebSocket subscriptions: {subscriptions}")
+                
                 if "all" in subscriptions or (event_type and event_type in subscriptions):
                     await websocket.send_text(json.dumps(message))
+                    messages_sent += 1
+                    print(f"✅ Message sent to WebSocket {id(websocket)}")
+                else:
+                    print(f"⚠️ WebSocket {id(websocket)} not subscribed to {event_type}")
             except Exception as e:
                 print(f"❌ Error broadcasting to WebSocket: {e}")
                 disconnected_websockets.append(websocket)
+        
+        print(f"📡 Total messages sent: {messages_sent}")
         
         # Clean up disconnected websockets
         for websocket in disconnected_websockets:
@@ -1113,5 +1129,58 @@ async def test_broadcast():
             metadata={"test": True, "timestamp": datetime.now(timezone.utc).isoformat()}
         )
         return {"status": "success", "message": "Test broadcast sent", "connections": len(websocket_manager.active_connections)}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "connections": len(websocket_manager.active_connections)}
+
+@router.post("/test-call-events")
+async def test_call_events():
+    """Test endpoint to simulate a complete call flow for testing WebSocket events"""
+    try:
+        test_call_session_id = "test-call-123"
+        
+        # Simulate call flow events
+        events = [
+            ("initiating", "Call is being initiated..."),
+            ("initiated", "Call has been initiated"),
+            ("ringing", "Call is ringing..."),
+            ("in-progress", "Call is now in progress"),
+            ("completed", "Call has ended")
+        ]
+        
+        for status, message in events:
+            await broadcast_call_status_update(
+                call_session_id=test_call_session_id,
+                status=status,
+                metadata={
+                    "test": True,
+                    "message": message,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            # Small delay between events
+            import asyncio
+            await asyncio.sleep(0.5)
+        
+        # Simulate transcript events
+        await broadcast_transcript_update(
+            call_session_id=test_call_session_id,
+            transcript=[
+                {"role": "agent", "message": "Hello! This is a test agent. How can I help you?", "timestamp": datetime.now(timezone.utc).isoformat()},
+                {"role": "client", "message": "Hi, this is a test call!", "timestamp": datetime.now(timezone.utc).isoformat()},
+                {"role": "agent", "message": "Great! This is working perfectly.", "timestamp": datetime.now(timezone.utc).isoformat()}
+            ],
+            new_messages=[
+                {"role": "agent", "message": "Hello! This is a test agent. How can I help you?", "timestamp": datetime.now(timezone.utc).isoformat()},
+                {"role": "client", "message": "Hi, this is a test call!", "timestamp": datetime.now(timezone.utc).isoformat()},
+                {"role": "agent", "message": "Great! This is working perfectly.", "timestamp": datetime.now(timezone.utc).isoformat()}
+            ]
+        )
+        
+        return {
+            "status": "success", 
+            "message": "Test call events sent", 
+            "connections": len(websocket_manager.active_connections),
+            "events_sent": len(events) + 1  # +1 for transcript
+        }
     except Exception as e:
         return {"status": "error", "message": str(e), "connections": len(websocket_manager.active_connections)}
