@@ -69,7 +69,7 @@ class VoiceAgentManager:
                 print(f"⚠️ Error processing agent object: {e}")
         
         # Agent-specific greeting - natural and conversational
-        response.say(f"Hi there! This is {agent_name}. How are you doing today?", voice=agent_voice)
+        response.say("Hello! How can I help you today?", voice=agent_voice)
         
         # Add gather to collect user input
         gather = response.gather(

@@ -359,7 +359,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             agent_name = agent.name if agent and agent.name else "AI Assistant"
             
             if "hello" in speech_lower or "hi" in speech_lower:
-                response = "Hi there! How are you doing today?"
+                response = "How can I help you today?"
             elif "help" in speech_lower:
                 response = "Sure! What's going on?"
             elif "thank" in speech_lower:
@@ -371,7 +371,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             elif "support" in speech_lower:
                 response = "Sure! What's going on?"
             elif "name" in speech_lower or "who" in speech_lower:
-                response = f"My name is {agent_name}. What would you like to talk about?"
+                response = "I'm here to help you. What would you like to talk about?"
             elif "how are you" in speech_lower:
                 response = "I'm doing great, thank you for asking! How are you doing today?"
             elif "what" in speech_lower and "do" in speech_lower:
@@ -386,7 +386,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             print(f"❌ Error generating fallback response: {e}")
             # Use agent name in error response if available
             if agent and agent.name:
-                return f"Sorry, I didn't quite catch that. This is {agent.name}. Could you repeat that?"
+                return "Sorry, I didn't quite catch that. Could you repeat that?"
             else:
                 return "Sorry, I didn't quite catch that. Could you repeat that?"
     
