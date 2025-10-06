@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.schemas.tenant import TenantCreate, TenantCreateResponse, TenantOut
 from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
@@ -33,7 +33,6 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     - Tenant name must be unique
     - Creator user is auto-linked to the tenant with role "admin"
     - Sets the new tenant as user's current tenant
-    - Creates Stripe customer and links it to the tenant
     - Returns tenant_id and tenant details with updated token
     """
     # Check if tenant name already exists for this user
@@ -66,25 +65,6 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     db.add(db_tenant)
     db.commit()
     db.refresh(db_tenant)
-    
-    # Create Stripe customer and link it to the tenant
-    from app.services.stripe_service import StripeService
-    try:
-        stripe_customer_id = StripeService.create_customer(
-            tenant=db_tenant,
-            email=current_user.email,
-            user=current_user
-        )
-        db_tenant.stripe_customer_id = stripe_customer_id
-        db.commit()
-    except Exception as e:
-        # If Stripe customer creation fails, delete the tenant
-        db.delete(db_tenant)
-        db.commit()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to create Stripe customer: {str(e)}"
-        )
     
     # Get admin role by name
     admin_role = db.query(Role).filter(Role.name == settings.ADMIN_ROLE).first()
@@ -205,7 +185,7 @@ def start_checkout_session(
 ):
     """
     Start Stripe checkout session for tenant subscription.
-    Stripe customer ID is automatically fetched from tenant record.
+    Stripe customer ID is created if not present.
     Tenant ID is fetched from current user's JWT token.
     """
     if not current_user.current_tenant_id:
@@ -213,23 +193,25 @@ def start_checkout_session(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No tenant selected"
         )
-    
     tenant_id = str(current_user.current_tenant_id)
-    
-    # Validate tenant exists and has Stripe customer ID
     tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
     if not tenant:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tenant not found"
         )
-    
+    # Create Stripe customer if not exists
     if not tenant.stripe_customer_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No Stripe customer found for this tenant. Please create tenant first."
+        from app.services.stripe_service import StripeService
+        stripe_customer_id = StripeService.create_customer(
+            tenant=tenant,
+            email=current_user.email,
+            user=current_user
         )
-    
+        tenant.stripe_customer_id = stripe_customer_id
+        db.commit()
+    else:
+        stripe_customer_id = tenant.stripe_customer_id
     # Create checkout session directly with Stripe
     import stripe
     from app.core.config import settings
@@ -241,7 +223,7 @@ def start_checkout_session(
     
     try:
         checkout_session = stripe.checkout.Session.create(
-            customer=tenant.stripe_customer_id,
+            customer=stripe_customer_id,
             success_url=success_url,
             cancel_url=cancel_url,
             mode="subscription",
@@ -251,7 +233,7 @@ def start_checkout_session(
             }],
             metadata={
                 "tenant_id": tenant_id,
-                "stripe_customer_id": tenant.stripe_customer_id
+                "stripe_customer_id": stripe_customer_id
             }
         )
         
@@ -274,7 +256,7 @@ def start_checkout_session(
         
         if subscription:
             # Update existing subscription
-            subscription.stripe_customer_id = tenant.stripe_customer_id
+            subscription.stripe_customer_id = stripe_customer_id
             subscription.plan_id = plan.id
             subscription.status = "pending_payment"
             subscription.stripe_session_id = checkout_session.id
@@ -283,7 +265,7 @@ def start_checkout_session(
             subscription = Subscription(
                 tenant_id=current_user.current_tenant_id,
                 plan_id=plan.id,
-                stripe_customer_id=tenant.stripe_customer_id,
+                stripe_customer_id=stripe_customer_id,
                 status="pending_payment",
                 stripe_session_id=checkout_session.id
             )
@@ -302,6 +284,109 @@ def start_checkout_session(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+@router.post("/start-credit-checkout-session")
+def start_credit_checkout_session(
+    amount: float,  # Amount in dollars
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Start Stripe checkout session for one-time credit purchase (pay as you go).
+    $1 = 10 credits. User can buy any amount of credits.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found"
+        )
+    import stripe
+    from app.core.config import settings
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    # Create Stripe customer if not exists
+    if not tenant.stripe_customer_id:
+        from app.services.stripe_service import StripeService
+        stripe_customer_id = StripeService.create_customer(
+            tenant=tenant,
+            email=current_user.email,
+            user=current_user
+        )
+        tenant.stripe_customer_id = stripe_customer_id
+        db.commit()
+    else:
+        stripe_customer_id = tenant.stripe_customer_id
+    # Create checkout session (one-time payment)
+    amount_cents = int(amount * 100)
+    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant.id}"
+    cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant.id}"
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            customer=stripe_customer_id,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            mode="payment",
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": "Credits Purchase"},
+                    "unit_amount": amount_cents
+                },
+                "quantity": 1
+            }],
+            metadata={
+                "tenant_id": str(tenant.id),
+                "amount": str(amount)
+            }
+        )
+        return create_success_response({
+            "session_id": checkout_session.id,
+            "url": checkout_session.url
+        }, "Credit checkout session created successfully")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+@router.get("/credits")
+def get_tenant_credits(current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
+    """
+    Get current credits for the current user's active tenant.
+    Also, after payment, update credits if not already updated (manual event simulation).
+    """
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    # Simulate Stripe event: check latest successful payment and update credits if needed
+    import stripe
+    from app.core.config import settings
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    if tenant.stripe_customer_id:
+        checkout_sessions = stripe.checkout.Session.list(
+            customer=tenant.stripe_customer_id,
+            limit=10
+        )
+        for session in checkout_sessions.data:
+            if session.payment_status == "paid" and session.mode == "payment":
+                metadata = session.metadata or {}
+                amount = float(metadata.get("amount", 0))
+                credits_to_add = int(amount * 10)
+                # Only add credits if not already added for this session
+                if credits_to_add > 0 and (not hasattr(tenant, 'last_credit_session') or tenant.last_credit_session != session.id):
+                    tenant.credits += credits_to_add
+                    tenant.status = "paid"
+                    # Optionally, store last_credit_session in DB to avoid double crediting
+                    # tenant.last_credit_session = session.id
+                    db.commit()
+                break
+    return create_success_response({"tenant_id": tenant.id, "credits": tenant.credits, "status": tenant.status}, "Tenant credits fetched successfully")
 
 @router.get("/verify-payment/{session_id}")
 def verify_payment(

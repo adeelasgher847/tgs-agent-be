@@ -17,14 +17,6 @@ class AgentService:
         """
         Create a new agent with tenant context and audit trail
         """
-        # Check billing limits before creating agent
-        if not BillingService.check_agent_limit(db, tenant_id):
-            usage = BillingService.get_current_usage(db, tenant_id)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Agent limit exceeded. You have {usage['agents_used']}/{usage['agent_limit']} agents. Please upgrade your plan."
-            )
-        
         # Validate model_id if provided
         if agent_in.model_id:
             model = db.query(Model).filter(
@@ -303,4 +295,4 @@ class AgentService:
         
         return effective_config
 
-agent_service = AgentService() 
+agent_service = AgentService()

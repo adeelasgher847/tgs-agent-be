@@ -290,20 +290,6 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(db_tenant)
 
-        # Create Stripe customer for the owner's tenant
-        try:
-            from app.services.stripe_service import StripeService
-            stripe_customer_id = StripeService.create_customer(
-                tenant=db_tenant,
-                email=email,
-                user=db_user
-            )
-            db_tenant.stripe_customer_id = stripe_customer_id
-            db.commit()
-        except Exception:
-            # Non-blocking: proceed without Stripe on failure
-            pass
-
         owner_role = db.query(Role).filter(Role.name == "owner").first()
 
         db_user.tenants.append(db_tenant)

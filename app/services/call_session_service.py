@@ -8,6 +8,7 @@ from app.models.call_session import CallSession
 from app.models.call_log import CallLog
 from app.models.user import User
 from app.models.agent import Agent
+from app.models.tenant import Tenant
 from app.schemas.call_log import CallLogCreate
 from typing import List, Dict, Optional, Any
 import uuid
@@ -312,6 +313,42 @@ class CallSessionService:
             "average_response_time": avg_response_time,
             "total_response_time_entries": len(call_session.response_times) if call_session.response_times else 0
         }
+    
+    def end_call_session(self, db: Session, call_session_id: uuid.UUID, end_time: datetime, duration: int) -> CallSession:
+        """
+        End a call session, updating its status and deducting credits from the tenant
+        
+        Args:
+            db: Database session
+            call_session_id: Call session ID (UUID)
+            end_time: End time of the call session
+            duration: Duration of the call in seconds
+            
+        Returns:
+            Updated CallSession object
+            
+        Raises:
+            Exception: If call session not found
+        """
+        call_session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+        if not call_session:
+            raise Exception("Call session not found")
+        call_session.end_time = end_time
+        call_session.duration = duration
+        call_session.status = "completed"
+        db.commit()
+        db.refresh(call_session)
+        # Deduct credits from tenant
+        tenant = db.query(Tenant).filter(Tenant.id == call_session.tenant_id).first()
+        if tenant:
+            minutes = max(1, int((duration or 0) / 60))
+            credits_to_deduct = minutes * 10
+            if tenant.credits >= credits_to_deduct:
+                tenant.credits -= credits_to_deduct
+            else:
+                tenant.credits = 0
+            db.commit()
+        return call_session
 
 # Global instance
 call_session_service = CallSessionService()
