@@ -3,6 +3,7 @@ from sqlalchemy import desc
 from typing import List, Optional
 from datetime import datetime, timezone
 import uuid
+import asyncio
 
 from app.models.transcript_message import TranscriptMessage
 from app.models.call_session import CallSession
@@ -147,16 +148,17 @@ class TranscriptService:
             "metadata": transcript_message.message_metadata
         }
         
-        # Broadcast the update
+        # Optional WebSocket broadcast (non-blocking - fire and forget)
         try:
-            await broadcast_transcript_update(
+            asyncio.create_task(broadcast_transcript_update(
                 call_session_id=str(call_session_id),
                 transcript=conversation,
                 new_messages=[new_message]
-            )
-            print(f"✅ Broadcasted transcript update for session {call_session_id}")
+            ))
+            print(f"✅ WebSocket: Transcript update queued for session {call_session_id}")
         except Exception as e:
-            print(f"❌ Failed to broadcast transcript update: {e}")
+            print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+            # Don't let WebSocket failures affect transcript saving
         
         return transcript_message
 
