@@ -695,7 +695,7 @@ async def handle_call_events_webhook(
             response.say(timeout_message, voice=agent_voice)
             response.hangup()
             
-            # Add timeout response to transcript (this will also broadcast the complete conversation array)
+            # Add timeout response to transcript and update call status
             if call_session:
                 print(f"📝 Adding timeout response to transcript for session {call_session.id}")
                 await _add_to_transcript(
@@ -708,6 +708,50 @@ async def handle_call_events_webhook(
                     user_id=call_session.user_id
                 )
                 print(f"✅ Timeout response added to transcript for session {call_session.id}")
+                
+                # Update call session status to completed due to timeout
+                call_session.status = "completed"
+                call_session.end_time = datetime.now(timezone.utc)
+                if call_session.start_time:
+                    duration = (call_session.end_time - call_session.start_time).total_seconds()
+                    call_session.duration = int(duration)
+                    print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+                
+                # Commit the status update
+                db.commit()
+                print(f"✅ Updated call session {call_session.id} status to: completed")
+                
+                # Broadcast call status update (non-blocking - fire and forget)
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="completed",
+                        metadata={
+                            "call_sid": call_sid,
+                            "reason": "timeout_no_speech",
+                            "message": "Call ended due to no speech detected",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    print(f"✅ Queued call status update: completed for session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to queue call status update (non-critical): {e}")
+                
+                # Also broadcast call ended event (non-blocking - fire and forget)
+                try:
+                    asyncio.create_task(broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="timeout_no_speech",
+                        final_data={
+                            "call_sid": call_sid,
+                            "duration": call_session.duration,
+                            "end_time": call_session.end_time.isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
+                    ))
+                    print(f"✅ Queued call ended event for session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
             
             print(f"📝 Extended listening response: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
