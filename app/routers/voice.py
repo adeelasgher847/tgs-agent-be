@@ -721,21 +721,21 @@ async def handle_call_events_webhook(
                 db.commit()
                 print(f"✅ Updated call session {call_session.id} status to: completed")
                 
-                # Broadcast call status update (non-blocking - fire and forget)
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="completed",
-                        metadata={
-                            "call_sid": call_sid,
-                            "reason": "timeout_no_speech",
-                            "message": "Call ended due to no speech detected",
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Queued call status update: completed for session {call_session.id}")
-                except Exception as e:
-                    print(f"⚠️ Failed to queue call status update (non-critical): {e}")
+                # # Broadcast call status update (non-blocking - fire and forget)
+                # try:
+                #     asyncio.create_task(broadcast_call_status_update(
+                #         call_session_id=str(call_session.id),
+                #         status="completed",
+                #         metadata={
+                #             "call_sid": call_sid,
+                #             "reason": "timeout_no_speech",
+                #             "message": "Call ended due to no speech detected",
+                #             "timestamp": datetime.now(timezone.utc).isoformat()
+                #         }
+                #     ))
+                #     print(f"✅ Queued call status update: completed for session {call_session.id}")
+                # except Exception as e:
+                #     print(f"⚠️ Failed to queue call status update (non-critical): {e}")
                 
                 # Also broadcast call ended event (non-blocking - fire and forget)
                 try:
