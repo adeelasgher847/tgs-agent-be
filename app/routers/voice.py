@@ -27,6 +27,7 @@ from app.routers.general_websocket import (
     broadcast_call_event,
     broadcast_system_notification
 )
+from app.services.transcript_service import transcript_service
 
 router = APIRouter()
 
@@ -59,50 +60,65 @@ def _get_random_follow_up_response() -> str:
     return random.choice(FOLLOW_UP_RESPONSES)
 
 
-async def _add_to_transcript(call_session, role: str, message: str, db: Session, timestamp: datetime = None):
-    """Add a message to the call session transcript and broadcast to WebSocket
+async def _add_to_transcript(
+    call_session, 
+    role: str, 
+    message: str, 
+    db: Session, 
+    message_type: str = "speech",
+    agent_id: Optional[uuid.UUID] = None,
+    user_id: Optional[uuid.UUID] = None,
+    confidence: Optional[float] = None,
+    duration: Optional[float] = None,
+    response_time: Optional[float] = None,
+    metadata: Optional[dict] = None
+):
+    """Add a message to the transcript using the new transcript service
     
     Args:
         call_session: The call session object
         role: Either "agent" or "client" 
         message: The message content
         db: Database session for committing changes
-        timestamp: Optional timestamp, defaults to current time
+        message_type: Type of message (speech, timeout, error, etc.)
+        confidence: Speech recognition confidence (0.0-1.0)
+        duration: Message duration in seconds
+        response_time: Time taken to generate response
+        metadata: Additional message metadata
     """
-    if timestamp is None:
-        timestamp = datetime.now(timezone.utc)
     
-    # Initialize transcript if it doesn't exist
-    if not call_session.call_transcript:
-        call_session.call_transcript = []
+    print(f"📝 Adding to transcript: {role} - {message[:50]}...")
     
-    # Add new message to transcript in role-based format
-    transcript_entry = {
-        "role": role,  # "agent" or "client"
-        "message": message,
-        "timestamp": timestamp.isoformat()
-    }
-    
-    call_session.call_transcript.append(transcript_entry)
-    print(f"📝 Added to transcript: {role} - {message[:50]}...")
-    
-    # Commit the transcript changes to database
     try:
-        db.commit()
-        print(f"✅ Committed transcript changes to database for session {call_session.id}")
-    except Exception as e:
-        print(f"❌ Failed to commit transcript changes: {e}")
-    
-    # Broadcast transcript update to WebSocket
-    try:
-        await broadcast_transcript_update(
-            call_session_id=str(call_session.id),
-            transcript=call_session.call_transcript,
-            new_messages=[transcript_entry]
+        # Use the new transcript service
+        transcript_message = await transcript_service.add_and_broadcast_message(
+            db=db,
+            call_session_id=call_session.id,
+            role=role,
+            message=message,
+            message_type=message_type,
+            agent_id=agent_id,
+            user_id=user_id,
+            confidence=confidence,
+            duration=duration,
+            response_time=response_time,
+            metadata=metadata
         )
-        print(f"✅ Broadcasted transcript update for session {call_session.id}")
+        
+        print(f"✅ Added transcript message {transcript_message.id} for session {call_session.id}")
+        
+        # Also update the legacy call_transcript field for backward compatibility
+        conversation = transcript_service.get_conversation_array(db, call_session.id)
+        call_session.call_transcript = conversation
+        db.commit()
+        
+        return transcript_message
+        
     except Exception as e:
-        print(f"❌ Failed to broadcast transcript update: {e}")
+        print(f"❌ Failed to add transcript message: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 def _get_conversation_state(call_session):
@@ -468,7 +484,7 @@ async def handle_call_events_webhook(
                 
                 # Prepare comprehensive metadata
                 metadata = {
-                    "call_sid": call_sid,
+                    # "call_sid": call_sid,
                     "from_number": from_number,
                     "to_number": to_number,
                     "direction": direction,
@@ -535,26 +551,20 @@ async def handle_call_events_webhook(
             try:
                 # Use the call session we already fetched (should be available from query param)
                 if call_session:
-                    # Add user speech to transcript
+                    # Add user speech to transcript (this will also broadcast the complete conversation array)
                     print(f"📝 Adding user speech to transcript for session {call_session.id}")
-                    await _add_to_transcript(call_session, "client", speech_result, db)
+                    await _add_to_transcript(
+                        call_session, 
+                        "client", 
+                        speech_result, 
+                        db,
+                        message_type="speech",
+                        agent_id=agent.id if agent else None,
+                        user_id=call_session.user_id,
+                        confidence=float(confidence) if confidence else None,
+                        duration=float(speech_duration) if speech_duration else None
+                    )
                     print(f"✅ User speech added to transcript for session {call_session.id}")
-                    
-                    # Also broadcast speech input event directly
-                    try:
-                        await broadcast_call_event(
-                            call_session_id=str(call_session.id),
-                            event_type="speech_input",
-                            event_data={
-                                "speech_text": speech_result,
-                                "confidence": float(confidence) if confidence else None,
-                                "duration": float(speech_duration) if speech_duration else None,
-                                "call_sid": call_sid
-                            }
-                        )
-                        print(f"✅ Broadcasted speech input event for session {call_session.id}")
-                    except Exception as e:
-                        print(f"❌ Failed to broadcast speech input event: {e}")
                     
                     # Update conversation state with interaction count
                     conversation_state = _get_conversation_state(call_session)
@@ -592,27 +602,19 @@ async def handle_call_events_webhook(
                     call_session_id=call_session.id if call_session else None
                 )
                 
-                # Add agent response to transcript
+                # Add agent response to transcript (this will also broadcast the complete conversation array)
                 if call_session:
                     print(f"📝 Adding agent response to transcript for session {call_session.id}")
-                    await _add_to_transcript(call_session, "agent", response_text, db)
+                    await _add_to_transcript(
+                        call_session, 
+                        "agent", 
+                        response_text, 
+                        db,
+                        message_type="agent_response",
+                        agent_id=agent.id if agent else None,
+                        user_id=call_session.user_id
+                    )
                     print(f"✅ Agent response added to transcript for session {call_session.id}")
-                    
-                    # Also broadcast agent response event directly
-                    try:
-                        await broadcast_call_event(
-                            call_session_id=str(call_session.id),
-                            event_type="agent_response",
-                            event_data={
-                                "response_text": response_text,
-                                "agent_id": str(agent.id) if agent else None,
-                                "agent_name": agent.name if agent else None,
-                                "call_sid": call_sid
-                            }
-                        )
-                        print(f"✅ Broadcasted agent response event for session {call_session.id}")
-                    except Exception as e:
-                        print(f"❌ Failed to broadcast agent response event: {e}")
                 
                 # Say response naturally with conversational flow
                 agent_voice = get_agent_voice(agent)
@@ -691,8 +693,23 @@ async def handle_call_events_webhook(
             )
             
             # Only hangup after very long silence
-            response.say("I haven't heard anything for a while. Thanks for calling! Have a great day!", voice=agent_voice)
+            timeout_message = "I haven't heard anything for a while. Thanks for calling! Have a great day!"
+            response.say(timeout_message, voice=agent_voice)
             response.hangup()
+            
+            # Add timeout response to transcript (this will also broadcast the complete conversation array)
+            if call_session:
+                print(f"📝 Adding timeout response to transcript for session {call_session.id}")
+                await _add_to_transcript(
+                    call_session, 
+                    "agent", 
+                    timeout_message, 
+                    db,
+                    message_type="timeout_response",
+                    agent_id=agent.id if agent else None,
+                    user_id=call_session.user_id
+                )
+                print(f"✅ Timeout response added to transcript for session {call_session.id}")
             
             print(f"📝 Extended listening response: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")

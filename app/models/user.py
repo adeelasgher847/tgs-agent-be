@@ -40,3 +40,4 @@ class User(Base):
     
     # Call sessions
     call_sessions = relationship("CallSession", back_populates="user")
+    transcript_messages = relationship("TranscriptMessage", back_populates="user")

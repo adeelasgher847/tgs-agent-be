@@ -29,4 +29,5 @@ class Agent(Base):
     creator = relationship("User", foreign_keys=[created_by], back_populates="created_agents")
     updater = relationship("User", foreign_keys=[updated_by], back_populates="updated_agents")
     call_sessions = relationship("CallSession", back_populates="agent")
+    transcript_messages = relationship("TranscriptMessage", back_populates="agent")
     model = relationship("Model")
