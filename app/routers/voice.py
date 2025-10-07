@@ -419,20 +419,20 @@ async def handle_call_events_webhook(
         print(f"AgentId from query: {agentId}")
         
         # Test WebSocket connection if we have a call session (non-blocking - fire and forget)
-        if call_session:
-            try:
-                asyncio.create_task(broadcast_call_status_update(
-                    call_session_id=str(call_session.id),
-                    status="webhook_test",
-                    metadata={
-                        "message": "Webhook is working",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "call_sid": call_sid
-                    }
-                ))
-                print(f"✅ Test broadcast queued to WebSocket for session {call_session.id}")
-            except Exception as e:
-                print(f"⚠️ Test broadcast failed (non-critical): {e}")
+        # if call_session:
+        #     try:
+        #         asyncio.create_task(broadcast_call_status_update(
+        #             call_session_id=str(call_session.id),
+        #             status="webhook_test",
+        #             metadata={
+        #                 "message": "Webhook is working",
+        #                 "timestamp": datetime.now(timezone.utc).isoformat(),
+        #                 "call_sid": call_sid
+        #             }
+        #         ))
+        #         print(f"✅ Test broadcast queued to WebSocket for session {call_session.id}")
+        #     except Exception as e:
+        #         print(f"⚠️ Test broadcast failed (non-critical): {e}")
         
         # Status broadcasts will be handled in the main status update section below
         
@@ -1250,6 +1250,22 @@ async def handle_recording_status_webhook(
                     call_session.recording_url = recording_url
                     db.commit()
                     print(f"✅ Updated call session {call_session.id} with recording URL")
+                    
+                    # Broadcast call status update when recording is completed (non-blocking - fire and forget)
+                    try:
+                        asyncio.create_task(broadcast_call_status_update(
+                            call_session_id=str(call_session.id),
+                            status="completed",
+                            metadata={
+                                "call_sid": call_sid,
+                                "call_duration": recording_duration,
+                                "message": "Call completed",
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }
+                        ))
+                        print(f"✅ Queued recording completed status update for session {call_session.id}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to queue recording completed status update (non-critical): {e}")
                 else:
                     print(f"📝 Recording status: {recording_status} - URL not ready yet")
             else:
