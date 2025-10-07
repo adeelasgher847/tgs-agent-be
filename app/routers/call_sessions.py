@@ -14,12 +14,13 @@ from app.models.call_session import CallSession
 from app.schemas.call_session import (
     CallSessionResponse, CallSessionStats, CallSessionList, CallSessionCreate
 )
+from app.schemas.base import SuccessResponse
 from app.services.call_session_service import call_session_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
 
-@router.get("/sessions", response_model=CallSessionList)
+@router.get("/sessions", response_model=SuccessResponse[CallSessionList])
 async def list_call_sessions(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -77,12 +78,16 @@ async def list_call_sessions(
                 updated_at=session.updated_at
             ))
         
-        return CallSessionList(sessions=session_responses, total=total)
+        call_session_list = CallSessionList(sessions=session_responses, total=total)
+        return create_success_response(
+            data=call_session_list,
+            message=f"Retrieved {len(session_responses)} call sessions successfully"
+        )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/sessions/{session_id}", response_model=CallSessionResponse)
+@router.get("/sessions/{session_id}", response_model=SuccessResponse[CallSessionResponse])
 async def get_call_session(
     session_id: uuid.UUID,
     user: User = Depends(require_tenant),
@@ -101,7 +106,7 @@ async def get_call_session(
         if call_session.tenant_id != user.current_tenant_id or call_session.user_id != user.id:
             raise HTTPException(status_code=403, detail="Access denied")
         
-        return CallSessionResponse(
+        call_session_response = CallSessionResponse(
             id=call_session.id,
             user_id=call_session.user_id,
             agent_id=call_session.agent_id,
@@ -119,12 +124,17 @@ async def get_call_session(
             updated_at=call_session.updated_at
         )
         
+        return create_success_response(
+            data=call_session_response,
+            message="Call session retrieved successfully"
+        )
+        
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/sessions/{session_id}/stats", response_model=CallSessionStats)
+@router.get("/sessions/{session_id}/stats", response_model=SuccessResponse[CallSessionStats])
 async def get_call_session_stats(
     session_id: uuid.UUID,
     user: User = Depends(require_tenant),
@@ -145,7 +155,10 @@ async def get_call_session_stats(
         
         stats = call_session_service.get_call_session_stats(db, session_id)
         
-        return CallSessionStats(**stats)
+        return create_success_response(
+            data=CallSessionStats(**stats),
+            message="Call session statistics retrieved successfully"
+        )
         
     except HTTPException:
         raise
