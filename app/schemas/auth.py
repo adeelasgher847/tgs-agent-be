@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from enum import Enum
 import uuid
@@ -8,7 +8,7 @@ class LoginRequest(BaseModel):
     password: str
 
 class RoleInfo(BaseModel):
-    id: uuid.UUID
+    id: uuid.UUID=Field(exclude=True) # exclude from response
     name: str
     description: Optional[str] = None
 
@@ -18,7 +18,7 @@ class TokenResponse(BaseModel):
     user_id: uuid.UUID
     email: str
     tenant_id: Optional[uuid.UUID] = None
-    tenant_ids: Optional[List[uuid.UUID]] = None
+    tenant_ids: Optional[List[uuid.UUID]] =  Field(default=None, exclude=True)
     role: Optional[RoleInfo] = None
     refresh_token: Optional[str] = None
 

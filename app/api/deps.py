@@ -62,6 +62,15 @@ def get_current_user_jwt(
 
     return user
 
+# In-memory store to track credited Stripe Checkout sessions
+_credited_session_ids: set[str] = set()
+
+def is_session_already_credited(session_id: str) -> bool:
+    return session_id in _credited_session_ids
+
+def mark_session_credited(session_id: str) -> None:
+    _credited_session_ids.add(session_id)
+
 
 def require_tenant(
     user: User = Depends(get_current_user_jwt), 

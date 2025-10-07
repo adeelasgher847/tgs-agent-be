@@ -115,18 +115,12 @@ class StripeService:
                     'price': plan.stripe_price_id,
                     'quantity': 1,
                 }],
-                'mode': 'subscription',
+                'mode': 'payment',
                 'success_url': success_url,
                 'cancel_url': cancel_url,
                 'metadata': {
                     'tenant_id': tenant_id,
                     'plan_id': plan_id
-                },
-                'subscription_data': {
-                    'metadata': {
-                        'tenant_id': tenant_id,
-                        'plan_id': plan_id
-                    }
                 }
             }
             
@@ -287,180 +281,29 @@ class StripeService:
     def handle_checkout_completed(event_data: Dict[str, Any], db: Session) -> None:
         """Handle checkout.session.completed event"""
         session = event_data['data']['object']
-        tenant_id = session['metadata']['tenant_id']
-        plan_id = session['metadata']['plan_id']
-        customer_id = session['customer']
-        subscription_id = session['subscription']
-        
-        # Find tenant by stripe_customer_id and update status to active
-        tenant = db.query(Tenant).filter(Tenant.stripe_customer_id == customer_id).first()
-        if tenant:
-            tenant.status = 'active'
-            tenant.stripe_subscription_id = subscription_id
-            db.commit()
-        
-        # Get or create subscription record
-        subscription = db.query(Subscription).filter(
-            Subscription.tenant_id == tenant_id
-        ).first()
-        
-        if not subscription:
-            subscription = Subscription(
-                tenant_id=tenant_id,
-                plan_id=plan_id,
-                stripe_subscription_id=subscription_id,
-                stripe_customer_id=customer_id,
-                status='active'
-            )
-            db.add(subscription)
-        else:
-            subscription.stripe_subscription_id = subscription_id
-            subscription.stripe_customer_id = customer_id
-            subscription.plan_id = plan_id
-            subscription.status = 'active'
-        
+        tenant_id = session.get("metadata", {}).get("tenant_id")
+        plan_id = session.get("metadata", {}).get("plan_id")
+
+        if not tenant_id or not plan_id:
+            print("Tenant ID or Plan ID not found in checkout session metadata")
+            return
+
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if not tenant:
+            print(f"Tenant with ID {tenant_id} not found")
+            return
+
+        plan = db.query(Plan).filter(Plan.id == plan_id).first()
+        if not plan:
+            print(f"Plan with ID {plan_id} not found")
+            return
+
+        # Add credits from the plan to the tenant's account
+        tenant.credits += plan.credits
+        tenant.status = 'active'
         db.commit()
-    
-    @staticmethod
-    def handle_invoice_paid(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle invoice.paid event"""
-        invoice = event_data['data']['object']
-        subscription_id = invoice['subscription']
-        
-        if subscription_id:
-            subscription = db.query(Subscription).filter(
-                Subscription.stripe_subscription_id == subscription_id
-            ).first()
-            
-            if subscription:
-                subscription.status = 'active'
-                db.commit()
-    
-    @staticmethod
-    def handle_invoice_payment_failed(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle invoice.payment_failed event"""
-        invoice = event_data['data']['object']
-        subscription_id = invoice['subscription']
-        
-        if subscription_id:
-            subscription = db.query(Subscription).filter(
-                Subscription.stripe_subscription_id == subscription_id
-            ).first()
-            
-            if subscription:
-                subscription.status = 'past_due'
-                db.commit()
-    
-    @staticmethod
-    def handle_subscription_updated(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle customer.subscription.updated event"""
-        stripe_subscription = event_data['data']['object']
-        subscription_id = stripe_subscription['id']
-        
-        subscription = db.query(Subscription).filter(
-            Subscription.stripe_subscription_id == subscription_id
-        ).first()
-        
-        if subscription:
-            subscription.status = stripe_subscription['status']
-            subscription.current_period_start = datetime.fromtimestamp(
-                stripe_subscription['current_period_start']
-            )
-            subscription.current_period_end = datetime.fromtimestamp(
-                stripe_subscription['current_period_end']
-            )
-            subscription.cancel_at_period_end = stripe_subscription['cancel_at_period_end']
-            
-            if stripe_subscription['canceled_at']:
-                subscription.canceled_at = datetime.fromtimestamp(
-                    stripe_subscription['canceled_at']
-                )
-            
-            db.commit()
-    
-    @staticmethod
-    def handle_subscription_deleted(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle customer.subscription.deleted event"""
-        stripe_subscription = event_data['data']['object']
-        subscription_id = stripe_subscription['id']
-        
-        subscription = db.query(Subscription).filter(
-            Subscription.stripe_subscription_id == subscription_id
-        ).first()
-        
-        if subscription:
-            subscription.status = 'canceled'
-            subscription.canceled_at = datetime.now()
-            db.commit()
-    
-    @staticmethod
-    def handle_customer_updated(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle customer.updated event"""
-        customer = event_data['data']['object']
-        customer_id = customer['id']
-        
-        # Update subscription with new customer info if needed
-        subscription = db.query(Subscription).filter(
-            Subscription.stripe_customer_id == customer_id
-        ).first()
-        
-        if subscription:
-            # Update any customer-related fields if needed
-            db.commit()
-    
-    @staticmethod
-    def handle_payment_method_attached(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle payment_method.attached event"""
-        payment_method = event_data['data']['object']
-        customer_id = payment_method['customer']
-        
-        # Log payment method attachment
-        print(f"Payment method {payment_method['id']} attached to customer {customer_id}")
-    
-    @staticmethod
-    def handle_payment_method_detached(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle payment_method.detached event"""
-        payment_method = event_data['data']['object']
-        customer_id = payment_method.get('customer')
-        
-        # Log payment method detachment
-        print(f"Payment method {payment_method['id']} detached from customer {customer_id}")
-    
-    @staticmethod
-    def handle_invoice_created(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle invoice.created event"""
-        invoice = event_data['data']['object']
-        subscription_id = invoice.get('subscription')
-        
-        if subscription_id:
-            # Log invoice creation
-            print(f"Invoice {invoice['id']} created for subscription {subscription_id}")
-    
-    @staticmethod
-    def handle_invoice_finalized(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle invoice.finalized event"""
-        invoice = event_data['data']['object']
-        subscription_id = invoice.get('subscription')
-        
-        if subscription_id:
-            # Log invoice finalization
-            print(f"Invoice {invoice['id']} finalized for subscription {subscription_id}")
-    
-    @staticmethod
-    def handle_customer_subscription_trial_will_end(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle customer.subscription.trial_will_end event"""
-        stripe_subscription = event_data['data']['object']
-        subscription_id = stripe_subscription['id']
-        
-        # Send notification to user about trial ending
-        print(f"Trial ending soon for subscription {subscription_id}")
-    
-    @staticmethod
-    def handle_customer_subscription_created(event_data: Dict[str, Any], db: Session) -> None:
-        """Handle customer.subscription.created event"""
-        stripe_subscription = event_data['data']['object']
-        subscription_id = stripe_subscription['id']
-        customer_id = stripe_subscription['customer']
-        
-        # Log new subscription creation
-        print(f"New subscription {subscription_id} created for customer {customer_id}")
+        db.refresh(tenant)
+
+        print(f"Added {plan.credits} credits to tenant {tenant.id}")
+
+    # Note: Idempotency is now handled at the endpoint level using in-memory store in deps

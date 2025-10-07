@@ -73,9 +73,6 @@ class AgentService:
         db.commit()
         db.refresh(db_agent)
         
-        # Increment usage tracking
-        BillingService.increment_agent_usage(db, tenant_id)
-        
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:

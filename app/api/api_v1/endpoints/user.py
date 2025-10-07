@@ -32,6 +32,8 @@ router = APIRouter()
 
 @router.post("/register", response_model=SuccessResponse[UserOut])
 def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
+    # Convert email to lowercase
+    user_in.email = user_in.email.lower()
     # Check if email already exists
     user = db.query(User).filter(User.email == user_in.email).first()
     if user:
@@ -42,8 +44,8 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
                 "message": "Email already registered",
                 "error_type": "email_already_exists"
             }
-        )    
-    
+        )
+
     hashed_password = pwd_context.hash(user_in.password)
     db_user = User(
         email=user_in.email,
@@ -58,19 +60,8 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
     
-    # Create tenant automatically with user's name as tenant name
-    # Use first name + last name, but make it unique by adding email suffix if needed
-    base_tenant_name = f"{user_in.first_name} {user_in.last_name}".strip()
-    tenant_name = base_tenant_name
-    
-    # Check if tenant name already exists and make it unique
-    counter = 1
-    while db.query(Tenant).filter(Tenant.name == tenant_name).first():
-        tenant_name = f"{base_tenant_name} ({user_in.email.split('@')[0]})"
-        counter += 1
-        if counter > 1:  # If still exists, add a number
-            tenant_name = f"{base_tenant_name} ({user_in.email.split('@')[0]}) {counter}"
-    
+    # Create tenant automatically with user's email as tenant name
+    tenant_name = user_in.email    
     # Generate schema name from tenant name
     schema_name = re.sub(r'[^a-zA-Z0-9]', '_', tenant_name.lower())
     schema_name = re.sub(r'_+', '_', schema_name).strip('_')
@@ -119,11 +110,13 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
     Automatically assigns admin role if user has no role in current tenant.
     """
+    # Convert email to lowercase
+    login_data.email = login_data.email.lower()
     # Find user by email
     user = db.query(User).filter(User.email == login_data.email).first()
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "field": "email",
                 "message": "Email not found in our system",
@@ -673,7 +666,7 @@ def get_user_profile(
         last_name=user.last_name,
         email=user.email,
         phone=user.phone,
-        role_id=role_info.id if role_info else None,
+        #role_id=role_info.id if role_info else None,
         current_tenant_id=user.current_tenant_id,
         join_date=user.join_date,
         created_at=user.created_at,
@@ -744,7 +737,7 @@ def update_user_profile(
         last_name=current_user.last_name,
         email=current_user.email,
         phone=current_user.phone,
-        role_id=role_info.id if role_info else None,
+        # role_id=role_info.id if role_info else None,
         current_tenant_id=current_user.current_tenant_id,
         join_date=current_user.join_date,
         created_at=current_user.created_at,
