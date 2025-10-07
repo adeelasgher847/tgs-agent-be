@@ -29,8 +29,13 @@ from app.routers.general_websocket import (
     broadcast_system_notification
 )
 from app.services.transcript_service import transcript_service
+from app.services.model_service import ModelService
+from app.services.gemini_service import gemini_service
 
 router = APIRouter()
+
+# Initialize services
+model_service = ModelService()
 
 # Array of human-like "didn't catch that" response phrases
 DIDNT_CATCH_RESPONSES = [
@@ -1327,6 +1332,157 @@ async def get_recording_access(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to access recording: {str(e)}")
+
+
+@router.post("/transcript/analyze/{call_session_id}", response_model=SuccessResponse[dict])
+async def analyze_call_transcript(
+    call_session_id: str,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Analyze call transcript using Gemini for summary and sentiment analysis
+    
+    Args:
+        call_session_id: UUID of the call session
+        user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Analysis results including summary and sentiment
+    """
+    try:
+        # Static model name for analysis
+        model_name = "gemini-2.0-flash"
+        
+        # Validate call session ID
+        try:
+            session_uuid = uuid.UUID(call_session_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid call session ID format")
+        
+        # Get call session
+        call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+        if not call_session:
+            raise HTTPException(status_code=404, detail="Call session not found")
+        
+        # Check if user has access to this call session
+        if call_session.user_id != user.id and call_session.tenant_id != user.current_tenant_id:
+            raise HTTPException(status_code=403, detail="Access denied to this call session")
+        
+        # Get model information by static name
+        model = model_service.get_model_by_name(db, model_name)
+        if not model:
+            raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found in database")
+        
+        print(f"🔍 Model found: {model.model_name}, Provider: {model.provider.name}")
+        
+        # Check if model is a Gemini model
+        provider_name = (model.provider.name or "").strip().lower()
+        print(f"🔍 Provider name (normalized): '{provider_name}'")
+        
+        if provider_name not in ("gemini", "google", "google-ai", "google ai", "gemini-1.5-flash", "gemini-2.0-flash"):
+            print(f"❌ Provider '{provider_name}' not recognized as Gemini model")
+            raise HTTPException(status_code=400, detail=f"Model must be a Gemini model for analysis. Provider: {model.provider.name}")
+        
+        print(f"✅ Model validated as Gemini model: {model.model_name}")
+        
+        # Get transcript messages
+        transcript_messages = transcript_service.get_messages_by_session(db, session_uuid)
+        print(f"🔍 Found {len(transcript_messages)} transcript messages for session {call_session_id}")
+        
+        if not transcript_messages:
+            raise HTTPException(status_code=404, detail="No transcript messages found for this call session")
+        
+        # Format transcript for analysis
+        transcript_text = ""
+        for msg in transcript_messages:
+            role_label = "Agent" if msg.role == "agent" else "Customer"
+            transcript_text += f"{role_label}: {msg.message}\n"
+        
+        # Create analysis prompts
+        summary_prompt = f"""
+        Analyze this call transcript and provide a brief summary in 2-3 sentences.
+        
+        Call Transcript:
+        {transcript_text}
+        
+        Provide only:
+        - Brief call overview
+        - Main topic/issue
+        - Outcome/resolution
+        
+        Keep it concise and to the point.
+        """
+        
+        sentiment_prompt = f"""
+        Analyze the sentiment of this call transcript and provide a brief assessment.
+        
+        Call Transcript:
+        {transcript_text}
+        
+        Provide only:
+        - Overall sentiment (positive/negative/neutral)
+        - Sentiment score (0-100)
+        - Customer satisfaction level (high/medium/low)
+        
+        Keep it brief and concise.
+        """
+        
+        # Get model API key
+        model_api_key = None
+        if model.api_key:
+            from app.core.security import decrypt_api_key
+            model_api_key = decrypt_api_key(model.api_key)
+        
+        # Perform analysis with Gemini
+        try:
+            # Generate summary
+            summary_result = gemini_service.generate_text(
+                prompt=summary_prompt,
+                model_name=model.model_name,
+                temperature=0.3,  # Lower temperature for more consistent analysis
+                max_tokens=200,  # Reduced for brief responses
+                api_key=model_api_key
+            )
+            
+            # Generate sentiment analysis
+            sentiment_result = gemini_service.generate_text(
+                prompt=sentiment_prompt,
+                model_name=model.model_name,
+                temperature=0.3,  # Lower temperature for more consistent analysis
+                max_tokens=150,  # Reduced for brief responses
+                api_key=model_api_key
+            )
+            
+            # Prepare response (hide model_id for security)
+            analysis_result = {
+                "call_session_id": call_session_id,
+                "transcript_message_count": len(transcript_messages),
+                "call_duration": call_session.duration,
+                "call_status": call_session.status,
+                "analysis": {
+                    "summary": summary_result["content"].strip(),
+                    "sentiment": sentiment_result["content"].strip()
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            print(f"✅ Transcript analysis completed for session {call_session_id}")
+            return create_success_response(
+                data=analysis_result,
+                message="Transcript analysis completed successfully"
+            )
+            
+        except Exception as e:
+            print(f"❌ Error during Gemini analysis: {e}")
+            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error in transcript analysis endpoint: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # def _generate_default_response() -> str:

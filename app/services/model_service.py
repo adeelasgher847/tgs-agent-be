@@ -49,6 +49,10 @@ class ModelService:
         """Get model by ID"""
         return db.query(Model).filter(Model.id == model_id).first()
     
+    def get_model_by_name(self, db: Session, model_name: str) -> Optional[Model]:
+        """Get model by name"""
+        return db.query(Model).filter(Model.model_name == model_name).first()
+    
     def get_models_by_provider(self, db: Session, provider_id: uuid.UUID) -> List[Model]:
         """Get all models for a specific provider"""
         return db.query(Model).filter(Model.provider_id == provider_id).all()
