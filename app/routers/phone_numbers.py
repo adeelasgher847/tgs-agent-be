@@ -103,7 +103,7 @@ async def create_phone_number(
         raise HTTPException(status_code=500, detail=str(e))
 
 # Specific routes must come before parameterized routes
-@router.get("/twilio/available", include_in_schema=False)
+@router.get("/available-numbers", include_in_schema=False)
 async def get_available_phone_numbers(
     country_code: str = Query(default="US", description="Country code (e.g., US, CA, GB)"),
     area_code: Optional[str] = Query(default=None, description="Specific area code to search for"),
