@@ -71,7 +71,8 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db_tenant = Tenant(
         name=tenant_name,
         schema_name=schema_name,
-        status="pending_payment"
+        status="pending_payment",
+        credits=50
     )
     
     db.add(db_tenant)
@@ -277,7 +278,8 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
         db_tenant = Tenant(
             name=tenant_name,
             schema_name=schema_name,
-            status="pending_payment"
+            status="pending_payment",
+            credits=50
         )
         db.add(db_tenant)
         db.commit()
