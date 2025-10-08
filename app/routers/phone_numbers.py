@@ -150,7 +150,7 @@ async def get_available_phone_numbers(
         print(f"❌ Error searching for available numbers: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to search for available numbers: {str(e)}")
 
-@router.get("/twilio-owned-number")
+@router.get("/available-numbers")
 async def get_owned_phone_numbers(
     limit: int = Query(default=50, ge=1, le=100, description="Maximum number of results to return"),
     user: User = Depends(require_tenant)

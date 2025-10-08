@@ -244,7 +244,7 @@ class TwilioService:
             results = []
             for number in incoming_phone_numbers:
                 results.append({
-                    'sid': number.sid,
+                    # 'sid': number.sid,
                     'phone_number': number.phone_number,
                     'friendly_name': number.friendly_name,
                     # 'voice_url': number.voice_url,
