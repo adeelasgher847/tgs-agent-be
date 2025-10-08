@@ -8,6 +8,7 @@ from app.models.call_session import CallSession
 from app.models.call_log import CallLog
 from app.models.user import User
 from app.models.agent import Agent
+from app.models.tenant import Tenant
 from app.schemas.call_log import CallLogCreate
 from typing import List, Dict, Optional, Any
 import uuid

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Optional
 from pydantic import EmailStr
 from datetime import datetime
@@ -15,6 +15,14 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6, description="Password must be at least 6 characters long")
     # role_id: Optional[int] = None
+
+    @model_validator(mode='before')
+    def trim_user_names(cls, values):
+        if 'first_name' in values and values['first_name']:
+            values['first_name'] = " ".join(values['first_name'].split())
+        if 'last_name' in values and values['last_name']:
+            values['last_name'] = " ".join(values['last_name'].split())
+        return values
 
 
 class UserUpdate(BaseModel):
@@ -33,7 +41,7 @@ class UserOut(UserBase):
 
 
 class RoleInfo(BaseModel):
-    id: uuid.UUID
+    id: uuid.UUID = Field(exclude=True)
     name: str
     description: Optional[str] = None
     
@@ -55,6 +63,7 @@ class UserProfile(UserBase):
     join_date: datetime
     created_at: datetime
     role: Optional[RoleInfo] = None
+    # role: Optional[RoleInfo]  = None
     current_tenant: Optional[TenantInfo] = None
     tenants: list[TenantInfo] = []
     

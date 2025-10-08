@@ -21,6 +21,8 @@ def create_agent(
     db: Session = Depends(get_db)
 ):
     """Create a new agent"""
+    # Trim whitespace from agent name
+    agent_in.name = " ".join(agent_in.name.split())
     # Both tenant_user and admin_user are validated by their respective middleware
     # We can use either one since they both represent the same user
     agent = agent_service.create_agent(db, agent_in, admin_user.current_tenant_id, admin_user.id)
