@@ -425,56 +425,14 @@ def verify_payment(
                 detail="This payment session does not belong to your tenant"
             )
         
-        # Load tenant
-        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
-        if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
-
-        credits_added = 0
-        if session.payment_status == "paid":
-            metadata = session.metadata or {}
-            amount_str = metadata.get("amount") or "0"
-            try:
-                amount = float(amount_str)
-            except ValueError:
-                amount = 0.0
-            credits_to_add = int(amount * 10)
-
-            if credits_to_add > 0:
-                # Idempotency: use in-memory store
-                if not is_session_already_credited(session.id):
-                    tenant.credits += credits_to_add
-                    tenant.status = "paid"
-                    db.commit()
-                    credits_added = credits_to_add
-                    mark_session_credited(session.id)
-
-        # Strong in-memory idempotency: ensure we only credit once per session id
-        if credits_added == 0 and is_session_already_credited(session.id):
-            return create_success_response({
-                "payment_status": session.payment_status,
-                "customer_id": session.customer,
-                "amount_total": session.amount_total,
-                "currency": session.currency,
-                "payment_intent": session.payment_intent,
-                "metadata": session.metadata,
-                "credits_added": 0,
-                "tenant_credits": tenant.credits
-            }, "Payment verification completed (already credited)")
-
-        if credits_added > 0:
-            mark_session_credited(session.id)
-
         return create_success_response({
             "payment_status": session.payment_status,
             "customer_id": session.customer,
             "amount_total": session.amount_total,
             "currency": session.currency,
             "payment_intent": session.payment_intent,
-            "metadata": session.metadata,
-            "credits_added": credits_added,
-            "tenant_credits": tenant.credits
-        }, "Payment verification completed")
+            "metadata": session.metadata
+        }, "Payment verification fetched")
         
     except Exception as e:
         raise HTTPException(
