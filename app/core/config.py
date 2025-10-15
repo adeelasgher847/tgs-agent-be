@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     
     # Webhook Configuration
-    WEBHOOK_BASE_URL: str = "https://voiceagentapi.site"
+    WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
     # Email settings for password reset
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
