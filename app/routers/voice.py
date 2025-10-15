@@ -703,8 +703,8 @@ async def handle_call_events_webhook(
             
             # More natural "didn't catch that" response
             response.say(_get_random_didnt_catch_response(), voice=agent_voice)
-            response.pause(length=0.3)
-            response.say(_get_random_follow_up_response(), voice=agent_voice)
+            response.pause(length=0.2)
+            # response.say(_get_random_follow_up_response(), voice=agent_voice)
             
             # Keep listening with reasonable timeout
             response.gather(
@@ -729,7 +729,7 @@ async def handle_call_events_webhook(
             )
             
             # Only hangup after very long silence
-            timeout_message = "Hello"
+            timeout_message = ""
             response.say(timeout_message, voice=agent_voice)
             response.hangup()
             
