@@ -28,7 +28,7 @@ class OpenAIService:
         
         return self._client
     def chat_completion(self, messages: List[Dict[str, str]], system_prompt: str = None, 
-                       model: str = "gpt-3.5-turbo", max_tokens: int = 150) -> Dict[str, Any]:
+                       model: str = "gpt-3.5-turbo", max_tokens: int = 100) -> Dict[str, Any]:
         """
         Generate chat completion using OpenAI API
         
@@ -128,7 +128,7 @@ class OpenAIService:
         response = self.chat_completion(
             messages=messages,
             system_prompt=agent_system_prompt,
-            max_tokens=200
+            max_tokens=100
         )
         
         response_time = time.time() - start_time

@@ -319,14 +319,14 @@ Guidelines for phone conversations:
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             else:
                 system_prompt = personalized_system_prompt
-            # Use agent-specific temperature if set, otherwise fall back to model default
+            # Use agent-specific temperature if set, otherwise fall back to model default (reduced for faster response)
             temperature = (
                 (agent.agent_temperature / 100.0) if agent.agent_temperature is not None 
                 else (model.temperature / 100.0) if model.temperature 
-                else 0.8
+                else 0.6
             )
-            # Use agent-specific max tokens if set, otherwise fall back to model default
-            max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 300)
+            # Use agent-specific max tokens if set, otherwise fall back to model default (reduced for faster response)
+            max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 150)
             
             # Use model-specific API key if available
             api_key = None
