@@ -39,20 +39,12 @@ model_service = ModelService()
 
 # Array of human-like "didn't catch that" response phrases
 DIDNT_CATCH_RESPONSES = [
-    "Hmm, I missed that—mind saying it again?",
-    "Didn't quite get that, can you repeat?",
-    "I didn't hear you clearly, would you mind repeating?",
-    "Can you say that again real quick?",
-    "I might've misheard—could you repeat that?"
+   "Hello"
 ]
 
 # Array of follow-up phrases for when the agent didn't catch something
 FOLLOW_UP_RESPONSES = [
-    "Could you repeat that for me?",
-    "Mind saying that one more time?",
-    "Can you try that again?",
-    "Would you mind repeating that?",
-    "Could you say that again?"
+    "Hello"
 ]
 
 
