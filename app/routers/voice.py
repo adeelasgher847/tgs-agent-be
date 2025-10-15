@@ -605,6 +605,9 @@ async def handle_call_events_webhook(
                     call_session_id=call_session.id if call_session else None
                 )
                 
+                # Check if this is a completion goodbye response (call should end)
+                is_goodbye_response = VoiceLoggingService._is_completion_goodbye(response_text)
+                
                 # Add agent response to transcript (this will also broadcast the complete conversation array)
                 if call_session:
                     print(f"📝 Adding agent response to transcript for session {call_session.id}")
@@ -613,7 +616,7 @@ async def handle_call_events_webhook(
                         "agent", 
                         response_text, 
                         db,
-                        message_type="agent_response",
+                        message_type="goodbye_response" if is_goodbye_response else "agent_response",
                         agent_id=agent.id if agent else None,
                         user_id=call_session.user_id
                     )
@@ -622,19 +625,57 @@ async def handle_call_events_webhook(
                 # Say response naturally with conversational flow
                 agent_voice = get_agent_voice(agent)
                 response.say(response_text, voice=agent_voice)
-                response.pause(length=0.3)  # Natural pause for conversation flow
                 
-                # Continue listening immediately for natural conversation
-                response.gather(
-                    input='speech',
-                    timeout=12,  # Shorter timeout for more natural conversation
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
-                    method='POST'
-                )
-                
-                # Gentle, natural fallback
-                response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
+                if is_goodbye_response:
+                    # This is a goodbye response - end the call gracefully
+                    print(f"🛑 Goodbye response detected - ending call for session {call_session.id}")
+                    
+                    # Update call session status to completed
+                    if call_session:
+                        call_session.status = "completed"
+                        call_session.end_time = datetime.now(timezone.utc)
+                        call_session.ended_reason = "system_prompt_completed"
+                        if call_session.start_time:
+                            duration = (call_session.end_time - call_session.start_time).total_seconds()
+                            call_session.duration = int(duration)
+                        db.commit()
+                        print(f"✅ Updated call session {call_session.id} status to: completed")
+                        
+                        # Broadcast call ended event
+                        try:
+                            asyncio.create_task(broadcast_call_ended(
+                                call_session_id=str(call_session.id),
+                                reason="system_prompt_completed",
+                                final_data={
+                                    "call_sid": call_sid,
+                                    "duration": call_session.duration,
+                                    "end_time": call_session.end_time.isoformat(),
+                                    "transcript": call_session.call_transcript or []
+                                }
+                            ))
+                            print(f"✅ Queued call ended event for session {call_session.id}")
+                        except Exception as e:
+                            print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
+                    
+                    # End the call with hangup
+                    response.hangup()
+                    print(f"📞 Call ended gracefully for session {call_session.id if call_session else 'unknown'}")
+                    
+                else:
+                    # Normal conversation flow - continue listening
+                    response.pause(length=0.3)  # Natural pause for conversation flow
+                    
+                    # Continue listening immediately for natural conversation
+                    response.gather(
+                        input='speech',
+                        timeout=12,  # Shorter timeout for more natural conversation
+                        speech_timeout='auto',
+                        action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
+                        method='POST'
+                    )
+                    
+                    # Gentle, natural fallback
+                    response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
             else:
                 # Default response for smooth conversation
                 default_voice = get_agent_voice(None)  # Use default voice
@@ -1282,6 +1323,105 @@ async def handle_recording_status_webhook(
     except Exception as e:
         print(f"⚠️ Error handling recording status webhook: {e}")
         return HTMLResponse("", media_type="application/xml")
+
+
+@router.post("/call/end", response_model=SuccessResponse[dict])
+async def end_call(
+    request: dict,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    End a call programmatically
+    
+    Request Payload:
+    {
+        "callSessionId": "uuid",
+        "reason": "user_requested" | "agent_completed" | "timeout" | "error",
+        "message": "Optional goodbye message"
+    }
+    """
+    try:
+        call_session_id = request.get("callSessionId")
+        reason = request.get("reason", "user_requested")
+        goodbye_message = request.get("message", "Thank you for calling! Have a great day!")
+        
+        if not call_session_id:
+            raise HTTPException(status_code=400, detail="callSessionId is required")
+        
+        # Get call session
+        try:
+            session_uuid = uuid.UUID(call_session_id)
+            call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid callSessionId format")
+        
+        if not call_session:
+            raise HTTPException(status_code=404, detail="Call session not found")
+        
+        # Verify user has access to this call session
+        if call_session.tenant_id != user.current_tenant_id:
+            raise HTTPException(status_code=403, detail="Access denied to this call session")
+        
+        # End the call using Twilio API if we have the call SID
+        call_ended = False
+        if call_session.twilio_call_sid:
+            call_ended = twilio_service.end_call(call_session.twilio_call_sid)
+        
+        # Update call session status
+        call_session.status = "completed"
+        call_session.end_time = datetime.now(timezone.utc)
+        call_session.ended_reason = reason
+        
+        if call_session.start_time:
+            duration = (call_session.end_time - call_session.start_time).total_seconds()
+            call_session.duration = int(duration)
+        
+        db.commit()
+        
+        # Add goodbye message to transcript
+        if goodbye_message:
+            await _add_to_transcript(
+                call_session,
+                "agent",
+                goodbye_message,
+                db,
+                message_type="call_end",
+                agent_id=call_session.agent_id,
+                user_id=call_session.user_id
+            )
+        
+        # Broadcast call ended event
+        try:
+            asyncio.create_task(broadcast_call_ended(
+                call_session_id=str(call_session.id),
+                reason=reason,
+                final_data={
+                    "call_sid": call_session.twilio_call_sid,
+                    "duration": call_session.duration,
+                    "end_time": call_session.end_time.isoformat(),
+                    "transcript": call_session.call_transcript or []
+                }
+            ))
+        except Exception as e:
+            print(f"⚠️ Failed to broadcast call ended event: {e}")
+        
+        return SuccessResponse(
+            data={
+                "callSessionId": str(call_session.id),
+                "status": "completed",
+                "reason": reason,
+                "duration": call_session.duration,
+                "twilioEnded": call_ended
+            },
+            message="Call ended successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error ending call: {e}")
+        raise HTTPException(status_code=500, detail="Failed to end call")
 
 
 @router.get("/recording/{call_session_id}/access", response_model=SuccessResponse[dict])

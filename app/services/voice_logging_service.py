@@ -342,6 +342,15 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 print(f"⚠️ Model {model_name} is not a Gemini model, using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
+            # Check if all system prompt objectives have been completed
+            conversation_complete = VoiceLoggingService._check_conversation_completion(
+                system_prompt, conversation_context, speech_text
+            )
+            
+            if conversation_complete:
+                print(f"🎯 All system prompt objectives completed - generating goodbye response")
+                return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
+            
             # Generate response using Gemini
             print(f"🔧 Gemini Config: model={model_name}, temp={temperature}, max_tokens={max_tokens}")
             print(f"🔧 Agent: {agent_name} (Language: {agent_language})")
@@ -363,6 +372,13 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             response_text = gemini_response["content"]
             response_time = gemini_response["response_time"]
             
+            # Check if the response indicates conversation completion
+            if VoiceLoggingService._check_conversation_completion(
+                system_prompt, conversation_context, response_text
+            ):
+                print(f"🎯 Conversation completion detected in response - generating goodbye")
+                return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
+            
             print(f"✅ Gemini generated response in {response_time:.2f}s: '{response_text}'")
             return response_text
             
@@ -370,6 +386,147 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             print(f"❌ Error generating Gemini response: {e}")
             # Fall back to simple response
             return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+    
+    @staticmethod
+    def _check_conversation_completion(system_prompt: str, conversation_context: str, current_text: str) -> bool:
+        """
+        Check if all objectives from the system prompt have been completed
+        """
+        if not system_prompt or not conversation_context:
+            return False
+        
+        # Extract key objectives/questions from system prompt
+        objectives = VoiceLoggingService._extract_system_prompt_objectives(system_prompt)
+        
+        if not objectives:
+            return False
+        
+        # Check if all objectives have been addressed in the conversation
+        conversation_lower = conversation_context.lower()
+        current_lower = current_text.lower()
+        
+        completed_objectives = 0
+        total_objectives = len(objectives)
+        
+        for objective in objectives:
+            if VoiceLoggingService._is_objective_completed(objective, conversation_lower, current_lower):
+                completed_objectives += 1
+        
+        # If 80% or more objectives are completed, consider conversation done
+        completion_ratio = completed_objectives / total_objectives
+        is_complete = completion_ratio >= 0.8
+        
+        if is_complete:
+            print(f"🎯 Conversation completion: {completed_objectives}/{total_objectives} objectives completed ({completion_ratio:.1%})")
+        
+        return is_complete
+    
+    @staticmethod
+    def _extract_system_prompt_objectives(system_prompt: str) -> list:
+        """
+        Extract key objectives, questions, or tasks from the system prompt
+        """
+        objectives = []
+        prompt_lower = system_prompt.lower()
+        
+        # Look for common patterns that indicate objectives
+        import re
+        
+        # Find questions (ending with ?)
+        questions = re.findall(r'[^.!?]*\?', system_prompt)
+        objectives.extend([q.strip() for q in questions if len(q.strip()) > 10])
+        
+        # Find numbered lists or bullet points
+        numbered_items = re.findall(r'\d+\.\s*([^.\n]+)', system_prompt)
+        objectives.extend([item.strip() for item in numbered_items if len(item.strip()) > 10])
+        
+        # Find bullet points
+        bullet_items = re.findall(r'[-*]\s*([^.\n]+)', system_prompt)
+        objectives.extend([item.strip() for item in bullet_items if len(item.strip()) > 10])
+        
+        # Find "ask about" or "find out" patterns
+        ask_patterns = re.findall(r'(?:ask about|find out|get information about|collect|gather)\s+([^.\n]+)', prompt_lower)
+        objectives.extend([item.strip() for item in ask_patterns if len(item.strip()) > 10])
+        
+        # Find "make sure" or "ensure" patterns
+        ensure_patterns = re.findall(r'(?:make sure|ensure|verify|check)\s+([^.\n]+)', prompt_lower)
+        objectives.extend([item.strip() for item in ensure_patterns if len(item.strip()) > 10])
+        
+        # Remove duplicates and filter out very short objectives
+        unique_objectives = list(set([obj for obj in objectives if len(obj) > 15]))
+        
+        return unique_objectives[:10]  # Limit to 10 objectives to avoid false positives
+    
+    @staticmethod
+    def _is_objective_completed(objective: str, conversation_context: str, current_text: str) -> bool:
+        """
+        Check if a specific objective has been completed based on conversation context
+        """
+        objective_lower = objective.lower()
+        
+        # Extract key terms from the objective
+        key_terms = []
+        
+        # Remove common words and extract meaningful terms
+        common_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'about', 'ask', 'find', 'get', 'make', 'sure', 'ensure', 'verify', 'check'}
+        words = objective_lower.split()
+        key_terms = [word for word in words if word not in common_words and len(word) > 3]
+        
+        if not key_terms:
+            return False
+        
+        # Check if key terms appear in conversation context
+        context_matches = sum(1 for term in key_terms if term in conversation_context)
+        current_matches = sum(1 for term in key_terms if term in current_text)
+        
+        # If most key terms are mentioned in conversation, objective is likely completed
+        completion_threshold = len(key_terms) * 0.6  # 60% of key terms
+        return (context_matches + current_matches) >= completion_threshold
+    
+    @staticmethod
+    def _is_completion_goodbye(text: str) -> bool:
+        """
+        Check if the response is a completion goodbye message
+        """
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        
+        # Look for completion goodbye indicators
+        completion_phrases = [
+            "perfect! i'm so glad i could help",
+            "excellent! i've provided you with all",
+            "great! i'm happy we were able to resolve",
+            "wonderful! i believe we've covered everything",
+            "everything you needed today",
+            "all the information you were looking for",
+            "we've covered everything you needed",
+            "everything is all set for you"
+        ]
+        
+        return any(phrase in text_lower for phrase in completion_phrases)
+    
+    @staticmethod
+    def _generate_completion_goodbye(agent_name: str, conversation_context: str) -> str:
+        """
+        Generate a natural goodbye response when all system prompt objectives are completed
+        """
+        # Analyze conversation context to personalize the goodbye
+        context_lower = conversation_context.lower()
+        
+        # Check what was accomplished
+        if any(word in context_lower for word in ["help", "assist", "support"]):
+            return f"Perfect! I'm so glad I could help you with everything you needed today. Thank you for calling, and have a wonderful day!"
+        elif any(word in context_lower for word in ["information", "details", "questions"]):
+            return f"Excellent! I've provided you with all the information you were looking for. Thanks for calling, and take care!"
+        elif any(word in context_lower for word in ["problem", "issue", "resolve", "fix"]):
+            return f"Great! I'm happy we were able to resolve everything for you. Thank you for calling, and have a great day!"
+        elif any(word in context_lower for word in ["appointment", "schedule", "booking"]):
+            return f"Perfect! Everything is all set for you. Thank you for calling, and we look forward to seeing you soon!"
+        else:
+            # Default completion goodbye
+            return f"Wonderful! I believe we've covered everything you needed today. Thank you for calling, and have a fantastic day!"
     
     @staticmethod
     async def _generate_fallback_response(speech_text: str, agent: Optional[Agent] = None) -> str:

@@ -385,6 +385,27 @@ class TwilioService:
             
         except TwilioException as e:
             raise Exception(f"Error fetching account info: {str(e)}")
+    
+    def end_call(self, call_sid: str) -> bool:
+        """
+        End a call programmatically using Twilio API
+        
+        Args:
+            call_sid: The SID of the call to end
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        client = self.get_client()
+        
+        try:
+            call = client.calls(call_sid).update(status='completed')
+            print(f"✅ Call {call_sid} ended successfully")
+            return True
+            
+        except TwilioException as e:
+            print(f"❌ Error ending call {call_sid}: {str(e)}")
+            return False
 
 # Global instance
 twilio_service = TwilioService()
