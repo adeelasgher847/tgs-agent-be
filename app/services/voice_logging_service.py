@@ -204,18 +204,34 @@ class VoiceLoggingService:
             conversation_context = ""
             if call_session_id and db:
                 try:
-                    call_session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
-                    if call_session and call_session.call_transcript:
-                        # Get last few interactions for context
-                        recent_interactions = call_session.call_transcript[-6:]  # Last 6 interactions
+                    # Import transcript service to get proper conversation array
+                    from app.services.transcript_service import transcript_service
+                    
+                    # Get the conversation array from transcript service
+                    conversation_array = transcript_service.get_conversation_array(db, call_session_id)
+                    
+                    if conversation_array:
+                        # Get last few interactions for context (exclude the current user input)
+                        recent_interactions = conversation_array[-6:]  # Last 6 interactions
                         if recent_interactions:
                             conversation_context = "\n\nPrevious conversation context:\n"
                             for interaction in recent_interactions:
-                                speaker = "Customer" if interaction.get("speaker") == "customer" else "You"
-                                text = interaction.get("text", "")
+                                # Map role to speaker name
+                                if interaction.get("role") == "client":
+                                    speaker = "Customer"
+                                elif interaction.get("role") == "agent":
+                                    speaker = "You"
+                                else:
+                                    speaker = interaction.get("role", "Unknown")
+                                
+                                text = interaction.get("message", "")
                                 conversation_context += f"{speaker}: {text}\n"
+                            
+                            print(f"🧠 Conversation context loaded: {len(recent_interactions)} recent interactions")
                 except Exception as e:
                     print(f"⚠️ Error getting conversation context: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             # Build personalized system prompt with conversation context
             personalized_system_prompt = f"""You are {agent_name}, a real person taking phone calls.
@@ -239,6 +255,7 @@ Guidelines for phone conversations:
 - Don't repeat information you've already shared unless asked
 - Talk like a friend, not like a helper or assistant
 - Don't constantly repeat your name - just talk naturally
+- IMPORTANT: Use the conversation history below to remember what was discussed and avoid repeating questions or information
 
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             
@@ -269,6 +286,7 @@ Guidelines for phone conversations:
 - Don't repeat information you've already shared unless asked
 - Talk like a friend, not like a helper or assistant
 - Don't constantly repeat your name - just talk naturally
+- IMPORTANT: Use the conversation history below to remember what was discussed and avoid repeating questions or information
 
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             elif model.system_prompt:
@@ -296,6 +314,7 @@ Guidelines for phone conversations:
 - Don't repeat information you've already shared unless asked
 - Talk like a friend, not like a helper or assistant
 - Don't constantly repeat your name - just talk naturally
+- IMPORTANT: Use the conversation history below to remember what was discussed and avoid repeating questions or information
 
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             else:
@@ -328,6 +347,9 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             print(f"🔧 Agent: {agent_name} (Language: {agent_language})")
             print(f"🔧 System Prompt: {system_prompt[:200]}...")
             print(f"🔧 User Prompt: {speech_text}")
+            print(f"🧠 Conversation Context Length: {len(conversation_context)} characters")
+            if conversation_context:
+                print(f"🧠 Conversation Context Preview: {conversation_context[:300]}...")
             
             gemini_response = gemini_service.generate_text(
                 prompt=speech_text,
