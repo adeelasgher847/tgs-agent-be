@@ -52,7 +52,7 @@ class GeminiService:
     def generate_text(self, prompt: str, system_prompt: str = None, 
                      model_name: str = "gemini-1.5-flash", 
                      temperature: float = 0.7, 
-                     max_tokens: int = 200,
+                     max_tokens: int = 1000,
                      api_key: str = None) -> Dict[str, Any]:
         """
         Generate text using Gemini API
@@ -110,7 +110,7 @@ class GeminiService:
                        system_prompt: str = None, 
                        model_name: str = "gemini-1.5-flash", 
                        temperature: float = 0.7,
-                       max_tokens: int = 200,
+                       max_tokens: int = 1000,
                        api_key: str = None) -> Dict[str, Any]:
         """
         Generate chat completion using Gemini API
@@ -186,72 +186,80 @@ class GeminiService:
         except Exception as e:
             raise Exception(f"Error in Gemini chat completion: {str(e)}")
     
-    def process_agent_conversation(self, user_input: str, 
-                                 agent_system_prompt: str = "You are a helpful assistant.",
-                                 conversation_history: List[Dict[str, str]] = None,
-                                 model_name: str = "gemini-1.5-flash",
-                                 temperature: float = 0.7,
-                                 max_tokens: int = 200,
-                                 api_key: str = None) -> Dict[str, Any]:
-        """
-        Process agent conversation using Gemini API
-        
-        Args:
-            user_input: Current user input
-            agent_system_prompt: System prompt for the agent
-            conversation_history: Previous conversation messages
-            model_name: Gemini model to use
-            temperature: Temperature setting (0.0 to 1.0)
-            max_tokens: Maximum tokens for response
-            api_key: Model-specific API key (optional)
-            
-        Returns:
-            Dictionary with response content and metadata
-        """
-        try:
-            start_time = time.time()
-            
-            # Get model instance with specific API key
-            model = self.get_model(model_name, api_key)
-            
-            # Start a chat session
-            chat = model.start_chat(history=[])
-            
-            # Send system prompt
-            chat.send_message(f"System: {agent_system_prompt}")
-            
-            # Add conversation history
-            if conversation_history:
-                for msg in conversation_history:
-                    if msg["role"] == "user":
-                        chat.send_message(msg["content"])
-                    # Note: Gemini doesn't support adding assistant messages to history directly
-            
-            # Send current user input and get response
-            response = chat.send_message(
-                user_input,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                )
-            )
-            
-            end_time = time.time()
-            response_time = end_time - start_time
-            
-            return {
-                "response": response.text,
-                "model": model_name,
-                "response_time": response_time,
-                "usage": {
-                    "prompt_tokens": len(user_input.split()) + len(agent_system_prompt.split()),
-                    "completion_tokens": len(response.text.split()),
-                    "total_tokens": len(user_input.split()) + len(agent_system_prompt.split()) + len(response.text.split())
-                }
-            }
-            
-        except Exception as e:
-            raise Exception(f"Error in Gemini agent conversation: {str(e)}")
+def process_agent_conversation(self, user_input: str, 
+                             agent_system_prompt: str = "You are a helpful assistant.",
+                             call_session=None,
+                             db=None,
+                             model_name: str = "gemini-1.5-flash",
+                             temperature: float = 0.7,
+                             max_tokens: int = 1000,
+                             api_key: str = None) -> Dict[str, Any]:
+    """
+    Process agent conversation using Gemini API with DB context memory.
+    """
+    try:
+        from datetime import datetime
+        import json
 
+        start_time = time.time()
+
+        # 🧠 Get model instance
+        model = self.get_model(model_name, api_key)
+
+        # 📜 Load previous transcript (if any)
+        conversation_history = []
+        if call_session and call_session.call_transcript:
+            try:
+                conversation_history = json.loads(call_session.call_transcript)
+            except:
+                conversation_history = []
+
+        # 🗣️ Prepare message context
+        history_text = "\n".join(
+            [f"{msg['role'].capitalize()}: {msg['content']}" for msg in conversation_history[-6:]]
+        )
+
+        full_prompt = (
+            f"System: {agent_system_prompt}\n\n"
+            f"Previous conversation:\n{history_text}\n\n"
+            f"User: {user_input}\n\n"
+            f"Note: Never repeat any question already asked. Be human-like and polite."
+        )
+
+        # 💬 Generate model response
+        response = model.generate_content(
+            full_prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
+        )
+
+        # ⏱️ Timing
+        end_time = time.time()
+        response_time = end_time - start_time
+
+        # 🪄 Update transcript in DB
+        if call_session and db:
+            conversation_history.append({"role": "user", "content": user_input})
+            conversation_history.append({"role": "assistant", "content": response.text})
+            call_session.call_transcript = json.dumps(conversation_history)
+            call_session.updated_at = datetime.utcnow()
+            db.commit()
+
+        return {
+            "response": response.text,
+            "model": model_name,
+            "response_time": response_time,
+            "usage": {
+                "prompt_tokens": len(full_prompt.split()),
+                "completion_tokens": len(response.text.split()),
+                "total_tokens": len(full_prompt.split()) + len(response.text.split())
+            }
+        }
+
+    except Exception as e:
+        raise Exception(f"Error in Gemini agent conversation: {str(e)}")
+        
 # Create a singleton instance
 gemini_service = GeminiService()

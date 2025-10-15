@@ -21,7 +21,6 @@ class OpenAIService:
         # Use provided API key or fall back to global setting
         key_to_use = api_key or settings.OPENAI_API_KEY
         
-<<<<<<< HEAD
         if not key_to_use:
             raise Exception("OpenAI API key not found. Please provide an API key or set OPENAI_API_KEY in your config.")
         
@@ -94,11 +93,6 @@ class OpenAIService:
                        temperature: float = 0.7,
                        max_tokens: int = 1000,
                        api_key: str = None) -> Dict[str, Any]:
-=======
-        return self._client
-    def chat_completion(self, messages: List[Dict[str, str]], system_prompt: str = None, 
-                       model: str = "gpt-3.5-turbo", max_tokens: int = 100) -> Dict[str, Any]:
->>>>>>> ac6770cc3f1b893a167f5c14b615a8a7be97b49a
         """
         Generate chat completion using OpenAI API
         
