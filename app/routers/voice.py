@@ -39,20 +39,12 @@ model_service = ModelService()
 
 # Array of human-like "didn't catch that" response phrases
 DIDNT_CATCH_RESPONSES = [
-    "Hmm, I missed that—mind saying it again?",
-    "Didn't quite get that, can you repeat?",
-    "I didn't hear you clearly, would you mind repeating?",
-    "Can you say that again real quick?",
-    "I might've misheard—could you repeat that?"
+   "Hello"
 ]
 
 # Array of follow-up phrases for when the agent didn't catch something
 FOLLOW_UP_RESPONSES = [
-    "Could you repeat that for me?",
-    "Mind saying that one more time?",
-    "Can you try that again?",
-    "Would you mind repeating that?",
-    "Could you say that again?"
+    "Hello"
 ]
 
 
@@ -663,30 +655,30 @@ async def handle_call_events_webhook(
                     
                 else:
                     # Normal conversation flow - continue listening
-                    response.pause(length=0.3)  # Natural pause for conversation flow
+                    response.pause(length=0.1)  # Natural pause for conversation flow
                     
-                    # Continue listening immediately for natural conversation
-                    response.gather(
-                        input='speech',
-                        timeout=12,  # Shorter timeout for more natural conversation
-                        speech_timeout='auto',
-                        action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
-                        method='POST'
-                    )
+                # Continue listening immediately for natural conversation
+                response.gather(
+                    input='speech',
+                    timeout=8,  # Faster timeout for quicker response
+                    speech_timeout='auto',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
+                    method='POST'
+                )
                     
                     # Gentle, natural fallback
-                    response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
+                response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
             else:
                 # Default response for smooth conversation
                 default_voice = get_agent_voice(None)  # Use default voice
                 response.say("Got it!", voice=default_voice)
-                response.pause(length=0.3)
+                response.pause(length=0.1)
                 response.say("What else would you like to talk about?", voice=default_voice)
                 
                 # Continue listening
                 response.gather(
                     input='speech',
-                    timeout=15,
+                    timeout=10,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                     method='POST'
@@ -711,13 +703,13 @@ async def handle_call_events_webhook(
             
             # More natural "didn't catch that" response
             response.say(_get_random_didnt_catch_response(), voice=agent_voice)
-            response.pause(length=0.3)
-            response.say(_get_random_follow_up_response(), voice=agent_voice)
+            response.pause(length=0.1)
+            # response.say(_get_random_follow_up_response(), voice=agent_voice)
             
             # Keep listening with reasonable timeout
             response.gather(
                 input='speech',
-                timeout=15,
+                timeout=10,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                 method='POST'
@@ -725,19 +717,19 @@ async def handle_call_events_webhook(
             
             # Gentle reminder
             response.say("I'm still here. Go ahead when you're ready.", voice=agent_voice)
-            response.pause(length=0.3)
+            response.pause(length=0.1)
             
             # Final attempt with longer timeout
             response.gather(
                 input='speech',
-                timeout=20,
+                timeout=12,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                 method='POST'
             )
             
             # Only hangup after very long silence
-            timeout_message = "Hello"
+            timeout_message = ""
             response.say(timeout_message, voice=agent_voice)
             response.hangup()
             
@@ -785,16 +777,16 @@ async def handle_call_events_webhook(
                 
                 # Also broadcast call ended event (non-blocking - fire and forget)
                 try:
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="timeout_no_speech",
-                        final_data={
-                            "call_sid": call_sid,
-                            "duration": call_session.duration,
-                            "end_time": call_session.end_time.isoformat(),
-                            "transcript": call_session.call_transcript or []
-                        }
-                    ))
+                    # asyncio.create_task(broadcast_call_ended(
+                    #     call_session_id=str(call_session.id),
+                    #     reason="timeout_no_speech",
+                    #     final_data={
+                    #         "call_sid": call_sid,
+                    #         "duration": call_session.duration,
+                    #         "end_time": call_session.end_time.isoformat(),
+                    #         "transcript": call_session.call_transcript or []
+                    #     }
+                    # ))
                     print(f"✅ Queued call ended event for session {call_session.id}")
                 except Exception as e:
                     print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
@@ -955,7 +947,7 @@ async def handle_call_events_webhook(
                 # Use main webhook for conversation flow
                 response.gather(
                     input='speech',
-                    timeout=15,
+                    timeout=10,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
@@ -963,12 +955,12 @@ async def handle_call_events_webhook(
                 
                 # Gentle fallback if no input
                 response.say(_get_random_didnt_catch_response(), voice=agent_voice)
-                response.pause(length=0.5)
+                response.pause(length=0.1)
                 
                 # Try main webhook again
                 response.gather(
                     input='speech',
-                    timeout=20,
+                    timeout=12,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
@@ -989,7 +981,7 @@ async def handle_call_events_webhook(
                 # Continue listening without repeating greeting
                 response.gather(
                     input='speech',
-                    timeout=15,
+                    timeout=10,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'

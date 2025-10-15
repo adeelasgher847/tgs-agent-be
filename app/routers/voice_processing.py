@@ -266,7 +266,7 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                 # Add gather for next user input
                 gather = response.gather(
                     input='speech',
-                    timeout=10,
+                    timeout=8,
                     speech_timeout='auto',
                     action=f'/voice/webhook/voice-process?agentId={agent.id}&sessionId={call_session.id if call_session else ""}',
                     method='POST'
@@ -404,7 +404,7 @@ async def initialize_voice_call(
         # Add gather for speech input
         gather = response.gather(
             input='speech',
-            timeout=10,
+            timeout=8,
             speech_timeout='auto',
             action=f'/voice/webhook/voice-process?agentId={agent.id}&sessionId={call_session.id if call_session else ""}',
             method='POST'

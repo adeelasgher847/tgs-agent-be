@@ -52,7 +52,7 @@ class GeminiService:
     def generate_text(self, prompt: str, system_prompt: str = None, 
                      model_name: str = "gemini-1.5-flash", 
                      temperature: float = 0.7, 
-                     max_tokens: int = 1000,
+                     max_tokens: int = 200,
                      api_key: str = None) -> Dict[str, Any]:
         """
         Generate text using Gemini API
@@ -110,7 +110,7 @@ class GeminiService:
                        system_prompt: str = None, 
                        model_name: str = "gemini-1.5-flash", 
                        temperature: float = 0.7,
-                       max_tokens: int = 1000,
+                       max_tokens: int = 200,
                        api_key: str = None) -> Dict[str, Any]:
         """
         Generate chat completion using Gemini API
@@ -191,7 +191,7 @@ class GeminiService:
                                  conversation_history: List[Dict[str, str]] = None,
                                  model_name: str = "gemini-1.5-flash",
                                  temperature: float = 0.7,
-                                 max_tokens: int = 1000,
+                                 max_tokens: int = 200,
                                  api_key: str = None) -> Dict[str, Any]:
         """
         Process agent conversation using Gemini API
