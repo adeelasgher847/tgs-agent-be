@@ -167,10 +167,10 @@ class VoiceLoggingService:
         call_session_id: Optional[uuid.UUID] = None
     ) -> str:
         """
-        Generate agent response based on speech input using Gemini AI with conversation context
+        Generate agent response based on speech input using AI (Gemini or OpenAI) with conversation context
         """
         try:
-            print(f"🤖 Generating Gemini response for: '{speech_text}'",agent,'agent info log')
+            print(f"🤖 Generating AI response for: '{speech_text}'",agent,'agent info log')
             
             # If no agent or no model_id, fall back to simple responses
             if not agent or not agent.model_id:
@@ -179,6 +179,7 @@ class VoiceLoggingService:
             
             # Import here to avoid circular imports
             from app.services.gemini_service import gemini_service
+            from app.services.openai_service import openai_service
             from app.services.model_service import model_service
             from app.core.security import decrypt_api_key
             
@@ -337,10 +338,17 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                     print(f"⚠️ Failed to decrypt model API key: {e}")
                     # Continue with global key
             
-            # Check if this is a Gemini model
-            if 'gemini' not in model_name.lower():
-                print(f"⚠️ Model {model_name} is not a Gemini model, using fallback response")
+            # Detect which AI service to use based on model name
+            is_gemini = 'gemini' in model_name.lower()
+            is_openai = 'gpt' in model_name.lower() or 'openai' in model_name.lower()
+            
+            if not is_gemini and not is_openai:
+                print(f"⚠️ Model {model_name} is not supported (not Gemini or OpenAI), using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+            
+            # Determine which service to use
+            ai_service_name = "Gemini" if is_gemini else "OpenAI"
+            ai_service = gemini_service if is_gemini else openai_service
             
             # Check if all system prompt objectives have been completed
             conversation_complete = VoiceLoggingService._check_conversation_completion(
@@ -351,8 +359,8 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 print(f"🎯 All system prompt objectives completed - generating goodbye response")
                 return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
             
-            # Generate response using Gemini
-            print(f"🔧 Gemini Config: model={model_name}, temp={temperature}, max_tokens={max_tokens}")
+            # Generate response using selected AI service
+            print(f"🔧 {ai_service_name} Config: model={model_name}, temp={temperature}, max_tokens={max_tokens}")
             print(f"🔧 Agent: {agent_name} (Language: {agent_language})")
             print(f"🔧 System Prompt: {system_prompt[:200]}...")
             print(f"🔧 User Prompt: {speech_text}")
@@ -360,7 +368,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             if conversation_context:
                 print(f"🧠 Conversation Context Preview: {conversation_context[:300]}...")
             
-            gemini_response = gemini_service.generate_text(
+            ai_response = ai_service.generate_text(
                 prompt=speech_text,
                 system_prompt=system_prompt,
                 model_name=model_name,
@@ -369,8 +377,8 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 api_key=api_key
             )
             
-            response_text = gemini_response["content"]
-            response_time = gemini_response["response_time"]
+            response_text = ai_response["content"]
+            response_time = ai_response["response_time"]
             
             # Check if the response indicates conversation completion
             if VoiceLoggingService._check_conversation_completion(
@@ -379,11 +387,11 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 print(f"🎯 Conversation completion detected in response - generating goodbye")
                 return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
             
-            print(f"✅ Gemini generated response in {response_time:.2f}s: '{response_text}'")
+            print(f"✅ {ai_service_name} generated response in {response_time:.2f}s: '{response_text}'")
             return response_text
             
         except Exception as e:
-            print(f"❌ Error generating Gemini response: {e}")
+            print(f"❌ Error generating AI response: {e}")
             # Fall back to simple response
             return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
     

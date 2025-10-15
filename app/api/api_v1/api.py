@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.api_v1.endpoints import user, tenant, role, invite, accept_invite, billing, plan, provider, model, gemini
+from app.api.api_v1.endpoints import user, tenant, role, invite, accept_invite, billing, plan, provider, model, gemini, openai
 from app.routers.agent import router as agent_router
 from app.routers.voice import router as voice_router
 from app.routers.live_voice import router as live_voice_router
@@ -26,3 +26,4 @@ api_router.include_router(plan.router, prefix="/plans", tags=["plans"])
 api_router.include_router(provider.router, prefix="/providers", tags=["providers"],include_in_schema=False)
 api_router.include_router(model.router, prefix="/models", tags=["models"])
 api_router.include_router(gemini.router, prefix="/gemini", tags=["gemini"],include_in_schema=False)
+api_router.include_router(openai.router, prefix="/openai", tags=["openai"],include_in_schema=False)
