@@ -183,8 +183,14 @@ class VoiceLoggingService:
             from app.services.model_service import model_service
             from app.core.security import decrypt_api_key
             
-            # Get the model from database
-            model = model_service.get_model_by_id(db, agent.model_id)
+            # Get the model from database with provider relationship
+            from sqlalchemy.orm import joinedload
+            from app.models.model import Model as ModelClass
+            
+            model = db.query(ModelClass).options(joinedload(ModelClass.provider)).filter(
+                ModelClass.id == agent.model_id
+            ).first()
+            
             if not model:
                 print("⚠️ Model not found, using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
@@ -192,6 +198,11 @@ class VoiceLoggingService:
             # Check if model is active
             if model.archive:
                 print("⚠️ Model is archived, using fallback response")
+                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+            
+            # Check if provider exists
+            if not model.provider:
+                print("⚠️ Model has no provider, using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
             # Get model details with agent-specific overrides
@@ -338,17 +349,20 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                     print(f"⚠️ Failed to decrypt model API key: {e}")
                     # Continue with global key
             
-            # Detect which AI service to use based on model name
-            is_gemini = 'gemini' in model_name.lower()
-            is_openai = 'gpt' in model_name.lower() or 'openai' in model_name.lower()
+            # Detect which AI service to use based on provider name
+            provider_name = model.provider.name.lower()
+            is_gemini = 'gemini' in provider_name or 'google' in provider_name
+            is_openai = 'openai' in provider_name
             
             if not is_gemini and not is_openai:
-                print(f"⚠️ Model {model_name} is not supported (not Gemini or OpenAI), using fallback response")
+                print(f"⚠️ Provider {provider_name} is not supported (not Gemini or OpenAI), using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
             # Determine which service to use
             ai_service_name = "Gemini" if is_gemini else "OpenAI"
             ai_service = gemini_service if is_gemini else openai_service
+            
+            print(f"🎯 Using {ai_service_name} service based on provider: {provider_name}")
             
             # Check if all system prompt objectives have been completed
             conversation_complete = VoiceLoggingService._check_conversation_completion(

@@ -251,7 +251,10 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
             "agent_id": str(agent.id),
             "agent_name": agent.name,
             "agent_voice_type": agent.voice_type,
-            "agent_system_prompt": agent_system_prompt
+            "agent_system_prompt": agent_system_prompt,
+            "model_id": str(agent.model_id) if agent.model_id else None,
+            "agent_temperature": agent.agent_temperature,
+            "agent_max_tokens": agent.agent_max_tokens
         }, {
             "user_id": "anonymous",  # For now, can be enhanced with auth
             "tenant_id": str(agent.tenant_id)
@@ -474,6 +477,7 @@ async def handle_stop_listening(session_id: str, message_data: dict):
 async def process_with_ai_live(session_id: str, user_input: str, session_data: dict, db: Session):
     """
     Process user input with AI and send voice response
+    Supports dynamic model selection based on agent configuration
     """
     try:
         agent_data = session_data["agent_data"]
@@ -493,19 +497,126 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
             "message": f"{agent_data['agent_name']} is thinking..."
         })
         
-        # Process with OpenAI
+        # Process with appropriate AI service based on agent's model configuration
         try:
-            openai_response = openai_service.process_agent_conversation(
-                user_input=user_input,
-                agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
-                conversation_history=conversation_history[:-1]  # Exclude current message
-            )
+            model_id = agent_data.get("model_id")
             
+            if model_id:
+                # Load model configuration with provider
+                from sqlalchemy.orm import joinedload
+                from app.models.model import Model
+                from app.services.gemini_service import gemini_service
+                from app.core.security import decrypt_api_key
+                
+                try:
+                    model_uuid = uuid.UUID(model_id)
+                    model = db.query(Model).options(joinedload(Model.provider)).filter(
+                        Model.id == model_uuid
+                    ).first()
+                    
+                    if model and not model.archive and model.provider:
+                        # Get provider to determine which service to use
+                        provider_name = model.provider.name.lower()
+                        model_name = model.model_name
+                        
+                        # Get model configuration with agent overrides
+                        temperature = (
+                            (agent_data.get("agent_temperature") / 100.0) 
+                            if agent_data.get("agent_temperature") is not None 
+                            else (model.temperature / 100.0) if model.temperature 
+                            else 0.7
+                        )
+                        max_tokens = (
+                            agent_data.get("agent_max_tokens") 
+                            if agent_data.get("agent_max_tokens") is not None 
+                            else (model.max_tokens or 1000)
+                        )
+                        
+                        # Decrypt model API key if available
+                        api_key = None
+                        if model.api_key:
+                            try:
+                                api_key = decrypt_api_key(model.api_key)
+                            except Exception as e:
+                                print(f"⚠️ Failed to decrypt model API key: {e}")
+                        
+                        # Route to appropriate service
+                        if 'gemini' in provider_name or 'google' in provider_name:
+                            # Use Gemini service
+                            gemini_response = gemini_service.generate_text(
+                                prompt=user_input,
+                                system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
+                                model_name=model_name,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                api_key=api_key
+                            )
+                            ai_response_text = gemini_response["content"]
+                            response_time = gemini_response["response_time"]
+                            print(f"✅ Live voice: Used Gemini model {model_name} (provider: {provider_name})")
+                        
+                        elif 'openai' in provider_name:
+                            # Use OpenAI service
+                            openai_response = openai_service.process_agent_conversation(
+                                user_input=user_input,
+                                agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
+                                conversation_history=conversation_history[:-1],
+                                model_name=model_name,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                api_key=api_key
+                            )
+                            ai_response_text = openai_response["response"]
+                            response_time = openai_response["response_time"]
+                            print(f"✅ Live voice: Used OpenAI model {model_name} (provider: {provider_name})")
+                        
+                        else:
+                            # Unsupported provider - fall back to default OpenAI
+                            print(f"⚠️ Unsupported provider {provider_name}, falling back to default OpenAI")
+                            openai_response = openai_service.process_agent_conversation(
+                                user_input=user_input,
+                                agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
+                                conversation_history=conversation_history[:-1]
+                            )
+                            ai_response_text = openai_response["response"]
+                            response_time = openai_response["response_time"]
+                    else:
+                        # Model not found or invalid - use default OpenAI
+                        print(f"⚠️ Model not found or invalid, using default OpenAI")
+                        openai_response = openai_service.process_agent_conversation(
+                            user_input=user_input,
+                            agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
+                            conversation_history=conversation_history[:-1]
+                        )
+                        ai_response_text = openai_response["response"]
+                        response_time = openai_response["response_time"]
+                
+                except ValueError:
+                    # Invalid UUID - use default OpenAI
+                    print(f"⚠️ Invalid model_id format, using default OpenAI")
+                    openai_response = openai_service.process_agent_conversation(
+                        user_input=user_input,
+                        agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
+                        conversation_history=conversation_history[:-1]
+                    )
+                    ai_response_text = openai_response["response"]
+                    response_time = openai_response["response_time"]
+            
+            else:
+                # No model_id - use default OpenAI
+                print(f"ℹ️ No model_id configured, using default OpenAI")
+                openai_response = openai_service.process_agent_conversation(
+                    user_input=user_input,
+                    agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
+                    conversation_history=conversation_history[:-1]
+                )
             ai_response_text = openai_response["response"]
             response_time = openai_response["response_time"]
             
         except Exception as e:
-            print(f"Error processing with OpenAI: {e}")
+            print(f"Error processing with AI: {e}")
+            import traceback
+            traceback.print_exc()
             ai_response_text = "I'm sorry, but I'm having trouble processing your request right now. Please try again."
             response_time = 0
         

@@ -116,18 +116,25 @@ async def process_voice_input(
                                 "content": msg["content"]
                             })
                 
-                # Use Gemini if agent has a model_id, otherwise fall back to OpenAI
+                # Use model-based routing if agent has a model_id
                 if agent.model_id:
                     from app.services.gemini_service import gemini_service
                     from app.services.model_service import model_service
                     from app.core.security import decrypt_api_key
+                    from sqlalchemy.orm import joinedload
+                    from app.models.model import Model
                     
-                    # Get the model from database
-                    model = model_service.get_model_by_id(db, agent.model_id)
-                    if model and not model.archive and 'gemini' in model.model_name.lower():
-                        # Use Gemini with agent-specific configuration
+                    # Get the model from database with provider relationship
+                    model = db.query(Model).options(joinedload(Model.provider)).filter(
+                        Model.id == agent.model_id
+                    ).first()
+                    
+                    if model and not model.archive and model.provider:
+                        # Get provider name to determine which service to use
+                        provider_name = model.provider.name.lower()
                         model_name = model.model_name
-                        # Always ensure agent name is included in system prompt
+                        
+                        # Build personalized system prompt
                         agent_name = agent.name if agent.name else "AI Assistant"
                         agent_language = agent.language if agent.language else "English"
                         
@@ -194,6 +201,7 @@ Guidelines for phone conversations:
 - Remember you are {agent_name} - introduce yourself naturally when appropriate
 
 Always respond as {agent_name}, a real person, not as any kind of system or tool."""
+                        
                         # Use agent-specific temperature if set, otherwise fall back to model default
                         temperature = (
                             (agent.agent_temperature / 100.0) if agent.agent_temperature is not None 
@@ -203,7 +211,7 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                         # Use agent-specific max tokens if set, otherwise fall back to model default
                         max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 300)
                         
-                        # Use model-specific API key if available
+                        # Decrypt model-specific API key if available
                         api_key = None
                         if model.api_key:
                             try:
@@ -211,21 +219,50 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                             except Exception as e:
                                 print(f"⚠️ Failed to decrypt model API key: {e}")
                         
-                        # Generate response using Gemini
-                        gemini_response = gemini_service.generate_text(
-                            prompt=speech_result,
-                            system_prompt=system_prompt,
-                            model_name=model_name,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            api_key=api_key
-                        )
+                        # Route to appropriate service based on provider
+                        if 'gemini' in provider_name or 'google' in provider_name:
+                            # Use Gemini service
+                            gemini_response = gemini_service.generate_text(
+                                prompt=speech_result,
+                                system_prompt=system_prompt,
+                                model_name=model_name,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                api_key=api_key
+                            )
+                            ai_response_text = gemini_response["content"]
+                            response_time = gemini_response["response_time"]
+                            print(f"✅ Used Gemini model: {model_name} (provider: {provider_name})")
                         
-                        ai_response_text = gemini_response["content"]
-                        response_time = gemini_response["response_time"]
-                        print(f"✅ Used Gemini model: {model_name}")
+                        elif 'openai' in provider_name:
+                            # Use OpenAI service with model configuration
+                            openai_response = openai_service.process_agent_conversation(
+                                user_input=speech_result,
+                                agent_system_prompt=system_prompt,
+                                conversation_history=conversation_history,
+                                model_name=model_name,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                api_key=api_key
+                            )
+                            ai_response_text = openai_response["response"]
+                            response_time = openai_response["response_time"]
+                            print(f"✅ Used OpenAI model: {model_name} (provider: {provider_name})")
+                        
+                        else:
+                            # Unsupported provider - fall back to default OpenAI
+                            print(f"⚠️ Unsupported provider: {provider_name}, falling back to default OpenAI")
+                            openai_response = openai_service.process_agent_conversation(
+                                user_input=speech_result,
+                                agent_system_prompt=agent.system_prompt or "You are a helpful assistant.",
+                                conversation_history=conversation_history
+                            )
+                            ai_response_text = openai_response["response"]
+                            response_time = openai_response["response_time"]
+                            print("✅ Used default OpenAI (unsupported provider)")
                     else:
-                        # Fall back to OpenAI
+                        # Model not found or archived - fall back to default OpenAI
+                        print(f"⚠️ Model not found, archived, or provider missing - falling back to default OpenAI")
                         openai_response = openai_service.process_agent_conversation(
                             user_input=speech_result,
                             agent_system_prompt=agent.system_prompt or "You are a helpful assistant.",
@@ -233,9 +270,9 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                         )
                         ai_response_text = openai_response["response"]
                         response_time = openai_response["response_time"]
-                        print("✅ Used OpenAI (fallback)")
+                        print("✅ Used default OpenAI (model fallback)")
                 else:
-                    # No model_id, use OpenAI
+                    # No model_id, use default OpenAI
                     openai_response = openai_service.process_agent_conversation(
                         user_input=speech_result,
                         agent_system_prompt=agent.system_prompt or "You are a helpful assistant.",
@@ -243,7 +280,7 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                     )
                     ai_response_text = openai_response["response"]
                     response_time = openai_response["response_time"]
-                    print("✅ Used OpenAI (no model_id)")
+                    print("✅ Used default OpenAI (no model_id)")
                 
                 # Add AI response to transcript
                 if call_session:
