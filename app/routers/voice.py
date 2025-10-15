@@ -737,22 +737,22 @@ async def handle_call_events_webhook(
             )
             
             # Only hangup after very long silence
-            timeout_message = "I haven't heard anything for a while. Thanks for calling! Have a great day!"
+            timeout_message = "Hello"
             response.say(timeout_message, voice=agent_voice)
             response.hangup()
             
             # Add timeout response to transcript and update call status
             if call_session:
                 print(f"📝 Adding timeout response to transcript for session {call_session.id}")
-                await _add_to_transcript(
-                    call_session, 
-                    "agent", 
-                    timeout_message, 
-                    db,
-                    message_type="timeout_response",
-                    agent_id=agent.id if agent else None,
-                    user_id=call_session.user_id
-                )
+                # await _add_to_transcript(
+                #     call_session, 
+                #     "agent", 
+                #     timeout_message, 
+                #     db,
+                #     message_type="timeout_response",
+                #     agent_id=agent.id if agent else None,
+                #     user_id=call_session.user_id
+                # )
                 print(f"✅ Timeout response added to transcript for session {call_session.id}")
                 
                 # Update call session status to completed due to timeout
