@@ -535,8 +535,31 @@ async def handle_call_events_webhook(
         
         # Agent already fetched above using callSessionId - no need to fetch again
         
+        # Check if this is the first "in-progress" event (call just answered)
+        # If so, skip speech handling and go to greeting section below
+        if call_status == "in-progress" and call_session:
+            conversation_state = _get_conversation_state(call_session)
+            has_greeted = conversation_state.get("has_greeted", False)
+            
+            if not has_greeted:
+                # This is the first time call is answered - skip speech handling
+                # and let it fall through to the greeting section below (line 803+)
+                print(f"🔄 First-time in-progress detected - skipping speech handler, will greet below")
+                pass  # Continue to line 803+ for greeting
+            else:
+                # Already greeted, handle speech normally
+                pass  # Continue with speech handling below
+        
         # Handle speech input - ROBUST MULTI-TENANT LOGGING
-        if speech_result and speech_result.strip():
+        # BUT: Skip if this is first-time answer (will be handled by greeting section below)
+        should_skip_speech_handling = False
+        if call_status == "in-progress" and call_session:
+            conversation_state = _get_conversation_state(call_session)
+            has_greeted = conversation_state.get("has_greeted", False)
+            if not has_greeted:
+                should_skip_speech_handling = True
+        
+        if not should_skip_speech_handling and speech_result and speech_result.strip():
             # VALID SPEECH DETECTED - LOG AND RESPOND
             print("=" * 60)
             print(f"🎤 SPEECH DETECTED: '{speech_result}'")
@@ -694,7 +717,7 @@ async def handle_call_events_webhook(
             print(f"📝 Speech response generated: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
         
-        elif speech_result == "" or speech_result is None:
+        elif not should_skip_speech_handling and (speech_result == "" or speech_result is None):
             # NO SPEECH DETECTED - KEEP LISTENING, DON'T TERMINATE
             print("=" * 60)
             print(f"🔇 NO SPEECH DETECTED - KEEPING CALL ALIVE")
@@ -800,7 +823,10 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
         
         # Handle different call statuses and trigger agent logic
-        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
+        print("=" * 80)
+        print(f"📋 Processing call status: '{call_status}' with direction: '{direction}'")
+        print(f"📋 Speech handling was skipped: {should_skip_speech_handling if 'should_skip_speech_handling' in locals() else 'N/A'}")
+        print("=" * 80)
         
         if call_status == "initiated" and direction == "outbound-api":
             # Call has been initiated - just log and return empty response
