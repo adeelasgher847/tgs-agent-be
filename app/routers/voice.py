@@ -870,6 +870,9 @@ async def handle_call_events_webhook(
             conversation_state = _get_conversation_state(call_session)
             has_greeted = conversation_state.get("has_greeted", False)
             
+            print(f"🔍 Conversation State: {conversation_state}")
+            print(f"🔍 Has Greeted: {has_greeted}")
+            
             # Get agent info
             agent = None
             agent_name = "AI"
@@ -888,8 +891,12 @@ async def handle_call_events_webhook(
             
             # Only greet if we haven't greeted yet
             if not has_greeted:
+                print("=" * 80)
                 print("🎤 FIRST TIME GREETING - Playing welcome message")
                 print("✅ CALL TRULY ANSWERED - Setting status to in-progress")
+                print(f"📞 Call Session ID: {call_session.id}")
+                print(f"📞 Call SID: {call_sid}")
+                print("=" * 80)
                 
                 # Mark as greeted
                 _update_conversation_state(call_session, "has_greeted", True)
@@ -902,6 +909,7 @@ async def handle_call_events_webhook(
                     print(f"⏰ Set start time for truly answered call: {call_session.id}")
                 
                 db.commit()
+                print(f"✅ Database updated: status={call_session.status}, start_time={call_session.start_time}")
                 
                 # Natural, conversational greeting with agent-specific voice
                 response = VoiceResponse()
@@ -951,22 +959,37 @@ async def handle_call_events_webhook(
                     to_number = call_session.to_number or ""
                     direction = call_session.call_type or "outbound"
                     
-                    asyncio.create_task(broadcast_call_status_update(
+                    print(f"🚀 BROADCASTING IN-PROGRESS STATUS NOW...")
+                    print(f"📡 Session ID: {call_session.id}")
+                    print(f"📡 Status: in-progress")
+                    print(f"📡 From: {from_number}, To: {to_number}")
+                    
+                    # Create the broadcast metadata
+                    broadcast_metadata = {
+                        "call_sid": call_sid,
+                        "from_number": from_number,
+                        "to_number": to_number,
+                        "direction": direction,
+                        "message": "Call is now in progress (answered)",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None
+                    }
+                    
+                    print(f"📡 Metadata: {broadcast_metadata}")
+                    
+                    # Await the broadcast directly to ensure it executes
+                    await broadcast_call_status_update(
                         call_session_id=str(call_session.id),
                         status="in-progress",
-                        metadata={
-                            "call_sid": call_sid,
-                            "from_number": from_number,
-                            "to_number": to_number,
-                            "direction": direction,
-                            "message": "Call is now in progress (answered)",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "start_time": call_session.start_time.isoformat() if call_session.start_time else None
-                        }
-                    ))
-                    print(f"✅ Broadcasted TRUE in-progress status for answered call: {call_session.id}")
+                        metadata=broadcast_metadata
+                    )
+                    
+                    print(f"✅✅✅ SUCCESSFULLY BROADCASTED TRUE in-progress status for answered call: {call_session.id}")
+                    print("=" * 80)
                 except Exception as e:
-                    print(f"⚠️ Failed to broadcast in-progress status: {e}")
+                    print(f"❌❌❌ FAILED to broadcast in-progress status: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
                 # Use main webhook for conversation flow
                 response.gather(
