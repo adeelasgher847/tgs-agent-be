@@ -39,12 +39,20 @@ model_service = ModelService()
 
 # Array of human-like "didn't catch that" response phrases
 DIDNT_CATCH_RESPONSES = [
-   "Hello"
+    "Hmm, I missed that—mind saying it again?",
+    "Didn't quite get that, can you repeat?",
+    "I didn't hear you clearly, would you mind repeating?",
+    "Can you say that again real quick?",
+    "I might've misheard—could you repeat that?"
 ]
 
 # Array of follow-up phrases for when the agent didn't catch something
 FOLLOW_UP_RESPONSES = [
-    "Hello"
+    "Could you repeat that for me?",
+    "Mind saying that one more time?",
+    "Can you try that again?",
+    "Would you mind repeating that?",
+    "Could you say that again?"
 ]
 
 
@@ -435,50 +443,8 @@ async def handle_call_events_webhook(
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
-            print(f"🔄 Received status from Twilio: {call_status} (Current: {call_session.status})")
-            
-            # ============================================================================
-            # STATUS VALIDATION: Prevent invalid status transitions
-            # This ensures that "in-progress" only happens after "ringing"
-            # and prevents premature "connected" status on frontend
-            # ============================================================================
-            current_status = call_session.status
-            valid_transition = False
-            
-            # Define valid status transitions
-            if call_status == "initiated":
-                # Can always set to initiated
-                valid_transition = True
-            elif call_status == "ringing":
-                # Can only ring if initiated or active
-                if current_status in ["initiated", "active"]:
-                    valid_transition = True
-                else:
-                    print(f"⚠️ Invalid transition: Cannot go to 'ringing' from '{current_status}'")
-            elif call_status == "in-progress":
-                # IMPORTANT: Can only go in-progress if call was ringing first
-                if current_status in ["ringing", "initiated"]:
-                    valid_transition = True
-                else:
-                    print(f"⚠️ BLOCKED: Cannot go to 'in-progress' from '{current_status}' - call must ring first!")
-            elif call_status == "completed":
-                # Can always complete from any state
-                valid_transition = True
-            elif call_status in ["failed", "busy", "no-answer"]:
-                # Can always fail/busy/no-answer from any state
-                valid_transition = True
-            else:
-                # Unknown status, allow it but log warning
-                print(f"⚠️ Unknown status: {call_status}")
-                valid_transition = True
-            
-            # Only update if transition is valid
-            if valid_transition:
-                call_session.status = call_status
-                print(f"✅ Valid transition: Updated status to '{call_status}'")
-            else:
-                print(f"❌ REJECTED: Invalid status transition blocked")
-                # Don't update status, keep current one
+            print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
+            call_session.status = call_status
             
             # Set start time when call becomes in-progress
             if call_status == "in-progress" and not call_session.start_time:
@@ -515,79 +481,55 @@ async def handle_call_events_webhook(
             db.commit()
             print(f"✅ Updated call session {call_session.id} status to: {call_status}")
             
-            # ============================================================================
-            # FALLBACK BROADCAST: Only for statuses NOT handled by specific blocks below
-            # This prevents duplicates while ensuring all statuses are broadcasted
-            # Specific blocks handle: initiated (outbound-api), ringing (outbound-api), 
-            # in-progress, failed, busy, no-answer
-            # ============================================================================
-            # Broadcast for statuses/directions that specific blocks don't cover
-            should_broadcast_here = False
-            
-            # Check if this status will be handled by specific blocks below
-            if call_status == "initiated" and direction == "outbound-api":
-                should_broadcast_here = False  # Handled by specific block (but we commented it out!)
-            elif call_status == "ringing" and direction == "outbound-api":
-                should_broadcast_here = False  # Handled by specific block
-            elif call_status == "in-progress":
-                should_broadcast_here = False  # Handled by specific block
-            elif call_status == "completed":
-                should_broadcast_here = True   # NOT handled by specific blocks
-            elif call_status in ["failed", "busy", "no-answer"]:
-                should_broadcast_here = False  # Handled by specific blocks
-            else:
-                # For any other status or direction combination, broadcast here
-                should_broadcast_here = True
-            
-            if should_broadcast_here:
-                try:
-                    print(f"🚀 [FALLBACK] Broadcasting call status update: {call_status} for session {call_session.id}")
-                    
-                    # Prepare comprehensive metadata
-                    metadata = {
-                        "call_sid": call_sid,
-                        "from_number": from_number,
-                        "to_number": to_number,
-                        "direction": direction,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                        "duration": call_session.duration
-                    }
-                    
-                    # Add status-specific messages
-                    if call_status == "ringing":
-                        metadata["message"] = "Call is ringing"
-                    elif call_status == "in-progress":
-                        metadata["message"] = "Call is now in progress"
-                    elif call_status == "completed":
-                        metadata["message"] = "Call has been completed"
-                    
-                    asyncio.create_task(broadcast_call_status_update(
+            # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
+            try:
+                print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
+                
+                # Prepare comprehensive metadata
+                metadata = {
+                    # "call_sid": call_sid,
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "direction": direction,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                    "duration": call_session.duration
+                }
+                
+                # Add status-specific messages
+                if call_status == "ringing":
+                    metadata["message"] = "Call is ringing"
+                elif call_status == "in-progress":
+                    metadata["message"] = "Call is now in progress"
+                elif call_status == "completed":
+                    metadata["message"] = "Call has been completed"
+                
+                asyncio.create_task(broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status=call_status,
+                    metadata=metadata
+                ))
+                print(f"✅ Queued call status update: {call_status} for session {call_session.id}")
+                
+                # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
+                if call_status == "completed":
+                    asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
-                        status=call_status,
-                        metadata=metadata
+                        reason="Call completed",
+                        final_data={
+                            "call_sid": call_sid,
+                            "duration": call_session.duration,
+                            "end_time": call_session.end_time.isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
                     ))
-                    print(f"✅ Queued fallback call status update: {call_status} for session {call_session.id}")
+                    print(f"✅ Queued call ended event for session {call_session.id}")
                     
-                    # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                    if call_status == "completed":
-                        asyncio.create_task(broadcast_call_ended(
-                            call_session_id=str(call_session.id),
-                            reason="Call completed",
-                            final_data={
-                                "call_sid": call_sid,
-                                "duration": call_session.duration,
-                                "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                                "transcript": call_session.call_transcript or []
-                            }
-                        ))
-                        print(f"✅ Queued call ended event for session {call_session.id}")
-                        
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call status update: {e}")
-                    import traceback
-                    traceback.print_exc()
+            except Exception as e:
+                print(f"❌ Failed to broadcast call status update: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
@@ -721,30 +663,30 @@ async def handle_call_events_webhook(
                     
                 else:
                     # Normal conversation flow - continue listening
-                    response.pause(length=0.1)  # Natural pause for conversation flow
+                    response.pause(length=0.3)  # Natural pause for conversation flow
                     
-                # Continue listening immediately for natural conversation
-                response.gather(
-                    input='speech',
-                    timeout=8,  # Faster timeout for quicker response
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
-                    method='POST'
-                )
+                    # Continue listening immediately for natural conversation
+                    response.gather(
+                        input='speech',
+                        timeout=12,  # Shorter timeout for more natural conversation
+                        speech_timeout='auto',
+                        action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
+                        method='POST'
+                    )
                     
                     # Gentle, natural fallback
-                response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
+                    response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
             else:
                 # Default response for smooth conversation
                 default_voice = get_agent_voice(None)  # Use default voice
                 response.say("Got it!", voice=default_voice)
-                response.pause(length=0.1)
+                response.pause(length=0.3)
                 response.say("What else would you like to talk about?", voice=default_voice)
                 
                 # Continue listening
                 response.gather(
                     input='speech',
-                    timeout=10,
+                    timeout=15,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                     method='POST'
@@ -769,13 +711,13 @@ async def handle_call_events_webhook(
             
             # More natural "didn't catch that" response
             response.say(_get_random_didnt_catch_response(), voice=agent_voice)
-            response.pause(length=0.1)
-            # response.say(_get_random_follow_up_response(), voice=agent_voice)
+            response.pause(length=0.3)
+            response.say(_get_random_follow_up_response(), voice=agent_voice)
             
             # Keep listening with reasonable timeout
             response.gather(
                 input='speech',
-                timeout=10,
+                timeout=15,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                 method='POST'
@@ -783,19 +725,19 @@ async def handle_call_events_webhook(
             
             # Gentle reminder
             response.say("I'm still here. Go ahead when you're ready.", voice=agent_voice)
-            response.pause(length=0.1)
+            response.pause(length=0.3)
             
             # Final attempt with longer timeout
             response.gather(
                 input='speech',
-                timeout=12,
+                timeout=20,
                 speech_timeout='auto',
                 action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
                 method='POST'
             )
             
             # Only hangup after very long silence
-            timeout_message = ""
+            timeout_message = "Hello"
             response.say(timeout_message, voice=agent_voice)
             response.hangup()
             
@@ -843,16 +785,16 @@ async def handle_call_events_webhook(
                 
                 # Also broadcast call ended event (non-blocking - fire and forget)
                 try:
-                    # asyncio.create_task(broadcast_call_ended(
-                    #     call_session_id=str(call_session.id),
-                    #     reason="timeout_no_speech",
-                    #     final_data={
-                    #         "call_sid": call_sid,
-                    #         "duration": call_session.duration,
-                    #         "end_time": call_session.end_time.isoformat(),
-                    #         "transcript": call_session.call_transcript or []
-                    #     }
-                    # ))
+                    asyncio.create_task(broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="timeout_no_speech",
+                        final_data={
+                            "call_sid": call_sid,
+                            "duration": call_session.duration,
+                            "end_time": call_session.end_time.isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
+                    ))
                     print(f"✅ Queued call ended event for session {call_session.id}")
                 except Exception as e:
                     print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
@@ -867,26 +809,22 @@ async def handle_call_events_webhook(
             # Call has been initiated - just log and return empty response
             print(f"Call initiated - SID: {call_sid}")
             
-            # ============================================================================
-            # COMMENTED OUT: Duplicate broadcast - already handled in /call/initiate endpoint
-            # This was causing "initiated" status to be sent 2-3 times
-            # ============================================================================
-            # # Broadcast call initiated event (non-blocking - fire and forget)
-            # if call_session:
-            #     try:
-            #         asyncio.create_task(broadcast_call_status_update(
-            #             call_session_id=str(call_session.id),
-            #             status="initiated",
-            #             metadata={
-            #                 "check":"just checking",
-            #                 "call_sid": call_sid,
-            #                 "direction": direction,
-            #                 "timestamp": datetime.now(timezone.utc).isoformat()
-            #             }
-            #         ))
-            #         print(f"✅ Broadcasted call initiated event for session {call_session.id}")
-            #     except Exception as e:
-            #         print(f"❌ Failed to broadcast call initiated event: {e}")
+            # Broadcast call initiated event (non-blocking - fire and forget)
+            if call_session:
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="initiated",
+                        metadata={
+                            "check":"just checking",
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    print(f"✅ Broadcasted call initiated event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call initiated event: {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
@@ -1017,7 +955,7 @@ async def handle_call_events_webhook(
                 # Use main webhook for conversation flow
                 response.gather(
                     input='speech',
-                    timeout=10,
+                    timeout=15,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
@@ -1025,12 +963,12 @@ async def handle_call_events_webhook(
                 
                 # Gentle fallback if no input
                 response.say(_get_random_didnt_catch_response(), voice=agent_voice)
-                response.pause(length=0.1)
+                response.pause(length=0.5)
                 
                 # Try main webhook again
                 response.gather(
                     input='speech',
-                    timeout=12,
+                    timeout=20,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
@@ -1051,7 +989,7 @@ async def handle_call_events_webhook(
                 # Continue listening without repeating greeting
                 response.gather(
                     input='speech',
-                    timeout=10,
+                    timeout=15,
                     speech_timeout='auto',
                     action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
@@ -1359,26 +1297,21 @@ async def handle_recording_status_webhook(
                     db.commit()
                     print(f"✅ Updated call session {call_session.id} with recording URL")
                     
-                    # ============================================================================
-                    # COMMENTED OUT: Duplicate "completed" broadcast
-                    # Recording webhook fires AFTER call is already completed
-                    # This causes duplicate "completed" status to be sent minutes later
-                    # ============================================================================
-                    # # Broadcast call status update when recording is completed (non-blocking - fire and forget)
-                    # try:
-                    #     asyncio.create_task(broadcast_call_status_update(
-                    #         call_session_id=str(call_session.id),
-                    #         status="completed",
-                    #         metadata={
-                    #             "call_sid": call_sid,
-                    #             "call_duration": recording_duration,
-                    #             "message": "Call completed",
-                    #             "timestamp": datetime.now(timezone.utc).isoformat()
-                    #         }
-                    #     ))
-                    #     print(f"✅ Queued recording completed status update for session {call_session.id}")
-                    # except Exception as e:
-                    #     print(f"⚠️ Failed to queue recording completed status update (non-critical): {e}")
+                    # Broadcast call status update when recording is completed (non-blocking - fire and forget)
+                    try:
+                        asyncio.create_task(broadcast_call_status_update(
+                            call_session_id=str(call_session.id),
+                            status="completed",
+                            metadata={
+                                "call_sid": call_sid,
+                                "call_duration": recording_duration,
+                                "message": "Call completed",
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }
+                        ))
+                        print(f"✅ Queued recording completed status update for session {call_session.id}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to queue recording completed status update (non-critical): {e}")
                 else:
                     print(f"📝 Recording status: {recording_status} - URL not ready yet")
             else:
