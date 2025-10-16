@@ -482,9 +482,22 @@ async def handle_call_events_webhook(
             print(f"✅ Updated call session {call_session.id} status to: {call_status}")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
-            # Skip "in-progress" here - it will be broadcast when user actually answers and we greet them
-            if call_status != "in-progress":
-                try:
+            try:
+                # For "in-progress" status, only broadcast if we haven't already broadcasted it
+                should_broadcast = True
+                if call_status == "in-progress":
+                    conversation_state = _get_conversation_state(call_session)
+                    already_broadcasted = conversation_state.get("in_progress_broadcasted", False)
+                    if already_broadcasted:
+                        print(f"⏭️ Skipping duplicate in-progress broadcast for session {call_session.id}")
+                        should_broadcast = False
+                    else:
+                        # Mark as broadcasted to prevent duplicates
+                        _update_conversation_state(call_session, "in_progress_broadcasted", True)
+                        db.commit()
+                        print(f"✅ First time broadcasting in-progress for session {call_session.id}")
+                
+                if should_broadcast:
                     print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
                     
                     # Prepare comprehensive metadata
@@ -502,6 +515,8 @@ async def handle_call_events_webhook(
                     # Add status-specific messages
                     if call_status == "ringing":
                         metadata["message"] = "Call is ringing"
+                    elif call_status == "in-progress":
+                        metadata["message"] = "Call connected - user answered"
                     elif call_status == "completed":
                         metadata["message"] = "Call has been completed"
                     
@@ -526,10 +541,10 @@ async def handle_call_events_webhook(
                         ))
                         print(f"✅ Queued call ended event for session {call_session.id}")
                         
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call status update: {e}")
-                    import traceback
-                    traceback.print_exc()
+            except Exception as e:
+                print(f"❌ Failed to broadcast call status update: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
@@ -888,22 +903,6 @@ async def handle_call_events_webhook(
             # Only greet if we haven't greeted yet
             if not has_greeted:
                 print("🎤 FIRST TIME GREETING - Playing welcome message")
-                
-                # Broadcast call in-progress event ONLY when user actually answers and we're greeting
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "message": "User answered - call connected",
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Broadcasted call in-progress event (user answered) for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call in-progress event: {e}")
                 
                 # Mark as greeted
                 _update_conversation_state(call_session, "has_greeted", True)
