@@ -443,25 +443,13 @@ async def handle_call_events_webhook(
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
-            print(f"🔄 Received status from Twilio: {call_status}")
+            print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
+            call_session.status = call_status
             
-            # Only update to "in-progress" if call is truly answered
-            # We'll set it to "in-progress" later when greeting is played (actual answer detection)
-            if call_status == "in-progress":
-                print(f"⏳ Skipping auto-update to 'in-progress' - will update when call is truly answered")
-                # Don't update status yet - keep it at current status (likely "ringing")
-                # The status will be updated to "in-progress" when greeting is sent
-                pass
-            else:
-                # For other statuses (ringing, completed, etc.), update normally
-                print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
-                call_session.status = call_status
-            
-            # Set start time when call becomes in-progress (will happen later when truly answered)
+            # Set start time when call becomes in-progress
             if call_status == "in-progress" and not call_session.start_time:
-                # Don't set start time yet - will be set when greeting is played
-                print(f"⏳ Will set start time when call is truly answered")
-                pass
+                call_session.start_time = datetime.now(timezone.utc)
+                print(f"⏰ Set start time for session {call_session.id}")
             
             # Set end time and calculate duration when call completes
             if call_status == "completed":
@@ -491,42 +479,57 @@ async def handle_call_events_webhook(
             
             # Commit the status update
             db.commit()
-            print(f"✅ Updated call session {call_session.id} status to: {call_session.status}")
+            print(f"✅ Updated call session {call_session.id} status to: {call_status}")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
-            # Skip broadcasting "in-progress" from Twilio webhook - we'll broadcast it when truly answered
-            if call_status != "in-progress":
-                try:
-                    print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
-                    
-                    # Prepare comprehensive metadata
-                    metadata = {
-                        # "call_sid": call_sid,
-                        "from_number": from_number,
-                        "to_number": to_number,
-                        "direction": direction,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                        "duration": call_session.duration
-                    }
-                    
-                    # Add status-specific messages
-                    if call_status == "ringing":
-                        metadata["message"] = "Call is ringing"
-                    elif call_status == "completed":
-                        metadata["message"] = "Call has been completed"
-                    
-                    asyncio.create_task(broadcast_call_status_update(
+            try:
+                print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
+                
+                # Prepare comprehensive metadata
+                metadata = {
+                    # "call_sid": call_sid,
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "direction": direction,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                    "duration": call_session.duration
+                }
+                
+                # Add status-specific messages
+                if call_status == "ringing":
+                    metadata["message"] = "Call is ringing"
+                elif call_status == "in-progress":
+                    metadata["message"] = "Call is now in progress"
+                elif call_status == "completed":
+                    metadata["message"] = "Call has been completed"
+                
+                asyncio.create_task(broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status=call_status,
+                    metadata=metadata
+                ))
+                print(f"✅ Queued call status update: {call_status} for session {call_session.id}")
+                
+                # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
+                if call_status == "completed":
+                    asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
-                        status=call_status,
-                        metadata=metadata
+                        reason="Call completed",
+                        final_data={
+                            "call_sid": call_sid,
+                            "duration": call_session.duration,
+                            "end_time": call_session.end_time.isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
                     ))
-                    print(f"✅ Queued call status update: {call_status} for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast status update: {e}")
-            else:
-                print(f"⏳ Skipping broadcast for 'in-progress' from Twilio - will broadcast when truly answered")
+                    print(f"✅ Queued call ended event for session {call_session.id}")
+                    
+            except Exception as e:
+                print(f"❌ Failed to broadcast call status update: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
@@ -535,31 +538,8 @@ async def handle_call_events_webhook(
         
         # Agent already fetched above using callSessionId - no need to fetch again
         
-        # Check if this is the first "in-progress" event (call just answered)
-        # If so, skip speech handling and go to greeting section below
-        if call_status == "in-progress" and call_session:
-            conversation_state = _get_conversation_state(call_session)
-            has_greeted = conversation_state.get("has_greeted", False)
-            
-            if not has_greeted:
-                # This is the first time call is answered - skip speech handling
-                # and let it fall through to the greeting section below (line 803+)
-                print(f"🔄 First-time in-progress detected - skipping speech handler, will greet below")
-                pass  # Continue to line 803+ for greeting
-            else:
-                # Already greeted, handle speech normally
-                pass  # Continue with speech handling below
-        
         # Handle speech input - ROBUST MULTI-TENANT LOGGING
-        # BUT: Skip if this is first-time answer (will be handled by greeting section below)
-        should_skip_speech_handling = False
-        if call_status == "in-progress" and call_session:
-            conversation_state = _get_conversation_state(call_session)
-            has_greeted = conversation_state.get("has_greeted", False)
-            if not has_greeted:
-                should_skip_speech_handling = True
-        
-        if not should_skip_speech_handling and speech_result and speech_result.strip():
+        if speech_result and speech_result.strip():
             # VALID SPEECH DETECTED - LOG AND RESPOND
             print("=" * 60)
             print(f"🎤 SPEECH DETECTED: '{speech_result}'")
@@ -717,7 +697,7 @@ async def handle_call_events_webhook(
             print(f"📝 Speech response generated: {str(response)[:200]}...")
             return HTMLResponse(str(response), media_type="application/xml")
         
-        elif not should_skip_speech_handling and (speech_result == "" or speech_result is None):
+        elif speech_result == "" or speech_result is None:
             # NO SPEECH DETECTED - KEEP LISTENING, DON'T TERMINATE
             print("=" * 60)
             print(f"🔇 NO SPEECH DETECTED - KEEPING CALL ALIVE")
@@ -823,10 +803,7 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
         
         # Handle different call statuses and trigger agent logic
-        print("=" * 80)
-        print(f"📋 Processing call status: '{call_status}' with direction: '{direction}'")
-        print(f"📋 Speech handling was skipped: {should_skip_speech_handling if 'should_skip_speech_handling' in locals() else 'N/A'}")
-        print("=" * 80)
+        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "initiated" and direction == "outbound-api":
             # Call has been initiated - just log and return empty response
@@ -879,12 +856,24 @@ async def handle_call_events_webhook(
         elif call_status == "in-progress":
             # Call is in progress - person answered, check if we already greeted
             print("=" * 50)
-            print(f"📞 CALL IN PROGRESS (Twilio webhook) - SID: {call_sid}")
-            print("⏳ Waiting to detect true answer (greeting) before broadcasting in-progress status")
+            print(f"📞 CALL IN PROGRESS - SID: {call_sid}")
             print("=" * 50)
             
-            # DON'T broadcast in-progress here - we'll broadcast it when greeting is sent (truly answered)
-            # This prevents false "in-progress" status before call is actually picked up
+            # Broadcast call in-progress event (non-blocking - fire and forget)
+            if call_session:
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    print(f"✅ Broadcasted call in-progress event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call in-progress event: {e}")
             
             # Get call session to check conversation state
             call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
@@ -895,9 +884,6 @@ async def handle_call_events_webhook(
             # Check if we already greeted this call
             conversation_state = _get_conversation_state(call_session)
             has_greeted = conversation_state.get("has_greeted", False)
-            
-            print(f"🔍 Conversation State: {conversation_state}")
-            print(f"🔍 Has Greeted: {has_greeted}")
             
             # Get agent info
             agent = None
@@ -917,25 +903,12 @@ async def handle_call_events_webhook(
             
             # Only greet if we haven't greeted yet
             if not has_greeted:
-                print("=" * 80)
                 print("🎤 FIRST TIME GREETING - Playing welcome message")
-                print("✅ CALL TRULY ANSWERED - Setting status to in-progress")
-                print(f"📞 Call Session ID: {call_session.id}")
-                print(f"📞 Call SID: {call_sid}")
-                print("=" * 80)
                 
                 # Mark as greeted
                 _update_conversation_state(call_session, "has_greeted", True)
                 _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
-                
-                # NOW set the status to in-progress and start time (call is truly answered)
-                call_session.status = "in-progress"
-                if not call_session.start_time:
-                    call_session.start_time = datetime.now(timezone.utc)
-                    print(f"⏰ Set start time for truly answered call: {call_session.id}")
-                
                 db.commit()
-                print(f"✅ Database updated: status={call_session.status}, start_time={call_session.start_time}")
                 
                 # Natural, conversational greeting with agent-specific voice
                 response = VoiceResponse()
@@ -978,44 +951,6 @@ async def handle_call_events_webhook(
                     )
                 except Exception as e:
                     print(f"⚠️ Error logging call answered event: {e}")
-                
-                # NOW broadcast "in-progress" status (call is truly answered)
-                try:
-                    from_number = call_session.from_number or ""
-                    to_number = call_session.to_number or ""
-                    direction = call_session.call_type or "outbound"
-                    
-                    print(f"🚀 BROADCASTING IN-PROGRESS STATUS NOW...")
-                    print(f"📡 Session ID: {call_session.id}")
-                    print(f"📡 Status: in-progress")
-                    print(f"📡 From: {from_number}, To: {to_number}")
-                    
-                    # Create the broadcast metadata
-                    broadcast_metadata = {
-                        "call_sid": call_sid,
-                        "from_number": from_number,
-                        "to_number": to_number,
-                        "direction": direction,
-                        "message": "Call is now in progress (answered)",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None
-                    }
-                    
-                    print(f"📡 Metadata: {broadcast_metadata}")
-                    
-                    # Await the broadcast directly to ensure it executes
-                    await broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="in-progress",
-                        metadata=broadcast_metadata
-                    )
-                    
-                    print(f"✅✅✅ SUCCESSFULLY BROADCASTED TRUE in-progress status for answered call: {call_session.id}")
-                    print("=" * 80)
-                except Exception as e:
-                    print(f"❌❌❌ FAILED to broadcast in-progress status: {e}")
-                    import traceback
-                    traceback.print_exc()
                 
                 # Use main webhook for conversation flow
                 response.gather(
