@@ -516,59 +516,78 @@ async def handle_call_events_webhook(
             print(f"✅ Updated call session {call_session.id} status to: {call_status}")
             
             # ============================================================================
-            # COMMENTED OUT: This section was causing DUPLICATE broadcasts
-            # The status-specific blocks below (initiated, ringing, in-progress, etc.) 
-            # already handle broadcasting. This was causing 2-3x duplicate messages.
+            # FALLBACK BROADCAST: Only for statuses NOT handled by specific blocks below
+            # This prevents duplicates while ensuring all statuses are broadcasted
+            # Specific blocks handle: initiated (outbound-api), ringing (outbound-api), 
+            # in-progress, failed, busy, no-answer
             # ============================================================================
-            # # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
-            # try:
-            #     print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
-            #     
-            #     # Prepare comprehensive metadata
-            #     metadata = {
-            #         # "call_sid": call_sid,
-            #         "from_number": from_number,
-            #         "to_number": to_number,
-            #         "direction": direction,
-            #         "timestamp": datetime.now(timezone.utc).isoformat(),
-            #         "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-            #         "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-            #         "duration": call_session.duration
-            #     }
-            #     
-            #     # Add status-specific messages
-            #     if call_status == "ringing":
-            #         metadata["message"] = "Call is ringing"
-            #     elif call_status == "in-progress":
-            #         metadata["message"] = "Call is now in progress"
-            #     elif call_status == "completed":
-            #         metadata["message"] = "Call has been completed"
-            #     
-            #     asyncio.create_task(broadcast_call_status_update(
-            #         call_session_id=str(call_session.id),
-            #         status=call_status,
-            #         metadata=metadata
-            #     ))
-            #     print(f"✅ Queued call status update: {call_status} for session {call_session.id}")
-            #     
-            #     # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-            #     if call_status == "completed":
-            #         asyncio.create_task(broadcast_call_ended(
-            #             call_session_id=str(call_session.id),
-            #             reason="Call completed",
-            #             final_data={
-            #                 "call_sid": call_sid,
-            #                 "duration": call_session.duration,
-            #                 "end_time": call_session.end_time.isoformat(),
-            #                 "transcript": call_session.call_transcript or []
-            #             }
-            #         ))
-            #         print(f"✅ Queued call ended event for session {call_session.id}")
-            #         
-            # except Exception as e:
-            #     print(f"❌ Failed to broadcast call status update: {e}")
-            #     import traceback
-            #     traceback.print_exc()
+            # Broadcast for statuses/directions that specific blocks don't cover
+            should_broadcast_here = False
+            
+            # Check if this status will be handled by specific blocks below
+            if call_status == "initiated" and direction == "outbound-api":
+                should_broadcast_here = False  # Handled by specific block (but we commented it out!)
+            elif call_status == "ringing" and direction == "outbound-api":
+                should_broadcast_here = False  # Handled by specific block
+            elif call_status == "in-progress":
+                should_broadcast_here = False  # Handled by specific block
+            elif call_status == "completed":
+                should_broadcast_here = True   # NOT handled by specific blocks
+            elif call_status in ["failed", "busy", "no-answer"]:
+                should_broadcast_here = False  # Handled by specific blocks
+            else:
+                # For any other status or direction combination, broadcast here
+                should_broadcast_here = True
+            
+            if should_broadcast_here:
+                try:
+                    print(f"🚀 [FALLBACK] Broadcasting call status update: {call_status} for session {call_session.id}")
+                    
+                    # Prepare comprehensive metadata
+                    metadata = {
+                        "call_sid": call_sid,
+                        "from_number": from_number,
+                        "to_number": to_number,
+                        "direction": direction,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                        "duration": call_session.duration
+                    }
+                    
+                    # Add status-specific messages
+                    if call_status == "ringing":
+                        metadata["message"] = "Call is ringing"
+                    elif call_status == "in-progress":
+                        metadata["message"] = "Call is now in progress"
+                    elif call_status == "completed":
+                        metadata["message"] = "Call has been completed"
+                    
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status=call_status,
+                        metadata=metadata
+                    ))
+                    print(f"✅ Queued fallback call status update: {call_status} for session {call_session.id}")
+                    
+                    # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
+                    if call_status == "completed":
+                        asyncio.create_task(broadcast_call_ended(
+                            call_session_id=str(call_session.id),
+                            reason="Call completed",
+                            final_data={
+                                "call_sid": call_sid,
+                                "duration": call_session.duration,
+                                "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                                "transcript": call_session.call_transcript or []
+                            }
+                        ))
+                        print(f"✅ Queued call ended event for session {call_session.id}")
+                        
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call status update: {e}")
+                    import traceback
+                    traceback.print_exc()
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
