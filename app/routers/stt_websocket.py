@@ -4,6 +4,7 @@ This replaces Twilio's built-in transcription with Google Cloud Speech-to-Text
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio

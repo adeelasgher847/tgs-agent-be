@@ -21,16 +21,22 @@ class GoogleSTTService:
         # Set credentials from environment variable
         # Support both file path and JSON content string
         if settings.GOOGLE_APPLICATION_CREDENTIALS:
-            creds = settings.GOOGLE_APPLICATION_CREDENTIALS
+            creds = settings.GOOGLE_APPLICATION_CREDENTIALS.strip()
             
-            # Check if it's JSON content (starts with { or looks like JSON)
-            if creds.strip().startswith('{'):
+            # Check if it's JSON content (more robust check)
+            is_json = False
+            try:
+                # Try to parse as JSON
+                json.loads(creds)
+                is_json = True
+            except (json.JSONDecodeError, ValueError):
+                # Not JSON, treat as file path
+                is_json = False
+            
+            if is_json:
                 # It's JSON content - write to temporary file
                 import tempfile
                 try:
-                    # Parse to validate JSON
-                    json.loads(creds)
-                    
                     # Create temporary file
                     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
                         f.write(creds)
@@ -38,12 +44,15 @@ class GoogleSTTService:
                     
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
                     print(f"✅ Using Google Cloud credentials from JSON content (temp file: {temp_path})")
-                except json.JSONDecodeError as e:
-                    print(f"⚠️ Invalid JSON in GOOGLE_APPLICATION_CREDENTIALS: {e}")
+                except Exception as e:
+                    print(f"⚠️ Error creating temp file for JSON credentials: {e}")
             else:
-                # It's a file path
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
-                print(f"✅ Using Google Cloud credentials from file: {creds}")
+                # It's a file path - check if file exists
+                if os.path.exists(creds):
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
+                    print(f"✅ Using Google Cloud credentials from file: {creds}")
+                else:
+                    print(f"⚠️ Credentials file not found: {creds}")
         
         self.client = None
         self._initialize_client()
