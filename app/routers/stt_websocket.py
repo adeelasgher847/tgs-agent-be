@@ -3,8 +3,7 @@ WebSocket endpoint for handling Twilio Media Streams with Google Cloud STT
 This replaces Twilio's built-in transcription with Google Cloud Speech-to-Text
 """
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Depends
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 import json
 import base64
 import asyncio
@@ -12,7 +11,6 @@ from typing import Optional, Dict
 from datetime import datetime, timezone
 import uuid
 
-from app.api.deps import get_db
 from app.services.google_stt_service import google_stt_service
 from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
@@ -315,15 +313,19 @@ class TwilioMediaStreamHandler:
 async def media_stream_websocket(
     websocket: WebSocket,
     callSessionId: str = Query(...),
-    agentId: str = Query(...),
-    db: Session = Depends(get_db)
+    agentId: str = Query(...)
 ):
     """
     WebSocket endpoint for Twilio Media Streams
     Receives real-time audio from Twilio and transcribes using Google Cloud STT
     """
+    # Accept connection FIRST (before any DB operations to avoid 403)
     await websocket.accept()
     print(f"✅ WebSocket connection accepted for call session {callSessionId}")
+    
+    # Get database session manually (after accepting connection)
+    from app.db.session import SessionLocal
+    db = SessionLocal()
     
     # Create handler
     handler = TwilioMediaStreamHandler(
@@ -375,5 +377,7 @@ async def media_stream_websocket(
         traceback.print_exc()
     
     finally:
+        # Close database session
+        db.close()
         print(f"🔚 WebSocket connection closed for call session {callSessionId}")
 

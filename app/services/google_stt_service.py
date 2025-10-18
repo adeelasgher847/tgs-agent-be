@@ -19,8 +19,31 @@ class GoogleSTTService:
     def __init__(self):
         """Initialize Google Speech-to-Text client"""
         # Set credentials from environment variable
+        # Support both file path and JSON content string
         if settings.GOOGLE_APPLICATION_CREDENTIALS:
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.GOOGLE_APPLICATION_CREDENTIALS
+            creds = settings.GOOGLE_APPLICATION_CREDENTIALS
+            
+            # Check if it's JSON content (starts with { or looks like JSON)
+            if creds.strip().startswith('{'):
+                # It's JSON content - write to temporary file
+                import tempfile
+                try:
+                    # Parse to validate JSON
+                    json.loads(creds)
+                    
+                    # Create temporary file
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+                        f.write(creds)
+                        temp_path = f.name
+                    
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
+                    print(f"✅ Using Google Cloud credentials from JSON content (temp file: {temp_path})")
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ Invalid JSON in GOOGLE_APPLICATION_CREDENTIALS: {e}")
+            else:
+                # It's a file path
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
+                print(f"✅ Using Google Cloud credentials from file: {creds}")
         
         self.client = None
         self._initialize_client()
