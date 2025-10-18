@@ -73,7 +73,8 @@ class GoogleSTTService:
         encoding: str = None,
         enable_automatic_punctuation: bool = True,
         model: str = "phone_call",
-        use_enhanced: bool = True
+        use_enhanced: bool = True,
+        interim_results: bool = False
     ) -> types.StreamingRecognitionConfig:
         """
         Create streaming recognition configuration
@@ -107,7 +108,7 @@ class GoogleSTTService:
         encoding_str = encoding or settings.GOOGLE_STT_ENCODING
         audio_encoding = encoding_map.get(encoding_str, speech.RecognitionConfig.AudioEncoding.MULAW)
         
-        # Create recognition config
+        # Create recognition config (Vapi-style for phone calls)
         config = speech.RecognitionConfig(
             encoding=audio_encoding,
             sample_rate_hertz=sample_rate,
@@ -115,13 +116,25 @@ class GoogleSTTService:
             enable_automatic_punctuation=enable_automatic_punctuation,
             model=model,
             use_enhanced=use_enhanced,
+            # Add speech contexts for better phone call recognition
+            speech_contexts=[
+                speech.SpeechContext(
+                    phrases=[
+                        "hello", "hi", "hey",
+                        "help", "assistance", "support",
+                        "yes", "no", "okay", "sure",
+                        "thank you", "thanks", "goodbye"
+                    ],
+                    boost=10.0
+                )
+            ],
         )
         
-        # Create streaming config
+        # Create streaming config optimized for phone calls (Vapi-style)
         streaming_config = types.StreamingRecognitionConfig(
             config=config,
-            interim_results=True,  # Get interim results for real-time feedback
-            single_utterance=False,  # Don't end stream after first utterance
+            interim_results=interim_results,  # Configurable interim results
+            single_utterance=True,  # End stream after utterance (better for turn-based conversation)
         )
         
         return streaming_config
@@ -212,17 +225,41 @@ class GoogleSTTService:
             if on_error:
                 await on_error(str(e))
     
-    def transcribe_audio_chunk(
+    def create_streaming_request_generator(self, audio_queue):
+        """
+        Create a generator for streaming requests (Vapi-style)
+        
+        Args:
+            audio_queue: Queue of audio chunks
+            
+        Yields:
+            StreamingRecognizeRequest objects
+        """
+        # First request with config
+        streaming_config = self.get_streaming_config()
+        yield speech.StreamingRecognizeRequest(streaming_config=streaming_config)
+        
+        # Subsequent requests with audio
+        while True:
+            try:
+                chunk = audio_queue.get_nowait()
+                if chunk is None:  # Sentinel to stop
+                    break
+                yield speech.StreamingRecognizeRequest(audio_content=chunk)
+            except:
+                break
+    
+    def transcribe_audio_chunk_streaming(
         self,
         audio_content: bytes,
         language_code: str = None
     ) -> Dict[str, Any]:
         """
-        Transcribe a single audio chunk (non-streaming)
-        Used as fallback or for short audio
+        Transcribe audio using streaming API (Vapi-style approach)
+        Better for phone calls - provides real-time results
         
         Args:
-            audio_content: Raw audio bytes
+            audio_content: Raw audio bytes (MULAW format)
             language_code: Language code for transcription
         
         Returns:
@@ -232,12 +269,10 @@ class GoogleSTTService:
             return {"error": "Google Speech client not initialized", "transcript": "", "confidence": 0.0}
         
         try:
+            import sys
             language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
             
-            # Create audio object
-            audio = speech.RecognitionAudio(content=audio_content)
-            
-            # Create config
+            # Create streaming config optimized for phone calls
             encoding_map = {
                 "MULAW": speech.RecognitionConfig.AudioEncoding.MULAW,
                 "LINEAR16": speech.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -252,28 +287,88 @@ class GoogleSTTService:
                 sample_rate_hertz=settings.GOOGLE_STT_SAMPLE_RATE,
                 language_code=language_code,
                 enable_automatic_punctuation=True,
-                model="phone_call",
-                use_enhanced=True,
+                model="phone_call",  # Phone call optimized model (Vapi uses this)
+                use_enhanced=True,   # Enhanced model for better accuracy
+                # Vapi-style optimization for phone calls
+                enable_word_time_offsets=False,
+                enable_word_confidence=False,
+                # Add common phrases for better recognition
+                speech_contexts=[
+                    speech.SpeechContext(
+                        phrases=[
+                            "hello", "hi", "hey",
+                            "help", "assistance", "support",
+                            "yes", "no", "okay", "sure",
+                            "thank you", "thanks", "goodbye"
+                        ],
+                        boost=10.0  # Boost recognition of common phone words
+                    )
+                ],
             )
             
-            # Perform recognition
-            response = self.client.recognize(config=config, audio=audio)
+            streaming_config = speech.StreamingRecognitionConfig(
+                config=config,
+                interim_results=False,  # Only final results for stability
+                single_utterance=True,  # One utterance per request
+            )
             
-            # Extract results
-            if response.results:
-                result = response.results[0]
-                if result.alternatives:
+            # Create request generator
+            def request_generator():
+                # First request with config
+                yield speech.StreamingRecognizeRequest(streaming_config=streaming_config)
+                # Second request with audio
+                yield speech.StreamingRecognizeRequest(audio_content=audio_content)
+            
+            # Perform streaming recognition
+            print(f"🔊 Starting streaming recognition with {len(audio_content)} bytes...")
+            sys.stdout.flush()
+            
+            responses = self.client.streaming_recognize(request_generator())
+            
+            # Process responses
+            response_count = 0
+            for response in responses:
+                response_count += 1
+                print(f"📡 Received response #{response_count} from STT")
+                sys.stdout.flush()
+                
+                if not response.results:
+                    print(f"⚠️ Response has no results")
+                    sys.stdout.flush()
+                    continue
+                
+                # Get results
+                for result in response.results:
+                    print(f"📊 Result is_final={result.is_final}, alternatives={len(result.alternatives)}")
+                    sys.stdout.flush()
+                    
+                    if not result.alternatives:
+                        continue
+                    
+                    # Get top alternative
                     alternative = result.alternatives[0]
-                    return {
-                        "transcript": alternative.transcript,
-                        "confidence": alternative.confidence,
-                        "is_final": True
-                    }
+                    transcript_text = alternative.transcript if hasattr(alternative, 'transcript') else ""
+                    
+                    print(f"📝 Transcript from STT: '{transcript_text}'")
+                    sys.stdout.flush()
+                    
+                    if transcript_text:
+                        return {
+                            "transcript": transcript_text,
+                            "confidence": alternative.confidence if hasattr(alternative, 'confidence') else 0.9,
+                            "is_final": result.is_final
+                        }
             
+            # No transcript found
+            print(f"⚠️ No transcript after {response_count} responses")
+            sys.stdout.flush()
             return {"transcript": "", "confidence": 0.0, "is_final": True}
         
         except Exception as e:
-            print(f"❌ Error transcribing audio chunk: {e}")
+            print(f"❌ Error in streaming transcription: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
             return {"error": str(e), "transcript": "", "confidence": 0.0}
 
 

@@ -45,10 +45,11 @@ class TwilioMediaStreamHandler:
         self.current_speech = ""
         self.speech_active = False
         self.silence_counter = 0
+        # Vapi-style fast response: 1-1.5 second silence detection
         # Twilio sends ~50 packets per second (20ms each)
-        # 2.5 seconds = ~125 packets, but we process in batches
-        # So ~12-15 empty batches = 2.5 seconds of silence
-        self.silence_threshold = 12  # ~2.5 seconds of silence to finalize speech
+        # We process in batches of 5, so ~10 batches per second
+        # 6-8 empty batches = ~0.8-1.2 seconds of silence (Vapi-like speed)
+        self.silence_threshold = 7  # ~1 second silence (Vapi-style fast response)
         
         # Inactivity timeout - end call if no speech for 15 seconds
         self.last_activity_time = None
@@ -99,9 +100,9 @@ class TwilioMediaStreamHandler:
             else:
                 self.silence_counter += 1
             
-            # Process buffer when it reaches a certain size (adjust for latency vs accuracy)
+            # Vapi-style fast processing: Small buffer for instant responses
             # Smaller = faster response, Larger = better accuracy
-            buffer_size_threshold = 5  # Process every 5 chunks (~100ms)
+            buffer_size_threshold = 3  # Process every 3 chunks (~60ms) - Vapi-like speed
             
             if len(self.audio_buffer) >= buffer_size_threshold:
                 # Force flush logs immediately
@@ -138,8 +139,9 @@ class TwilioMediaStreamHandler:
             print(f"🎵 Combined {len(combined_audio)} bytes of audio")
             sys.stdout.flush()
             
-            # Skip if audio is too short
-            if len(combined_audio) < 100:
+            # Vapi-style: Process smaller chunks for faster response
+            # Skip only if extremely short (less than 50 bytes)
+            if len(combined_audio) < 50:
                 print(f"⚠️ Skipping - audio too short: {len(combined_audio)} bytes")
                 sys.stdout.flush()
                 return
@@ -158,19 +160,19 @@ class TwilioMediaStreamHandler:
                 }
                 language_code = language_map.get(self.agent.language, "en-US")
             
-            # Transcribe audio chunk
+            # Transcribe audio chunk using STREAMING API (Vapi-style)
             import sys
             from datetime import datetime, timezone
             
-            print(f"🎙️ Sending {len(combined_audio)} bytes to Google Cloud STT...")
+            print(f"🎙️ Sending {len(combined_audio)} bytes to Google Cloud STT (streaming API)...")
             sys.stdout.flush()
             
-            result = google_stt_service.transcribe_audio_chunk(
+            result = google_stt_service.transcribe_audio_chunk_streaming(
                 audio_content=combined_audio,
                 language_code=language_code
             )
             
-            print(f"📝 STT Result: {result}")
+            print(f"📝 STT Result (streaming): {result}")
             sys.stdout.flush()
             
             if result.get("transcript"):
@@ -238,7 +240,7 @@ class TwilioMediaStreamHandler:
             traceback.print_exc()
     
     async def finalize_speech(self):
-        """Finalize accumulated speech and trigger response generation"""
+        """Finalize accumulated speech and trigger response generation (Vapi-style speed)"""
         if not self.current_speech.strip():
             self.speech_active = False
             self.current_speech = ""
@@ -246,6 +248,10 @@ class TwilioMediaStreamHandler:
         
         try:
             import sys
+            import time
+            
+            # Start total response timer (Vapi-style metrics)
+            total_start_time = time.time()
             
             final_transcript = self.current_speech.strip()
             print(f"✅ Final speech detected: '{final_transcript}'")
@@ -280,7 +286,10 @@ class TwilioMediaStreamHandler:
                     }
                 )
                 
-                # Generate agent response
+                # Generate agent response (Vapi-style: fast LLM call)
+                import time
+                start_time = time.time()
+                
                 response_text = await VoiceLoggingService.generate_agent_response(
                     speech_text=final_transcript,
                     confidence=0.9,
@@ -289,12 +298,18 @@ class TwilioMediaStreamHandler:
                     call_session_id=self.call_session.id
                 )
                 
+                llm_time = time.time() - start_time
+                print(f"⚡ LLM response generated in {llm_time:.2f}s (Vapi-style)")
+                sys.stdout.flush()
+                
                 # Add agent response to transcript
+                transcript_start = time.time()
                 await self._add_to_transcript(
                     role="agent",
                     message=response_text,
                     message_type="agent_response"
                 )
+                transcript_time = time.time() - transcript_start
                 
                 # Send response back to Twilio via API call to update TwiML
                 # Twilio Media Streams is one-way, so we need to interrupt the call with new TwiML
@@ -306,24 +321,42 @@ class TwilioMediaStreamHandler:
                 self.call_session.call_metadata["pending_response"] = response_text
                 self.db.commit()
                 
-                # Trigger a TwiML update by redirecting the call
-                # This will interrupt the current stream and play the response
+                # Trigger a TwiML update by redirecting the call (Vapi-style instant)
+                # This will interrupt the current stream and play the response immediately
                 try:
                     if self.call_sid:
-                        # Add a small delay to ensure call is ready for redirect
-                        await asyncio.sleep(0.5)
-                        
+                        # Vapi-style: Immediate redirect, no delay
                         redirect_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
                         redirect_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}"
                         
-                        # Try to redirect the call
+                        redirect_start = time.time()
+                        
+                        # Try to redirect the call immediately
                         success = twilio_service.redirect_call(self.call_sid, redirect_url)
+                        
+                        redirect_time = time.time() - redirect_start
+                        
                         if success:
-                            print(f"✅ Successfully triggered TwiML redirect for call {self.call_sid}")
+                            print(f"✅ TwiML redirect triggered in {redirect_time:.2f}s")
+                            sys.stdout.flush()
+                            
+                            # Calculate total response time (Vapi-style metrics)
+                            total_time = time.time() - total_start_time
+                            print("=" * 80)
+                            print(f"⚡ VAPI-STYLE PERFORMANCE METRICS:")
+                            print(f"   📊 LLM Generation: {llm_time:.2f}s")
+                            print(f"   📊 Transcript Save: {transcript_time:.3f}s")
+                            print(f"   📊 TwiML Redirect: {redirect_time:.3f}s")
+                            print(f"   🎯 TOTAL RESPONSE TIME: {total_time:.2f}s")
+                            print(f"   (Vapi target: ~1-2s)")
+                            print("=" * 80)
+                            sys.stdout.flush()
                         else:
-                            print(f"⚠️ Call redirect returned false - call may have ended")
+                            print(f"⚠️ Call redirect failed - call may have ended")
+                            sys.stdout.flush()
                 except Exception as e:
                     print(f"⚠️ Failed to trigger TwiML redirect: {e}")
+                    sys.stdout.flush()
                     # Non-critical - the call will redirect on its own after the pause timeout
         
         except Exception as e:

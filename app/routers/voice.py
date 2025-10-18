@@ -681,6 +681,7 @@ async def handle_call_events_webhook(
             # Only greet if we haven't greeted yet
             if not has_greeted:
                 print("🎤 FIRST TIME GREETING - Playing welcome message and starting media stream")
+                print("⏱️ Adding 2 second delay before greeting (Vapi-style)")
                 
                 # Mark as greeted
                 _update_conversation_state(call_session, "has_greeted", True)
@@ -690,6 +691,10 @@ async def handle_call_events_webhook(
                 # Natural, conversational greeting with agent-specific voice
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
+                
+                # Add 2 second pause before greeting (prevents early audio capture)
+                # This ensures call is fully connected before we start listening
+                response.pause(length=2)
                 
                 # Professional, concise greeting
                 response.say(f"Hello! This is {agent_name}. How can I help you today?", voice=agent_voice)
@@ -730,11 +735,12 @@ async def handle_call_events_webhook(
                     print(f"⚠️ Error logging call answered event: {e}")
                 
                 # Start media streaming for Google Cloud STT
+                # Use inbound_track to capture only user's voice (not agent's)
                 add_media_stream_to_response(
                     response,
                     agent_id=str(agentId),
                     call_session_id=str(call_session.id),
-                    track="inbound_track"  # Only stream user's audio
+                    track="inbound_track"  # Only stream user audio (Vapi-style)
                 )
                 
                 # Add a pause to keep the call alive while streaming
@@ -785,12 +791,12 @@ async def handle_call_events_webhook(
                         print(f"🛑 Goodbye response - ending call")
                         return HTMLResponse(str(response), media_type="application/xml")
                 
-                # Continue streaming
+                # Continue streaming (only user audio)
                 add_media_stream_to_response(
                     response,
                     agent_id=str(agentId),
                     call_session_id=str(call_session.id),
-                    track="inbound_track"
+                    track="inbound_track"  # Only stream user audio (Vapi-style)
                 )
                 
                 # Keep call alive for continued streaming
