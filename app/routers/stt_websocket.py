@@ -45,7 +45,10 @@ class TwilioMediaStreamHandler:
         self.current_speech = ""
         self.speech_active = False
         self.silence_counter = 0
-        self.silence_threshold = 20  # Number of empty chunks before considering speech ended
+        # Twilio sends ~50 packets per second (20ms each)
+        # 2.5 seconds = ~125 packets, but we process in batches
+        # So ~12-15 empty batches = 2.5 seconds of silence
+        self.silence_threshold = 12  # ~2.5 seconds of silence to finalize speech
         
         # Get call session and agent
         self.call_session = None
@@ -92,7 +95,8 @@ class TwilioMediaStreamHandler:
                 self.silence_counter += 1
             
             # Process buffer when it reaches a certain size (adjust for latency vs accuracy)
-            buffer_size_threshold = 10  # Process every 10 chunks
+            # Smaller = faster response, Larger = better accuracy
+            buffer_size_threshold = 5  # Process every 5 chunks (~100ms)
             
             if len(self.audio_buffer) >= buffer_size_threshold:
                 await self.process_audio_buffer()
@@ -227,11 +231,18 @@ class TwilioMediaStreamHandler:
                 # This will interrupt the current stream and play the response
                 try:
                     if self.call_sid:
+                        # Add a small delay to ensure call is ready for redirect
+                        await asyncio.sleep(0.5)
+                        
                         redirect_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
                         redirect_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}"
                         
-                        twilio_service.redirect_call(self.call_sid, redirect_url)
-                        print(f"✅ Triggered TwiML redirect for call {self.call_sid}")
+                        # Try to redirect the call
+                        success = twilio_service.redirect_call(self.call_sid, redirect_url)
+                        if success:
+                            print(f"✅ Successfully triggered TwiML redirect for call {self.call_sid}")
+                        else:
+                            print(f"⚠️ Call redirect returned false - call may have ended")
                 except Exception as e:
                     print(f"⚠️ Failed to trigger TwiML redirect: {e}")
                     # Non-critical - the call will redirect on its own after the pause timeout

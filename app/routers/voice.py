@@ -736,9 +736,10 @@ async def handle_call_events_webhook(
                     track="inbound_track"  # Only stream user's audio
                 )
                 
-                # Add a long pause to keep the call alive while streaming
+                # Add a pause to keep the call alive while streaming
                 # The WebSocket will handle transcription and responses
-                response.pause(length=300)  # 5 minutes - adjust as needed
+                # This is a background wait - actual response will come via redirect
+                response.pause(length=60)  # 60 seconds - background streaming time
                 
                 # After timeout, redirect back to check for updates or end call
                 response.redirect(
@@ -781,8 +782,8 @@ async def handle_call_events_webhook(
                     track="inbound_track"
                 )
                 
-                # Keep call alive
-                response.pause(length=300)
+                # Keep call alive for continued streaming
+                response.pause(length=60)  # Background streaming - redirect will interrupt
                 
                 # Redirect to check for more responses
                 response.redirect(
