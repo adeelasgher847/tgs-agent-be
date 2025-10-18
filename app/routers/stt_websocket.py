@@ -99,12 +99,24 @@ class TwilioMediaStreamHandler:
             buffer_size_threshold = 5  # Process every 5 chunks (~100ms)
             
             if len(self.audio_buffer) >= buffer_size_threshold:
+                # Force flush logs immediately
+                import sys
+                sys.stdout.flush()
+                print(f"🔊 Processing {len(self.audio_buffer)} audio chunks...")
+                sys.stdout.flush()
+                
                 await self.process_audio_buffer()
+                
+                # Flush logs again after processing
+                sys.stdout.flush()
         
         except Exception as e:
             print(f"❌ Error handling media message: {e}")
+            import sys
+            sys.stdout.flush()
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
     
     async def process_audio_buffer(self):
         """Process accumulated audio buffer with Google STT"""
@@ -112,12 +124,19 @@ class TwilioMediaStreamHandler:
             return
         
         try:
+            import sys
+            
             # Combine audio chunks
             combined_audio = b''.join(self.audio_buffer)
             self.audio_buffer = []
             
+            print(f"🎵 Combined {len(combined_audio)} bytes of audio")
+            sys.stdout.flush()
+            
             # Skip if audio is too short
             if len(combined_audio) < 100:
+                print(f"⚠️ Skipping - audio too short: {len(combined_audio)} bytes")
+                sys.stdout.flush()
                 return
             
             # Get language from agent
@@ -135,10 +154,17 @@ class TwilioMediaStreamHandler:
                 language_code = language_map.get(self.agent.language, "en-US")
             
             # Transcribe audio chunk
+            import sys
+            print(f"🎙️ Sending {len(combined_audio)} bytes to Google Cloud STT...")
+            sys.stdout.flush()
+            
             result = google_stt_service.transcribe_audio_chunk(
                 audio_content=combined_audio,
                 language_code=language_code
             )
+            
+            print(f"📝 STT Result: {result}")
+            sys.stdout.flush()
             
             if result.get("transcript"):
                 transcript = result["transcript"].strip()
@@ -151,9 +177,15 @@ class TwilioMediaStreamHandler:
                     self.silence_counter = 0
                     
                     print(f"🎤 Accumulated speech: '{self.current_speech.strip()}'")
+                    sys.stdout.flush()
+            else:
+                print(f"⚠️ No transcript in result")
+                sys.stdout.flush()
             
             # Check if speech has ended (silence detected)
             if self.speech_active and self.silence_counter >= self.silence_threshold:
+                print(f"🔕 Silence threshold reached ({self.silence_counter} >= {self.silence_threshold})")
+                sys.stdout.flush()
                 await self.finalize_speech()
         
         except Exception as e:
@@ -169,8 +201,11 @@ class TwilioMediaStreamHandler:
             return
         
         try:
+            import sys
+            
             final_transcript = self.current_speech.strip()
             print(f"✅ Final speech detected: '{final_transcript}'")
+            sys.stdout.flush()
             
             # Reset speech state
             self.speech_active = False
@@ -285,6 +320,8 @@ class TwilioMediaStreamHandler:
     async def handle_start_message(self, message: dict):
         """Handle stream start message"""
         try:
+            import sys
+            
             self.stream_sid = message.get("streamSid")
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
@@ -295,12 +332,16 @@ class TwilioMediaStreamHandler:
             print(f"Call SID: {self.call_sid}")
             print(f"Call Session ID: {self.call_session_id}")
             print(f"Agent: {self.agent.name if self.agent else 'Unknown'}")
+            print(f"🎯 Listening for audio... (2.5s silence = speech end)")
             print("=" * 60)
+            sys.stdout.flush()
             
             self.is_connected = True
         
         except Exception as e:
             print(f"❌ Error handling start message: {e}")
+            import sys
+            sys.stdout.flush()
     
     async def handle_stop_message(self, message: dict):
         """Handle stream stop message"""
@@ -375,13 +416,22 @@ async def media_stream_websocket(
                 print("✅ Twilio Media Stream connected")
             
             elif event == "start":
+                import sys
+                print(f"📡 Received START event")
+                sys.stdout.flush()
                 await handler.handle_start_message(message)
+                sys.stdout.flush()
             
             elif event == "media":
+                # Don't log every media packet - too many!
                 await handler.handle_media_message(message)
             
             elif event == "stop":
+                import sys
+                print(f"📡 Received STOP event")
+                sys.stdout.flush()
                 await handler.handle_stop_message(message)
+                sys.stdout.flush()
                 break
             
             elif event == "mark":
