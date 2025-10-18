@@ -310,26 +310,24 @@ class TwilioMediaStreamHandler:
             print(f"❌ Error handling stop message: {e}")
 
 
-@router.websocket("/ws/media-stream")
+@router.websocket("/ws/media-stream/{callSessionId}/{agentId}")
 async def media_stream_websocket(
     websocket: WebSocket,
-    callSessionId: str = Query(None),
-    agentId: str = Query(None)
+    callSessionId: str,
+    agentId: str
 ):
     """
     WebSocket endpoint for Twilio Media Streams
     Receives real-time audio from Twilio and transcribes using Google Cloud STT
+    
+    Path Parameters:
+        callSessionId: UUID of the call session
+        agentId: UUID of the agent
     """
     print("=" * 80)
     print(f"🎙️ STT WebSocket Connection Attempt")
-    print(f"📋 Parameters: callSessionId={callSessionId}, agentId={agentId}")
+    print(f"📋 Path Parameters: callSessionId={callSessionId}, agentId={agentId}")
     print("=" * 80)
-    
-    # Validate required parameters BEFORE accepting
-    if not callSessionId or not agentId:
-        print(f"❌ WebSocket REJECTED: Missing parameters (callSessionId={callSessionId}, agentId={agentId})")
-        await websocket.close(code=4000, reason="Missing required parameters: callSessionId and agentId")
-        return
     
     # Accept connection FIRST (before any DB operations to avoid 403)
     try:

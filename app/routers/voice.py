@@ -224,7 +224,9 @@ def add_media_stream_to_response(
     # Use wss:// for secure WebSocket connection
     ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
     ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
-    ws_url = f"{ws_protocol}://{ws_base}/api/v1/stt/ws/media-stream?callSessionId={call_session_id}&agentId={agent_id}"
+    
+    # Pass parameters as path segments instead of query params to avoid XML encoding issues
+    ws_url = f"{ws_protocol}://{ws_base}/api/v1/stt/ws/media-stream/{call_session_id}/{agent_id}"
     
     print(f"🎙️ Adding media stream to TwiML: {ws_url}")
     
