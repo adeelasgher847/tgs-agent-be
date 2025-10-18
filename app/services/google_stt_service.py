@@ -34,7 +34,7 @@ class GoogleSTTService:
                 is_json = False
             
             if is_json:
-                # It's JSON content - write to temporary file
+                # It's JSON content - write to temporary  file
                 import tempfile
                 try:
                     # Create temporary file
