@@ -323,7 +323,8 @@ class GoogleSTTService:
             print(f"🔊 Starting streaming recognition with {len(audio_content)} bytes...")
             sys.stdout.flush()
             
-            responses = self.client.streaming_recognize(request_generator())
+            # Fix: Add 'requests=' parameter name for streaming API
+            responses = self.client.streaming_recognize(requests=request_generator())
             
             # Process responses
             response_count = 0
