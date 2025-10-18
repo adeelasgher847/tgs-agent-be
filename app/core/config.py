@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
     
+    # Google Cloud Speech-to-Text Configuration
+    GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file
+    GOOGLE_CLOUD_PROJECT_ID: str = ""
+    GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
+    GOOGLE_STT_SAMPLE_RATE: int = 8000  # Twilio uses 8kHz for MULAW
+    GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
     
     FRONTEND_URL: str = "http://localhost:3000"  
     

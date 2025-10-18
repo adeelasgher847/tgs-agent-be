@@ -1,0 +1,250 @@
+"""
+Google Cloud Speech-to-Text Service for real-time transcription
+Handles streaming audio from Twilio and returns transcriptions
+"""
+
+import os
+import asyncio
+import base64
+from typing import Optional, Callable, Dict, Any
+from google.cloud import speech_v1p1beta1 as speech
+from google.cloud.speech_v1p1beta1 import types
+from app.core.config import settings
+import json
+
+
+class GoogleSTTService:
+    """Service for handling Google Cloud Speech-to-Text streaming"""
+    
+    def __init__(self):
+        """Initialize Google Speech-to-Text client"""
+        # Set credentials from environment variable
+        if settings.GOOGLE_APPLICATION_CREDENTIALS:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.GOOGLE_APPLICATION_CREDENTIALS
+        
+        self.client = None
+        self._initialize_client()
+    
+    def _initialize_client(self):
+        """Initialize the Speech client"""
+        try:
+            self.client = speech.SpeechClient()
+            print("✅ Google Cloud Speech-to-Text client initialized")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize Google Speech client: {e}")
+            print("⚠️ Transcription will not be available without proper credentials")
+    
+    def get_streaming_config(
+        self,
+        language_code: str = None,
+        sample_rate: int = None,
+        encoding: str = None,
+        enable_automatic_punctuation: bool = True,
+        model: str = "phone_call",
+        use_enhanced: bool = True
+    ) -> types.StreamingRecognitionConfig:
+        """
+        Create streaming recognition configuration
+        
+        Args:
+            language_code: BCP-47 language code (e.g., 'en-US', 'es-ES')
+            sample_rate: Audio sample rate in Hz
+            encoding: Audio encoding format
+            enable_automatic_punctuation: Whether to add punctuation
+            model: Recognition model to use
+            use_enhanced: Whether to use enhanced model
+        
+        Returns:
+            StreamingRecognitionConfig object
+        """
+        # Use defaults from settings if not provided
+        language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
+        sample_rate = sample_rate or settings.GOOGLE_STT_SAMPLE_RATE
+        
+        # Map encoding string to enum
+        encoding_map = {
+            "MULAW": speech.RecognitionConfig.AudioEncoding.MULAW,
+            "LINEAR16": speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            "FLAC": speech.RecognitionConfig.AudioEncoding.FLAC,
+            "AMR": speech.RecognitionConfig.AudioEncoding.AMR,
+            "AMR_WB": speech.RecognitionConfig.AudioEncoding.AMR_WB,
+            "OGG_OPUS": speech.RecognitionConfig.AudioEncoding.OGG_OPUS,
+            "SPEEX_WITH_HEADER_BYTE": speech.RecognitionConfig.AudioEncoding.SPEEX_WITH_HEADER_BYTE,
+        }
+        
+        encoding_str = encoding or settings.GOOGLE_STT_ENCODING
+        audio_encoding = encoding_map.get(encoding_str, speech.RecognitionConfig.AudioEncoding.MULAW)
+        
+        # Create recognition config
+        config = speech.RecognitionConfig(
+            encoding=audio_encoding,
+            sample_rate_hertz=sample_rate,
+            language_code=language_code,
+            enable_automatic_punctuation=enable_automatic_punctuation,
+            model=model,
+            use_enhanced=use_enhanced,
+        )
+        
+        # Create streaming config
+        streaming_config = types.StreamingRecognitionConfig(
+            config=config,
+            interim_results=True,  # Get interim results for real-time feedback
+            single_utterance=False,  # Don't end stream after first utterance
+        )
+        
+        return streaming_config
+    
+    async def transcribe_stream(
+        self,
+        audio_generator,
+        language_code: str = None,
+        on_interim_result: Optional[Callable] = None,
+        on_final_result: Optional[Callable] = None,
+        on_error: Optional[Callable] = None
+    ):
+        """
+        Transcribe audio stream from Twilio
+        
+        Args:
+            audio_generator: Async generator yielding audio chunks
+            language_code: Language code for transcription
+            on_interim_result: Callback for interim results
+            on_final_result: Callback for final results
+            on_error: Callback for errors
+        """
+        if not self.client:
+            print("❌ Google Speech client not initialized")
+            if on_error:
+                await on_error("Google Speech client not initialized")
+            return
+        
+        try:
+            # Get streaming config
+            streaming_config = self.get_streaming_config(language_code=language_code)
+            
+            # Create request generator
+            async def request_generator():
+                # First request with config
+                yield types.StreamingRecognizeRequest(streaming_config=streaming_config)
+                
+                # Subsequent requests with audio
+                async for audio_chunk in audio_generator:
+                    if audio_chunk:
+                        yield types.StreamingRecognizeRequest(audio_content=audio_chunk)
+            
+            # Start streaming recognition
+            print("🎤 Starting Google Cloud STT streaming recognition...")
+            
+            # Create requests and get responses
+            requests = request_generator()
+            responses = self.client.streaming_recognize(requests)
+            
+            # Process responses
+            for response in responses:
+                if not response.results:
+                    continue
+                
+                # Get the first result
+                result = response.results[0]
+                
+                if not result.alternatives:
+                    continue
+                
+                # Get the top alternative
+                alternative = result.alternatives[0]
+                transcript = alternative.transcript
+                confidence = alternative.confidence if hasattr(alternative, 'confidence') else 0.0
+                
+                # Handle interim vs final results
+                if result.is_final:
+                    print(f"✅ Final transcript: '{transcript}' (confidence: {confidence:.2f})")
+                    if on_final_result:
+                        await on_final_result({
+                            "transcript": transcript,
+                            "confidence": confidence,
+                            "is_final": True
+                        })
+                else:
+                    print(f"⏳ Interim transcript: '{transcript}'")
+                    if on_interim_result:
+                        await on_interim_result({
+                            "transcript": transcript,
+                            "confidence": confidence,
+                            "is_final": False
+                        })
+        
+        except Exception as e:
+            print(f"❌ Error in streaming transcription: {e}")
+            import traceback
+            traceback.print_exc()
+            if on_error:
+                await on_error(str(e))
+    
+    def transcribe_audio_chunk(
+        self,
+        audio_content: bytes,
+        language_code: str = None
+    ) -> Dict[str, Any]:
+        """
+        Transcribe a single audio chunk (non-streaming)
+        Used as fallback or for short audio
+        
+        Args:
+            audio_content: Raw audio bytes
+            language_code: Language code for transcription
+        
+        Returns:
+            Dictionary with transcript and confidence
+        """
+        if not self.client:
+            return {"error": "Google Speech client not initialized", "transcript": "", "confidence": 0.0}
+        
+        try:
+            language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
+            
+            # Create audio object
+            audio = speech.RecognitionAudio(content=audio_content)
+            
+            # Create config
+            encoding_map = {
+                "MULAW": speech.RecognitionConfig.AudioEncoding.MULAW,
+                "LINEAR16": speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            }
+            audio_encoding = encoding_map.get(
+                settings.GOOGLE_STT_ENCODING,
+                speech.RecognitionConfig.AudioEncoding.MULAW
+            )
+            
+            config = speech.RecognitionConfig(
+                encoding=audio_encoding,
+                sample_rate_hertz=settings.GOOGLE_STT_SAMPLE_RATE,
+                language_code=language_code,
+                enable_automatic_punctuation=True,
+                model="phone_call",
+                use_enhanced=True,
+            )
+            
+            # Perform recognition
+            response = self.client.recognize(config=config, audio=audio)
+            
+            # Extract results
+            if response.results:
+                result = response.results[0]
+                if result.alternatives:
+                    alternative = result.alternatives[0]
+                    return {
+                        "transcript": alternative.transcript,
+                        "confidence": alternative.confidence,
+                        "is_final": True
+                    }
+            
+            return {"transcript": "", "confidence": 0.0, "is_final": True}
+        
+        except Exception as e:
+            print(f"❌ Error transcribing audio chunk: {e}")
+            return {"error": str(e), "transcript": "", "confidence": 0.0}
+
+
+# Global service instance
+google_stt_service = GoogleSTTService()
+

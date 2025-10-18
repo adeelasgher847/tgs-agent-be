@@ -406,6 +406,33 @@ class TwilioService:
         except TwilioException as e:
             print(f"❌ Error ending call {call_sid}: {str(e)}")
             return False
+    
+    def redirect_call(self, call_sid: str, redirect_url: str, method: str = "POST") -> bool:
+        """
+        Redirect an in-progress call to a new TwiML URL
+        This is useful for interrupting media streams to play responses
+        
+        Args:
+            call_sid: The SID of the call to redirect
+            redirect_url: The URL to fetch new TwiML from
+            method: HTTP method to use (POST or GET)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        client = self.get_client()
+        
+        try:
+            call = client.calls(call_sid).update(
+                url=redirect_url,
+                method=method
+            )
+            print(f"✅ Call {call_sid} redirected to {redirect_url}")
+            return True
+            
+        except TwilioException as e:
+            print(f"❌ Error redirecting call {call_sid}: {str(e)}")
+            return False
 
 # Global instance
 twilio_service = TwilioService()

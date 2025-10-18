@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, HTTPException, Query, Depends
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from typing import Optional
-from twilio.twiml.voice_response import VoiceResponse
+from twilio.twiml.voice_response import VoiceResponse, Start, Stream
 from datetime import datetime, timezone
 import random
 import uuid
@@ -202,6 +202,41 @@ def get_agent_voice(agent) -> str:
     return selected_voice
 
 
+def add_media_stream_to_response(
+    response: VoiceResponse,
+    agent_id: str,
+    call_session_id: str,
+    track: str = "inbound_track"
+) -> VoiceResponse:
+    """
+    Add media streaming to TwiML response for Google Cloud STT
+    
+    Args:
+        response: VoiceResponse object
+        agent_id: Agent ID
+        call_session_id: Call session ID
+        track: Which audio track to stream (inbound_track, outbound_track, both_tracks)
+    
+    Returns:
+        Modified VoiceResponse with streaming enabled
+    """
+    # Build WebSocket URL for media streaming
+    # Use wss:// for secure WebSocket connection
+    ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
+    ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
+    ws_url = f"{ws_protocol}://{ws_base}/api/v1/stt/ws/media-stream?callSessionId={call_session_id}&agentId={agent_id}"
+    
+    print(f"🎙️ Adding media stream to TwiML: {ws_url}")
+    
+    # Start media streaming
+    start = Start()
+    stream = Stream(url=ws_url, track=track)
+    start.append(stream)
+    response.append(start)
+    
+    return response
+
+
 @router.post("/call/initiate", response_model=SuccessResponse[CallInitiateResponse])
 async def initiate_call(
     request: CallInitiateRequest,
@@ -371,12 +406,13 @@ async def handle_call_events_webhook(
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
         
-        # Extract speech input (if any)
-        speech_result = form_data.get("SpeechResult", "")
-        confidence = form_data.get("Confidence", "")
-        speech_duration = form_data.get("SpeechDuration", "")
+        # Note: Speech input is now handled by Google Cloud STT via WebSocket
+        # The old Twilio SpeechResult is no longer used
+        # speech_result = form_data.get("SpeechResult", "")
+        # confidence = form_data.get("Confidence", "")
+        # speech_duration = form_data.get("SpeechDuration", "")
         
-        print(f"🎤 Speech input - Result: '{speech_result}', Confidence: {confidence}, Duration: {speech_duration}")
+        print(f"🎤 Speech handling is now managed by Google Cloud STT WebSocket")
         
         # Get call session using callSessionId from query parameters (OPTIMIZED)
         call_session = None
@@ -536,271 +572,9 @@ async def handle_call_events_webhook(
             if not call_status:
                 print(f"⚠️ No call status provided - cannot update status or broadcast")
         
-        # Agent already fetched above using callSessionId - no need to fetch again
-        
-        # Handle speech input - ROBUST MULTI-TENANT LOGGING
-        if speech_result and speech_result.strip():
-            # VALID SPEECH DETECTED - LOG AND RESPOND
-            print("=" * 60)
-            print(f"🎤 SPEECH DETECTED: '{speech_result}'")
-            print(f"📊 Confidence: {confidence}, Duration: {speech_duration}")
-            print(f"📞 Call SID: {call_sid}")
-            print(f"⏰ Timestamp: {datetime.now(timezone.utc)}")
-            print(f"🏢 Tenant ID: {agent.tenant_id if agent else 'Unknown'}")
-            print(f"🤖 Agent: {agent.name if agent else 'Unknown'}")
-            print("=" * 60)
-            
-            # Log voice interaction for smooth tracking
-            try:
-                # Use the call session we already fetched (should be available from query param)
-                if call_session:
-                    # Add user speech to transcript (this will also broadcast the complete conversation array)
-                    print(f"📝 Adding user speech to transcript for session {call_session.id}")
-                    await _add_to_transcript(
-                        call_session, 
-                        "client", 
-                        speech_result, 
-                        db,
-                        message_type="speech",
-                        agent_id=agent.id if agent else None,
-                        user_id=call_session.user_id,
-                        confidence=float(confidence) if confidence else None,
-                        duration=float(speech_duration) if speech_duration else None
-                    )
-                    print(f"✅ User speech added to transcript for session {call_session.id}")
-                    
-                    # Update conversation state with interaction count
-                    conversation_state = _get_conversation_state(call_session)
-                    interaction_count = conversation_state.get("interaction_count", 0) + 1
-                    _update_conversation_state(call_session, "interaction_count", interaction_count)
-                    _update_conversation_state(call_session, "last_user_input", speech_result)
-                    db.commit()
-                    
-                    await VoiceLoggingService.log_voice_interaction(
-                        db=db,
-                        call_session_id=call_session.id,
-                        interaction_type="speech_input",
-                        speech_text=speech_result,
-                        confidence=float(confidence) if confidence else None,
-                        duration=float(speech_duration) if speech_duration else None,
-                        metadata={
-                            "call_sid": call_sid,
-                            "agent_id": str(agent.id) if agent else None,
-                            "tenant_id": str(agent.tenant_id) if agent else None
-                        }
-                    )
-            except Exception as e:
-                print(f"⚠️ Error logging voice interaction: {e}")
-            
-            # Generate smooth, natural response
-            response = VoiceResponse()
-            
-            if agent:
-                # Generate intelligent response based on speech using Gemini with conversation context
-                response_text = await VoiceLoggingService.generate_agent_response(
-                    speech_text=speech_result,
-                    confidence=float(confidence) if confidence else 0.0,
-                    agent=agent,
-                    db=db,
-                    call_session_id=call_session.id if call_session else None
-                )
-                
-                # Check if this is a completion goodbye response (call should end)
-                is_goodbye_response = VoiceLoggingService._is_completion_goodbye(response_text)
-                
-                # Add agent response to transcript (this will also broadcast the complete conversation array)
-                if call_session:
-                    print(f"📝 Adding agent response to transcript for session {call_session.id}")
-                    await _add_to_transcript(
-                        call_session, 
-                        "agent", 
-                        response_text, 
-                        db,
-                        message_type="goodbye_response" if is_goodbye_response else "agent_response",
-                        agent_id=agent.id if agent else None,
-                        user_id=call_session.user_id
-                    )
-                    print(f"✅ Agent response added to transcript for session {call_session.id}")
-                
-                # Say response naturally with conversational flow
-                agent_voice = get_agent_voice(agent)
-                response.say(response_text, voice=agent_voice)
-                
-                if is_goodbye_response:
-                    # This is a goodbye response - end the call gracefully
-                    print(f"🛑 Goodbye response detected - ending call for session {call_session.id}")
-                    
-                    # Update call session status to completed
-                    if call_session:
-                        call_session.status = "completed"
-                        call_session.end_time = datetime.now(timezone.utc)
-                        call_session.ended_reason = "system_prompt_completed"
-                        if call_session.start_time:
-                            duration = (call_session.end_time - call_session.start_time).total_seconds()
-                            call_session.duration = int(duration)
-                        db.commit()
-                        print(f"✅ Updated call session {call_session.id} status to: completed")
-                        
-                        # Broadcast call ended event
-                        try:
-                            asyncio.create_task(broadcast_call_ended(
-                                call_session_id=str(call_session.id),
-                                reason="system_prompt_completed",
-                                final_data={
-                                    "call_sid": call_sid,
-                                    "duration": call_session.duration,
-                                    "end_time": call_session.end_time.isoformat(),
-                                    "transcript": call_session.call_transcript or []
-                                }
-                            ))
-                            print(f"✅ Queued call ended event for session {call_session.id}")
-                        except Exception as e:
-                            print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
-                    
-                    # End the call with hangup
-                    response.hangup()
-                    print(f"📞 Call ended gracefully for session {call_session.id if call_session else 'unknown'}")
-                    
-                else:
-                    # Normal conversation flow - continue listening
-                    response.pause(length=0.3)  # Natural pause for conversation flow
-                    
-                    # Continue listening immediately for natural conversation
-                    response.gather(
-                        input='speech',
-                        timeout=12,  # Shorter timeout for more natural conversation
-                        speech_timeout='auto',
-                        action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={userId}&callSessionId={call_session.id}',
-                        method='POST'
-                    )
-                    
-                    # Gentle, natural fallback
-                    response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
-            else:
-                # Default response for smooth conversation
-                default_voice = get_agent_voice(None)  # Use default voice
-                response.say("Got it!", voice=default_voice)
-                response.pause(length=0.3)
-                response.say("What else would you like to talk about?", voice=default_voice)
-                
-                # Continue listening
-                response.gather(
-                    input='speech',
-                    timeout=15,
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
-                    method='POST'
-                )
-                
-                response.say("Thanks for calling! Take care!", voice=default_voice)
-            
-            print(f"📝 Speech response generated: {str(response)[:200]}...")
-            return HTMLResponse(str(response), media_type="application/xml")
-        
-        elif speech_result == "" or speech_result is None:
-            # NO SPEECH DETECTED - KEEP LISTENING, DON'T TERMINATE
-            print("=" * 60)
-            print(f"🔇 NO SPEECH DETECTED - KEEPING CALL ALIVE")
-            print(f"📞 Call SID: {call_sid}")
-            print(f"⏰ Timestamp: {datetime.now(timezone.utc)}")
-            print(f"🏢 Tenant ID: {agent.tenant_id if agent else 'Unknown'}")
-            print("=" * 60)
-            
-            response = VoiceResponse()
-            agent_voice = get_agent_voice(agent)
-            
-            # More natural "didn't catch that" response
-            response.say(_get_random_didnt_catch_response(), voice=agent_voice)
-            response.pause(length=0.3)
-            response.say(_get_random_follow_up_response(), voice=agent_voice)
-            
-            # Keep listening with reasonable timeout
-            response.gather(
-                input='speech',
-                timeout=15,
-                speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
-                method='POST'
-            )
-            
-            # Gentle reminder
-            response.say("I'm still here. Go ahead when you're ready.", voice=agent_voice)
-            response.pause(length=0.3)
-            
-            # Final attempt with longer timeout
-            response.gather(
-                input='speech',
-                timeout=20,
-                speech_timeout='auto',
-                action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id if agent else ""}&userId={userId}&callSessionId={call_session.id if call_session else ""}',
-                method='POST'
-            )
-            
-            # Only hangup after very long silence
-            timeout_message = "Hello"
-            response.say(timeout_message, voice=agent_voice)
-            response.hangup()
-            
-            # Add timeout response to transcript and update call status
-            if call_session:
-                print(f"📝 Adding timeout response to transcript for session {call_session.id}")
-                # await _add_to_transcript(
-                #     call_session, 
-                #     "agent", 
-                #     timeout_message, 
-                #     db,
-                #     message_type="timeout_response",
-                #     agent_id=agent.id if agent else None,
-                #     user_id=call_session.user_id
-                # )
-                print(f"✅ Timeout response added to transcript for session {call_session.id}")
-                
-                # Update call session status to completed due to timeout
-                call_session.status = "completed"
-                call_session.end_time = datetime.now(timezone.utc)
-                if call_session.start_time:
-                    duration = (call_session.end_time - call_session.start_time).total_seconds()
-                    call_session.duration = int(duration)
-                    print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
-                
-                # Commit the status update
-                db.commit()
-                print(f"✅ Updated call session {call_session.id} status to: completed")
-                
-                # # Broadcast call status update (non-blocking - fire and forget)
-                # try:
-                #     asyncio.create_task(broadcast_call_status_update(
-                #         call_session_id=str(call_session.id),
-                #         status="completed",
-                #         metadata={
-                #             "call_sid": call_sid,
-                #             "reason": "timeout_no_speech",
-                #             "message": "Call ended due to no speech detected",
-                #             "timestamp": datetime.now(timezone.utc).isoformat()
-                #         }
-                #     ))
-                #     print(f"✅ Queued call status update: completed for session {call_session.id}")
-                # except Exception as e:
-                #     print(f"⚠️ Failed to queue call status update (non-critical): {e}")
-                
-                # Also broadcast call ended event (non-blocking - fire and forget)
-                try:
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="timeout_no_speech",
-                        final_data={
-                            "call_sid": call_sid,
-                            "duration": call_session.duration,
-                            "end_time": call_session.end_time.isoformat(),
-                            "transcript": call_session.call_transcript or []
-                        }
-                    ))
-                    print(f"✅ Queued call ended event for session {call_session.id}")
-                except Exception as e:
-                    print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
-            
-            print(f"📝 Extended listening response: {str(response)[:200]}...")
-            return HTMLResponse(str(response), media_type="application/xml")
+        # Speech input is now handled by Google Cloud STT via WebSocket
+        # The WebSocket will transcribe audio and generate responses
+        # This webhook now primarily handles call status updates and plays pending responses
         
         # Handle different call statuses and trigger agent logic
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
@@ -903,7 +677,7 @@ async def handle_call_events_webhook(
             
             # Only greet if we haven't greeted yet
             if not has_greeted:
-                print("🎤 FIRST TIME GREETING - Playing welcome message")
+                print("🎤 FIRST TIME GREETING - Playing welcome message and starting media stream")
                 
                 # Mark as greeted
                 _update_conversation_state(call_session, "has_greeted", True)
@@ -952,54 +726,70 @@ async def handle_call_events_webhook(
                 except Exception as e:
                     print(f"⚠️ Error logging call answered event: {e}")
                 
-                # Use main webhook for conversation flow
-                response.gather(
-                    input='speech',
-                    timeout=15,
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                    method='POST'
+                # Start media streaming for Google Cloud STT
+                add_media_stream_to_response(
+                    response,
+                    agent_id=str(agentId),
+                    call_session_id=str(call_session.id),
+                    track="inbound_track"  # Only stream user's audio
                 )
                 
-                # Gentle fallback if no input
-                response.say(_get_random_didnt_catch_response(), voice=agent_voice)
-                response.pause(length=0.5)
+                # Add a long pause to keep the call alive while streaming
+                # The WebSocket will handle transcription and responses
+                response.pause(length=300)  # 5 minutes - adjust as needed
                 
-                # Try main webhook again
-                response.gather(
-                    input='speech',
-                    timeout=20,
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                # After timeout, redirect back to check for updates or end call
+                response.redirect(
+                    f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
-                
-                # Final gentle attempt
-                response.say("I'm having trouble hearing you clearly. Please call back when you have a moment. Thanks!", voice=agent_voice)
                 
                 twiml_result = str(response)
-                print(f"📝 GREETING TwiML: {twiml_result}")
+                print(f"📝 GREETING TwiML with Media Stream: {twiml_result}")
                 return HTMLResponse(twiml_result, media_type="application/xml")
             else:
-                print("🔄 ALREADY GREETED - Continuing conversation")
-                # Already greeted, just continue listening
+                print("🔄 ALREADY GREETED - Checking for pending response or continuing stream")
+                
+                # Check if there's a pending response from the WebSocket
+                pending_response = None
+                if call_session.call_metadata and "pending_response" in call_session.call_metadata:
+                    pending_response = call_session.call_metadata.pop("pending_response")
+                    db.commit()
+                
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
-                # Continue listening without repeating greeting
-                response.gather(
-                    input='speech',
-                    timeout=15,
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                if pending_response:
+                    # Play the pending response
+                    print(f"🎤 Playing pending response: {pending_response}")
+                    response.say(pending_response, voice=agent_voice)
+                    
+                    # Check if it's a goodbye response
+                    is_goodbye = VoiceLoggingService._is_completion_goodbye(pending_response)
+                    if is_goodbye:
+                        response.hangup()
+                        print(f"🛑 Goodbye response - ending call")
+                        return HTMLResponse(str(response), media_type="application/xml")
+                
+                # Continue streaming
+                add_media_stream_to_response(
+                    response,
+                    agent_id=str(agentId),
+                    call_session_id=str(call_session.id),
+                    track="inbound_track"
+                )
+                
+                # Keep call alive
+                response.pause(length=300)
+                
+                # Redirect to check for more responses
+                response.redirect(
+                    f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
                 
-                # Gentle fallback
-                response.say("I'm here if you want to talk about anything else.", voice=agent_voice)
-                
                 twiml_result = str(response)
-                print(f"📝 CONTINUATION TwiML: {twiml_result}")
+                print(f"📝 CONTINUATION TwiML with Media Stream: {twiml_result}")
                 return HTMLResponse(twiml_result, media_type="application/xml")
         
         elif call_status == "completed":
