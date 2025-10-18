@@ -313,16 +313,33 @@ class TwilioMediaStreamHandler:
 @router.websocket("/ws/media-stream")
 async def media_stream_websocket(
     websocket: WebSocket,
-    callSessionId: str = Query(...),
-    agentId: str = Query(...)
+    callSessionId: str = Query(None),
+    agentId: str = Query(None)
 ):
     """
     WebSocket endpoint for Twilio Media Streams
     Receives real-time audio from Twilio and transcribes using Google Cloud STT
     """
+    print("=" * 80)
+    print(f"🎙️ STT WebSocket Connection Attempt")
+    print(f"📋 Parameters: callSessionId={callSessionId}, agentId={agentId}")
+    print("=" * 80)
+    
+    # Validate required parameters BEFORE accepting
+    if not callSessionId or not agentId:
+        print(f"❌ WebSocket REJECTED: Missing parameters (callSessionId={callSessionId}, agentId={agentId})")
+        await websocket.close(code=4000, reason="Missing required parameters: callSessionId and agentId")
+        return
+    
     # Accept connection FIRST (before any DB operations to avoid 403)
-    await websocket.accept()
-    print(f"✅ WebSocket connection accepted for call session {callSessionId}")
+    try:
+        await websocket.accept()
+        print(f"✅ WebSocket connection ACCEPTED for call session {callSessionId}")
+    except Exception as e:
+        print(f"❌ Failed to accept WebSocket: {e}")
+        import traceback
+        traceback.print_exc()
+        return
     
     # Get database session manually (after accepting connection)
     from app.db.session import SessionLocal
