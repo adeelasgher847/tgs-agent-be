@@ -50,6 +50,11 @@ class TwilioMediaStreamHandler:
         # So ~12-15 empty batches = 2.5 seconds of silence
         self.silence_threshold = 12  # ~2.5 seconds of silence to finalize speech
         
+        # Inactivity timeout - end call if no speech for 15 seconds
+        self.last_activity_time = None
+        self.inactivity_timeout = 15  # seconds
+        self.has_received_any_speech = False
+        
         # Get call session and agent
         self.call_session = None
         self.agent = None
@@ -155,6 +160,8 @@ class TwilioMediaStreamHandler:
             
             # Transcribe audio chunk
             import sys
+            from datetime import datetime, timezone
+            
             print(f"🎙️ Sending {len(combined_audio)} bytes to Google Cloud STT...")
             sys.stdout.flush()
             
@@ -175,12 +182,49 @@ class TwilioMediaStreamHandler:
                     self.current_speech += " " + transcript
                     self.speech_active = True
                     self.silence_counter = 0
+                    self.has_received_any_speech = True
+                    
+                    # Reset activity timer when speech is detected
+                    self.last_activity_time = datetime.now(timezone.utc)
                     
                     print(f"🎤 Accumulated speech: '{self.current_speech.strip()}'")
                     sys.stdout.flush()
             else:
                 print(f"⚠️ No transcript in result")
                 sys.stdout.flush()
+            
+            # Check inactivity timeout (15 seconds no speech = end call)
+            if self.last_activity_time:
+                time_since_activity = (datetime.now(timezone.utc) - self.last_activity_time).total_seconds()
+                if time_since_activity > self.inactivity_timeout:
+                    print(f"⏱️ Inactivity timeout reached ({time_since_activity:.1f}s > {self.inactivity_timeout}s)")
+                    print(f"🛑 Ending call due to inactivity...")
+                    sys.stdout.flush()
+                    
+                    # Add timeout message to transcript
+                    if self.call_session:
+                        timeout_msg = "I didn't hear anything. Please call back when you're ready. Goodbye!"
+                        await self._add_to_transcript(
+                            role="agent",
+                            message=timeout_msg,
+                            message_type="timeout_end"
+                        )
+                    
+                    # Store goodbye message for playback
+                    if self.call_session:
+                        if not self.call_session.call_metadata:
+                            self.call_session.call_metadata = {}
+                        self.call_session.call_metadata["pending_response"] = timeout_msg
+                        self.db.commit()
+                    
+                    # Trigger redirect to play goodbye before ending
+                    if self.call_sid:
+                        redirect_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
+                        redirect_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}&timeout=true"
+                        twilio_service.redirect_call(self.call_sid, redirect_url)
+                        print(f"📞 Triggered goodbye redirect for inactivity")
+                        sys.stdout.flush()
+                    return
             
             # Check if speech has ended (silence detected)
             if self.speech_active and self.silence_counter >= self.silence_threshold:
@@ -321,10 +365,14 @@ class TwilioMediaStreamHandler:
         """Handle stream start message"""
         try:
             import sys
+            from datetime import datetime, timezone
             
             self.stream_sid = message.get("streamSid")
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
+            
+            # Start inactivity timer
+            self.last_activity_time = datetime.now(timezone.utc)
             
             print("=" * 60)
             print(f"🎙️ MEDIA STREAM STARTED")
@@ -333,6 +381,7 @@ class TwilioMediaStreamHandler:
             print(f"Call Session ID: {self.call_session_id}")
             print(f"Agent: {self.agent.name if self.agent else 'Unknown'}")
             print(f"🎯 Listening for audio... (2.5s silence = speech end)")
+            print(f"⏱️ Inactivity timeout: {self.inactivity_timeout}s (auto-end if no speech)")
             print("=" * 60)
             sys.stdout.flush()
             
@@ -403,6 +452,9 @@ async def media_stream_websocket(
         db=db
     )
     
+    # Counter for media messages
+    media_message_count = 0
+    
     try:
         while True:
             # Receive message from Twilio
@@ -413,7 +465,9 @@ async def media_stream_websocket(
             event = message.get("event")
             
             if event == "connected":
+                import sys
                 print("✅ Twilio Media Stream connected")
+                sys.stdout.flush()
             
             elif event == "start":
                 import sys
@@ -423,7 +477,12 @@ async def media_stream_websocket(
                 sys.stdout.flush()
             
             elif event == "media":
-                # Don't log every media packet - too many!
+                import sys
+                media_message_count += 1
+                # Log every 50th media message to track activity
+                if media_message_count % 50 == 0:
+                    print(f"📦 Media packets received: {media_message_count}")
+                    sys.stdout.flush()
                 await handler.handle_media_message(message)
             
             elif event == "stop":

@@ -367,6 +367,7 @@ async def handle_call_events_webhook(
     agentId: Optional[str] = Query(None),
     userId: Optional[str] = Query(None),
     callSessionId: Optional[str] = Query(None),
+    timeout: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -761,6 +762,16 @@ async def handle_call_events_webhook(
                 
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
+                
+                # Check if this is a timeout redirect
+                if timeout == "true":
+                    print(f"⏱️ Timeout redirect - playing goodbye and ending call")
+                    if pending_response:
+                        response.say(pending_response, voice=agent_voice)
+                    else:
+                        response.say("Thank you for calling. Goodbye!", voice=agent_voice)
+                    response.hangup()
+                    return HTMLResponse(str(response), media_type="application/xml")
                 
                 if pending_response:
                     # Play the pending response
