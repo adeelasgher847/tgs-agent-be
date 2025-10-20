@@ -45,11 +45,11 @@ class TwilioMediaStreamHandler:
         self.current_speech = ""
         self.speech_active = False
         self.silence_counter = 0
-        # Vapi-style fast response: 1-1.5 second silence detection
+        # Smart silence detection for end-of-speech
         # Twilio sends ~50 packets per second (20ms each)
-        # We process in batches of 5, so ~10 batches per second
-        # 6-8 empty batches = ~0.8-1.2 seconds of silence (Vapi-like speed)
-        self.silence_threshold = 7  # ~1 second silence (Vapi-style fast response)
+        # We wait for actual silence before processing
+        # 40-50 empty chunks = ~0.8-1 second of silence (Vapi-like speed)
+        self.silence_threshold = 45  # ~1 second silence (optimal for clean speech detection)
         
         # Inactivity timeout - end call if no speech for 15 seconds
         self.last_activity_time = None
@@ -94,21 +94,56 @@ class TwilioMediaStreamHandler:
             # Add to buffer
             self.audio_buffer.append(audio_data)
             
-            # Reset silence counter when receiving audio
+            # Track silence to detect end of speech (Smart approach - no duplicates!)
             if len(audio_data) > 0:
                 self.silence_counter = 0
+                if not self.speech_active:
+                    self.speech_active = True
+                    print(f"🎤 Speech started - buffering audio...")
+                    import sys
+                    sys.stdout.flush()
             else:
                 self.silence_counter += 1
             
-            # Google Cloud STT needs more audio data for accurate recognition
-            # Balanced approach: 25 chunks = ~0.5 seconds (enough for speech detection)
-            buffer_size_threshold = 25  # Process every 25 chunks (~500ms) - Good balance
+            # Check for inactivity timeout (no speech for 15 seconds)
+            if self.last_activity_time:
+                from datetime import datetime, timezone
+                time_since_activity = (datetime.now(timezone.utc) - self.last_activity_time).total_seconds()
+                if time_since_activity > self.inactivity_timeout and not self.has_received_any_speech:
+                    print(f"⏱️ Inactivity timeout ({time_since_activity:.1f}s) - no speech detected, ending call...")
+                    import sys
+                    sys.stdout.flush()
+                    
+                    # Add timeout message
+                    if self.call_session:
+                        timeout_msg = "I didn't hear anything. Please call back when you're ready. Goodbye!"
+                        await self._add_to_transcript(
+                            role="agent",
+                            message=timeout_msg,
+                            message_type="timeout_end"
+                        )
+                        if not self.call_session.call_metadata:
+                            self.call_session.call_metadata = {}
+                        self.call_session.call_metadata["pending_response"] = timeout_msg
+                        self.db.commit()
+                    
+                    # Trigger goodbye redirect
+                    if self.call_sid:
+                        redirect_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
+                        redirect_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}&timeout=true"
+                        twilio_service.redirect_call(self.call_sid, redirect_url)
+                        print(f"📞 Goodbye redirect triggered for inactivity")
+                        sys.stdout.flush()
+                    return
             
-            if len(self.audio_buffer) >= buffer_size_threshold:
-                # Force flush logs immediately
+            # Only process when silence detected (avoids duplicates)
+            # This way: User speaks → Silence → Process complete speech → Clean result!
+            if self.speech_active and self.silence_counter >= self.silence_threshold:
+                # User stopped speaking - process all accumulated audio
                 import sys
                 sys.stdout.flush()
-                print(f"🔊 Processing {len(self.audio_buffer)} audio chunks...")
+                print(f"🔕 Silence detected ({self.silence_counter} empty chunks)")
+                print(f"🔊 Processing complete speech: {len(self.audio_buffer)} audio chunks...")
                 sys.stdout.flush()
                 
                 await self.process_audio_buffer()
@@ -125,23 +160,27 @@ class TwilioMediaStreamHandler:
             sys.stdout.flush()
     
     async def process_audio_buffer(self):
-        """Process accumulated audio buffer with Google STT"""
+        """Process accumulated audio buffer with Google STT (entire speech segment)"""
         if not self.audio_buffer:
             return
         
         try:
             import sys
             
-            # Combine audio chunks
+            # Combine ALL audio chunks accumulated during speech
             combined_audio = b''.join(self.audio_buffer)
             self.audio_buffer = []
             
-            print(f"🎵 Combined {len(combined_audio)} bytes of audio")
+            # Reset speech state (ready for next speech segment)
+            self.speech_active = False
+            self.silence_counter = 0
+            
+            print(f"🎵 Combined {len(combined_audio)} bytes of complete speech")
             sys.stdout.flush()
             
             # Skip if audio buffer is too small (safety check)
-            # With 25 chunk threshold, we should have ~4KB typically
-            if len(combined_audio) < 50:
+            # Should have accumulated multiple seconds of speech
+            if len(combined_audio) < 1000:
                 print(f"⚠️ Skipping - audio too short: {len(combined_audio)} bytes")
                 sys.stdout.flush()
                 return
@@ -179,59 +218,24 @@ class TwilioMediaStreamHandler:
                 transcript = result["transcript"].strip()
                 confidence = result.get("confidence", 0.0)
                 
-                # Accumulate speech
+                # Add this speech segment to accumulated speech
                 if transcript:
                     self.current_speech += " " + transcript
-                    self.speech_active = True
-                    self.silence_counter = 0
                     self.has_received_any_speech = True
                     
                     # Reset activity timer when speech is detected
                     self.last_activity_time = datetime.now(timezone.utc)
                     
-                    print(f"🎤 Accumulated speech: '{self.current_speech.strip()}'")
+                    print(f"✅ Speech segment received: '{transcript}'")
+                    print(f"🎤 Total accumulated speech: '{self.current_speech.strip()}'")
                     sys.stdout.flush()
             else:
                 print(f"⚠️ No transcript in result")
                 sys.stdout.flush()
             
-            # Check inactivity timeout (15 seconds no speech = end call)
-            if self.last_activity_time:
-                time_since_activity = (datetime.now(timezone.utc) - self.last_activity_time).total_seconds()
-                if time_since_activity > self.inactivity_timeout:
-                    print(f"⏱️ Inactivity timeout reached ({time_since_activity:.1f}s > {self.inactivity_timeout}s)")
-                    print(f"🛑 Ending call due to inactivity...")
-                    sys.stdout.flush()
-                    
-                    # Add timeout message to transcript
-                    if self.call_session:
-                        timeout_msg = "I didn't hear anything. Please call back when you're ready. Goodbye!"
-                        await self._add_to_transcript(
-                            role="agent",
-                            message=timeout_msg,
-                            message_type="timeout_end"
-                        )
-                    
-                    # Store goodbye message for playback
-                    if self.call_session:
-                        if not self.call_session.call_metadata:
-                            self.call_session.call_metadata = {}
-                        self.call_session.call_metadata["pending_response"] = timeout_msg
-                        self.db.commit()
-                    
-                    # Trigger redirect to play goodbye before ending
-                    if self.call_sid:
-                        redirect_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
-                        redirect_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}&timeout=true"
-                        twilio_service.redirect_call(self.call_sid, redirect_url)
-                        print(f"📞 Triggered goodbye redirect for inactivity")
-                        sys.stdout.flush()
-                    return
-            
-            # Check if speech has ended (silence detected)
-            if self.speech_active and self.silence_counter >= self.silence_threshold:
-                print(f"🔕 Silence threshold reached ({self.silence_counter} >= {self.silence_threshold})")
-                sys.stdout.flush()
+            # Now that we have the complete speech segment, finalize it
+            # This will generate LLM response and trigger agent reply
+            if self.current_speech.strip():
                 await self.finalize_speech()
         
         except Exception as e:
@@ -413,8 +417,9 @@ class TwilioMediaStreamHandler:
             print(f"Call SID: {self.call_sid}")
             print(f"Call Session ID: {self.call_session_id}")
             print(f"Agent: {self.agent.name if self.agent else 'Unknown'}")
-            print(f"🎯 Listening for audio... (2.5s silence = speech end)")
+            print(f"🎯 Listening for audio... (~1s silence = speech end)")
             print(f"⏱️ Inactivity timeout: {self.inactivity_timeout}s (auto-end if no speech)")
+            print(f"📊 Silence threshold: {self.silence_threshold} chunks")
             print("=" * 60)
             sys.stdout.flush()
             
