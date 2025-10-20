@@ -680,8 +680,7 @@ async def handle_call_events_webhook(
             
             # Only greet if we haven't greeted yet
             if not has_greeted:
-                print("🎤 FIRST TIME GREETING - Playing welcome message and starting media stream")
-                print("⏱️ Adding 2 second delay before greeting (Vapi-style)")
+                print("🎤 FIRST TIME GREETING - Playing welcome message and starting media stream immediately")
                 
                 # Mark as greeted
                 _update_conversation_state(call_session, "has_greeted", True)
@@ -692,11 +691,7 @@ async def handle_call_events_webhook(
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
-                # Add 2 second pause before greeting (prevents early audio capture)
-                # This ensures call is fully connected before we start listening
-                response.pause(length=2)
-                
-                # Professional, concise greeting
+                # Professional, concise greeting - stream starts immediately after
                 response.say(f"Hello! This is {agent_name}. How can I help you today?", voice=agent_voice)
                 
                 # Add initial greeting to transcript
