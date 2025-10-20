@@ -740,8 +740,8 @@ async def handle_call_events_webhook(
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
-                # Professional, concise greeting
-                greeting_text = f"Hello! This is {agent_name}. How can I help you today?"
+                # Simple greeting
+                greeting_text = "Hello"
                 response.say(greeting_text, voice=agent_voice)
                 
                 # Add initial greeting to transcript
