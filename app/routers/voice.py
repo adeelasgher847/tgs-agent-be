@@ -658,6 +658,17 @@ async def handle_call_events_webhook(
                 print(f"⚠️ Call session not found for SID: {call_sid}")
                 return HTMLResponse("", media_type="application/xml")
             
+            # Initialize conversation state for new calls (fixes infinite timeout loop)
+            if not call_session.call_metadata:
+                call_session.call_metadata = {}
+            
+            if "conversation_state" not in call_session.call_metadata:
+                call_session.call_metadata["conversation_state"] = {
+                    "has_greeted": False
+                }
+                db.commit()
+                print("✅ Initialized conversation state for new call - STT will start properly")
+            
             # Check if we already greeted this call
             conversation_state = _get_conversation_state(call_session)
             has_greeted = conversation_state.get("has_greeted", False)
