@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import random
 import uuid
 import asyncio
+import sys
 
 from app.api.deps import get_db, require_tenant
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
@@ -1160,6 +1161,29 @@ async def handle_recording_callback(
         print(f"📝 Recording SID: {recording_sid}")
         print(f"⏱️ Duration: {recording_duration}s")
         print(f"📊 Status: {recording_status}")
+        sys.stdout.flush()
+        
+        # IMPORTANT: Twilio calls this webhook twice:
+        # 1. 'action' callback (no status, has URL) - User finished speaking → PROCESS THIS for TTS
+        # 2. 'recordingStatusCallback' (has status) - Recording processed → SKIP (just for logging)
+        
+        if recording_status:
+            # This is a status callback, not the action callback
+            # We don't need to return TTS here, just acknowledge
+            print(f"ℹ️ Recording status callback (status={recording_status}) - acknowledging only, no TTS")
+            sys.stdout.flush()
+            return HTMLResponse("", media_type="application/xml")
+        
+        # If no recording URL at all, something is wrong
+        if not recording_url:
+            print(f"⚠️ No recording URL provided - cannot process")
+            sys.stdout.flush()
+            return HTMLResponse("", media_type="application/xml")
+        
+        # This is the 'action' callback - user finished speaking
+        # Process this for TTS response
+        print(f"✅ Action callback detected - processing for TTS response")
+        sys.stdout.flush()
         
         # Get call session
         call_session = None
@@ -1291,13 +1315,19 @@ async def handle_recording_callback(
                     
                     # Say agent's response
                     response.say(response_text, voice=agent_voice)
+                    print(f"🎤 TTS configured: voice={agent_voice}, text='{response_text[:50]}...'")
+                    sys.stdout.flush()
                     
                     # Check if this is a goodbye
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
                     if is_goodbye:
                         print(f"🛑 Goodbye detected - ending call")
+                        sys.stdout.flush()
                         response.hangup()
-                        return HTMLResponse(str(response), media_type="application/xml")
+                        twiml_str = str(response)
+                        print(f"📤 Returning TwiML (goodbye): {twiml_str[:200]}...")
+                        sys.stdout.flush()
+                        return HTMLResponse(twiml_str, media_type="application/xml")
                     
                     # Continue conversation - record next user input
                     recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
@@ -1314,8 +1344,11 @@ async def handle_recording_callback(
                         transcribe=False  # We use Google STT
                     )
                     
+                    twiml_str = str(response)
                     print(f"🔄 Continuing conversation - waiting for next user input")
-                    return HTMLResponse(str(response), media_type="application/xml")
+                    print(f"📤 Returning TwiML with TTS: {twiml_str[:200]}...")
+                    sys.stdout.flush()
+                    return HTMLResponse(twiml_str, media_type="application/xml")
                 
                 else:
                     # No transcript - ask user to repeat
