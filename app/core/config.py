@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     GOOGLE_STT_SAMPLE_RATE: int = 8000  # Twilio uses 8kHz for MULAW
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
     
+    # Voice Conversation Settings
+    USE_GATHER_APPROACH: bool = True  # Use <Gather> for 3-4s latency (faster) vs <Record> for 4-6s latency (more accurate)
+    
     FRONTEND_URL: str = "http://localhost:3000"  
     
     # Stripe settings

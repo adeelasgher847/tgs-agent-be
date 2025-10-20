@@ -709,6 +709,26 @@ async def handle_call_events_webhook(
             
             # Only greet if we haven't greeted yet
             if not has_greeted:
+                # Check if we should use Gather-based approach (faster, 3-4s latency)
+                use_gather_approach = getattr(settings, 'USE_GATHER_APPROACH', False)
+                
+                if use_gather_approach:
+                    print("🎤 REDIRECTING TO GATHER-BASED APPROACH (3-4s latency)")
+                    
+                    # Redirect to Gather greeting endpoint for faster conversation
+                    response = VoiceResponse()
+                    response.redirect(
+                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                        method='POST'
+                    )
+                    
+                    # Mark as greeted
+                    _update_conversation_state(call_session, "has_greeted", True)
+                    _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
+                    db.commit()
+                    
+                    return HTMLResponse(str(response), media_type="application/xml")
+                
                 print("🎤 FIRST TIME GREETING - VAPI-style with <Record> and silence detection")
                 
                 # Mark as greeted
