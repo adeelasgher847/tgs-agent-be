@@ -758,63 +758,77 @@ async def handle_call_events_webhook(
                 except Exception as e:
                     print(f"⚠️ Error logging call answered event: {e}")
                 
-                # Use Twilio Gather - Twilio detects silence automatically!
-                # Simple and reliable (like Vapi uses)
-                gather = response.gather(
-                    input='speech',
-                    timeout=10,  # Wait up to 10 seconds for user to speak
-                    speech_timeout='auto',  # Twilio auto-detects when user stops speaking
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
-                    method='POST',
-                    enhanced=True,  # Use enhanced model for better accuracy
-                    profanity_filter=False,  # Don't censor speech
-                    language=get_gather_language(agent)  # Match agent language
+                # Start Google Cloud STT Media Stream (Vapi approach)
+                add_media_stream_to_response(
+                    response,
+                    agent_id=str(agentId),
+                    call_session_id=str(call_session.id),
+                    track="inbound_track"  # Only user audio
                 )
                 
-                print(f"🎤 Gather configured - Twilio handles silence detection automatically")
+                # Keep call alive for streaming
+                response.pause(length=60)
                 
-                # Fallback if no speech detected
-                response.say("I didn't catch that. Let me know if you need help!", voice=agent_voice)
+                # Redirect after pause
                 response.redirect(
                     f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
                 
+                print(f"🎙️ Media Stream configured for Google Cloud STT")
+                
                 twiml_result = str(response)
-                print(f"📝 GREETING TwiML with Gather (Hybrid Approach): {twiml_result}")
+                print(f"📝 GREETING TwiML with Media Stream: {twiml_result}")
                 return HTMLResponse(twiml_result, media_type="application/xml")
             else:
-                print("🔄 ALREADY GREETED - Checking for fallback or timeout")
+                print("🔄 ALREADY GREETED - Checking for pending response")
+                
+                # Check for pending response from STT WebSocket
+                pending_response = None
+                if call_session.call_metadata and "pending_response" in call_session.call_metadata:
+                    pending_response = call_session.call_metadata.pop("pending_response")
+                    db.commit()
                 
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
-                # Check if this is a timeout redirect
+                # Check if timeout redirect
                 if timeout == "true":
                     print(f"⏱️ Timeout - ending call")
-                    response.say("Thank you for calling. Goodbye!", voice=agent_voice)
+                    if pending_response:
+                        response.say(pending_response, voice=agent_voice)
+                    else:
+                        response.say("Thank you for calling. Goodbye!", voice=agent_voice)
                     response.hangup()
                     return HTMLResponse(str(response), media_type="application/xml")
                 
-                # Fallback - ask user to speak again
-                response.say("I'm still here. How can I help you?", voice=agent_voice)
+                # Play pending response if available
+                if pending_response:
+                    print(f"🎤 Playing pending response: {pending_response}")
+                    response.say(pending_response, voice=agent_voice)
+                    
+                    # Check if goodbye
+                    is_goodbye = VoiceLoggingService._is_completion_goodbye(pending_response)
+                    if is_goodbye:
+                        response.hangup()
+                        print(f"🛑 Goodbye - ending call")
+                        return HTMLResponse(str(response), media_type="application/xml")
                 
-                # Gather next input
-                gather = response.gather(
-                    input='speech',
-                    timeout=10,
-                    speech_timeout='auto',
-                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
-                    method='POST',
-                    enhanced=True,
-                    profanity_filter=False,
-                    language=get_gather_language(agent)
+                # Continue streaming
+                add_media_stream_to_response(
+                    response,
+                    agent_id=str(agentId),
+                    call_session_id=str(call_session.id),
+                    track="inbound_track"
                 )
                 
-                # Fallback if no input
-                response.say("Thank you for calling. Goodbye!", voice=agent_voice)
-                response.hangup()
+                response.pause(length=60)
+                response.redirect(
+                    f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                    method='POST'
+                )
                 
+                print(f"📝 CONTINUATION TwiML with Media Stream")
                 return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "completed":
