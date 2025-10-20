@@ -164,7 +164,7 @@ class TwilioMediaStreamHandler:
             import sys
             from datetime import datetime, timezone
             
-            print(f"🎙️ Sending {len(combined_audio)} bytes to Google Cloud STT (streaming API)...")
+            print(f"🎙️ Sending {len(combined_audio)} bytes to Google Cloud STT (Vapi-style)...")
             sys.stdout.flush()
             
             result = google_stt_service.transcribe_audio_chunk_streaming(
@@ -172,7 +172,7 @@ class TwilioMediaStreamHandler:
                 language_code=language_code
             )
             
-            print(f"📝 STT Result (streaming): {result}")
+            print(f"📝 STT Result: {result}")
             sys.stdout.flush()
             
             if result.get("transcript"):

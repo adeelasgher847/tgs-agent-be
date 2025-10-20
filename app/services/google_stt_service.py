@@ -255,15 +255,16 @@ class GoogleSTTService:
         language_code: str = None
     ) -> Dict[str, Any]:
         """
-        Transcribe audio using streaming API (Vapi-style approach)
-        Better for phone calls - provides real-time results
+        Transcribe audio chunk using Google Cloud STT (Vapi-style approach)
+        Uses simple recognize() API for short phone call audio chunks
+        Fast and reliable - perfect for real-time phone conversations
         
         Args:
             audio_content: Raw audio bytes (MULAW format)
             language_code: Language code for transcription
         
         Returns:
-            Dictionary with transcript and confidence
+            Dictionary with transcript, confidence, and is_final status
         """
         if not self.client:
             return {"error": "Google Speech client not initialized", "transcript": "", "confidence": 0.0}
@@ -289,10 +290,7 @@ class GoogleSTTService:
                 enable_automatic_punctuation=True,
                 model="phone_call",  # Phone call optimized model (Vapi uses this)
                 use_enhanced=True,   # Enhanced model for better accuracy
-                # Vapi-style optimization for phone calls
-                enable_word_time_offsets=False,
-                enable_word_confidence=False,
-                # Add common phrases for better recognition
+                # Add common phrases for better recognition (Vapi-style)
                 speech_contexts=[
                     speech.SpeechContext(
                         phrases=[
@@ -306,67 +304,42 @@ class GoogleSTTService:
                 ],
             )
             
-            streaming_config = speech.StreamingRecognitionConfig(
-                config=config,
-                interim_results=False,  # Only final results for stability
-                single_utterance=True,  # One utterance per request
-            )
+            # Use simple recognize() API instead of streaming
+            # This is better for short phone call chunks (Vapi-style)
+            audio = speech.RecognitionAudio(content=audio_content)
             
-            # Create request generator
-            def request_generator():
-                # First request with config
-                yield speech.StreamingRecognizeRequest(streaming_config=streaming_config)
-                # Second request with audio
-                yield speech.StreamingRecognizeRequest(audio_content=audio_content)
-            
-            # Perform streaming recognition
-            print(f"🔊 Starting streaming recognition with {len(audio_content)} bytes...")
+            print(f"🎙️ Sending {len(audio_content)} bytes to Google Cloud STT...")
             sys.stdout.flush()
             
-            # Fix: Add 'requests=' parameter name for streaming API
-            responses = self.client.streaming_recognize(requests=request_generator())
+            # Simple recognize() call - fast and reliable for short chunks
+            response = self.client.recognize(config=config, audio=audio)
             
-            # Process responses
-            response_count = 0
-            for response in responses:
-                response_count += 1
-                print(f"📡 Received response #{response_count} from STT")
-                sys.stdout.flush()
-                
-                if not response.results:
-                    print(f"⚠️ Response has no results")
-                    sys.stdout.flush()
-                    continue
-                
-                # Get results
-                for result in response.results:
-                    print(f"📊 Result is_final={result.is_final}, alternatives={len(result.alternatives)}")
-                    sys.stdout.flush()
-                    
-                    if not result.alternatives:
-                        continue
-                    
-                    # Get top alternative
+            print(f"📡 Received response from Google STT")
+            sys.stdout.flush()
+            
+            # Process results
+            if response.results:
+                result = response.results[0]
+                if result.alternatives:
                     alternative = result.alternatives[0]
-                    transcript_text = alternative.transcript if hasattr(alternative, 'transcript') else ""
+                    transcript_text = alternative.transcript
+                    confidence = alternative.confidence if hasattr(alternative, 'confidence') else 0.9
                     
-                    print(f"📝 Transcript from STT: '{transcript_text}'")
+                    print(f"📝 Transcript: '{transcript_text}' (confidence: {confidence:.2f})")
                     sys.stdout.flush()
                     
-                    if transcript_text:
-                        return {
-                            "transcript": transcript_text,
-                            "confidence": alternative.confidence if hasattr(alternative, 'confidence') else 0.9,
-                            "is_final": result.is_final
-                        }
+                    return {
+                        "transcript": transcript_text,
+                        "confidence": confidence,
+                        "is_final": True
+                    }
             
-            # No transcript found
-            print(f"⚠️ No transcript after {response_count} responses")
+            print(f"⚠️ No transcript in response")
             sys.stdout.flush()
             return {"transcript": "", "confidence": 0.0, "is_final": True}
         
         except Exception as e:
-            print(f"❌ Error in streaming transcription: {e}")
+            print(f"❌ Error in transcription: {e}")
             import traceback
             traceback.print_exc()
             sys.stdout.flush()
