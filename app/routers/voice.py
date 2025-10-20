@@ -143,6 +143,24 @@ def _update_conversation_state(call_session, key: str, value):
     call_session.call_metadata["conversation_state"] = state
 
 
+def get_gather_language(agent) -> str:
+    """Get language code for Twilio Gather based on agent language"""
+    if not agent or not agent.language:
+        return "en-US"
+    
+    # Map agent language to Twilio supported languages
+    language_map = {
+        "en": "en-US",
+        "es": "es-ES",
+        "hi": "hi-IN",
+        "ar": "ar-SA",
+        "zh": "zh-CN",
+        "ur": "ur-PK"
+    }
+    
+    return language_map.get(agent.language, "en-US")
+
+
 def get_agent_voice(agent) -> str:
     """Get the appropriate Twilio voice based on agent's voice type and language"""
     if not agent:
@@ -702,14 +720,14 @@ async def handle_call_events_webhook(
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
-                # Professional, concise greeting - stream starts immediately after
+                # Professional, concise greeting
                 response.say(f"Hello! This is {agent_name}. How can I help you today?", voice=agent_voice)
                 
                 # Add initial greeting to transcript
                 greeting_text = f"Hello! This is {agent_name}. How can I help you today?"
                 await _add_to_transcript(call_session, "agent", greeting_text, db)
                 
-                # Broadcast greeting event (non-blocking - fire and forget)
+                # Broadcast greeting event
                 try:
                     asyncio.create_task(broadcast_call_event(
                         call_session_id=str(call_session.id),
@@ -740,83 +758,64 @@ async def handle_call_events_webhook(
                 except Exception as e:
                     print(f"⚠️ Error logging call answered event: {e}")
                 
-                # Start media streaming for Google Cloud STT
-                # Use inbound_track to capture only user's voice (not agent's)
-                add_media_stream_to_response(
-                    response,
-                    agent_id=str(agentId),
-                    call_session_id=str(call_session.id),
-                    track="inbound_track"  # Only stream user audio (Vapi-style)
+                # Use Twilio Gather - Twilio detects silence automatically!
+                # Simple and reliable (like Vapi uses)
+                gather = response.gather(
+                    input='speech',
+                    timeout=10,  # Wait up to 10 seconds for user to speak
+                    speech_timeout='auto',  # Twilio auto-detects when user stops speaking
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
+                    method='POST',
+                    enhanced=True,  # Use enhanced model for better accuracy
+                    profanity_filter=False,  # Don't censor speech
+                    language=get_gather_language(agent)  # Match agent language
                 )
                 
-                # Add a pause to keep the call alive while streaming
-                # The WebSocket will handle transcription and responses
-                # This is a background wait - actual response will come via redirect
-                response.pause(length=60)  # 60 seconds - background streaming time
+                print(f"🎤 Gather configured - Twilio handles silence detection automatically")
                 
-                # After timeout, redirect back to check for updates or end call
+                # Fallback if no speech detected
+                response.say("I didn't catch that. Let me know if you need help!", voice=agent_voice)
                 response.redirect(
                     f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                     method='POST'
                 )
                 
                 twiml_result = str(response)
-                print(f"📝 GREETING TwiML with Media Stream: {twiml_result}")
+                print(f"📝 GREETING TwiML with Gather (Hybrid Approach): {twiml_result}")
                 return HTMLResponse(twiml_result, media_type="application/xml")
             else:
-                print("🔄 ALREADY GREETED - Checking for pending response or continuing stream")
-                
-                # Check if there's a pending response from the WebSocket
-                pending_response = None
-                if call_session.call_metadata and "pending_response" in call_session.call_metadata:
-                    pending_response = call_session.call_metadata.pop("pending_response")
-                    db.commit()
+                print("🔄 ALREADY GREETED - Checking for fallback or timeout")
                 
                 response = VoiceResponse()
                 agent_voice = get_agent_voice(agent)
                 
                 # Check if this is a timeout redirect
                 if timeout == "true":
-                    print(f"⏱️ Timeout redirect - playing goodbye and ending call")
-                    if pending_response:
-                        response.say(pending_response, voice=agent_voice)
-                    else:
-                        response.say("Thank you for calling. Goodbye!", voice=agent_voice)
+                    print(f"⏱️ Timeout - ending call")
+                    response.say("Thank you for calling. Goodbye!", voice=agent_voice)
                     response.hangup()
                     return HTMLResponse(str(response), media_type="application/xml")
                 
-                if pending_response:
-                    # Play the pending response
-                    print(f"🎤 Playing pending response: {pending_response}")
-                    response.say(pending_response, voice=agent_voice)
-                    
-                    # Check if it's a goodbye response
-                    is_goodbye = VoiceLoggingService._is_completion_goodbye(pending_response)
-                    if is_goodbye:
-                        response.hangup()
-                        print(f"🛑 Goodbye response - ending call")
-                        return HTMLResponse(str(response), media_type="application/xml")
+                # Fallback - ask user to speak again
+                response.say("I'm still here. How can I help you?", voice=agent_voice)
                 
-                # Continue streaming (only user audio)
-                add_media_stream_to_response(
-                    response,
-                    agent_id=str(agentId),
-                    call_session_id=str(call_session.id),
-                    track="inbound_track"  # Only stream user audio (Vapi-style)
+                # Gather next input
+                gather = response.gather(
+                    input='speech',
+                    timeout=10,
+                    speech_timeout='auto',
+                    action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
+                    method='POST',
+                    enhanced=True,
+                    profanity_filter=False,
+                    language=get_gather_language(agent)
                 )
                 
-                # Keep call alive for continued streaming
-                response.pause(length=60)  # Background streaming - redirect will interrupt
+                # Fallback if no input
+                response.say("Thank you for calling. Goodbye!", voice=agent_voice)
+                response.hangup()
                 
-                # Redirect to check for more responses
-                response.redirect(
-                    f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                    method='POST'
-                )
-                
-                twiml_result = str(response)
-                print(f"📝 CONTINUATION TwiML with Media Stream: {twiml_result}")
-                return HTMLResponse(twiml_result, media_type="application/xml")
+                return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "completed":
             # Call completed
@@ -1073,6 +1072,205 @@ async def get_dashboard_analytics(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get dashboard analytics: {str(e)}")
+
+
+@router.post("/webhook/gather-speech", response_class=HTMLResponse)
+async def handle_gather_speech_webhook(
+    request: Request,
+    agentId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
+    body: str = Depends(get_request_body),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle speech gathered by Twilio's Gather
+    Twilio detects silence, sends audio, we transcribe with Google STT
+    HYBRID APPROACH: Twilio for silence detection + Google for transcription
+    """
+    print("=" * 80)
+    print(f"🎙️ GATHER SPEECH WEBHOOK CALLED")
+    print("=" * 80)
+    
+    try:
+        form_data = await request.form()
+        
+        call_sid = form_data.get("CallSid", "")
+        recording_url = form_data.get("RecordingUrl", "")
+        speech_result = form_data.get("SpeechResult", "")  # Twilio's transcription
+        confidence = form_data.get("Confidence", "0")
+        
+        print(f"📞 Call SID: {call_sid}")
+        print(f"🎤 Twilio Speech Result: {speech_result}")
+        print(f"📊 Confidence: {confidence}")
+        print(f"🎵 Recording URL: {recording_url}")
+        
+        # Get call session
+        call_session = None
+        if callSessionId:
+            try:
+                session_uuid = uuid.UUID(callSessionId)
+                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+                print(f"✅ Found call session: {call_session.id}")
+            except ValueError:
+                print(f"⚠️ Invalid call session ID: {callSessionId}")
+        
+        # Get agent
+        agent = None
+        if agentId and call_session:
+            try:
+                agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
+                print(f"✅ Agent: {agent.name}")
+            except Exception as e:
+                print(f"⚠️ Error fetching agent: {e}")
+        
+        # Download audio from Twilio recording
+        if recording_url and call_session:
+            try:
+                import requests
+                import base64
+                
+                # Get Twilio credentials
+                client = twilio_service.get_client()
+                account_sid = client.username
+                auth_token = client.password
+                
+                # Download recording with authentication
+                auth_url = f"https://{account_sid}:{auth_token}@api.twilio.com{recording_url}.wav"
+                print(f"📥 Downloading audio from Twilio...")
+                
+                audio_response = requests.get(auth_url)
+                audio_content = audio_response.content
+                
+                print(f"✅ Downloaded {len(audio_content)} bytes of audio")
+                
+                # Send to Google Cloud STT
+                from app.services.google_stt_service import google_stt_service
+                
+                # Get language
+                language_code = "en-US"
+                if agent and hasattr(agent, 'language'):
+                    language_map = {
+                        "en": "en-US",
+                        "es": "es-ES",
+                        "hi": "hi-IN",
+                        "ar": "ar-SA",
+                        "zh": "zh-CN",
+                        "ur": "ur-PK"
+                    }
+                    language_code = language_map.get(agent.language, "en-US")
+                
+                print(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
+                
+                # Transcribe with Google STT
+                stt_result = google_stt_service.transcribe_audio_chunk_streaming(
+                    audio_content=audio_content,
+                    language_code=language_code
+                )
+                
+                google_transcript = stt_result.get("transcript", "")
+                google_confidence = stt_result.get("confidence", 0.0)
+                
+                print(f"📝 Google STT Transcript: '{google_transcript}'")
+                print(f"📊 Google STT Confidence: {google_confidence:.2f}")
+                
+                # Use Google transcript (more accurate)
+                final_transcript = google_transcript if google_transcript else speech_result
+                
+                if final_transcript:
+                    # Add to transcript
+                    await _add_to_transcript(
+                        call_session, 
+                        "client", 
+                        final_transcript, 
+                        db,
+                        message_type="speech",
+                        confidence=google_confidence
+                    )
+                    
+                    # Generate LLM response
+                    response_text = await VoiceLoggingService.generate_agent_response(
+                        speech_text=final_transcript,
+                        confidence=google_confidence,
+                        agent=agent,
+                        db=db,
+                        call_session_id=call_session.id
+                    )
+                    
+                    # Add agent response to transcript
+                    await _add_to_transcript(
+                        call_session,
+                        "agent",
+                        response_text,
+                        db,
+                        message_type="agent_response"
+                    )
+                    
+                    print(f"✅ Generated agent response: '{response_text}'")
+                    
+                    # Create response TwiML
+                    response = VoiceResponse()
+                    agent_voice = get_agent_voice(agent)
+                    
+                    # Say agent response
+                    response.say(response_text, voice=agent_voice)
+                    
+                    # Check if goodbye
+                    is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
+                    if is_goodbye:
+                        response.hangup()
+                        print(f"🛑 Goodbye detected - ending call")
+                        return HTMLResponse(str(response), media_type="application/xml")
+                    
+                    # Continue conversation - gather next input
+                    gather = response.gather(
+                        input='speech',
+                        timeout=10,
+                        speech_timeout='auto',
+                        action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
+                        method='POST',
+                        enhanced=True,
+                        profanity_filter=False,
+                        language=get_gather_language(agent)
+                    )
+                    
+                    # Fallback
+                    response.say("I didn't catch that. Please try again!", voice=agent_voice)
+                    response.redirect(
+                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&callSessionId={call_session.id}',
+                        method='POST'
+                    )
+                    
+                    print(f"📝 Response TwiML: {str(response)[:200]}...")
+                    return HTMLResponse(str(response), media_type="application/xml")
+            
+            except Exception as e:
+                print(f"❌ Error processing gathered speech: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Fallback response
+        response = VoiceResponse()
+        agent_voice = get_agent_voice(agent)
+        response.say("I didn't hear you. Could you please repeat that?", voice=agent_voice)
+        
+        gather = response.gather(
+            input='speech',
+            timeout=10,
+            speech_timeout='auto',
+            action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
+            method='POST',
+            enhanced=True,
+            profanity_filter=False,
+            language=get_gather_language(agent)
+        )
+        
+        return HTMLResponse(str(response), media_type="application/xml")
+    
+    except Exception as e:
+        print(f"❌ Error in gather speech webhook: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 @router.post("/webhook/recording-status")

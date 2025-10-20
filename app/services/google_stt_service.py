@@ -252,16 +252,19 @@ class GoogleSTTService:
     def transcribe_audio_chunk_streaming(
         self,
         audio_content: bytes,
-        language_code: str = None
+        language_code: str = None,
+        encoding: str = None,
+        sample_rate: int = None
     ) -> Dict[str, Any]:
         """
-        Transcribe audio chunk using Google Cloud STT (Vapi-style approach)
-        Uses simple recognize() API for short phone call audio chunks
-        Fast and reliable - perfect for real-time phone conversations
+        Transcribe audio using Google Cloud STT
+        Works with both MULAW (Media Streams) and WAV (Gather recordings)
         
         Args:
-            audio_content: Raw audio bytes (MULAW format)
+            audio_content: Raw audio bytes (MULAW or WAV format)
             language_code: Language code for transcription
+            encoding: Audio encoding (MULAW, LINEAR16) - auto-detected if None
+            sample_rate: Sample rate in Hz - auto-detected if None
         
         Returns:
             Dictionary with transcript, confidence, and is_final status
@@ -273,19 +276,31 @@ class GoogleSTTService:
             import sys
             language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
             
-            # Create streaming config optimized for phone calls
+            # Auto-detect encoding and sample rate from audio file
+            if encoding is None or sample_rate is None:
+                # Check if WAV file (starts with RIFF header)
+                if audio_content[:4] == b'RIFF':
+                    # WAV file detected
+                    encoding = "LINEAR16"
+                    # Parse WAV header for sample rate (bytes 24-27)
+                    sample_rate = int.from_bytes(audio_content[24:28], byteorder='little')
+                    print(f"📊 Auto-detected: WAV file, {sample_rate}Hz, LINEAR16")
+                else:
+                    # Assume MULAW for Media Streams
+                    encoding = settings.GOOGLE_STT_ENCODING
+                    sample_rate = settings.GOOGLE_STT_SAMPLE_RATE
+                    print(f"📊 Using config: MULAW, {sample_rate}Hz")
+            
+            # Map encoding
             encoding_map = {
                 "MULAW": speech.RecognitionConfig.AudioEncoding.MULAW,
                 "LINEAR16": speech.RecognitionConfig.AudioEncoding.LINEAR16,
             }
-            audio_encoding = encoding_map.get(
-                settings.GOOGLE_STT_ENCODING,
-                speech.RecognitionConfig.AudioEncoding.MULAW
-            )
+            audio_encoding = encoding_map.get(encoding, speech.RecognitionConfig.AudioEncoding.LINEAR16)
             
             config = speech.RecognitionConfig(
                 encoding=audio_encoding,
-                sample_rate_hertz=settings.GOOGLE_STT_SAMPLE_RATE,
+                sample_rate_hertz=sample_rate,  # Use detected or provided sample rate
                 language_code=language_code,
                 enable_automatic_punctuation=True,
                 model="phone_call",  # Phone call optimized model (Vapi uses this)
