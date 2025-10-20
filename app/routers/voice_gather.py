@@ -31,6 +31,20 @@ router = APIRouter()
 model_service = ModelService()
 
 
+def get_call_duration_realtime(call_session) -> str:
+    """Get real-time call duration in human-readable format"""
+    if not call_session or not call_session.start_time:
+        return "00:00"
+    
+    current_time = datetime.now(timezone.utc)
+    duration_seconds = (current_time - call_session.start_time).total_seconds()
+    
+    minutes = int(duration_seconds // 60)
+    seconds = int(duration_seconds % 60)
+    
+    return f"{minutes:02d}:{seconds:02d}"
+
+
 def get_agent_voice(agent) -> str:
     """Get the appropriate Twilio voice based on agent's voice type and language"""
     if not agent:
@@ -158,22 +172,20 @@ async def gather_greeting_webhook(
         agent_voice = get_agent_voice(agent)
         gather_language = get_gather_language(agent)
         
-        # Greeting message
-        greeting_text = f"Hello! This is {agent_name}. How can I help you today?"
-        response.say(greeting_text, voice=agent_voice)
+        # NO GREETING - User speaks first! 🎤
+        # Just start listening immediately for better UX
+        print(f"👂 Listening for user to speak first (no greeting)")
+        sys.stdout.flush()
         
-        # Add greeting to transcript
+        # Log call start event (no greeting transcript)
         if call_session:
-            await add_to_transcript(call_session, "agent", greeting_text, db, message_type="greeting")
-            
-            # Broadcast greeting event
             try:
                 asyncio.create_task(broadcast_call_event(
                     call_session_id=str(call_session.id),
-                    event_type="greeting",
+                    event_type="call_started",
                     event_data={
                         "agent_name": agent_name,
-                        "greeting_text": greeting_text,
+                        "message": "Call connected - Listening for user input",
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                 ))
@@ -184,23 +196,39 @@ async def gather_greeting_webhook(
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
         
         # Gather speech input with optimized settings for low latency
+        # User speaks FIRST - no greeting
         gather = response.gather(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout='auto',  # Auto-detect when user stops speaking
-            timeout=10,  # Overall timeout (10 seconds of silence)
+            speechTimeout='auto',  # Auto-detect when user stops speaking (FAST)
+            timeout=8,  # Reduced to 8 seconds for faster detection
             language=gather_language,
             enhanced=True,  # Use enhanced model for better accuracy
             profanity_filter=False,  # Don't filter for natural conversation
             speech_model='phone_call'  # Optimized for phone calls
         )
         
-        # Timeout fallback
-        response.say("I didn't hear anything. Please call back if you need assistance. Goodbye!", voice=agent_voice)
+        # Timeout fallback (if user doesn't speak)
+        response.say("Hello? Are you there? Please speak so I can help you.", voice=agent_voice)
+        
+        # Give one more chance to speak
+        gather_retry = response.gather(
+            input='speech',
+            action=callback_url,
+            method='POST',
+            speechTimeout='auto',
+            timeout=5,  # Shorter timeout for retry
+            language=gather_language,
+            enhanced=True,
+            profanity_filter=False,
+            speech_model='phone_call'
+        )
+        
+        response.say("I still can't hear you. Please call back. Goodbye!", voice=agent_voice)
         response.hangup()
         
-        print(f"✅ Greeting TwiML generated with <Gather>")
+        print(f"✅ TwiML generated - User speaks FIRST (no greeting)")
         print(f"📝 TwiML: {str(response)[:300]}...")
         sys.stdout.flush()
         
@@ -246,11 +274,11 @@ async def gather_speech_callback_webhook(
     print(f"🎙️ GATHER SPEECH CALLBACK - Processing User Input")
     print(f"📞 Call Session: {callSessionId}")
     print(f"🤖 Agent: {agentId}")
-    print(f"⏰ Start Time: {datetime.now(timezone.utc).isoformat()}")
+    print(f"⏰ Processing Start: {datetime.now(timezone.utc).isoformat()}")
     print("=" * 80)
     sys.stdout.flush()
     
-    start_time = datetime.now(timezone.utc)
+    processing_start_time = datetime.now(timezone.utc)
     
     try:
         # Parse form data from Twilio
@@ -290,6 +318,11 @@ async def gather_speech_callback_webhook(
         agent_voice = get_agent_voice(agent)
         gather_language = get_gather_language(agent)
         
+        # Get real-time call duration
+        call_duration = get_call_duration_realtime(call_session) if call_session else "00:00"
+        print(f"⏱️ Real-time Call Duration: {call_duration}")
+        sys.stdout.flush()
+        
         # STEP 2: Download audio from Twilio (if available)
         transcript = ""
         stt_confidence = 0.0
@@ -312,8 +345,8 @@ async def gather_speech_callback_webhook(
                 print(f"📥 Downloading audio from Twilio...")
                 sys.stdout.flush()
                 
-                # Download audio
-                audio_response = requests.get(auth_url, timeout=5)
+                # Download audio with reduced timeout for faster response
+                audio_response = requests.get(auth_url, timeout=3)  # Reduced from 5s to 3s
                 
                 if audio_response.status_code == 200:
                     audio_content = audio_response.content
@@ -453,10 +486,30 @@ async def gather_speech_callback_webhook(
                 message_type="agent_response"
             )
         
-        # Calculate total latency
-        total_time = (datetime.now(timezone.utc) - start_time).total_seconds()
-        print(f"⏱️ Total Latency: {total_time:.2f}s")
+        # Calculate total processing latency
+        processing_time = (datetime.now(timezone.utc) - processing_start_time).total_seconds()
+        
+        # Get updated real-time call duration
+        call_duration_end = get_call_duration_realtime(call_session) if call_session else "00:00"
+        
+        print(f"⏱️ Processing Latency: {processing_time:.2f}s")
+        print(f"📞 Call Duration (Real-time): {call_duration_end}")
         sys.stdout.flush()
+        
+        # Broadcast real-time duration update
+        if call_session:
+            try:
+                asyncio.create_task(broadcast_call_event(
+                    call_session_id=str(call_session.id),
+                    event_type="duration_update",
+                    event_data={
+                        "duration": call_duration_end,
+                        "processing_time": f"{processing_time:.2f}s",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                ))
+            except Exception as e:
+                print(f"⚠️ Duration broadcast failed (non-critical): {e}")
         
         # STEP 7: Create TwiML response with <Say> + <Gather>
         response = VoiceResponse()
@@ -472,15 +525,15 @@ async def gather_speech_callback_webhook(
             response.hangup()
             return HTMLResponse(str(response), media_type="application/xml")
         
-        # Continue conversation - gather next input
+        # Continue conversation - gather next input with optimized timeout
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
         
         gather = response.gather(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout='auto',  # Auto-detect silence
-            timeout=10,  # 10 seconds of silence
+            speechTimeout='auto',  # Auto-detect silence (FASTEST)
+            timeout=7,  # Reduced to 7 seconds for faster flow
             language=gather_language,
             enhanced=True,
             profanity_filter=False,
