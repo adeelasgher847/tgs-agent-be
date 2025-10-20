@@ -100,9 +100,9 @@ class TwilioMediaStreamHandler:
             else:
                 self.silence_counter += 1
             
-            # Vapi-style fast processing: Small buffer for instant responses
-            # Smaller = faster response, Larger = better accuracy
-            buffer_size_threshold = 3  # Process every 3 chunks (~60ms) - Vapi-like speed
+            # Google Cloud STT needs more audio data for accurate recognition
+            # Balanced approach: 25 chunks = ~0.5 seconds (enough for speech detection)
+            buffer_size_threshold = 25  # Process every 25 chunks (~500ms) - Good balance
             
             if len(self.audio_buffer) >= buffer_size_threshold:
                 # Force flush logs immediately
@@ -139,8 +139,8 @@ class TwilioMediaStreamHandler:
             print(f"🎵 Combined {len(combined_audio)} bytes of audio")
             sys.stdout.flush()
             
-            # Vapi-style: Process smaller chunks for faster response
-            # Skip only if extremely short (less than 50 bytes)
+            # Skip if audio buffer is too small (safety check)
+            # With 25 chunk threshold, we should have ~4KB typically
             if len(combined_audio) < 50:
                 print(f"⚠️ Skipping - audio too short: {len(combined_audio)} bytes")
                 sys.stdout.flush()
