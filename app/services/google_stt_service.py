@@ -276,6 +276,10 @@ class GoogleSTTService:
             import sys
             language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
             
+            # Default model and enhanced flag
+            model = "default"
+            use_enhanced = False
+            
             # Auto-detect encoding and sample rate from audio file
             if encoding is None or sample_rate is None:
                 # Check if WAV file (starts with RIFF header)
@@ -284,12 +288,37 @@ class GoogleSTTService:
                     encoding = "LINEAR16"
                     # Parse WAV header for sample rate (bytes 24-27)
                     sample_rate = int.from_bytes(audio_content[24:28], byteorder='little')
-                    print(f"📊 Auto-detected: WAV file, {sample_rate}Hz, LINEAR16")
+                    
+                    # For 8kHz LINEAR16 recordings, use 'default' or 'command_and_search' model
+                    # 'telephony' model is deprecated, 'phone_call' is for MULAW only
+                    if sample_rate <= 8000:
+                        model = "command_and_search"  # Best for short utterances at 8kHz
+                        use_enhanced = False  # Enhanced not available for 8kHz
+                    else:
+                        model = "default"
+                        use_enhanced = True
+                    
+                    print(f"📊 Auto-detected: WAV file, {sample_rate}Hz, LINEAR16, model={model}, enhanced={use_enhanced}")
+                    sys.stdout.flush()
                 else:
                     # Assume MULAW for Media Streams
                     encoding = settings.GOOGLE_STT_ENCODING
                     sample_rate = settings.GOOGLE_STT_SAMPLE_RATE
-                    print(f"📊 Using config: MULAW, {sample_rate}Hz")
+                    
+                    # phone_call model is for MULAW streaming
+                    model = "phone_call"
+                    use_enhanced = False  # Enhanced not available for 8kHz MULAW
+                    
+                    print(f"📊 Using config: MULAW, {sample_rate}Hz, model={model}, enhanced={use_enhanced}")
+                    sys.stdout.flush()
+            else:
+                # Manual configuration provided
+                if sample_rate <= 8000:
+                    model = "command_and_search" if encoding == "LINEAR16" else "phone_call"
+                    use_enhanced = False
+                else:
+                    model = "default"
+                    use_enhanced = True
             
             # Map encoding
             encoding_map = {
@@ -303,9 +332,9 @@ class GoogleSTTService:
                 sample_rate_hertz=sample_rate,  # Use detected or provided sample rate
                 language_code=language_code,
                 enable_automatic_punctuation=True,
-                model="phone_call",  # Phone call optimized model (Vapi uses this)
-                use_enhanced=True,   # Enhanced model for better accuracy
-                # Add common phrases for better recognition (Vapi-style)
+                model=model,  # Dynamic model based on audio format
+                use_enhanced=use_enhanced,  # Only for 16kHz+ audio
+                # Add common phrases for better recognition
                 speech_contexts=[
                     speech.SpeechContext(
                         phrases=[
@@ -320,10 +349,11 @@ class GoogleSTTService:
             )
             
             # Use simple recognize() API instead of streaming
-            # This is better for short phone call chunks (Vapi-style)
+            # This is better for short phone call chunks (VAPI-style)
             audio = speech.RecognitionAudio(content=audio_content)
             
             print(f"🎙️ Sending {len(audio_content)} bytes to Google Cloud STT...")
+            print(f"🔧 Config: encoding={encoding}, sample_rate={sample_rate}Hz, model={model}, enhanced={use_enhanced}")
             sys.stdout.flush()
             
             # Simple recognize() call - fast and reliable for short chunks
@@ -349,7 +379,7 @@ class GoogleSTTService:
                         "is_final": True
                     }
             
-            print(f"⚠️ No transcript in response")
+            print(f"⚠️ No transcript in response - empty audio or silence")
             sys.stdout.flush()
             return {"transcript": "", "confidence": 0.0, "is_final": True}
         
