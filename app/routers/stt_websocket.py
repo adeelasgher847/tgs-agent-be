@@ -45,11 +45,14 @@ import uuid
 import io
 from pydub import AudioSegment
 
-# Python 3.13+ compatibility: audioop was removed, use pyaudioop instead
+# Python 3.13+ compatibility: audioop was removed, use audioop-lts instead
 try:
     import audioop
 except ModuleNotFoundError:
-    import pyaudioop as audioop
+    try:
+        from audioop_lts import audioop
+    except ImportError:
+        raise ImportError("audioop module not found. Install audioop-lts for Python 3.13+")
 
 from app.services.google_stt_service import google_stt_service
 from app.services.call_session_service import call_session_service

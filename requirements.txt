@@ -29,4 +29,4 @@ google-auth-oauthlib
 google-cloud-speech
 google-cloud-texttospeech
 pydub
-pyaudioop
+audioop-lts; python_version >= '3.13'
