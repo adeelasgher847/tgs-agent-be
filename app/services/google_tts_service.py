@@ -146,7 +146,8 @@ class GoogleTTSService:
         voice_type: str = "female",
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
-        output_format: str = "mp3"
+        output_format: str = "mp3",
+        use_gemini_flash: bool = False
     ) -> bytes:
         """
         Convert text to speech using Google Cloud TTS API
@@ -158,6 +159,7 @@ class GoogleTTSService:
             speaking_rate: Speech speed (0.25 to 4.0, default 1.0)
             pitch: Voice pitch (-20.0 to 20.0, default 0.0)
             output_format: Output format (mp3, linear16, ogg_opus, mulaw, alaw)
+            use_gemini_flash: Use Gemini TTS Flash voices (ultra-fast and high quality)
             
         Returns:
             Audio data as bytes
@@ -169,7 +171,7 @@ class GoogleTTSService:
             synthesis_input = texttospeech.SynthesisInput(text=text)
             
             # Get voice name and language code
-            voice_name = self.get_voice_name(language, voice_type)
+            voice_name = self.get_voice_name(language, voice_type, use_gemini_flash)
             language_code = self.get_language_code(language)
             
             # Build the voice request

@@ -15,7 +15,7 @@ router = APIRouter()
 
 # In-memory cache for generated audio
 audio_cache = {}
-MAX_CACHE_SIZE = 200  # Cache up to 200 audio filees
+MAX_CACHE_SIZE = 200  # Cache up to 200 audio files
 
 
 def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False) -> str:
