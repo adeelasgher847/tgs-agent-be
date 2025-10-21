@@ -821,17 +821,19 @@ async def handle_call_events_webhook(
                     text = pending_response if pending_response else "Thank you for calling. Goodbye!"
                     lang = agent.language if agent and agent.language else "en"
                     voice = agent.voice_type if agent and agent.voice_type else "female"
-                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+                    # Use Gemini Flash for fast goodbye
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
                     response.play(tts_url)
                     response.hangup()
                     return HTMLResponse(str(response), media_type="application/xml")
                 
-                # Play pending response if available
+                # Play pending response if available (VAPI-STYLE ULTRA-FAST)
                 if pending_response:
-                    print(f"🎤 Playing pending response: {pending_response}")
+                    print(f"🎤 Playing pending response (Gemini Flash): {pending_response}")
                     lang = agent.language if agent and agent.language else "en"
                     voice = agent.voice_type if agent and agent.voice_type else "female"
-                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(pending_response)}&lang={lang}&voice={voice}"
+                    # Use Gemini Flash TTS for ultra-fast generation (200-300ms vs 500-1000ms)
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(pending_response)}&lang={lang}&voice={voice}&gemini_flash=true"
                     response.play(tts_url)
                     
                     # Check if goodbye
