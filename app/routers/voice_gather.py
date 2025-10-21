@@ -57,7 +57,7 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
                 text=text,
                 language=language,
                 voice_type=voice_type,
-                speaking_rate=1.0,
+                speaking_rate=1.1,  # 10% faster for quicker responses
                 pitch=0.0,
                 output_format="mp3"
             )
@@ -593,7 +593,7 @@ async def gather_speech_callback_webhook(
                     text=response_text,
                     language=lang,
                     voice_type=voice,
-                    speaking_rate=1.0,
+                    speaking_rate=1.1,  # 10% faster for quicker responses (sounds natural)
                     pitch=0.0,
                     output_format="mp3"
                 )

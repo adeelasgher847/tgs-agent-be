@@ -60,7 +60,7 @@ async def serve_google_tts_audio(
                 text=text,
                 language=lang,
                 voice_type=voice,
-                speaking_rate=1.0,
+                speaking_rate=1.1,  # 10% faster for quicker responses
                 pitch=0.0,
                 output_format="mp3"
             )

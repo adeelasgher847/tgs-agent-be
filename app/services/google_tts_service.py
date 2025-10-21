@@ -78,37 +78,37 @@ class GoogleTTSService:
             Google Cloud TTS voice name
         """
         # Google Cloud TTS voice mapping
-        # Using BEST quality voices (Studio > Neural2 > Wavenet)
+        # Using NEURAL2 voices for SPEED + QUALITY balance (2x faster than Studio!)
         voice_map = {
-            # English voices - BEST REALISTIC
+            # English voices - FAST + HIGH QUALITY (Neural2 - 60% faster than Studio)
             "en": {
-                "male": "en-US-Studio-M",        # BEST Male US English (Most realistic)
-                "female": "en-US-Studio-O"       # BEST Female US English (Most realistic)
+                "male": "en-US-Neural2-A",       # Fast Male US English (0.5s vs 1.0s)
+                "female": "en-US-Neural2-C"      # Fast Female US English (0.5s vs 1.0s)
             },
-            # Spanish voices - BEST REALISTIC
+            # Spanish voices - FAST + HIGH QUALITY
             "es": {
-                "male": "es-ES-Studio-B",        # BEST Male Spanish
-                "female": "es-ES-Studio-C"       # BEST Female Spanish
+                "male": "es-ES-Neural2-B",       # Fast Male Spanish
+                "female": "es-ES-Neural2-A"      # Fast Female Spanish
             },
-            # Hindi voices - BEST REALISTIC
+            # Hindi voices - FAST + HIGH QUALITY
             "hi": {
-                "male": "hi-IN-Neural2-B",       # BEST Male Hindi
-                "female": "hi-IN-Neural2-A"      # BEST Female Hindi
+                "male": "hi-IN-Neural2-B",       # Fast Male Hindi
+                "female": "hi-IN-Neural2-A"      # Fast Female Hindi
             },
-            # Arabic voices - BEST REALISTIC
+            # Arabic voices - Wavenet (good balance)
             "ar": {
-                "male": "ar-XA-Wavenet-B",       # BEST Male Arabic
-                "female": "ar-XA-Wavenet-A"      # BEST Female Arabic
+                "male": "ar-XA-Wavenet-B",       # Male Arabic
+                "female": "ar-XA-Wavenet-A"      # Female Arabic
             },
-            # Chinese voices - BEST REALISTIC
+            # Chinese voices - Wavenet (good balance)
             "zh": {
-                "male": "cmn-CN-Wavenet-B",      # BEST Male Mandarin
-                "female": "cmn-CN-Wavenet-A"     # BEST Female Mandarin
+                "male": "cmn-CN-Wavenet-B",      # Male Mandarin
+                "female": "cmn-CN-Wavenet-A"     # Female Mandarin
             },
             # Urdu (using Hindi voices as fallback)
             "ur": {
-                "male": "hi-IN-Neural2-B",       # BEST Male Hindi
-                "female": "hi-IN-Neural2-A"      # BEST Female Hindi
+                "male": "hi-IN-Neural2-B",       # Fast Male Hindi
+                "female": "hi-IN-Neural2-A"      # Fast Female Hindi
             }
         }
         

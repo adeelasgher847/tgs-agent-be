@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, Query, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse, Start, Stream
@@ -8,6 +8,7 @@ import random
 import uuid
 import asyncio
 import sys
+import requests
 
 from app.api.deps import get_db, require_tenant
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
@@ -1833,15 +1834,15 @@ async def end_call(
         raise HTTPException(status_code=500, detail="Failed to end call")
 
 
-@router.get("/recording/{call_session_id}/access", response_model=SuccessResponse[dict])
+@router.get("/recording/{call_session_id}/access")
 async def get_recording_access(
     call_session_id: str,
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
-    Get direct access to call recording for authenticated users.
-    Returns the authenticated Twilio recording URL.
+    Stream call recording directly to user (NO Twilio login required!)
+    Returns audio file that can be played directly in browser.
     """
     try:
         # Get call session and verify user has access
@@ -1856,31 +1857,51 @@ async def get_recording_access(
         if not call_session.recording_url:
             raise HTTPException(status_code=404, detail="No recording available for this call")
         
-        # Get Twilio credentials to create authenticated URL
+        # Get Twilio credentials to download recording server-side
         client = twilio_service.get_client()
         account_sid = client.username
         auth_token = client.password
         
         # Extract recording SID from the URL
-        recording_sid = call_session.recording_url.split('/')[-1].replace('.mp3', '')
+        recording_sid = call_session.recording_url.split('/')[-1].replace('.mp3', '').replace('.wav', '')
         
-        # Create authenticated Twilio URL
+        # Create authenticated Twilio URL for server-side download
         authenticated_url = f"https://{account_sid}:{auth_token}@api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
         
-        # Return the URL in JSON response instead of redirecting
-        return create_success_response(
-            {
-                "call_session_id": call_session_id,
-                "recording_url": authenticated_url,
-                "message": "Use the recording_url to access the call recording directly"
-            },
-            "Recording access URL generated successfully"
+        print(f"📥 Streaming recording for call session: {call_session_id}")
+        print(f"🎵 Recording SID: {recording_sid}")
+        
+        # Download recording from Twilio (server-side with auth)
+        response = requests.get(authenticated_url, stream=True, timeout=30)
+        
+        if response.status_code != 200:
+            print(f"❌ Failed to fetch recording: HTTP {response.status_code}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to fetch recording from Twilio: HTTP {response.status_code}"
+            )
+        
+        print(f"✅ Streaming recording to user (no login required)")
+        
+        # Stream audio directly to user (NO authentication required on user's end!)
+        return StreamingResponse(
+            response.iter_content(chunk_size=8192),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f"inline; filename=call_recording_{call_session_id}.mp3",
+                "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                "Accept-Ranges": "bytes"  # Enable seeking in audio player
+            }
         )
         
     except HTTPException:
         raise
+    except requests.RequestException as e:
+        print(f"❌ Network error fetching recording: {e}")
+        raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to access recording: {str(e)}")
+        print(f"❌ Error streaming recording: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stream recording: {str(e)}")
 
 
 @router.post("/transcript/analyze/{call_session_id}", response_model=SuccessResponse[dict])
