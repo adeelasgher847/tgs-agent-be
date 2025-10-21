@@ -494,19 +494,20 @@ async def gather_speech_callback_webhook(
             
             return HTMLResponse(str(response), media_type="application/xml")
         
-        # STEP 5: Add user speech to transcript
+        # STEP 5: Add user speech to transcript (non-blocking - fire and forget)
         if call_session:
-            await add_to_transcript(
+            # Fire DB writes in background - don't wait for them
+            asyncio.create_task(add_to_transcript(
                 call_session,
                 "client",
                 transcript,
                 db,
                 message_type="speech",
                 confidence=stt_confidence
-            )
+            ))
             
-            # Log voice interaction
-            await VoiceLoggingService.log_voice_interaction(
+            # Log voice interaction (non-blocking)
+            asyncio.create_task(VoiceLoggingService.log_voice_interaction(
                 db=db,
                 call_session_id=call_session.id,
                 interaction_type="speech_input",
@@ -517,9 +518,9 @@ async def gather_speech_callback_webhook(
                     "agent_id": str(agent.id) if agent else None,
                     "source": "google_stt" if recording_url else "twilio"
                 }
-            )
+            ))
         
-        # STEP 6: Generate AI response using LLM
+        # STEP 6: Generate AI response using LLM (start immediately - don't wait for DB)
         llm_start = datetime.now(timezone.utc)
         
         print(f"🤖 Generating AI response...")
@@ -539,15 +540,15 @@ async def gather_speech_callback_webhook(
         print(f"✅ AI Response: '{response_text}' (time: {llm_time:.2f}s)")
         sys.stdout.flush()
         
-        # Add agent response to transcript
+        # Add agent response to transcript (non-blocking - fire and forget)
         if call_session:
-            await add_to_transcript(
+            asyncio.create_task(add_to_transcript(
                 call_session,
                 "agent",
                 response_text,
                 db,
                 message_type="agent_response"
-            )
+            ))
         
         # Calculate total processing latency
         processing_time = (datetime.now(timezone.utc) - processing_start_time).total_seconds()

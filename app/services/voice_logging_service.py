@@ -223,8 +223,8 @@ class VoiceLoggingService:
                     conversation_array = transcript_service.get_conversation_array(db, call_session_id)
                     
                     if conversation_array:
-                        # Get last few interactions for context (exclude the current user input)
-                        recent_interactions = conversation_array[-6:]  # Last 6 interactions
+                        # Get last few interactions for context (OPTIMIZED: reduced from 6 to 4 for faster processing)
+                        recent_interactions = conversation_array[-4:]  # Last 4 interactions (enough context, faster LLM)
                         if recent_interactions:
                             conversation_context = "\n\nPrevious conversation context:\n"
                             for interaction in recent_interactions:
@@ -337,8 +337,13 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 else (model.temperature / 100.0) if model.temperature 
                 else 0.6
             )
-            # Use agent-specific max tokens if set, otherwise fall back to model default (reduced for faster response)
-            max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 150)
+            # Use agent-specific max tokens if set, otherwise fall back to model default
+            # VOICE OPTIMIZATION: Cap at 200 tokens max for fast responses (2-4 sentences)
+            requested_max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 200)
+            max_tokens = min(requested_max_tokens, 200)  # Force cap at 200 for voice calls (sweet spot)
+            
+            if requested_max_tokens > 200:
+                print(f"⚡ Voice optimization: Capped max_tokens from {requested_max_tokens} to 200 for faster response")
             
             # Use model-specific API key if available
             api_key = None
@@ -382,14 +387,23 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             if conversation_context:
                 print(f"🧠 Conversation Context Preview: {conversation_context[:300]}...")
             
-            ai_response = ai_service.generate_text(
-                prompt=speech_text,
-                system_prompt=system_prompt,
-                model_name=model_name,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                api_key=api_key
-            )
+            # Generate response with 10-second timeout for voice calls
+            try:
+                ai_response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ai_service.generate_text,
+                        prompt=speech_text,
+                        system_prompt=system_prompt,
+                        model_name=model_name,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        api_key=api_key
+                    ),
+                    timeout=10.0  # 10 second timeout for LLM response
+                )
+            except asyncio.TimeoutError:
+                print(f"⚠️ LLM timeout after 10s - using fallback response")
+                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
             response_text = ai_response["content"]
             response_time = ai_response["response_time"]
