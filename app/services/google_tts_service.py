@@ -65,19 +65,59 @@ class GoogleTTSService:
         
         return self._client
     
-    def get_voice_name(self, language: str = "en", voice_type: str = "female") -> str:
+    def get_voice_name(self, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = False) -> str:
         """
         Get appropriate Google TTS voice name based on language and gender
-        BEST REALISTIC VOICES - Using Studio and Neural2 voices
+        BEST REALISTIC VOICES - Using Studio, Neural2, and Gemini Flash voices
         
         Args:
             language: Language code (en, es, hi, ar, zh, ur)
             voice_type: Voice gender (male or female)
+            use_gemini_flash: Use Gemini TTS Flash voices (ultra-fast and high quality)
             
         Returns:
             Google Cloud TTS voice name
         """
-        # Google Cloud TTS voice mapping
+        # Gemini Flash TTS voices - ULTRA FAST + PREMIUM QUALITY (Latest AI-powered voices)
+        if use_gemini_flash:
+            gemini_flash_voice_map = {
+                # English voices - Gemini Flash
+                "en": {
+                    "male": "en-US-Journey-D",       # Gemini Flash Male (Ultra-fast, Natural)
+                    "female": "en-US-Journey-F"      # Gemini Flash Female (Ultra-fast, Natural)
+                },
+                # Spanish voices - Gemini Flash
+                "es": {
+                    "male": "es-US-Journey-D",       # Gemini Flash Male Spanish
+                    "female": "es-US-Journey-F"      # Gemini Flash Female Spanish
+                },
+                # Hindi voices - Fallback to Neural2
+                "hi": {
+                    "male": "hi-IN-Neural2-B",       # Fast Male Hindi
+                    "female": "hi-IN-Neural2-A"      # Fast Female Hindi
+                },
+                # Arabic voices - Fallback to Wavenet
+                "ar": {
+                    "male": "ar-XA-Wavenet-B",       # Male Arabic
+                    "female": "ar-XA-Wavenet-A"      # Female Arabic
+                },
+                # Chinese voices - Fallback to Wavenet
+                "zh": {
+                    "male": "cmn-CN-Wavenet-B",      # Male Mandarin
+                    "female": "cmn-CN-Wavenet-A"     # Female Mandarin
+                },
+                # Urdu - Fallback to Hindi
+                "ur": {
+                    "male": "hi-IN-Neural2-B",       # Fast Male Hindi
+                    "female": "hi-IN-Neural2-A"      # Fast Female Hindi
+                }
+            }
+            
+            language = language if language in gemini_flash_voice_map else "en"
+            voice_type = voice_type if voice_type in ["male", "female"] else "female"
+            return gemini_flash_voice_map[language][voice_type]
+        
+        # Google Cloud TTS voice mapping (Standard Neural2 voices)
         # Using NEURAL2 voices for SPEED + QUALITY balance (2x faster than Studio!)
         voice_map = {
             # English voices - FAST + HIGH QUALITY (Neural2 - 60% faster than Studio)
