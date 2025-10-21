@@ -338,12 +338,12 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 else 0.6
             )
             # Use agent-specific max tokens if set, otherwise fall back to model default
-            # VOICE OPTIMIZATION: Cap at 200 tokens max for fast responses (2-4 sentences)
-            requested_max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 200)
-            max_tokens = min(requested_max_tokens, 200)  # Force cap at 200 for voice calls (sweet spot)
+            # VOICE OPTIMIZATION: Cap at 100 tokens max for ULTRA-FAST responses (1-2 sentences, Vapi-style)
+            requested_max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 100)
+            max_tokens = min(requested_max_tokens, 100)  # Force cap at 100 for voice calls (Vapi-style speed!)
             
-            if requested_max_tokens > 200:
-                print(f"⚡ Voice optimization: Capped max_tokens from {requested_max_tokens} to 200 for faster response")
+            if requested_max_tokens > 100:
+                print(f"⚡ Voice optimization: Capped max_tokens from {requested_max_tokens} to 100 for ultra-fast response")
             
             # Use model-specific API key if available
             api_key = None

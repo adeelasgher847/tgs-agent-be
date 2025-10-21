@@ -242,8 +242,8 @@ async def gather_greeting_webhook(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout='auto',  # Auto-detect when user stops speaking (FAST)
-            timeout=8,  # Reduced to 8 seconds for faster detection
+            speechTimeout=0.8,  # VAPI-STYLE: Fast silence detection (800ms vs 1.5s)
+            timeout=5,  # Quick timeout for responsive UX
             language=gather_language,
             enhanced=True,  # Use enhanced model for better accuracy
             profanity_filter=False,  # Don't filter for natural conversation
@@ -262,7 +262,7 @@ async def gather_greeting_webhook(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout='auto',
+            speechTimeout=0.8,  # Fast detection on retry
             timeout=5,  # Shorter timeout for retry
             language=gather_language,
             enhanced=True,
@@ -477,8 +477,8 @@ async def gather_speech_callback_webhook(
                 input='speech',
                 action=callback_url,
                 method='POST',
-                speechTimeout='auto',
-                timeout=10,
+                speechTimeout=0.8,  # Fast silence detection
+                timeout=5,  # Quick timeout
                 language=gather_language,
                 enhanced=True,
                 profanity_filter=False,
@@ -634,8 +634,8 @@ async def gather_speech_callback_webhook(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout='auto',  # Auto-detect silence (FASTEST)
-            timeout=7,  # Reduced to 7 seconds for faster flow
+            speechTimeout=0.8,  # VAPI-STYLE: 800ms silence detection for speed
+            timeout=5,  # Quick timeout for responsive UX
             language=gather_language,
             enhanced=True,
             profanity_filter=False,
@@ -676,8 +676,8 @@ async def gather_speech_callback_webhook(
                 input='speech',
                 action=callback_url,
                 method='POST',
-                speechTimeout='auto',
-                timeout=10,
+                speechTimeout=0.8,  # Fast detection for error recovery
+                timeout=5,  # Quick timeout
                 language='en-US',
                 enhanced=True,
                 profanity_filter=False,
