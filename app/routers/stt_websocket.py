@@ -45,6 +45,12 @@ import uuid
 import io
 from pydub import AudioSegment
 
+# Python 3.13+ compatibility: audioop was removed, use pyaudioop instead
+try:
+    import audioop
+except ModuleNotFoundError:
+    import pyaudioop as audioop
+
 from app.services.google_stt_service import google_stt_service
 from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
@@ -139,8 +145,7 @@ class TwilioMediaStreamHandler:
             # Export as raw PCM
             raw_audio = audio.raw_data
             
-            # Encode to MULAW
-            import audioop
+            # Encode to MULAW (audioop is imported at top of file)
             mulaw_audio = audioop.lin2ulaw(raw_audio, 2)  # 2 = 16-bit samples
             
             print(f"✅ Audio converted: {len(mulaw_audio)} bytes MULAW")
