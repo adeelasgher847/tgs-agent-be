@@ -18,9 +18,9 @@ audio_cache = {}
 MAX_CACHE_SIZE = 200  # Cache up to 200 audio files
 
 
-def generate_cache_key(text: str, language: str, voice_type: str) -> str:
+def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False) -> str:
     """Generate unique cache key for audio"""
-    content = f"{text}_{language}_{voice_type}"
+    content = f"{text}_{language}_{voice_type}_{use_gemini}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
@@ -28,7 +28,8 @@ def generate_cache_key(text: str, language: str, voice_type: str) -> str:
 async def serve_google_tts_audio(
     text: str = Query(..., description="Text to convert to speech"),
     lang: str = Query("en", description="Language code"),
-    voice: str = Query("female", description="Voice type (male/female)")
+    voice: str = Query("female", description="Voice type (male/female)"),
+    gemini_flash: bool = Query(False, description="Use Gemini Flash TTS voices (ultra-fast)")
 ):
     """
     Generate and serve Google TTS audio on-the-fly for Twilio
@@ -40,21 +41,24 @@ async def serve_google_tts_audio(
         text: Text to speak
         lang: Language code (en, es, hi, ar, zh, ur)
         voice: Voice type (male or female)
+        gemini_flash: Use Gemini Flash TTS voices (ultra-fast and high quality)
         
     Returns:
         Audio file as MP3
     """
     try:
         # Generate cache key
-        cache_key = generate_cache_key(text, lang, voice)
+        cache_key = generate_cache_key(text, lang, voice, gemini_flash)
         
         # Check cache first
         if cache_key in audio_cache:
-            print(f"✅ Serving cached Google TTS audio: '{text[:50]}...'")
+            voice_label = "Gemini Flash" if gemini_flash else "Neural2"
+            print(f"✅ Serving cached Google TTS audio ({voice_label}): '{text[:50]}...'")
             audio_content = audio_cache[cache_key]
         else:
             # Generate new audio
-            print(f"🎤 Generating Google TTS audio: '{text[:50]}...' (lang={lang}, voice={voice})")
+            voice_label = "Gemini Flash" if gemini_flash else "Neural2"
+            print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
             audio_content = google_tts_service.text_to_speech(
                 text=text,
@@ -62,7 +66,8 @@ async def serve_google_tts_audio(
                 voice_type=voice,
                 speaking_rate=1.1,  # 10% faster for quicker responses
                 pitch=0.0,
-                output_format="mp3"
+                output_format="mp3",
+                use_gemini_flash=gemini_flash
             )
             
             # Cache it (with size limit)

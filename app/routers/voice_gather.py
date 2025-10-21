@@ -37,19 +37,19 @@ model_service = ModelService()
 from app.routers.tts_audio import audio_cache
 
 
-def generate_cache_key(text: str, language: str, voice_type: str) -> str:
+def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False) -> str:
     """Generate unique cache key for TTS audio (same as tts_audio.py)"""
-    content = f"{text}_{language}_{voice_type}"
+    content = f"{text}_{language}_{voice_type}_{use_gemini}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
-def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female") -> None:
+def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = False) -> None:
     """
     Pre-generate TTS audio and cache it for instant playback
     Eliminates 1-second delay when Twilio requests the audio
     """
     try:
-        cache_key = generate_cache_key(text, language, voice_type)
+        cache_key = generate_cache_key(text, language, voice_type, use_gemini_flash)
         
         if cache_key not in audio_cache:
             # Generate audio
@@ -59,7 +59,8 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
                 voice_type=voice_type,
                 speaking_rate=1.1,  # 10% faster for quicker responses
                 pitch=0.0,
-                output_format="mp3"
+                output_format="mp3",
+                use_gemini_flash=use_gemini_flash
             )
             
             # Cache it
@@ -582,11 +583,14 @@ async def gather_speech_callback_webhook(
         tts_start = datetime.now(timezone.utc)
         try:
             # Check if already cached
-            cache_key = generate_cache_key(response_text, lang, voice)
+            # TODO: Add support for use_gemini_flash from agent configuration
+            use_gemini_flash = False  # Can be configured per agent in future
+            cache_key = generate_cache_key(response_text, lang, voice, use_gemini_flash)
             
             if cache_key not in audio_cache:
                 # Pre-generate audio BEFORE sending TwiML
-                print(f"⚡ Pre-generating TTS audio: '{response_text[:50]}...'")
+                voice_label = "Gemini Flash" if use_gemini_flash else "Neural2"
+                print(f"⚡ Pre-generating TTS audio ({voice_label}): '{response_text[:50]}...'")
                 sys.stdout.flush()
                 
                 audio_content = google_tts_service.text_to_speech(
@@ -595,7 +599,8 @@ async def gather_speech_callback_webhook(
                     voice_type=voice,
                     speaking_rate=1.1,  # 10% faster for quicker responses (sounds natural)
                     pitch=0.0,
-                    output_format="mp3"
+                    output_format="mp3",
+                    use_gemini_flash=use_gemini_flash
                 )
                 
                 # Cache it for instant playback
