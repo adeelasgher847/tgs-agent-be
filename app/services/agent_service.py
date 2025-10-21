@@ -29,6 +29,17 @@ class AgentService:
                     detail="Invalid model_id. Model not found or is archived."
                 )
 
+        # 🚨 CHECK AGENT LIMIT (MAX 5 AGENTS PER TENANT)
+        agent_count = db.query(func.count(Agent.id)).filter(
+            Agent.tenant_id == tenant_id
+        ).scalar()
+        
+        if agent_count >= 5:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Agent limit reached. You can only create up to 5 agents per tenant."
+            )
+
         # Check for duplicate name within tenant
         existing = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,

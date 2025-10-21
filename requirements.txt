@@ -8,7 +8,8 @@ passlib[bcrypt]
 pydantic
 pydantic-settings
 pytest
-httpx 
+httpx
+requests
 python-multipart
 pydantic[email]
 twilio
@@ -25,3 +26,5 @@ bcrypt==4.1.2
 authlib
 google-auth
 google-auth-oauthlib
+google-cloud-speech
+google-cloud-texttospeech
