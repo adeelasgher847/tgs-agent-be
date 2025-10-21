@@ -61,10 +61,10 @@ class GoogleSTTService:
         """Initialize the Speech client"""
         try:
             self.client = speech.SpeechClient()
-            print("✅ Google Cloud Speech-to-Text client initialized")
+            print("Google Cloud Speech-to-Text client initialized")
         except Exception as e:
-            print(f"⚠️ Failed to initialize Google Speech client: {e}")
-            print("⚠️ Transcription will not be available without proper credentials")
+            print(f"Warning: Failed to initialize Google Speech client: {e}")
+            print("Warning: Transcription will not be available without proper credentials")
     
     def get_streaming_config(
         self,

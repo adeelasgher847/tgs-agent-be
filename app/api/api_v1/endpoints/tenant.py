@@ -13,6 +13,9 @@ import re
 from app.core.config import settings
 from app.models.user import user_tenant_association
 from app.models.refresh_token import RefreshToken
+from app.models.plan import Plan
+import stripe
+import uuid
 
 from sqlalchemy import update
 router = APIRouter()
@@ -389,6 +392,7 @@ def get_tenant_credits(current_user: User = Depends(get_current_user_jwt), db: S
     Get current credits for the current user's active tenant.
     """
     tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    print(tenant)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return create_success_response({"tenant_id": tenant.id, "credits": tenant.credits, "status": tenant.status}, "Tenant credits fetched successfully")
@@ -418,21 +422,87 @@ def verify_payment(
     try:
         session = stripe.checkout.Session.retrieve(session_id)
         
-        # Verify this session belongs to the current tenant
-        if session.metadata.get("tenant_id") != str(current_user.current_tenant_id):
+        # Get tenant ID from session metadata (the tenant who made the payment)
+        session_tenant_id = session.metadata.get("tenant_id")
+        print(f"VERIFY DEBUG: Session tenant ID: {session_tenant_id}")
+        
+        # Get the tenant who made the payment (not necessarily current user's tenant)
+        tenant = db.query(Tenant).filter(Tenant.id == session_tenant_id).first()
+        if not tenant:
+            print(f"VERIFY DEBUG: Payment tenant not found: {session_tenant_id}")
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This payment session does not belong to your tenant"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tenant {session_tenant_id} not found"
             )
+        
+        print(f"VERIFY DEBUG: Found payment tenant - ID: {tenant.id}")
+        print(f"VERIFY DEBUG: Payment tenant credits: {tenant.credits}")
+        print(f"VERIFY DEBUG: Payment tenant status: {tenant.status}")
+        
+        # Calculate credits that would be added
+        amount_dollars = session.amount_total / 100 if session.amount_total else 0
+        credits_to_add = int(amount_dollars * 10)
+        
+        print(f"VERIFY DEBUG: Payment status: {session.payment_status}")
+        print(f"VERIFY DEBUG: Amount dollars: {amount_dollars}")
+        print(f"VERIFY DEBUG: Credits to add: {credits_to_add}")
+        print(f"VERIFY DEBUG: Current tenant credits: {tenant.credits or 0}")
+        
+        # If payment is paid, actually update the credits
+        if session.payment_status == 'paid':
+            print(f"VERIFY DEBUG: Payment is paid, updating credits...")
+            old_credits = tenant.credits or 0
+            tenant.credits = old_credits + credits_to_add
+            tenant.status = 'active'
+            
+            print(f"VERIFY DEBUG: Old credits: {old_credits}")
+            print(f"VERIFY DEBUG: New credits: {tenant.credits}")
+            print(f"VERIFY DEBUG: New status: {tenant.status}")
+            
+            # Update subscription ID if available
+            if session.subscription:
+                print(f"VERIFY DEBUG: Updating subscription ID: {session.subscription}")
+                tenant.stripe_subscription_id = session.subscription
+            
+            print(f"VERIFY DEBUG: About to commit to database...")
+            db.commit()
+            print(f"VERIFY DEBUG: Database commit successful")
+            
+            db.refresh(tenant)
+            print(f"VERIFY DEBUG: After refresh - credits: {tenant.credits}, status: {tenant.status}")
+        else:
+            print(f"VERIFY DEBUG: Payment not paid, skipping credit update")
+        
+        # Get subscription information if available
+        subscription_info = None
+        if session.subscription:
+            try:
+                subscription = stripe.Subscription.retrieve(session.subscription)
+                subscription_info = {
+                    "subscription_id": subscription.id,
+                    "status": subscription.status,
+                    "current_period_start": subscription.current_period_start,
+                    "current_period_end": subscription.current_period_end,
+                    "plan_id": subscription.items.data[0].price.id if subscription.items.data else None
+                }
+            except:
+                subscription_info = {"subscription_id": session.subscription, "status": "unknown"}
         
         return create_success_response({
             "payment_status": session.payment_status,
             "customer_id": session.customer,
             "amount_total": session.amount_total,
+            "amount_dollars": amount_dollars,
             "currency": session.currency,
             "payment_intent": session.payment_intent,
-            "metadata": session.metadata
-        }, "Payment verification fetched")
+            "metadata": session.metadata,
+            "subscription_id": session.subscription,
+            "subscription_info": subscription_info,
+            "credits_to_add": credits_to_add,
+            "current_tenant_credits": tenant.credits or 0,
+            "total_credits_after_payment": (tenant.credits or 0) + credits_to_add,
+            "credits_updated": session.payment_status == 'paid'
+        }, "Payment verification and credit update completed")
         
     except Exception as e:
         raise HTTPException(
@@ -601,6 +671,25 @@ def get_payment_history(
         total_amount = sum(p["amount_total"] for p in payment_history if p["type"] != "refund")  # Already converted to dollars
         total_amount_cents = sum(p["amount_total_cents"] for p in payment_history if p["type"] != "refund")
         
+        # Calculate total credits from successful payments
+        total_credits_earned = sum(int(p["amount_total"] * 10) for p in successful_payments)
+        current_tenant_credits = tenant.credits or 0
+        
+        # Get subscription information
+        subscription_info = None
+        if tenant.stripe_subscription_id:
+            try:
+                subscription = stripe.Subscription.retrieve(tenant.stripe_subscription_id)
+                subscription_info = {
+                    "subscription_id": subscription.id,
+                    "status": subscription.status,
+                    "current_period_start": subscription.current_period_start,
+                    "current_period_end": subscription.current_period_end,
+                    "plan_id": subscription.items.data[0].price.id if subscription.items.data else None
+                }
+            except:
+                subscription_info = {"subscription_id": tenant.stripe_subscription_id, "status": "unknown"}
+        
         summary = {
             "total_payments": len(payment_history),
             "successful_payments": len(successful_payments),
@@ -610,7 +699,10 @@ def get_payment_history(
             "total_amount_formatted": f"${total_amount:.2f}",  # Format as USD
             "currency": "usd" if payment_history else "usd",
             "refunds_count": len([p for p in payment_history if p["type"] == "refund"]),
-            "last_payment_date": payment_history[0]["created"] if payment_history else None
+            "last_payment_date": payment_history[0]["created"] if payment_history else None,
+            "total_credits_earned": total_credits_earned,
+            "current_tenant_credits": current_tenant_credits,
+            "subscription_info": subscription_info
         }
         
         return create_success_response({
@@ -618,7 +710,7 @@ def get_payment_history(
             "summary": summary
         }, "Payment history retrieved successfully")
         
-    except stripe.error.StripeError as e:
+    except stripe.StripeError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Stripe error: {str(e)}"
@@ -628,3 +720,562 @@ def get_payment_history(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error: {str(e)}"
         )
+
+@router.post("/confirm-payment-simple")
+def confirm_payment_simple(
+    session_id: str,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db)
+):
+    """
+    Simple payment confirmation using Stripe API.
+    No webhook dependency - direct API call to confirm payment and add credits.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    
+    # Set Stripe API key
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    
+    try:
+        # Retrieve checkout session from Stripe
+        session = stripe.checkout.Session.retrieve(session_id)
+        
+        # Verify payment status
+        if session.payment_status != 'paid':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Payment not completed or failed"
+            )
+        
+        # Get metadata
+        metadata = session.get("metadata", {})
+        tenant_id = metadata.get("tenant_id")
+        plan_id = metadata.get("plan_id")
+        amount = float(metadata.get("amount", 0))
+        
+        # Get the tenant who made the payment (from session metadata)
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if not tenant:
+            print(f"CONFIRM DEBUG: Payment tenant not found: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tenant {tenant_id} not found"
+            )
+        
+        print(f"CONFIRM DEBUG: Found payment tenant - ID: {tenant.id}")
+        print(f"CONFIRM DEBUG: Payment tenant credits: {tenant.credits}")
+        print(f"CONFIRM DEBUG: Payment tenant status: {tenant.status}")
+        
+        # Get plan details
+        plan = None
+        if plan_id:
+            plan = db.query(Plan).filter(Plan.id == plan_id).first()
+        
+        # Calculate credits based on payment amount: $1 = 10 credits
+        credits_to_add = int(amount * 10)
+        
+        # Add credits to tenant
+        old_credits = tenant.credits or 0
+        print(f"DEBUG: Old credits: {old_credits}")
+        print(f"DEBUG: Credits to add: {credits_to_add}")
+        
+        tenant.credits = old_credits + credits_to_add
+        tenant.status = 'active'
+        
+        print(f"DEBUG: New credits before commit: {tenant.credits}")
+        print(f"DEBUG: New status before commit: {tenant.status}")
+        
+        # Update subscription ID if available
+        if session.subscription:
+            print(f"DEBUG: Updating subscription ID: {session.subscription}")
+            tenant.stripe_subscription_id = session.subscription
+        
+        print(f"DEBUG: About to commit to database...")
+        db.commit()
+        print(f"DEBUG: Database commit successful")
+        
+        db.refresh(tenant)
+        print(f"DEBUG: After refresh - credits: {tenant.credits}, status: {tenant.status}")
+        
+        # Get subscription information
+        subscription_info = None
+        if session.subscription:
+            try:
+                subscription = stripe.Subscription.retrieve(session.subscription)
+                subscription_info = {
+                    "subscription_id": subscription.id,
+                    "status": subscription.status,
+                    "current_period_start": subscription.current_period_start,
+                    "current_period_end": subscription.current_period_end,
+                    "plan_id": subscription.items.data[0].price.id if subscription.items.data else None
+                }
+            except:
+                subscription_info = {"subscription_id": session.subscription, "status": "unknown"}
+        
+        # Prepare response
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "credits_added": credits_to_add,
+            "total_credits": tenant.credits,
+            "payment_amount": amount,
+            "plan_name": plan.display_name if plan else "Credit Purchase",
+            "subscription_id": session.subscription,
+            "subscription_info": subscription_info,
+            "status": "success"
+        }
+        
+        return create_success_response(response_data, "Payment confirmed and credits added successfully")
+        
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stripe error: {str(e)}"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error confirming payment: {str(e)}"
+        )
+
+@router.post("/test-credit-update")
+def test_credit_update(
+    credits_to_add: int = 100,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db)
+):
+    """
+    Test endpoint to manually add credits and update subscription ID.
+    This helps debug the credit update issue.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    
+    try:
+        # Get tenant
+        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found"
+            )
+        
+        # Store old values for comparison
+        old_credits = tenant.credits or 0
+        old_subscription_id = tenant.stripe_subscription_id
+        
+        # Update credits
+        tenant.credits = old_credits + credits_to_add
+        tenant.status = 'active'
+        
+        # Update subscription ID (test value)
+        import uuid
+        test_subscription_id = f"sub_test_{uuid.uuid4().hex[:8]}"
+        tenant.stripe_subscription_id = test_subscription_id
+        
+        # Commit changes
+        db.commit()
+        db.refresh(tenant)
+        
+        # Prepare response
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "old_credits": old_credits,
+            "new_credits": tenant.credits,
+            "credits_added": credits_to_add,
+            "old_subscription_id": old_subscription_id,
+            "new_subscription_id": tenant.stripe_subscription_id,
+            "status": "success"
+        }
+        
+        return create_success_response(response_data, "Test credit update successful")
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error in test credit update: {str(e)}"
+        )
+
+@router.get("/tenant-status")
+def get_tenant_status(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Get current tenant status including credits and subscription ID.
+    This helps debug the tenant update issue.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    
+    try:
+        # Get tenant
+        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found"
+            )
+        print (tenant.stripe_subscription_id    )
+        print (tenant.stripe_customer_id)
+        print (tenant.credits)
+        print (tenant.status)
+        print (tenant.name)
+        print (tenant.id)
+        print (tenant.created_at)
+        print (tenant.updated_at)
+        print (tenant.schema_name)
+        # Prepare response
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "tenant_name": tenant.name,
+            "status": tenant.status,
+            "credits": tenant.credits,
+            "stripe_customer_id": tenant.stripe_customer_id,
+            "stripe_subscription_id": tenant.stripe_subscription_id,
+            "created_at": tenant.created_at.isoformat() if tenant.created_at else None
+        }
+        
+        return create_success_response(response_data, "Tenant status retrieved successfully")
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting tenant status: {str(e)}"
+        )
+
+@router.post("/manual-update-credits")
+def manual_update_credits(
+    credits_to_add: int,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually update tenant credits and status.
+    This bypasses all payment checks and directly updates the database.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    
+    try:
+        # Get tenant
+        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found"
+            )
+        
+        # Store old values
+        old_credits = tenant.credits or 0
+        old_status = tenant.status
+        
+        # Update credits and status
+        print(f"MANUAL DEBUG: Old credits: {old_credits}")
+        print(f"MANUAL DEBUG: Credits to add: {credits_to_add}")
+        
+        tenant.credits = old_credits + credits_to_add
+        tenant.status = 'active'
+        
+        print(f"MANUAL DEBUG: New credits before commit: {tenant.credits}")
+        print(f"MANUAL DEBUG: New status before commit: {tenant.status}")
+        
+        # Force commit
+        print(f"MANUAL DEBUG: About to commit to database...")
+        db.commit()
+        print(f"MANUAL DEBUG: Database commit successful")
+        
+        db.refresh(tenant)
+        print(f"MANUAL DEBUG: After refresh - credits: {tenant.credits}, status: {tenant.status}")
+        
+        # Verify the update
+        updated_tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+        print(f"MANUAL DEBUG: Verification query - credits: {updated_tenant.credits}, status: {updated_tenant.status}")
+        
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "old_credits": old_credits,
+            "new_credits": updated_tenant.credits,
+            "old_status": old_status,
+            "new_status": updated_tenant.status,
+            "credits_added": credits_to_add,
+            "database_updated": True
+        }
+        
+        return create_success_response(response_data, "Manual credit update successful")
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error in manual credit update: {str(e)}"
+        )
+
+@router.get("/debug-database")
+def debug_database(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Debug endpoint to check database state directly.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    
+    try:
+        print(f"DEBUG DB: Current user tenant ID: {current_user.current_tenant_id}")
+        
+        # Direct database query
+        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+        if not tenant:
+            print(f"DEBUG DB: Tenant not found in database")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found"
+            )
+        
+        print(f"DEBUG DB: Tenant found - ID: {tenant.id}")
+        print(f"DEBUG DB: Tenant credits: {tenant.credits}")
+        print(f"DEBUG DB: Tenant status: {tenant.status}")
+        print(f"DEBUG DB: Tenant subscription ID: {tenant.stripe_subscription_id}")
+        
+        # Try to update and see what happens
+        print(f"DEBUG DB: Attempting to update credits...")
+        old_credits = tenant.credits or 0
+        tenant.credits = old_credits + 1
+        print(f"DEBUG DB: Set credits to: {tenant.credits}")
+        
+        print(f"DEBUG DB: About to commit...")
+        db.commit()
+        print(f"DEBUG DB: Commit successful")
+        
+        # Refresh and check
+        db.refresh(tenant)
+        print(f"DEBUG DB: After refresh - credits: {tenant.credits}")
+        
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "credits": tenant.credits,
+            "status": tenant.status,
+            "subscription_id": tenant.stripe_subscription_id,
+            "database_working": True
+        }
+        
+        return create_success_response(response_data, "Database debug successful")
+        
+    except Exception as e:
+        print(f"DEBUG DB ERROR: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database debug error: {str(e)}"
+        )
+
+@router.get("/check-credits")
+def check_credits(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Simple endpoint to check current credits without any updates.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    
+    try:
+        # Get tenant
+        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tenant not found"
+            )
+        
+        print(f"CHECK CREDITS: Tenant ID: {tenant.id}")
+        print(f"CHECK CREDITS: Current credits: {tenant.credits}")
+        print(f"CHECK CREDITS: Current status: {tenant.status}")
+        print(f"CHECK CREDITS: Subscription ID: {tenant.stripe_subscription_id}")
+        
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "credits": tenant.credits,
+            "status": tenant.status,
+            "subscription_id": tenant.stripe_subscription_id,
+            "timestamp": "current"
+        }
+        
+        return create_success_response(response_data, "Current credits retrieved")
+        
+    except Exception as e:
+        print(f"CHECK CREDITS ERROR: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error checking credits: {str(e)}"
+        )
+
+@router.get("/debug-user-tenant")
+def debug_user_tenant(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db)
+):
+    """
+    Debug endpoint to check user-tenant mapping and all tenants.
+    """
+    try:
+        print(f"USER DEBUG: Current user ID: {current_user.id}")
+        print(f"USER DEBUG: Current user email: {current_user.email}")
+        print(f"USER DEBUG: Current user tenant ID: {current_user.current_tenant_id}")
+        
+        # Get current user's tenant
+        current_tenant = None
+        if current_user.current_tenant_id:
+            current_tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+            if current_tenant:
+                print(f"USER DEBUG: Current tenant found - ID: {current_tenant.id}")
+                print(f"USER DEBUG: Current tenant credits: {current_tenant.credits}")
+                print(f"USER DEBUG: Current tenant status: {current_tenant.status}")
+            else:
+                print(f"USER DEBUG: Current tenant not found in database")
+        
+        # Get all tenants for this user
+        user_tenants = db.query(Tenant).join(
+            user_tenant_association
+        ).filter(
+            user_tenant_association.c.user_id == current_user.id
+        ).all()
+        
+        print(f"USER DEBUG: User has {len(user_tenants)} tenants")
+        for i, tenant in enumerate(user_tenants):
+            print(f"USER DEBUG: Tenant {i+1} - ID: {tenant.id}, Credits: {tenant.credits}, Status: {tenant.status}")
+        
+        # Get all tenants in database (for debugging)
+        all_tenants = db.query(Tenant).all()
+        print(f"USER DEBUG: Total tenants in database: {len(all_tenants)}")
+        for i, tenant in enumerate(all_tenants):
+            print(f"USER DEBUG: DB Tenant {i+1} - ID: {tenant.id}, Credits: {tenant.credits}, Status: {tenant.status}")
+        
+        response_data = {
+            "user_id": str(current_user.id),
+            "user_email": current_user.email,
+            "current_tenant_id": str(current_user.current_tenant_id) if current_user.current_tenant_id else None,
+            "current_tenant": {
+                "id": str(current_tenant.id) if current_tenant else None,
+                "name": current_tenant.name if current_tenant else None,
+                "credits": current_tenant.credits if current_tenant else None,
+                "status": current_tenant.status if current_tenant else None
+            } if current_tenant else None,
+            "user_tenants": [
+                {
+                    "id": str(tenant.id),
+                    "name": tenant.name,
+                    "credits": tenant.credits,
+                    "status": tenant.status
+                } for tenant in user_tenants
+            ],
+            "all_tenants_count": len(all_tenants)
+        }
+        
+        return create_success_response(response_data, "User-tenant debug completed")
+        
+    except Exception as e:
+        print(f"USER DEBUG ERROR: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"User-tenant debug error: {str(e)}"
+        )
+
+@router.post("/update-credits-for-tenant")
+def update_credits_for_tenant(
+    tenant_id: str,
+    credits_to_add: int,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db)
+):
+    """
+    Update credits for a specific tenant ID.
+    This helps when payment was made for a different tenant.
+    """
+    try:
+        print(f"TENANT UPDATE: Updating credits for tenant: {tenant_id}")
+        print(f"TENANT UPDATE: Credits to add: {credits_to_add}")
+        
+        # Get the specific tenant
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if not tenant:
+            print(f"TENANT UPDATE: Tenant not found: {tenant_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tenant {tenant_id} not found"
+            )
+        
+        print(f"TENANT UPDATE: Found tenant - ID: {tenant.id}")
+        print(f"TENANT UPDATE: Current credits: {tenant.credits}")
+        print(f"TENANT UPDATE: Current status: {tenant.status}")
+        
+        # Update credits
+        old_credits = tenant.credits or 0
+        tenant.credits = old_credits + credits_to_add
+        tenant.status = 'active'
+        
+        print(f"TENANT UPDATE: Old credits: {old_credits}")
+        print(f"TENANT UPDATE: New credits: {tenant.credits}")
+        print(f"TENANT UPDATE: New status: {tenant.status}")
+        
+        # Commit changes
+        db.commit()
+        print(f"TENANT UPDATE: Database commit successful")
+        
+        # Refresh and verify
+        db.refresh(tenant)
+        print(f"TENANT UPDATE: After refresh - credits: {tenant.credits}, status: {tenant.status}")
+        
+        response_data = {
+            "tenant_id": str(tenant.id),
+            "tenant_name": tenant.name,
+            "old_credits": old_credits,
+            "new_credits": tenant.credits,
+            "credits_added": credits_to_add,
+            "status": tenant.status,
+            "updated": True
+        }
+        
+        return create_success_response(response_data, f"Credits updated for tenant {tenant.name}")
+        
+    except Exception as e:
+        print(f"TENANT UPDATE ERROR: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating tenant credits: {str(e)}"
+        )
+
+@router.get("/test-simple")
+def test_simple():
+    """
+    Simple test endpoint to check if server is working.
+    """
+    return {"status": "success", "message": "Server is working correctly"}
