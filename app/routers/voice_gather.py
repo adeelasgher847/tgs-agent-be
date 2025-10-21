@@ -19,6 +19,7 @@ from app.services.twilio_service import twilio_service
 from app.services.agent_service import agent_service
 from app.services.call_session_service import call_session_service
 from app.services.google_stt_service import google_stt_service
+from app.services.google_tts_service import google_tts_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
@@ -27,9 +28,48 @@ from app.core.config import settings
 from app.utils.twilio_validation import get_request_body
 from app.routers.general_websocket import broadcast_transcript_update, broadcast_call_event
 from urllib.parse import quote
+import hashlib
 
 router = APIRouter()
 model_service = ModelService()
+
+# Import TTS audio cache from tts_audio router for pre-generation optimization
+from app.routers.tts_audio import audio_cache
+
+
+def generate_cache_key(text: str, language: str, voice_type: str) -> str:
+    """Generate unique cache key for TTS audio (same as tts_audio.py)"""
+    content = f"{text}_{language}_{voice_type}"
+    return hashlib.md5(content.encode()).hexdigest()
+
+
+def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female") -> None:
+    """
+    Pre-generate TTS audio and cache it for instant playback
+    Eliminates 1-second delay when Twilio requests the audio
+    """
+    try:
+        cache_key = generate_cache_key(text, language, voice_type)
+        
+        if cache_key not in audio_cache:
+            # Generate audio
+            audio_content = google_tts_service.text_to_speech(
+                text=text,
+                language=language,
+                voice_type=voice_type,
+                speaking_rate=1.0,
+                pitch=0.0,
+                output_format="mp3"
+            )
+            
+            # Cache it
+            audio_cache[cache_key] = audio_content
+            print(f"⚡ Pre-cached TTS: '{text[:30]}...' ({len(audio_content)} bytes)")
+            sys.stdout.flush()
+    except Exception as e:
+        # Non-critical - will generate on-demand if pre-generation fails
+        print(f"⚠️ TTS pre-cache failed: {e}")
+        sys.stdout.flush()
 
 
 def get_call_duration_realtime(call_session) -> str:
@@ -423,6 +463,10 @@ async def gather_speech_callback_webhook(
             text = "Sorry, I didn't catch that. Could you repeat?"
             lang = agent.language if agent and agent.language else "en"
             voice = agent.voice_type if agent and agent.voice_type else "female"
+            
+            # Pre-generate TTS for instant playback
+            pre_generate_tts(text, lang, voice)
+            
             tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
             response.play(tts_url)
             
@@ -530,12 +574,47 @@ async def gather_speech_callback_webhook(
             except Exception as e:
                 print(f"⚠️ Duration broadcast failed (non-critical): {e}")
         
-        # STEP 7: Create TwiML response with Google TTS + <Gather>
-        response = VoiceResponse()
-        
-        # Say agent's response using Google TTS
+        # STEP 7: Pre-generate TTS audio (OPTIMIZATION - eliminates 1s delay)
         lang = agent.language if agent and agent.language else "en"
         voice = agent.voice_type if agent and agent.voice_type else "female"
+        
+        tts_start = datetime.now(timezone.utc)
+        try:
+            # Check if already cached
+            cache_key = generate_cache_key(response_text, lang, voice)
+            
+            if cache_key not in audio_cache:
+                # Pre-generate audio BEFORE sending TwiML
+                print(f"⚡ Pre-generating TTS audio: '{response_text[:50]}...'")
+                sys.stdout.flush()
+                
+                audio_content = google_tts_service.text_to_speech(
+                    text=response_text,
+                    language=lang,
+                    voice_type=voice,
+                    speaking_rate=1.0,
+                    pitch=0.0,
+                    output_format="mp3"
+                )
+                
+                # Cache it for instant playback
+                audio_cache[cache_key] = audio_content
+                
+                tts_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
+                print(f"✅ TTS pre-generated: {len(audio_content)} bytes in {tts_time:.2f}s (cached)")
+                sys.stdout.flush()
+            else:
+                print(f"⚡ TTS already cached: '{response_text[:50]}...'")
+                sys.stdout.flush()
+                
+        except Exception as e:
+            print(f"⚠️ TTS pre-generation failed (will generate on-demand): {e}")
+            sys.stdout.flush()
+        
+        # STEP 8: Create TwiML response with Google TTS + <Gather>
+        response = VoiceResponse()
+        
+        # Say agent's response using Google TTS (now instant from cache)
         tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}"
         response.play(tts_url)
         
