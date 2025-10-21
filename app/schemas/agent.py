@@ -49,6 +49,7 @@ class AgentOut(AgentBase):
     id: uuid.UUID
     tenant_id: uuid.UUID
     model_id: Optional[uuid.UUID] = None
+    provider_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     created_by: uuid.UUID

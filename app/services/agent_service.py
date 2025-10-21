@@ -84,6 +84,12 @@ class AgentService:
         db.commit()
         db.refresh(db_agent)
         
+        # Load model to get provider_id
+        if db_agent.model_id:
+            model = db.query(Model).filter(Model.id == db_agent.model_id).first()
+            if model:
+                db_agent.provider_id = model.provider_id
+        
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
@@ -107,6 +113,12 @@ class AgentService:
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied. You can only access agents within your current tenant."
             )
+        
+        # Load model to get provider_id
+        if agent.model_id:
+            model = db.query(Model).filter(Model.id == agent.model_id).first()
+            if model:
+                agent.provider_id = model.provider_id
         
         return agent
     
@@ -138,6 +150,13 @@ class AgentService:
         
         # Get paginated results
         agents = query.offset(offset).limit(limit).all()
+        
+        # Load provider_id for each agent
+        for agent in agents:
+            if agent.model_id:
+                model = db.query(Model).filter(Model.id == agent.model_id).first()
+                if model:
+                    agent.provider_id = model.provider_id
         
         # Calculate pagination info
         total_pages = (total + limit - 1) // limit
@@ -226,6 +245,13 @@ class AgentService:
         
         db.commit()
         db.refresh(agent)
+        
+        # Load model to get provider_id
+        if agent.model_id:
+            model = db.query(Model).filter(Model.id == agent.model_id).first()
+            if model:
+                agent.provider_id = model.provider_id
+        
         return agent
     
     def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
@@ -257,10 +283,19 @@ class AgentService:
             return []
         
         clean_search_term = search_term.strip().lower()
-        return db.query(Agent).filter(
+        agents = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
             func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
+        
+        # Load provider_id for each agent
+        for agent in agents:
+            if agent.model_id:
+                model = db.query(Model).filter(Model.id == agent.model_id).first()
+                if model:
+                    agent.provider_id = model.provider_id
+        
+        return agents
     
     def get_agent_effective_model_config(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Dict[str, Any]:
         """
