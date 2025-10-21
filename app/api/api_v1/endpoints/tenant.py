@@ -261,7 +261,7 @@ def start_checkout_session(
     
     stripe.api_key = settings.STRIPE_SECRET_KEY
     
-    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant_id}&session_id={{CHECKOUT_SESSION_ID}}"
+    success_url = f"{settings.BACKEND_URL}/api/v1/billing/auto-process-payment/{{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant_id}"
     
     try:
@@ -297,6 +297,8 @@ def start_checkout_session(
             }],
             metadata={
                 "tenant_id": tenant_id,
+                "user_id": str(current_user.id),
+                "user_email": current_user.email,
                 "purchase_type": "plan_purchase",
                 "plan_id": str(plan.id),
                 "amount": str(amount_dollars)
@@ -353,7 +355,7 @@ def start_credit_checkout_session(
         stripe_customer_id = tenant.stripe_customer_id
     # Create checkout session (one-time payment)
     amount_cents = int(amount * 100)
-    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant.id}&session_id={{CHECKOUT_SESSION_ID}}"
+    success_url = f"{settings.BACKEND_URL}/api/v1/billing/auto-process-payment/{{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant.id}"
     try:
         checkout_session = stripe.checkout.Session.create(
@@ -371,6 +373,8 @@ def start_credit_checkout_session(
             }],
             metadata={
                 "tenant_id": str(tenant.id),
+                "user_id": str(current_user.id),
+                "user_email": current_user.email,
                 "purchase_type": "credit_purchase",
                 "amount": str(amount)
             }
@@ -386,6 +390,7 @@ def start_credit_checkout_session(
             detail=str(e)
         )
 
+
 @router.get("/credits")
 def get_tenant_credits(current_user: User = Depends(get_current_user_jwt), db: Session = Depends(get_db)):
     """
@@ -400,18 +405,13 @@ def get_tenant_credits(current_user: User = Depends(get_current_user_jwt), db: S
 @router.get("/verify-payment/{session_id}")
 def verify_payment(
     session_id: str,
-    current_user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
     """
     Verify payment status using Stripe checkout session ID.
-    If paid, add credits to tenant exactly once per session.
+    Only shows payment status - does NOT update credits or plans.
+    This endpoint can be called by frontend without authentication.
     """
-    if not current_user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No tenant selected"
-        )
     
     # Retrieve checkout session from Stripe
     import stripe
@@ -439,7 +439,7 @@ def verify_payment(
         print(f"VERIFY DEBUG: Payment tenant credits: {tenant.credits}")
         print(f"VERIFY DEBUG: Payment tenant status: {tenant.status}")
         
-        # Calculate credits that would be added
+        # Calculate credits that would be added (for display only)
         amount_dollars = session.amount_total / 100 if session.amount_total else 0
         credits_to_add = int(amount_dollars * 10)
         
@@ -447,31 +447,6 @@ def verify_payment(
         print(f"VERIFY DEBUG: Amount dollars: {amount_dollars}")
         print(f"VERIFY DEBUG: Credits to add: {credits_to_add}")
         print(f"VERIFY DEBUG: Current tenant credits: {tenant.credits or 0}")
-        
-        # If payment is paid, actually update the credits
-        if session.payment_status == 'paid':
-            print(f"VERIFY DEBUG: Payment is paid, updating credits...")
-            old_credits = tenant.credits or 0
-            tenant.credits = old_credits + credits_to_add
-            tenant.status = 'active'
-            
-            print(f"VERIFY DEBUG: Old credits: {old_credits}")
-            print(f"VERIFY DEBUG: New credits: {tenant.credits}")
-            print(f"VERIFY DEBUG: New status: {tenant.status}")
-            
-            # Update subscription ID if available
-            if session.subscription:
-                print(f"VERIFY DEBUG: Updating subscription ID: {session.subscription}")
-                tenant.stripe_subscription_id = session.subscription
-            
-            print(f"VERIFY DEBUG: About to commit to database...")
-            db.commit()
-            print(f"VERIFY DEBUG: Database commit successful")
-            
-            db.refresh(tenant)
-            print(f"VERIFY DEBUG: After refresh - credits: {tenant.credits}, status: {tenant.status}")
-        else:
-            print(f"VERIFY DEBUG: Payment not paid, skipping credit update")
         
         # Get subscription information if available
         subscription_info = None
@@ -488,6 +463,7 @@ def verify_payment(
             except:
                 subscription_info = {"subscription_id": session.subscription, "status": "unknown"}
         
+        # Return payment status without updating anything
         return create_success_response({
             "payment_status": session.payment_status,
             "customer_id": session.customer,
@@ -500,9 +476,9 @@ def verify_payment(
             "subscription_info": subscription_info,
             "credits_to_add": credits_to_add,
             "current_tenant_credits": tenant.credits or 0,
-            "total_credits_after_payment": (tenant.credits or 0) + credits_to_add,
-            "credits_updated": session.payment_status == 'paid'
-        }, "Payment verification and credit update completed")
+            "tenant_status": tenant.status,
+            "message": "Payment status retrieved - no updates made"
+        }, "Payment status retrieved successfully")
         
     except Exception as e:
         raise HTTPException(

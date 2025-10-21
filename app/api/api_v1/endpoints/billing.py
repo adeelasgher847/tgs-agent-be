@@ -12,11 +12,62 @@ from app.core.config import settings
 
 router = APIRouter()
 
-@router.post("/webhook")
-def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Handle Stripe webhook events - DISABLED"""
-    # Webhook is disabled in favor of direct API calls
-    return {"status": "webhook_disabled", "message": "Use /confirm-payment endpoint instead"}
+@router.get("/auto-process-payment/{session_id}")
+def auto_process_payment(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Automatically process payment when user is redirected to success URL.
+    This endpoint is called automatically by Stripe after successful payment.
+    After processing, redirects user to frontend success page.
+    """
+    from fastapi.responses import RedirectResponse
+    import stripe
+    from app.services.stripe_service import StripeService
+    
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    
+    try:
+        print(f"AUTO PROCESS: Processing session {session_id}")
+        
+        # Retrieve checkout session from Stripe
+        session = stripe.checkout.Session.retrieve(session_id)
+        
+        print(f"AUTO PROCESS: Session status: {session.payment_status}")
+        print(f"AUTO PROCESS: Customer: {session.customer}")
+        print(f"AUTO PROCESS: Subscription: {session.subscription}")
+        
+        # Get tenant_id from session metadata
+        tenant_id = session.get("metadata", {}).get("tenant_id")
+        
+        # Check if payment is completed
+        if session.payment_status != 'paid':
+            # Redirect to frontend with error status
+            error_url = f"{settings.FRONTEND_URL}/payment/error?message=Payment not completed&tenant_id={tenant_id}"
+            return RedirectResponse(url=error_url)
+        
+        # Process the payment using our service
+        event_data = {
+            'data': {
+                'object': session
+            }
+        }
+        
+        StripeService.handle_checkout_completed(event_data, db)
+        
+        print(f"AUTO PROCESS SUCCESS: Payment processed for tenant {tenant_id}")
+        
+        # Redirect to frontend success page with success message
+        success_url = f"{settings.FRONTEND_URL}/payment/success?session_id={session_id}&tenant_id={tenant_id}&auto_processed=true"
+        return RedirectResponse(url=success_url)
+        
+    except Exception as e:
+        print(f"AUTO PROCESS ERROR: {str(e)}")
+        # Redirect to frontend with error
+        error_url = f"{settings.FRONTEND_URL}/payment/error?message=Payment processing failed&tenant_id={tenant_id or 'unknown'}"
+        return RedirectResponse(url=error_url)
+
 
 @router.post("/confirm-payment")
 def confirm_payment(

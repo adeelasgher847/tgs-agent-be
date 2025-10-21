@@ -116,7 +116,7 @@ class StripeService:
                     'quantity': 1,
                 }],
                 'mode': 'payment',
-                'success_url': success_url,
+                'success_url': f"{success_url}?session_id={{CHECKOUT_SESSION_ID}}",
                 'cancel_url': cancel_url,
                 'metadata': {
                     'tenant_id': tenant_id,
@@ -282,30 +282,138 @@ class StripeService:
         """Handle checkout.session.completed event"""
         session = event_data['data']['object']
         tenant_id = session.get("metadata", {}).get("tenant_id")
+        user_id = session.get("metadata", {}).get("user_id")
+        user_email = session.get("metadata", {}).get("user_email")
         plan_id = session.get("metadata", {}).get("plan_id")
         amount = float(session.get("metadata", {}).get("amount", 0))
+        purchase_type = session.get("metadata", {}).get("purchase_type", "credit_purchase")
 
-        if not tenant_id or not plan_id:
-            print("Tenant ID or Plan ID not found in checkout session metadata")
+        print(f"STRIPE WEBHOOK DEBUG: Processing checkout completed")
+        print(f"STRIPE WEBHOOK DEBUG: Tenant ID: {tenant_id}")
+        print(f"STRIPE WEBHOOK DEBUG: User ID: {user_id}")
+        print(f"STRIPE WEBHOOK DEBUG: User Email: {user_email}")
+        print(f"STRIPE WEBHOOK DEBUG: Plan ID: {plan_id}")
+        print(f"STRIPE WEBHOOK DEBUG: Amount: {amount}")
+        print(f"STRIPE WEBHOOK DEBUG: Purchase type: {purchase_type}")
+        print(f"STRIPE WEBHOOK DEBUG: Session ID: {session.get('id')}")
+        print(f"STRIPE WEBHOOK DEBUG: Payment status: {session.get('payment_status')}")
+
+        if not tenant_id:
+            print("STRIPE WEBHOOK ERROR: Tenant ID not found in checkout session metadata")
             return
 
+        # Get tenant
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenant:
-            print(f"Tenant with ID {tenant_id} not found")
+            print(f"STRIPE WEBHOOK ERROR: Tenant with ID {tenant_id} not found")
             return
 
-        plan = db.query(Plan).filter(Plan.id == plan_id).first()
-        if not plan:
-            print(f"Plan with ID {plan_id} not found")
+        # Get user who made the payment
+        user = None
+        if user_id:
+            from app.models.user import User
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                print(f"STRIPE WEBHOOK DEBUG: Found user - ID: {user.id}, Email: {user.email}")
+            else:
+                print(f"STRIPE WEBHOOK WARNING: User with ID {user_id} not found")
+
+        print(f"STRIPE WEBHOOK DEBUG: Found tenant - ID: {tenant.id}")
+        print(f"STRIPE WEBHOOK DEBUG: Current credits: {tenant.credits}")
+        print(f"STRIPE WEBHOOK DEBUG: Current status: {tenant.status}")
+
+        # Check if payment is actually completed
+        if session.get('payment_status') != 'paid':
+            print(f"STRIPE WEBHOOK DEBUG: Payment not completed, status: {session.get('payment_status')}")
             return
 
         # Calculate credits based on payment amount: $1 = 10 credits
+        # Add credits for both credit purchases and plan purchases
         credits_to_add = int(amount * 10)
         tenant.credits = (tenant.credits or 0) + credits_to_add
+        print(f"STRIPE WEBHOOK DEBUG: Added {credits_to_add} credits to tenant {tenant.id} (purchase type: {purchase_type})")
+        
+        # Update tenant status to active
         tenant.status = 'active'
+        
+        # Update subscription ID if available (for subscription purchases)
+        if session.get('subscription'):
+            tenant.stripe_subscription_id = session.get('subscription')
+            print(f"STRIPE WEBHOOK DEBUG: Updated subscription ID: {session.get('subscription')}")
+        
+        # Update customer ID if available (for both credit and subscription purchases)
+        if session.get('customer'):
+            tenant.stripe_customer_id = session.get('customer')
+            print(f"STRIPE WEBHOOK DEBUG: Updated customer ID: {session.get('customer')}")
+        
+        # For plan purchases, create or update subscription record
+        if purchase_type == 'plan_purchase' and plan_id:
+            # Get plan details
+            plan = db.query(Plan).filter(Plan.id == plan_id).first()
+            if plan:
+                print(f"STRIPE WEBHOOK DEBUG: Processing plan purchase for: {plan.name}")
+                
+                # Create or update subscription record
+                from app.models.subscription import Subscription
+                existing_subscription = db.query(Subscription).filter(
+                    Subscription.tenant_id == tenant_id
+                ).first()
+                
+                if existing_subscription:
+                    # Update existing subscription
+                    existing_subscription.plan_id = plan_id
+                    existing_subscription.stripe_customer_id = session.get('customer')
+                    existing_subscription.stripe_session_id = session.get('id')
+                    existing_subscription.status = 'paid'  # Set status to paid
+                    existing_subscription.current_period_start = datetime.now()
+                    existing_subscription.current_period_end = datetime.now() + timedelta(days=30)  # 30 days from now
+                    print(f"STRIPE WEBHOOK DEBUG: Updated existing subscription for tenant {tenant_id} with status 'paid'")
+                else:
+                    # Create new subscription
+                    new_subscription = Subscription(
+                        tenant_id=tenant_id,
+                        plan_id=plan_id,
+                        stripe_customer_id=session.get('customer'),
+                        stripe_session_id=session.get('id'),
+                        status='paid',  # Set status to paid
+                        current_period_start=datetime.now(),
+                        current_period_end=datetime.now() + timedelta(days=30)  # 30 days from now
+                    )
+                    db.add(new_subscription)
+                    print(f"STRIPE WEBHOOK DEBUG: Created new subscription for tenant {tenant_id} with status 'paid'")
+
+        # Update user information if available
+        if user:
+            # You can add user-specific updates here
+            # For example, update user's last payment date, total spent, etc.
+            print(f"STRIPE WEBHOOK DEBUG: Updating user {user.id} information")
+            
+            # Example: Update user's last payment information
+            # user.last_payment_date = datetime.now()
+            # user.total_payments = (user.total_payments or 0) + amount
+            # You can add more user-specific fields as needed
+            
+            print(f"STRIPE WEBHOOK DEBUG: User {user.id} updated successfully")
+
+        # Commit changes
         db.commit()
         db.refresh(tenant)
 
-        print(f"Added {credits_to_add} credits to tenant {tenant.id}")
+        print(f"STRIPE WEBHOOK SUCCESS: Updated tenant {tenant.id}")
+        print(f"STRIPE WEBHOOK SUCCESS: New credits: {tenant.credits}")
+        print(f"STRIPE WEBHOOK SUCCESS: New status: {tenant.status}")
+        print(f"STRIPE WEBHOOK SUCCESS: Subscription ID: {tenant.stripe_subscription_id}")
+        
+        # Log subscription details if created/updated
+        if purchase_type == 'plan_purchase' and plan_id:
+            subscription = db.query(Subscription).filter(Subscription.tenant_id == tenant_id).first()
+            if subscription:
+                print(f"STRIPE WEBHOOK SUCCESS: Subscription created/updated - Plan ID: {subscription.plan_id}, Status: {subscription.status}")
+                print(f"STRIPE WEBHOOK SUCCESS: Subscription period: {subscription.current_period_start} to {subscription.current_period_end}")
+        
+        if user:
+            print(f"STRIPE WEBHOOK SUCCESS: User {user.id} ({user.email}) payment processed")
+        else:
+            print(f"STRIPE WEBHOOK SUCCESS: Payment processed (user info not available)")
 
     # Note: Idempotency is now handled at the endpoint level using in-memory store in deps

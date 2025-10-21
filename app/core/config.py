@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     
     # Webhook Configuration
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
+    BACKEND_URL: str = "https://tgs-agent-be.onrender.com"
     # Email settings for password reset
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
