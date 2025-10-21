@@ -13,9 +13,28 @@ from app.core.config import settings
 
 router = APIRouter()
 
-# In-memory cache for generated audio
+# In-memory cache for generated audio (AGGRESSIVE CACHING)
 audio_cache = {}
-MAX_CACHE_SIZE = 200  # Cache up to 200 audio files
+MAX_CACHE_SIZE = 500  # Cache up to 500 audio files for faster responses
+
+# Common responses to pre-cache on startup
+COMMON_RESPONSES = [
+    "Hello",
+    "Hi",
+    "How can I help you?",
+    "Could you repeat that?",
+    "Sorry, I didn't catch that.",
+    "Thank you for calling.",
+    "Goodbye",
+    "Please hold on.",
+    "One moment please.",
+    "I'm here to help.",
+    "Can you say that again?",
+    "I understand.",
+    "Let me check that for you.",
+    "Is there anything else?",
+    "Have a great day!"
+]
 
 
 def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False) -> str:
@@ -64,7 +83,7 @@ async def serve_google_tts_audio(
                 text=text,
                 language=lang,
                 voice_type=voice,
-                speaking_rate=1.1,  # 10% faster for quicker responses
+                speaking_rate=1.3,  # 30% faster for minimum latency
                 pitch=0.0,
                 output_format="mp3",
                 use_gemini_flash=gemini_flash
@@ -122,4 +141,42 @@ async def clear_cache():
         "message": "Cache cleared",
         "items_removed": cache_size
     }
+
+
+@router.post("/google-tts/cache/warmup")
+async def warmup_cache():
+    """Pre-cache common responses for instant delivery"""
+    cached_count = 0
+    
+    try:
+        # Pre-cache common responses in English with both male and female voices
+        for text in COMMON_RESPONSES:
+            for voice_type in ["male", "female"]:
+                for use_gemini in [True, False]:
+                    cache_key = generate_cache_key(text, "en", voice_type, use_gemini)
+                    
+                    if cache_key not in audio_cache:
+                        try:
+                            audio_content = google_tts_service.text_to_speech(
+                                text=text,
+                                language="en",
+                                voice_type=voice_type,
+                                speaking_rate=1.3,
+                                pitch=0.0,
+                                output_format="mp3",
+                                use_gemini_flash=use_gemini
+                            )
+                            
+                            audio_cache[cache_key] = audio_content
+                            cached_count += 1
+                        except Exception as e:
+                            print(f"⚠️ Failed to cache '{text}' ({voice_type}): {e}")
+        
+        return {
+            "message": "Cache warmup completed",
+            "cached_items": cached_count,
+            "total_cache_size": len(audio_cache)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cache warmup failed: {str(e)}")
 
