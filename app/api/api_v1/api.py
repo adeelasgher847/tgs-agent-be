@@ -9,6 +9,7 @@ from app.routers.call_sessions import router as call_sessions_router
 from app.routers.call_logs import router as call_logs_router
 from app.routers.general_websocket import router as general_websocket_router
 from app.routers.stt_websocket import router as stt_websocket_router
+from app.routers.tts_audio import router as tts_audio_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -31,3 +32,4 @@ api_router.include_router(provider.router, prefix="/providers", tags=["providers
 api_router.include_router(model.router, prefix="/models", tags=["models"])
 api_router.include_router(gemini.router, prefix="/gemini", tags=["gemini"],include_in_schema=False)
 api_router.include_router(openai.router, prefix="/openai", tags=["openai"],include_in_schema=False)
+api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)

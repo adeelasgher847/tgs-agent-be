@@ -32,6 +32,7 @@ from app.routers.general_websocket import (
 from app.services.transcript_service import transcript_service
 from app.services.model_service import ModelService
 from app.services.gemini_service import gemini_service
+from urllib.parse import quote
 
 router = APIRouter()
 
@@ -737,13 +738,15 @@ async def handle_call_events_webhook(
                 _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
                 db.commit()
                 
-                # Natural, conversational greeting with agent-specific voice
+                # Natural, conversational greeting with Google TTS
                 response = VoiceResponse()
-                agent_voice = get_agent_voice(agent)
                 
                 # Simple greeting
                 greeting_text = "Hello"
-                response.say(greeting_text, voice=agent_voice)
+                lang = agent.language if agent and agent.language else "en"
+                voice = agent.voice_type if agent and agent.voice_type else "female"
+                tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(greeting_text)}&lang={lang}&voice={voice}"
+                response.play(tts_url)
                 
                 # Add initial greeting to transcript
                 await _add_to_transcript(call_session, "agent", greeting_text, db)
@@ -810,22 +813,25 @@ async def handle_call_events_webhook(
                     db.commit()
                 
                 response = VoiceResponse()
-                agent_voice = get_agent_voice(agent)
                 
                 # Check if timeout redirect
                 if timeout == "true":
                     print(f"⏱️ Timeout - ending call")
-                    if pending_response:
-                        response.say(pending_response, voice=agent_voice)
-                    else:
-                        response.say("Thank you for calling. Goodbye!", voice=agent_voice)
+                    text = pending_response if pending_response else "Thank you for calling. Goodbye!"
+                    lang = agent.language if agent and agent.language else "en"
+                    voice = agent.voice_type if agent and agent.voice_type else "female"
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+                    response.play(tts_url)
                     response.hangup()
                     return HTMLResponse(str(response), media_type="application/xml")
                 
                 # Play pending response if available
                 if pending_response:
                     print(f"🎤 Playing pending response: {pending_response}")
-                    response.say(pending_response, voice=agent_voice)
+                    lang = agent.language if agent and agent.language else "en"
+                    voice = agent.voice_type if agent and agent.voice_type else "female"
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(pending_response)}&lang={lang}&voice={voice}"
+                    response.play(tts_url)
                     
                     # Check if goodbye
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(pending_response)
@@ -985,8 +991,11 @@ async def handle_call_events_webhook(
             # Default response for other statuses
             print(f"Unhandled call status: '{call_status}' - using default response")
             response = VoiceResponse()
-            agent_voice = get_agent_voice(agent)
-            response.say("Thanks for calling! Have a great day!", voice=agent_voice)
+            text = "Thanks for calling! Have a great day!"
+            lang = agent.language if agent and agent.language else "en"
+            voice = agent.voice_type if agent and agent.voice_type else "female"
+            tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+            response.play(tts_url)
             return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
@@ -1311,11 +1320,13 @@ async def handle_recording_callback(
                     
                     # Create TwiML response
                     response = VoiceResponse()
-                    agent_voice = get_agent_voice(agent)
                     
-                    # Say agent's response
-                    response.say(response_text, voice=agent_voice)
-                    print(f"🎤 TTS configured: voice={agent_voice}, text='{response_text[:50]}...'")
+                    # Say agent's response using Google TTS
+                    lang = agent.language if agent and agent.language else "en"
+                    voice = agent.voice_type if agent and agent.voice_type else "female"
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}"
+                    response.play(tts_url)
+                    print(f"🎤 Google TTS configured: text='{response_text[:50]}...'")
                     sys.stdout.flush()
                     
                     # Check if this is a goodbye
@@ -1354,10 +1365,13 @@ async def handle_recording_callback(
                     # No transcript - ask user to repeat
                     print(f"⚠️ No transcript from Google STT")
                     response = VoiceResponse()
-                    agent_voice = get_agent_voice(agent)
                     
                     # Natural "didn't catch that" response
-                    response.say(_get_random_didnt_catch_response(), voice=agent_voice)
+                    text = _get_random_didnt_catch_response()
+                    lang = agent.language if agent and agent.language else "en"
+                    voice = agent.voice_type if agent and agent.voice_type else "female"
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+                    response.play(tts_url)
                     
                     # Record again
                     recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
@@ -1383,8 +1397,11 @@ async def handle_recording_callback(
                 
                 # Fallback response
                 response = VoiceResponse()
-                agent_voice = get_agent_voice(agent)
-                response.say("Sorry, I had trouble hearing you. Could you please repeat that?", voice=agent_voice)
+                text = "Sorry, I had trouble hearing you. Could you please repeat that?"
+                lang = agent.language if agent and agent.language else "en"
+                voice = agent.voice_type if agent and agent.voice_type else "female"
+                tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+                response.play(tts_url)
                 
                 recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
                 
@@ -1405,8 +1422,11 @@ async def handle_recording_callback(
         # Fallback if no recording URL
         print(f"⚠️ No recording URL provided")
         response = VoiceResponse()
-        agent_voice = get_agent_voice(agent)
-        response.say("I didn't hear anything. Please try speaking again.", voice=agent_voice)
+        text = "I didn't hear anything. Please try speaking again."
+        lang = agent.language if agent and agent.language else "en"
+        voice = agent.voice_type if agent and agent.voice_type else "female"
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+        response.play(tts_url)
         
         recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
         
@@ -1431,7 +1451,9 @@ async def handle_recording_callback(
         
         # Ultimate fallback
         response = VoiceResponse()
-        response.say("Sorry, something went wrong. Please try calling again later. Goodbye!")
+        text = "Sorry, something went wrong. Please try calling again later. Goodbye!"
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
+        response.play(tts_url)
         response.hangup()
         return HTMLResponse(str(response), media_type="application/xml")
 
@@ -1573,10 +1595,12 @@ async def handle_gather_speech_webhook(
                     
                     # Create response TwiML
                     response = VoiceResponse()
-                    agent_voice = get_agent_voice(agent)
                     
-                    # Say agent response
-                    response.say(response_text, voice=agent_voice)
+                    # Say agent response using Google TTS
+                    lang = agent.language if agent and agent.language else "en"
+                    voice = agent.voice_type if agent and agent.voice_type else "female"
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}"
+                    response.play(tts_url)
                     
                     # Check if goodbye
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
@@ -1598,7 +1622,11 @@ async def handle_gather_speech_webhook(
                     )
                     
                     # Fallback
-                    response.say("I didn't catch that. Please try again!", voice=agent_voice)
+                    text = "I didn't catch that. Please try again!"
+                    lang = agent.language if agent and agent.language else "en"
+                    voice = agent.voice_type if agent and agent.voice_type else "female"
+                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+                    response.play(tts_url)
                     response.redirect(
                         f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agentId}&callSessionId={call_session.id}',
                         method='POST'
@@ -1614,8 +1642,11 @@ async def handle_gather_speech_webhook(
         
         # Fallback response
         response = VoiceResponse()
-        agent_voice = get_agent_voice(agent)
-        response.say("I didn't hear you. Could you please repeat that?", voice=agent_voice)
+        text = "I didn't hear you. Could you please repeat that?"
+        lang = agent.language if agent and agent.language else "en"
+        voice = agent.voice_type if agent and agent.voice_type else "female"
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+        response.play(tts_url)
         
         gather = response.gather(
             input='speech',
