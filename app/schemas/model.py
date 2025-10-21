@@ -3,9 +3,10 @@ Model schemas for API serialization
 """
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field ,model_validator
 from datetime import datetime
 import uuid
+from app.services.pricing_service import pricing_service
 
 
 class ModelBase(BaseModel):
@@ -47,10 +48,19 @@ class ModelResponse(BaseModel):
     archive: bool = Field(True, description="Whether the model is archived")
     created_at: datetime
     updated_at: Optional[datetime] = None
-    
+    pricing: Optional[dict] = Field(None, description="Dynamic pricing details for the model") 
+
+    # ✅ Correct inject_pricing for Pydantic v2
+    @model_validator(mode='wrap')
+    def inject_pricing(cls, model, info):
+        # model is the actual instance here
+        if hasattr(model, "model_name") and model.model_name:
+            model.pricing = pricing_service.get_pricing_for_model(model.model_name)
+        return model
+
     class Config:
         from_attributes = True
-
+    
 
 class ModelList(BaseModel):
     """Schema for listing models"""
@@ -58,3 +68,5 @@ class ModelList(BaseModel):
     total: int
     page: int
     size: int
+
+

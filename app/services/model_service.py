@@ -11,7 +11,9 @@ from app.models.provider import Provider
 from app.schemas.model import ModelCreate, ModelUpdate
 from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
 import uuid
+from app.services.pricing_service import PricingService
 
+pricing_service = PricingService()
 
 class ModelService:
     """Service for model operations"""
@@ -120,7 +122,7 @@ class ModelService:
             "created_at": model.created_at,
             "updated_at": model.updated_at
         }
-        
+          
         # Decrypt API key if it exists
         if model.api_key:
             try:
@@ -129,21 +131,34 @@ class ModelService:
                 model_dict["api_key"] = None  # Failed to decrypt
         
         return model_dict
+
+        
     
     def model_to_safe_dict(self, model: Model) -> dict:
         """Convert model to dictionary without API key for safe API responses"""
-        return {
-            "id": model.id,
-            "provider_id": model.provider_id,
-            "model_name": model.model_name,
-            "description": model.description,
-            "system_prompt": model.system_prompt,
-            "temperature": model.temperature,
-            "max_tokens": model.max_tokens,
-            "archive": model.archive,
-            "created_at": model.created_at,
-            "updated_at": model.updated_at
+        data = {
+        "id": model.id,
+        "provider_id": model.provider_id,
+        "model_name": model.model_name,
+        "description": model.description,
+        "system_prompt": model.system_prompt,
+        "temperature": model.temperature,
+        "max_tokens": model.max_tokens,
+        "archive": model.archive,
+        "created_at": model.created_at,
+        "updated_at": model.updated_at
+    }
+        # ✅ Use correct PricingService method
+        pricing = pricing_service.get_pricing_for_model(model.model_name)
+        if pricing:
+         data["pricing"] = {
+            "llm_per_min": pricing.get("llm_cost_per_minute"),
+            "twilio_per_min": pricing.get("twilio_cost_per_minute"),
+            "total_per_min": pricing.get("total_cost_per_minute")
         }
+        else:
+            data["pricing"] = {"error": "Pricing not found for this model"}
+        return data
     
     def get_models_safe(self, db: Session, skip: int = 0, limit: int = 100) -> List[dict]:
         """Get all models as safe dictionaries (no API keys)"""
