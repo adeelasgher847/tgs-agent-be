@@ -37,34 +37,36 @@ model_service = ModelService()
 from app.routers.tts_audio import audio_cache
 
 
-def generate_cache_key(text: str, language: str, voice_type: str) -> str:
+def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False) -> str:
     """Generate unique cache key for TTS audio (same as tts_audio.py)"""
-    content = f"{text}_{language}_{voice_type}"
+    content = f"{text}_{language}_{voice_type}_{use_gemini}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
-def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female") -> None:
+def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = True) -> None:
     """
     Pre-generate TTS audio and cache it for instant playback
-    Eliminates 1-second delay when Twilio requests the audio
+    Uses Gemini Flash TTS for ultra-fast generation (200-300ms)
     """
     try:
-        cache_key = generate_cache_key(text, language, voice_type)
+        cache_key = generate_cache_key(text, language, voice_type, use_gemini_flash)
         
         if cache_key not in audio_cache:
-            # Generate audio
+            # Generate audio with Gemini Flash
+            voice_label = "Gemini Flash" if use_gemini_flash else "Neural2"
             audio_content = google_tts_service.text_to_speech(
                 text=text,
                 language=language,
                 voice_type=voice_type,
-                speaking_rate=1.1,  # 10% faster for quicker responses
+                speaking_rate=1.3,  # 30% faster for minimum latency
                 pitch=0.0,
-                output_format="mp3"
+                output_format="mp3",
+                use_gemini_flash=use_gemini_flash
             )
             
             # Cache it
             audio_cache[cache_key] = audio_content
-            print(f"⚡ Pre-cached TTS: '{text[:30]}...' ({len(audio_content)} bytes)")
+            print(f"⚡ Pre-cached TTS ({voice_label}): '{text[:30]}...' ({len(audio_content)} bytes)")
             sys.stdout.flush()
     except Exception as e:
         # Non-critical - will generate on-demand if pre-generation fails
@@ -254,7 +256,7 @@ async def gather_greeting_webhook(
         text = "Hello? Are you there? Please speak so I can help you."
         lang = agent.language if agent and agent.language else "en"
         voice = agent.voice_type if agent and agent.voice_type else "female"
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
         response.play(tts_url)
         
         # Give one more chance to speak
@@ -273,7 +275,7 @@ async def gather_greeting_webhook(
         text = "I still can't hear you. Please call back. Goodbye!"
         lang = agent.language if agent and agent.language else "en"
         voice = agent.voice_type if agent and agent.voice_type else "female"
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
         response.play(tts_url)
         response.hangup()
         
@@ -467,7 +469,7 @@ async def gather_speech_callback_webhook(
             # Pre-generate TTS for instant playback
             pre_generate_tts(text, lang, voice)
             
-            tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+            tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
             response.play(tts_url)
             
             # Gather again
@@ -488,7 +490,7 @@ async def gather_speech_callback_webhook(
             text = "I'm still not hearing you. Please call back if you need help. Goodbye!"
             lang = agent.language if agent and agent.language else "en"
             voice = agent.voice_type if agent and agent.voice_type else "female"
-            tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+            tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
             response.play(tts_url)
             response.hangup()
             
@@ -616,7 +618,7 @@ async def gather_speech_callback_webhook(
         response = VoiceResponse()
         
         # Say agent's response using Google TTS (now instant from cache)
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}"
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}&gemini_flash=true"
         response.play(tts_url)
         
         # Check if this is a goodbye
@@ -646,7 +648,7 @@ async def gather_speech_callback_webhook(
         text = "Thank you for calling. Have a great day!"
         lang = agent.language if agent and agent.language else "en"
         voice = agent.voice_type if agent and agent.voice_type else "female"
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
         response.play(tts_url)
         response.hangup()
         
