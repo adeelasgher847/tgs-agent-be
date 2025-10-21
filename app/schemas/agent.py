@@ -49,7 +49,7 @@ class AgentOut(AgentBase):
     id: uuid.UUID
     tenant_id: uuid.UUID
     model_id: Optional[uuid.UUID] = None
-    provider_id: Optional[uuid.UUID] = None
+    provider_id: Optional[uuid.UUID] = Field(None, exclude=False)  # Computed from model relationship
     created_at: datetime
     updated_at: Optional[datetime] = None
     created_by: uuid.UUID
@@ -57,6 +57,8 @@ class AgentOut(AgentBase):
 
     class Config:
         from_attributes = True
+        # Allow extra fields for computed attributes
+        extra = "allow"
 
 
 class AgentListResponse(BaseModel):

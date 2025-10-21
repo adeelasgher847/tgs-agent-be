@@ -26,7 +26,10 @@ def create_agent(
     # Both tenant_user and admin_user are validated by their respective middleware
     # We can use either one since they both represent the same user
     agent = agent_service.create_agent(db, agent_in, admin_user.current_tenant_id, admin_user.id)
-    return create_success_response(agent, "Agent created successfully", status.HTTP_201_CREATED)
+    
+    # Ensure provider_id is properly set for response
+    agent_out = AgentOut.model_validate(agent)
+    return create_success_response(agent_out, "Agent created successfully", status.HTTP_201_CREATED)
 
 
 @router.get("/{agent_id}", response_model=SuccessResponse[AgentOut])
@@ -70,7 +73,10 @@ def update_agent(
 ):
     """Update an agent"""
     agent = agent_service.update_agent(db, agent_id, agent_update, admin_user.current_tenant_id, admin_user.id)
-    return create_success_response(agent, "Agent updated successfully")
+    
+    # Ensure provider_id is properly set for response
+    agent_out = AgentOut.model_validate(agent)
+    return create_success_response(agent_out, "Agent updated successfully")
 
 
 @router.delete("/{agent_id}", response_model=SuccessResponse[dict])
