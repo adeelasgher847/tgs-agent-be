@@ -98,22 +98,27 @@ class BidirectionalStreamHandler:
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
             
-            # Simple and FAST silence detection (Twilio-based)
-            # Twilio sends empty payloads during silence - trust this!
-            # This is the FASTEST and most RELIABLE approach
+            # Audio energy-based silence detection (MULAW never empty!)
+            # Twilio sends continuous MULAW audio - use amplitude to detect silence
             if len(audio_data) > 0:
-                # Audio data present = user speaking
-                self.silence_counter = 0
-                if not self.speech_active:
-                    self.speech_active = True
-                    print(f"🎤 User started speaking...")
-                    sys.stdout.flush()
+                # Calculate simple audio amplitude (fast!)
+                avg_amplitude = sum(abs(b - 127) for b in audio_data) / len(audio_data)
+                
+                # Threshold: speech > 15, silence < 15
+                if avg_amplitude > 15:  # Speech detected
+                    self.silence_counter = 0
+                    if not self.speech_active:
+                        self.speech_active = True
+                        print(f"🎤 User started speaking (amp: {int(avg_amplitude)})...")
+                        sys.stdout.flush()
+                else:  # Silence (low amplitude)
+                    self.silence_counter += 1
+                    if self.silence_counter == 1 and self.speech_active:
+                        print(f"🔇 Silence starting (amp: {int(avg_amplitude)})...")
+                        sys.stdout.flush()
             else:
-                # Empty payload = silence detected by Twilio
+                # Rare case: truly empty
                 self.silence_counter += 1
-                if self.silence_counter == 1 and self.speech_active:
-                    print(f"🔇 Silence starting...")
-                    sys.stdout.flush()
             
             # Process when silence detected
             if self.speech_active and self.silence_counter >= self.silence_threshold:
