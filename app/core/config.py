@@ -50,8 +50,9 @@ class Settings(BaseSettings):
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
     
     # Voice Conversation Settings
-    USE_GATHER_APPROACH: bool = True  # Use <Gather> for 3-4s latency (faster) vs <Record> for 4-6s latency (more accurate with Google STT)
-    USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Testing MULAW amplitude detection for ultra-low latency
+    USE_GATHER_APPROACH: bool = True  # Use <Gather> for STT (proven reliable!)
+    USE_BIDIRECTIONAL_STREAMING: bool = False  # Disabled - using Gather for STT
+    USE_WEBSOCKET_TTS: bool = True  # ✅ NEW - Stream TTS via WebSocket for instant playback (no HTTP fetch delay!)
     
     FRONTEND_URL: str = "http://localhost:3000"  
     

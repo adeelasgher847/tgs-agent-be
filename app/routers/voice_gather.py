@@ -37,19 +37,19 @@ model_service = ModelService()
 from app.routers.tts_audio import audio_cache
 
 
-def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False) -> str:
+def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False, format: str = "mp3") -> str:
     """Generate unique cache key for TTS audio (same as tts_audio.py)"""
-    content = f"{text}_{language}_{voice_type}_{use_gemini}"
+    content = f"{text}_{language}_{voice_type}_{use_gemini}_{format}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
-def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = True) -> None:
+def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = True, format: str = "mp3") -> None:
     """
     Pre-generate TTS audio and cache it for instant playback
     Uses Gemini Flash TTS for ultra-fast generation (200-300ms)
     """
     try:
-        cache_key = generate_cache_key(text, language, voice_type, use_gemini_flash)
+        cache_key = generate_cache_key(text, language, voice_type, use_gemini_flash, format)
         
         if cache_key not in audio_cache:
             # Generate audio with Gemini Flash
@@ -60,7 +60,7 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
                 voice_type=voice_type,
                 speaking_rate=1.1,  # Slightly faster for efficiency while staying clear
                 pitch=0.0,
-                output_format="mp3",
+                output_format=format,
                 use_gemini_flash=use_gemini_flash
             )
             
@@ -604,12 +604,18 @@ async def gather_speech_callback_webhook(
         tts_start = datetime.now(timezone.utc)
         try:
             # Check if already cached
-            cache_key = generate_cache_key(response_text, lang, voice)
+            use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
+            output_fmt = "mulaw" if use_websocket_tts else "mp3"
+            cache_key = generate_cache_key(response_text, lang, voice, True, output_fmt)
             
             if cache_key not in audio_cache:
                 # Pre-generate audio BEFORE sending TwiML
                 print(f"⚡ Pre-generating TTS audio: '{response_text[:50]}...'")
                 sys.stdout.flush()
+                
+                # Use MULAW format for faster delivery (smaller than MP3)
+                use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
+                output_fmt = "mulaw" if use_websocket_tts else "mp3"
                 
                 audio_content = google_tts_service.text_to_speech(
                     text=response_text,
@@ -617,7 +623,7 @@ async def gather_speech_callback_webhook(
                     voice_type=voice,
                     speaking_rate=1.1,  # Slightly faster for efficiency while staying clear
                     pitch=0.0,
-                    output_format="mp3"
+                    output_format=output_fmt
                 )
                 
                 # Cache it for instant playback
@@ -637,8 +643,13 @@ async def gather_speech_callback_webhook(
         # STEP 8: Create TwiML response with Google TTS + <Gather>
         response = VoiceResponse()
         
+        # Check if WebSocket TTS is enabled for faster delivery
+        use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
+        
         # Say agent's response using Google TTS (now instant from cache)
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}&gemini_flash=true"
+        # Use optimized format if WebSocket TTS enabled
+        format_param = "&format=mulaw" if use_websocket_tts else ""
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}&gemini_flash=true{format_param}"
         response.play(tts_url)
         
         # Check if this is a goodbye

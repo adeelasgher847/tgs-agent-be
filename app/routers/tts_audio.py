@@ -18,9 +18,9 @@ audio_cache = {}
 MAX_CACHE_SIZE = 200  # Cache up to 200 audio files
 
 
-def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False) -> str:
+def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False, format: str = "mp3") -> str:
     """Generate unique cache key for audio"""
-    content = f"{text}_{language}_{voice_type}_{use_gemini}"
+    content = f"{text}_{language}_{voice_type}_{use_gemini}_{format}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
@@ -29,7 +29,8 @@ async def serve_google_tts_audio(
     text: str = Query(..., description="Text to convert to speech"),
     lang: str = Query("en", description="Language code"),
     voice: str = Query("female", description="Voice type (male/female)"),
-    gemini_flash: bool = Query(True, description="Use Gemini Flash TTS voices (ultra-fast)")
+    gemini_flash: bool = Query(True, description="Use Gemini Flash TTS voices (ultra-fast)"),
+    format: str = Query("mp3", description="Audio format (mp3, mulaw) - mulaw is faster for Twilio")
 ):
     """
     Generate and serve Google TTS audio on-the-fly for Twilio
@@ -46,8 +47,13 @@ async def serve_google_tts_audio(
         Audio file as MP3
     """
     try:
+        # Validate format
+        valid_formats = ["mp3", "mulaw"]
+        if format not in valid_formats:
+            format = "mp3"
+        
         # Generate cache key
-        cache_key = generate_cache_key(text, lang, voice, gemini_flash)
+        cache_key = generate_cache_key(text, lang, voice, gemini_flash, format)
         
         # Check cache first
         if cache_key in audio_cache:
@@ -65,7 +71,7 @@ async def serve_google_tts_audio(
                 voice_type=voice,
                 speaking_rate=1.1,  # Slightly faster for efficiency while staying clear
                 pitch=0.0,
-                output_format="mp3",
+                output_format=format,  # Use requested format (mp3 or mulaw)
                 use_gemini_flash=gemini_flash
             )
             
@@ -79,14 +85,23 @@ async def serve_google_tts_audio(
             audio_cache[cache_key] = audio_content
             print(f"💾 Cached Google TTS audio ({len(audio_content)} bytes)")
         
-        # Return audio as MP3
+        # Return audio with appropriate media type
+        media_types = {
+            "mp3": "audio/mpeg",
+            "mulaw": "audio/basic"  # MULAW format for faster Twilio delivery
+        }
+        media_type = media_types.get(format, "audio/mpeg")
+        
+        # Aggressive caching headers for instant delivery
         return Response(
             content=audio_content,
-            media_type="audio/mpeg",
+            media_type=media_type,
             headers={
-                "Content-Type": "audio/mpeg",
-                "Cache-Control": "public, max-age=86400",  # Cache for 24 hours
-                "Content-Disposition": "inline"
+                "Content-Type": media_type,
+                "Cache-Control": "public, max-age=31536000, immutable",  # Cache 1 year (aggressive!)
+                "Content-Disposition": "inline",
+                "X-Content-Type-Options": "nosniff",
+                "Access-Control-Allow-Origin": "*"  # Allow cross-origin for Twilio
             }
         )
         
