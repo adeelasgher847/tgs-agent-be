@@ -699,6 +699,100 @@ async def gather_speech_callback_webhook(
         return HTMLResponse(str(response), media_type="application/xml")
 
 
+@router.post("/gather/streaming", response_class=HTMLResponse, include_in_schema=False)
+async def streaming_greeting_webhook(
+    request: Request,
+    agentId: Optional[str] = Query(None),
+    userId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
+    body: str = Depends(get_request_body),
+    db: Session = Depends(get_db)
+):
+    """
+    Bidirectional streaming endpoint - returns TwiML with WebSocket stream
+    
+    This uses WebSocket for both STT and TTS streaming for ultra-low latency.
+    Target: <3 seconds response time
+    """
+    print("=" * 80)
+    print(f"🎙️ BIDIRECTIONAL STREAMING WEBHOOK")
+    print(f"📞 Call Session: {callSessionId}")
+    print(f"🤖 Agent: {agentId}")
+    print(f"⚡ Using real-time WebSocket streaming")
+    print("=" * 80)
+    sys.stdout.flush()
+    
+    try:
+        # Parse form data
+        form_data = await request.form()
+        call_sid = form_data.get("CallSid", "")
+        
+        # Get call session and agent
+        call_session = None
+        agent = None
+        
+        if callSessionId:
+            try:
+                session_uuid = uuid.UUID(callSessionId)
+                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+                
+                if call_session and agentId:
+                    agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
+                    if agent:
+                        print(f"✅ Agent: {agent.name}")
+                    sys.stdout.flush()
+            except ValueError:
+                print(f"⚠️ Invalid call session ID: {callSessionId}")
+                sys.stdout.flush()
+        
+        # Create TwiML response with bidirectional streaming
+        response = VoiceResponse()
+        
+        # Build WebSocket URL for bidirectional streaming
+        ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
+        ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
+        ws_url = f"{ws_protocol}://{ws_base}/api/v1/stream/ws/bidirectional/{callSessionId}/{agentId}"
+        
+        print(f"🔗 WebSocket URL: {ws_url}")
+        sys.stdout.flush()
+        
+        # Start bidirectional media stream
+        from twilio.twiml.voice_response import Connect, Stream
+        
+        connect = Connect()
+        stream = Stream(url=ws_url)
+        
+        # Add parameters to stream
+        stream.parameter(name="callSid", value=call_sid)
+        stream.parameter(name="agentId", value=agentId)
+        stream.parameter(name="callSessionId", value=callSessionId)
+        
+        connect.append(stream)
+        response.append(connect)
+        
+        # Add a Say for initial greeting (optional)
+        # User will hear this while WebSocket connects
+        # response.say("Connecting you now...", voice=get_agent_voice(agent))
+        
+        print(f"✅ TwiML with bidirectional streaming generated")
+        print(f"📝 TwiML: {str(response)[:300]}...")
+        sys.stdout.flush()
+        
+        return HTMLResponse(str(response), media_type="application/xml")
+    
+    except Exception as e:
+        print(f"❌ Error in streaming webhook: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        
+        # Fallback response
+        response = VoiceResponse()
+        response.say("Sorry, something went wrong. Please call back later.", voice="Polly.Joanna")
+        response.hangup()
+        return HTMLResponse(str(response), media_type="application/xml")
+
+
 # Health check endpoint
 @router.get("/gather/health")
 async def health_check():
@@ -710,7 +804,8 @@ async def health_check():
         "target_latency": "3-4 seconds per turn",
         "endpoints": {
             "greeting": "/api/v1/voice/gather/greeting",
-            "speech_callback": "/api/v1/voice/gather/speech-callback"
+            "speech_callback": "/api/v1/voice/gather/speech-callback",
+            "streaming": "/api/v1/voice/gather/streaming (NEW - WebSocket streaming)"
         }
     }
 

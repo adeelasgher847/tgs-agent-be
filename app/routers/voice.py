@@ -718,12 +718,26 @@ async def handle_call_events_webhook(
                 if use_gather_approach:
                     print("🎤 REDIRECTING TO GATHER-BASED APPROACH (3-4s latency)")
                     
-                    # Redirect to Gather greeting endpoint for faster conversation
+                    # Redirect to streaming or gather endpoint
+                    # Use streaming for ultra-low latency (<3s) or gather for standard (4-6s)
+                    use_streaming = getattr(settings, 'USE_BIDIRECTIONAL_STREAMING', True)  # Default to streaming
+                    
                     response = VoiceResponse()
-                    response.redirect(
-                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                        method='POST'
-                    )
+                    
+                    if use_streaming:
+                        # NEW: Bidirectional WebSocket streaming (FASTER!)
+                        print(f"⚡ Using bidirectional streaming for ultra-low latency")
+                        response.redirect(
+                            f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                            method='POST'
+                        )
+                    else:
+                        # OLD: Standard Gather approach (still works)
+                        print(f"📞 Using standard Gather approach")
+                        response.redirect(
+                            f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                            method='POST'
+                        )
                     
                     # Mark as greeted
                     _update_conversation_state(call_session, "has_greeted", True)
