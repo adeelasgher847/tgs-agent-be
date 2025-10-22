@@ -105,8 +105,9 @@ class BidirectionalStreamHandler:
                 # MULAW: center = 127, deviation = sound amplitude
                 avg_amplitude = sum(abs(b - 127) for b in audio_data) / len(audio_data)
                 
-                # Threshold: speech > 15, silence < 15
-                if avg_amplitude > 15:  # Speech detected
+                # Threshold: speech > 40, silence/noise < 40
+                # Background noise typically 20-35, speech 50-80
+                if avg_amplitude > 40:  # Speech detected (above background noise)
                     self.silence_counter = 0
                     if not self.speech_active:
                         self.speech_active = True
