@@ -215,12 +215,32 @@ async def gather_greeting_webhook(
         agent_voice = get_agent_voice(agent)
         gather_language = get_gather_language(agent)
         
-        # NO GREETING - User speaks first! 🎤
-        # Just start listening immediately for better UX
-        print(f"👂 Listening for user to speak first (no greeting)")
+        # GREETING: Say "Hello" when call starts! 👋
+        greeting_text = "Hello"
+        lang = agent.language if agent and agent.language else "en"
+        voice = agent.voice_type if agent and agent.voice_type else "female"
+        
+        # Use Gemini Flash TTS for fast greeting
+        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(greeting_text)}&lang={lang}&voice={voice}&gemini_flash=true"
+        response.play(tts_url)
+        
+        print(f"👋 Playing greeting: '{greeting_text}'")
         sys.stdout.flush()
         
-        # Log call start event (no greeting transcript)
+        # Add greeting to transcript
+        if call_session:
+            try:
+                asyncio.create_task(add_to_transcript(
+                    call_session,
+                    "agent",
+                    greeting_text,
+                    db,
+                    message_type="greeting"
+                ))
+            except Exception as e:
+                print(f"⚠️ Failed to add greeting to transcript: {e}")
+        
+        # Log call start event
         if call_session:
             try:
                 asyncio.create_task(broadcast_call_event(
@@ -228,7 +248,8 @@ async def gather_greeting_webhook(
                     event_type="call_started",
                     event_data={
                         "agent_name": agent_name,
-                        "message": "Call connected - Listening for user input",
+                        "greeting": greeting_text,
+                        "message": f"Call connected - {agent_name} says: {greeting_text}",
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                 ))
@@ -239,7 +260,6 @@ async def gather_greeting_webhook(
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
         
         # Gather speech input with optimized settings for low latency
-        # User speaks FIRST - no greeting
         gather = response.gather(
             input='speech',
             action=callback_url,
