@@ -18,6 +18,7 @@ class Agent(Base):
     created_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     updated_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     model_id = Column(UUID(as_uuid=True), ForeignKey("model.id"), nullable=True)
+    provider_id = Column(UUID(as_uuid=True), ForeignKey("provider.id"), nullable=True)  # Provider for filtering models
     provider_agent_id = Column(String(255), nullable=True)
     
     # Agent-specific model configuration (overrides model defaults)
@@ -31,3 +32,4 @@ class Agent(Base):
     call_sessions = relationship("CallSession", back_populates="agent")
     transcript_messages = relationship("TranscriptMessage", back_populates="agent")
     model = relationship("Model")
+    provider = relationship("Provider")  # Provider relationship for filtering models

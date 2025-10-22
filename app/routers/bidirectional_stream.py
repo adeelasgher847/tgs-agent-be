@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
+import math  # For RMS energy calculation
 from typing import Optional, Dict
 from datetime import datetime, timezone
 import uuid
 import sys
-import struct  # For audio energy calculation
 
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
@@ -49,6 +49,11 @@ class BidirectionalStreamHandler:
         self.speech_active = False
         self.silence_counter = 0
         self.silence_threshold = 50  # ~1 second silence
+        
+        # Dynamic energy tracking for better silence detection
+        self.energy_history = []
+        self.baseline_energy = 0
+        self.peak_energy = 0
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -94,35 +99,55 @@ class BidirectionalStreamHandler:
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
             
-            # Silence detection based on audio energy
+            # Dynamic silence detection based on audio energy
             try:
-                # Calculate audio energy manually (Python 3.13 compatible)
-                # MULAW audio: 1 byte per sample
                 if len(audio_data) > 0:
-                    # Calculate average amplitude
+                    # Calculate RMS-like energy (Python 3.13 compatible)
                     sum_squares = sum(byte * byte for byte in audio_data)
-                    avg_energy = sum_squares / len(audio_data)
+                    rms_energy = math.sqrt(sum_squares / len(audio_data))
                     
-                    # Speech detection threshold
-                    # Typical values: silence < 1000, speech > 2000, loud speech > 5000
-                    if avg_energy > 1500:  # Speech detected
+                    # Track energy history for dynamic baseline
+                    self.energy_history.append(rms_energy)
+                    
+                    # Keep last 100 samples (~2 seconds)
+                    if len(self.energy_history) > 100:
+                        self.energy_history.pop(0)
+                    
+                    # Update baseline and peak
+                    if len(self.energy_history) >= 10:
+                        sorted_energies = sorted(self.energy_history)
+                        self.baseline_energy = sorted_energies[len(sorted_energies) // 4]  # 25th percentile
+                        self.peak_energy = sorted_energies[-10]  # Top 10%
+                    
+                    # Dynamic threshold: speech if above baseline + 30% of range
+                    energy_range = max(self.peak_energy - self.baseline_energy, 20)
+                    speech_threshold = self.baseline_energy + (energy_range * 0.3)
+                    
+                    # Detect speech vs silence
+                    if rms_energy > speech_threshold and rms_energy > 50:  # Minimum 50 to filter noise
                         self.silence_counter = 0
                         if not self.speech_active:
                             self.speech_active = True
-                            print(f"🎤 User started speaking (energy: {int(avg_energy)})...")
+                            print(f"🎤 User started speaking (energy: {int(rms_energy)}, threshold: {int(speech_threshold)})...")
                             sys.stdout.flush()
                     else:  # Silence detected
                         self.silence_counter += 1
+                        if self.silence_counter == 1 and self.speech_active:
+                            print(f"🔇 Silence starting (energy: {int(rms_energy)} < {int(speech_threshold)})...")
+                            sys.stdout.flush()
                 else:
                     self.silence_counter += 1
                     
             except Exception as e:
-                # Fallback: assume speech if error in energy calculation
-                self.silence_counter = 0
-                if not self.speech_active:
-                    self.speech_active = True
-                    print(f"⚠️ Energy check failed, assuming speech: {e}")
-                    sys.stdout.flush()
+                # Fallback: use simple length check
+                if len(audio_data) > 100:
+                    self.silence_counter = 0
+                    if not self.speech_active:
+                        self.speech_active = True
+                        print(f"⚠️ Energy check failed, using fallback: {e}")
+                        sys.stdout.flush()
+                else:
+                    self.silence_counter += 1
             
             # Process when silence detected
             if self.speech_active and self.silence_counter >= self.silence_threshold:
