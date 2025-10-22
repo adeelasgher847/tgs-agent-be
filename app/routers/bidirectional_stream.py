@@ -102,6 +102,7 @@ class BidirectionalStreamHandler:
             # Twilio sends continuous MULAW audio - use amplitude to detect silence
             if len(audio_data) > 0:
                 # Calculate simple audio amplitude (fast!)
+                # MULAW: center = 127, deviation = sound amplitude
                 avg_amplitude = sum(abs(b - 127) for b in audio_data) / len(audio_data)
                 
                 # Threshold: speech > 15, silence < 15
@@ -109,12 +110,17 @@ class BidirectionalStreamHandler:
                     self.silence_counter = 0
                     if not self.speech_active:
                         self.speech_active = True
-                        print(f"🎤 User started speaking (amp: {int(avg_amplitude)})...")
+                        print(f"🎤 User started speaking (amplitude: {avg_amplitude:.1f})...")
                         sys.stdout.flush()
                 else:  # Silence (low amplitude)
                     self.silence_counter += 1
                     if self.silence_counter == 1 and self.speech_active:
-                        print(f"🔇 Silence starting (amp: {int(avg_amplitude)})...")
+                        print(f"🔇 Silence detected (amplitude: {avg_amplitude:.1f}, counter started)...")
+                        sys.stdout.flush()
+                    # Debug: Show when approaching threshold
+                    elif self.speech_active and self.silence_counter % 10 == 0:
+                        remaining = self.silence_threshold - self.silence_counter
+                        print(f"🔇 Silence continuing... (amp: {avg_amplitude:.1f}, {remaining} packets until processing)")
                         sys.stdout.flush()
             else:
                 # Rare case: truly empty

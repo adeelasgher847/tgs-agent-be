@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     
     # Voice Conversation Settings
     USE_GATHER_APPROACH: bool = True  # Use <Gather> for 3-4s latency (faster) vs <Record> for 4-6s latency (more accurate with Google STT)
-    USE_BIDIRECTIONAL_STREAMING: bool = False  # ❌ DISABLED - Using reliable Gather approach (proven working)
+    USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Testing MULAW amplitude detection for ultra-low latency
     
     FRONTEND_URL: str = "http://localhost:3000"  
     
