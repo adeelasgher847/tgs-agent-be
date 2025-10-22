@@ -9,11 +9,11 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-import audioop  # For audio energy detection (RMS)
 from typing import Optional, Dict
 from datetime import datetime, timezone
 import uuid
 import sys
+import struct  # For audio energy calculation
 
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
@@ -94,28 +94,34 @@ class BidirectionalStreamHandler:
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
             
-            # Silence detection based on audio energy (RMS)
+            # Silence detection based on audio energy
             try:
-                # Calculate RMS (Root Mean Square) for MULAW audio energy
-                rms = audioop.rms(audio_data, 1)  # 1 = sample width for MULAW
-                
-                # Speech detection threshold
-                # Typical values: silence < 300, speech > 500, loud speech > 1000
-                if rms > 400:  # Speech detected
-                    self.silence_counter = 0
-                    if not self.speech_active:
-                        self.speech_active = True
-                        print(f"🎤 User started speaking (RMS: {rms})...")
-                        sys.stdout.flush()
-                else:  # Silence detected
+                # Calculate audio energy manually (Python 3.13 compatible)
+                # MULAW audio: 1 byte per sample
+                if len(audio_data) > 0:
+                    # Calculate average amplitude
+                    sum_squares = sum(byte * byte for byte in audio_data)
+                    avg_energy = sum_squares / len(audio_data)
+                    
+                    # Speech detection threshold
+                    # Typical values: silence < 1000, speech > 2000, loud speech > 5000
+                    if avg_energy > 1500:  # Speech detected
+                        self.silence_counter = 0
+                        if not self.speech_active:
+                            self.speech_active = True
+                            print(f"🎤 User started speaking (energy: {int(avg_energy)})...")
+                            sys.stdout.flush()
+                    else:  # Silence detected
+                        self.silence_counter += 1
+                else:
                     self.silence_counter += 1
                     
             except Exception as e:
-                # Fallback: assume speech if error in RMS calculation
+                # Fallback: assume speech if error in energy calculation
                 self.silence_counter = 0
                 if not self.speech_active:
                     self.speech_active = True
-                    print(f"⚠️ RMS check failed, assuming speech: {e}")
+                    print(f"⚠️ Energy check failed, assuming speech: {e}")
                     sys.stdout.flush()
             
             # Process when silence detected
