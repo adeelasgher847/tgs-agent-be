@@ -15,6 +15,15 @@ from datetime import datetime, timezone
 import uuid
 import sys
 
+# Try to import WebRTC VAD (professional voice activity detection)
+try:
+    import webrtcvad
+    WEBRTC_VAD_AVAILABLE = True
+    print("✅ WebRTC VAD available - using professional voice activity detection")
+except ImportError:
+    WEBRTC_VAD_AVAILABLE = False
+    print("⚠️ WebRTC VAD not available - using fallback energy-based detection")
+
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
 from app.services.call_session_service import call_session_service
@@ -54,6 +63,20 @@ class BidirectionalStreamHandler:
         self.energy_history = []
         self.baseline_energy = 0
         self.peak_energy = 0
+        
+        # WebRTC VAD for professional voice activity detection
+        if WEBRTC_VAD_AVAILABLE:
+            try:
+                self.vad = webrtcvad.Vad(2)  # Aggressiveness: 0 (least) to 3 (most aggressive)
+                self.use_webrtc_vad = True
+                print("✅ WebRTC VAD initialized (aggressiveness: 2)")
+            except Exception as e:
+                print(f"⚠️ WebRTC VAD init failed: {e}, using fallback")
+                self.vad = None
+                self.use_webrtc_vad = False
+        else:
+            self.vad = None
+            self.use_webrtc_vad = False
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -99,52 +122,63 @@ class BidirectionalStreamHandler:
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
             
-            # Dynamic silence detection based on audio energy
+            # Voice Activity Detection (VAD) - WebRTC or fallback
             try:
                 if len(audio_data) > 0:
-                    # Calculate RMS-like energy (Python 3.13 compatible)
-                    sum_squares = sum(byte * byte for byte in audio_data)
-                    rms_energy = math.sqrt(sum_squares / len(audio_data))
+                    is_speech = False
                     
-                    # Track energy history for dynamic baseline
-                    self.energy_history.append(rms_energy)
+                    # Try WebRTC VAD first (most accurate)
+                    if self.use_webrtc_vad and self.vad:
+                        try:
+                            # WebRTC VAD requires specific frame sizes (10ms, 20ms, or 30ms)
+                            # Twilio sends ~20ms frames (160 bytes for 8kHz MULAW)
+                            # Pad or trim to valid frame size
+                            frame_size = 160  # 20ms at 8kHz
+                            if len(audio_data) < frame_size:
+                                # Pad with zeros
+                                audio_data = audio_data + b'\x00' * (frame_size - len(audio_data))
+                            elif len(audio_data) > frame_size:
+                                # Use first frame
+                                audio_data = audio_data[:frame_size]
+                            
+                            # WebRTC VAD call - returns True if speech detected
+                            is_speech = self.vad.is_speech(audio_data, sample_rate=8000)
+                            
+                        except Exception as e:
+                            # Fallback to energy-based if WebRTC VAD fails
+                            print(f"⚠️ WebRTC VAD failed: {e}, using energy fallback")
+                            sys.stdout.flush()
+                            self.use_webrtc_vad = False  # Disable for future packets
+                            
+                    # Fallback: Energy-based detection (simple and reliable)
+                    if not self.use_webrtc_vad:
+                        sum_squares = sum(byte * byte for byte in audio_data)
+                        rms_energy = math.sqrt(sum_squares / len(audio_data))
+                        is_speech = rms_energy > 80  # Simple threshold
                     
-                    # Keep last 100 samples (~2 seconds)
-                    if len(self.energy_history) > 100:
-                        self.energy_history.pop(0)
-                    
-                    # Update baseline and peak
-                    if len(self.energy_history) >= 10:
-                        sorted_energies = sorted(self.energy_history)
-                        self.baseline_energy = sorted_energies[len(sorted_energies) // 4]  # 25th percentile
-                        self.peak_energy = sorted_energies[-10]  # Top 10%
-                    
-                    # Dynamic threshold: speech if above baseline + 30% of range
-                    energy_range = max(self.peak_energy - self.baseline_energy, 20)
-                    speech_threshold = self.baseline_energy + (energy_range * 0.3)
-                    
-                    # Detect speech vs silence
-                    if rms_energy > speech_threshold and rms_energy > 50:  # Minimum 50 to filter noise
+                    # Update speech state based on detection
+                    if is_speech:
                         self.silence_counter = 0
                         if not self.speech_active:
                             self.speech_active = True
-                            print(f"🎤 User started speaking (energy: {int(rms_energy)}, threshold: {int(speech_threshold)})...")
+                            vad_method = "WebRTC VAD" if self.use_webrtc_vad else "Energy-based"
+                            print(f"🎤 User started speaking ({vad_method})...")
                             sys.stdout.flush()
                     else:  # Silence detected
                         self.silence_counter += 1
                         if self.silence_counter == 1 and self.speech_active:
-                            print(f"🔇 Silence starting (energy: {int(rms_energy)} < {int(speech_threshold)})...")
+                            print(f"🔇 Silence starting...")
                             sys.stdout.flush()
                 else:
                     self.silence_counter += 1
                     
             except Exception as e:
-                # Fallback: use simple length check
+                # Ultimate fallback: simple length check
                 if len(audio_data) > 100:
                     self.silence_counter = 0
                     if not self.speech_active:
                         self.speech_active = True
-                        print(f"⚠️ Energy check failed, using fallback: {e}")
+                        print(f"⚠️ VAD failed, using basic fallback: {e}")
                         sys.stdout.flush()
                 else:
                     self.silence_counter += 1

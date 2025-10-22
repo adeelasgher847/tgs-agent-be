@@ -28,3 +28,4 @@ google-auth
 google-auth-oauthlib
 google-cloud-speech
 google-cloud-texttospeech
+webrtcvad  # Voice Activity Detection for better silence detection
