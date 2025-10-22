@@ -58,7 +58,7 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
                 text=text,
                 language=language,
                 voice_type=voice_type,
-                speaking_rate=1.3,  # 30% faster for minimum latency
+                speaking_rate=1.0,  # Natural speed for clear understanding
                 pitch=0.0,
                 output_format="mp3",
                 use_gemini_flash=use_gemini_flash
@@ -244,7 +244,7 @@ async def gather_greeting_webhook(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout=0.8,  # VAPI-STYLE: Fast silence detection (800ms vs 1.5s)
+            speechTimeout=1.0,  # Balanced silence detection for natural speech
             timeout=5,  # Quick timeout for responsive UX
             language=gather_language,
             enhanced=True,  # Use enhanced model for better accuracy
@@ -264,7 +264,7 @@ async def gather_greeting_webhook(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout=0.8,  # Fast detection on retry
+            speechTimeout=1.0,  # Balanced detection on retry
             timeout=5,  # Shorter timeout for retry
             language=gather_language,
             enhanced=True,
@@ -399,7 +399,7 @@ async def gather_speech_callback_webhook(
                 sys.stdout.flush()
                 
                 # Download audio with reduced timeout for faster response
-                audio_response = requests.get(auth_url, timeout=3)  # Reduced from 5s to 3s
+                audio_response = requests.get(auth_url, timeout=2)  # 2s timeout for speed
                 
                 if audio_response.status_code == 200:
                     audio_content = audio_response.content
@@ -479,7 +479,7 @@ async def gather_speech_callback_webhook(
                 input='speech',
                 action=callback_url,
                 method='POST',
-                speechTimeout=0.8,  # Fast silence detection
+                speechTimeout=1.0,  # Balanced silence detection
                 timeout=5,  # Quick timeout
                 language=gather_language,
                 enhanced=True,
@@ -595,7 +595,7 @@ async def gather_speech_callback_webhook(
                     text=response_text,
                     language=lang,
                     voice_type=voice,
-                    speaking_rate=1.1,  # 10% faster for quicker responses (sounds natural)
+                    speaking_rate=1.0,  # Natural speed for clear conversation
                     pitch=0.0,
                     output_format="mp3"
                 )
@@ -636,7 +636,7 @@ async def gather_speech_callback_webhook(
             input='speech',
             action=callback_url,
             method='POST',
-            speechTimeout=0.8,  # VAPI-STYLE: 800ms silence detection for speed
+            speechTimeout=1.0,  # Balanced silence detection for accuracy
             timeout=5,  # Quick timeout for responsive UX
             language=gather_language,
             enhanced=True,
@@ -678,7 +678,7 @@ async def gather_speech_callback_webhook(
                 input='speech',
                 action=callback_url,
                 method='POST',
-                speechTimeout=0.8,  # Fast detection for error recovery
+                speechTimeout=1.0,  # Balanced detection for error recovery
                 timeout=5,  # Quick timeout
                 language='en-US',
                 enhanced=True,

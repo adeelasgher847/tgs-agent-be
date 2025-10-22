@@ -63,7 +63,7 @@ async def serve_google_tts_audio(
                 text=text,
                 language=lang,
                 voice_type=voice,
-                speaking_rate=1.3,  # 30% faster for minimum latency
+                speaking_rate=1.0,  # Natural speed for clear understanding
                 pitch=0.0,
                 output_format="mp3",
                 use_gemini_flash=gemini_flash

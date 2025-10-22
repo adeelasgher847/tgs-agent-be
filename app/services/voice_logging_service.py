@@ -223,8 +223,8 @@ class VoiceLoggingService:
                     conversation_array = transcript_service.get_conversation_array(db, call_session_id)
                     
                     if conversation_array:
-                        # Get last few interactions for context (OPTIMIZED: reduced from 6 to 4 for faster processing)
-                        recent_interactions = conversation_array[-4:]  # Last 4 interactions (enough context, faster LLM)
+                        # Get last few interactions for context (OPTIMIZED: reduced to 2 for fastest processing)
+                        recent_interactions = conversation_array[-3]  # Last 2 interactions (minimal context, fastest LLM)
                         if recent_interactions:
                             conversation_context = "\n\nPrevious conversation context:\n"
                             for interaction in recent_interactions:
@@ -387,7 +387,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             if conversation_context:
                 print(f"🧠 Conversation Context Preview: {conversation_context[:300]}...")
             
-            # Generate response with 10-second timeout for voice calls
+            # Generate response with 5-second timeout for voice calls
             try:
                 ai_response = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -399,10 +399,10 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                         max_tokens=max_tokens,
                         api_key=api_key
                     ),
-                    timeout=10.0  # 10 second timeout for LLM response
+                    timeout=5.0  # 5 second timeout for faster response
                 )
             except asyncio.TimeoutError:
-                print(f"⚠️ LLM timeout after 10s - using fallback response")
+                print(f"⚠️ LLM timeout after 5s - using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
             response_text = ai_response["content"]
