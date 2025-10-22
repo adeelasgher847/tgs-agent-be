@@ -223,8 +223,8 @@ class VoiceLoggingService:
                     conversation_array = transcript_service.get_conversation_array(db, call_session_id)
                     
                     if conversation_array:
-                        # Get last few interactions for context (OPTIMIZED: reduced to 2 for fastest processing)
-                        recent_interactions = conversation_array[-3]  # Last 2 interactions (minimal context, fastest LLM)
+                        # Get last few interactions for context (OPTIMIZED: reduced to 3 for balanced processing)
+                        recent_interactions = conversation_array[-3:]  # Last 3 interactions (balanced context, fast LLM)
                         if recent_interactions:
                             conversation_context = "\n\nPrevious conversation context:\n"
                             for interaction in recent_interactions:
