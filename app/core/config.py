@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     
     # Voice Conversation Settings
     USE_GATHER_APPROACH: bool = True  # Use <Gather> for 3-4s latency (faster) vs <Record> for 4-6s latency (more accurate with Google STT)
-    USE_BIDIRECTIONAL_STREAMING: bool = True  # Use WebSocket bidirectional streaming for <3s latency (FASTEST!) - requires websockets
+    USE_BIDIRECTIONAL_STREAMING: bool = False  # Disabled - using old STT websocket (working properly)
     
     FRONTEND_URL: str = "http://localhost:3000"  
     
