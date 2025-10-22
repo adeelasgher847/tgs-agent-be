@@ -65,11 +65,14 @@ async def serve_google_tts_audio(
             voice_label = "Gemini Flash" if gemini_flash else "Neural2"
             print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
+            # Use normal speed for MULAW (clearer), slightly faster for MP3
+            rate = 1.0 if format == "mulaw" else 1.1
+            
             audio_content = google_tts_service.text_to_speech(
                 text=text,
                 language=lang,
                 voice_type=voice,
-                speaking_rate=1.1,  # Slightly faster for efficiency while staying clear
+                speaking_rate=rate,  # Dynamic rate based on format
                 pitch=0.0,
                 output_format=format,  # Use requested format (mp3 or mulaw)
                 use_gemini_flash=gemini_flash
@@ -88,16 +91,22 @@ async def serve_google_tts_audio(
         # Return audio with appropriate media type
         media_types = {
             "mp3": "audio/mpeg",
-            "mulaw": "audio/basic"  # MULAW format for faster Twilio delivery
+            "mulaw": "audio/x-mulaw"  # MULAW with proper MIME type
         }
         media_type = media_types.get(format, "audio/mpeg")
         
-        # Aggressive caching headers for instant delivery
+        # Set proper Content-Type with sample rate for MULAW
+        if format == "mulaw":
+            content_type_header = "audio/x-mulaw;rate=8000"  # Specify 8kHz for Twilio
+        else:
+            content_type_header = media_type
+        
+        # Return audio with optimized headers
         return Response(
             content=audio_content,
             media_type=media_type,
             headers={
-                "Content-Type": media_type,
+                "Content-Type": content_type_header,  # Proper type with rate
                 "Cache-Control": "public, max-age=31536000, immutable",  # Cache 1 year (aggressive!)
                 "Content-Disposition": "inline",
                 "X-Content-Type-Options": "nosniff",

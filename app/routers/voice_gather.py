@@ -54,11 +54,12 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
         if cache_key not in audio_cache:
             # Generate audio with Gemini Flash
             voice_label = "Gemini Flash" if use_gemini_flash else "Neural2"
+            rate = 1.0 if format == "mulaw" else 1.1  # Normal speed for MULAW
             audio_content = google_tts_service.text_to_speech(
                 text=text,
                 language=language,
                 voice_type=voice_type,
-                speaking_rate=1.1,  # Slightly faster for efficiency while staying clear
+                speaking_rate=rate,  # Dynamic rate based on format
                 pitch=0.0,
                 output_format=format,
                 use_gemini_flash=use_gemini_flash
@@ -616,12 +617,13 @@ async def gather_speech_callback_webhook(
                 # Use MULAW format for faster delivery (smaller than MP3)
                 use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
                 output_fmt = "mulaw" if use_websocket_tts else "mp3"
-                
+
+                rate = 1.0 if output_fmt == "mulaw" else 1.1  # Normal speed for MULAW
                 audio_content = google_tts_service.text_to_speech(
                     text=response_text,
                     language=lang,
                     voice_type=voice,
-                    speaking_rate=1.1,  # Slightly faster for efficiency while staying clear
+                    speaking_rate=rate,  # Dynamic rate based on format
                     pitch=0.0,
                     output_format=output_fmt
                 )

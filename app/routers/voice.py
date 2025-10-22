@@ -734,10 +734,10 @@ async def handle_call_events_webhook(
                     else:
                         # OLD: Standard Gather approach (still works)
                         print(f"📞 Using standard Gather approach")
-                        response.redirect(
-                            f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                            method='POST'
-                        )
+                    response.redirect(
+                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                        method='POST'
+                    )
                     
                     # Mark as greeted
                     _update_conversation_state(call_session, "has_greeted", True)

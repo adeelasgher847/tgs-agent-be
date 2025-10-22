@@ -235,7 +235,8 @@ class GoogleTTSService:
             audio_config = texttospeech.AudioConfig(
                 audio_encoding=audio_encoding,
                 speaking_rate=speaking_rate,
-                pitch=pitch
+                pitch=pitch,
+                sample_rate_hertz=8000 if output_format == "mulaw" else None  # 8kHz for MULAW (Twilio compatible)
             )
             
             # Perform the text-to-speech request
