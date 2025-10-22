@@ -9,20 +9,12 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-import math  # For RMS energy calculation
 from typing import Optional, Dict
 from datetime import datetime, timezone
 import uuid
 import sys
 
-# Try to import WebRTC VAD (professional voice activity detection)
-try:
-    import webrtcvad
-    WEBRTC_VAD_AVAILABLE = True
-    print("✅ WebRTC VAD available - using professional voice activity detection")
-except ImportError:
-    WEBRTC_VAD_AVAILABLE = False
-    print("⚠️ WebRTC VAD not available - using fallback energy-based detection")
+# Using simple Twilio-based silence detection for maximum speed and reliability
 
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
@@ -57,26 +49,10 @@ class BidirectionalStreamHandler:
         self.current_speech = ""
         self.speech_active = False
         self.silence_counter = 0
-        self.silence_threshold = 50  # ~1 second silence
+        self.silence_threshold = 45  # ~0.9 second silence (faster!)
         
-        # Dynamic energy tracking for better silence detection
-        self.energy_history = []
-        self.baseline_energy = 0
-        self.peak_energy = 0
-        
-        # WebRTC VAD for professional voice activity detection
-        if WEBRTC_VAD_AVAILABLE:
-            try:
-                self.vad = webrtcvad.Vad(2)  # Aggressiveness: 0 (least) to 3 (most aggressive)
-                self.use_webrtc_vad = True
-                print("✅ WebRTC VAD initialized (aggressiveness: 2)")
-            except Exception as e:
-                print(f"⚠️ WebRTC VAD init failed: {e}, using fallback")
-                self.vad = None
-                self.use_webrtc_vad = False
-        else:
-            self.vad = None
-            self.use_webrtc_vad = False
+        # Using simple Twilio-based silence detection (fastest and most reliable!)
+        # No need for complex VAD - Twilio sends empty payloads during silence
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -122,66 +98,22 @@ class BidirectionalStreamHandler:
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
             
-            # Voice Activity Detection (VAD) - WebRTC or fallback
-            try:
-                if len(audio_data) > 0:
-                    is_speech = False
-                    
-                    # Try WebRTC VAD first (most accurate)
-                    if self.use_webrtc_vad and self.vad:
-                        try:
-                            # WebRTC VAD requires specific frame sizes (10ms, 20ms, or 30ms)
-                            # Twilio sends ~20ms frames (160 bytes for 8kHz MULAW)
-                            # Pad or trim to valid frame size
-                            frame_size = 160  # 20ms at 8kHz
-                            if len(audio_data) < frame_size:
-                                # Pad with zeros
-                                audio_data = audio_data + b'\x00' * (frame_size - len(audio_data))
-                            elif len(audio_data) > frame_size:
-                                # Use first frame
-                                audio_data = audio_data[:frame_size]
-                            
-                            # WebRTC VAD call - returns True if speech detected
-                            is_speech = self.vad.is_speech(audio_data, sample_rate=8000)
-                            
-                        except Exception as e:
-                            # Fallback to energy-based if WebRTC VAD fails
-                            print(f"⚠️ WebRTC VAD failed: {e}, using energy fallback")
-                            sys.stdout.flush()
-                            self.use_webrtc_vad = False  # Disable for future packets
-                            
-                    # Fallback: Energy-based detection (simple and reliable)
-                    if not self.use_webrtc_vad:
-                        sum_squares = sum(byte * byte for byte in audio_data)
-                        rms_energy = math.sqrt(sum_squares / len(audio_data))
-                        is_speech = rms_energy > 80  # Simple threshold
-                    
-                    # Update speech state based on detection
-                    if is_speech:
-                        self.silence_counter = 0
-                        if not self.speech_active:
-                            self.speech_active = True
-                            vad_method = "WebRTC VAD" if self.use_webrtc_vad else "Energy-based"
-                            print(f"🎤 User started speaking ({vad_method})...")
-                            sys.stdout.flush()
-                    else:  # Silence detected
-                        self.silence_counter += 1
-                        if self.silence_counter == 1 and self.speech_active:
-                            print(f"🔇 Silence starting...")
-                            sys.stdout.flush()
-                else:
-                    self.silence_counter += 1
-                    
-            except Exception as e:
-                # Ultimate fallback: simple length check
-                if len(audio_data) > 100:
-                    self.silence_counter = 0
-                    if not self.speech_active:
-                        self.speech_active = True
-                        print(f"⚠️ VAD failed, using basic fallback: {e}")
-                        sys.stdout.flush()
-                else:
-                    self.silence_counter += 1
+            # Simple and FAST silence detection (Twilio-based)
+            # Twilio sends empty payloads during silence - trust this!
+            # This is the FASTEST and most RELIABLE approach
+            if len(audio_data) > 0:
+                # Audio data present = user speaking
+                self.silence_counter = 0
+                if not self.speech_active:
+                    self.speech_active = True
+                    print(f"🎤 User started speaking...")
+                    sys.stdout.flush()
+            else:
+                # Empty payload = silence detected by Twilio
+                self.silence_counter += 1
+                if self.silence_counter == 1 and self.speech_active:
+                    print(f"🔇 Silence starting...")
+                    sys.stdout.flush()
             
             # Process when silence detected
             if self.speech_active and self.silence_counter >= self.silence_threshold:
