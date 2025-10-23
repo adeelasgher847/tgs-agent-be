@@ -778,9 +778,14 @@ async def handle_call_events_webhook(
                 except Exception as e:
                     print(f"⚠️ Failed to queue greeting event (non-critical): {e}")
                 
-                # Use streaming TwiML instead of <Play> for real-time TTS
-                streaming_twiml = build_streaming_twiml(str(call_session.id), str(agent.id))
-                return HTMLResponse(streaming_twiml, media_type="application/xml")
+                # Simple greeting without recording for testing
+                response = VoiceResponse()
+                greeting_text = "Hello! How can I help you today?"
+                response.say(greeting_text, voice="alice")
+                response.hangup()
+                
+                print(f"📝 Simple greeting TwiML generated")
+                return HTMLResponse(str(response), media_type="application/xml")
             else:
                 print("🔄 ALREADY GREETED - Playing agent response and listening for next input")
                 
@@ -818,37 +823,15 @@ async def handle_call_events_webhook(
                         print(f"🛑 Goodbye - ending call")
                         return HTMLResponse(str(response), media_type="application/xml")
                     
-                    # Continue conversation - record next user input
-                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
-                    
-                    response.record(
-                        action=recording_callback_url,
-                        method='POST',
-                        timeout=5,  # Wait 5 seconds of silence
-                        max_length=60,
-                        play_beep=False,
-                        trim='do-not-trim',
-                        recording_status_callback=recording_callback_url,
-                        recording_status_callback_method='POST',
-                        transcribe=False
-                    )
+                    # Continue conversation - simple response for testing
+                    response.say("Thank you for calling. Have a great day!", voice="alice")
+                    response.hangup()
                 else:
-                    # No pending response - just listen
-                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
-                    
-                    response.record(
-                        action=recording_callback_url,
-                        method='POST',
-                        timeout=5,
-                        max_length=60,
-                        play_beep=False,
-                        trim='do-not-trim',
-                        recording_status_callback=recording_callback_url,
-                        recording_status_callback_method='POST',
-                        transcribe=False
-                    )
+                    # No pending response - simple goodbye
+                    response.say("Thank you for calling. Have a great day!", voice="alice")
+                    response.hangup()
                 
-                print(f"📝 CONTINUATION TwiML with <Record>")
+                print(f"📝 CONTINUATION TwiML - Simple response (no recording)")
                 return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "completed":
