@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Optional, Dict
+from typing import Optional, Dict, Iterable
 from datetime import datetime, timezone
 import uuid
 import sys
@@ -23,8 +23,109 @@ from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
 from app.core.config import settings
+from app.routers.tts_audio import audio_cache, generate_cache_key
+
+# Real-time TTS MULAW streaming constants
+MULAW_SAMPLE_RATE_HZ = 8000  # Twilio-friendly
+BYTES_PER_SECOND = MULAW_SAMPLE_RATE_HZ  # 8-bit mu-law => 1 byte per sample
+CHUNK_DURATION_SEC = 0.02  # 20ms
+MULAW_FRAME_BYTES = int(BYTES_PER_SECOND * CHUNK_DURATION_SEC)  # 160 bytes
 
 router = APIRouter()
+
+
+def iter_mulaw_20ms_frames(audio_bytes: bytes) -> Iterable[bytes]:
+    """
+    Yield 20ms mu-law frames (160 bytes at 8kHz).
+    Pads the final frame with mu-law silence (0xFF) if needed.
+    """
+    if not audio_bytes:
+        return
+    total_len = len(audio_bytes)
+    full_frames = total_len // MULAW_FRAME_BYTES
+    remainder = total_len % MULAW_FRAME_BYTES
+
+    offset = 0
+    for _ in range(full_frames):
+        yield audio_bytes[offset:offset + MULAW_FRAME_BYTES]
+        offset += MULAW_FRAME_BYTES
+
+    if remainder:
+        last = bytearray(audio_bytes[offset:])
+        last.extend(b'\xFF' * (MULAW_FRAME_BYTES - remainder))  # mu-law silence pad
+        yield bytes(last)
+
+
+async def stream_mulaw_bytes_over_twilio(websocket, stream_sid: str, audio_bytes: bytes, pace_20ms: bool = True):
+    """
+    Send mu-law audio to Twilio as 20ms 'media' frames.
+    - Sends first frame immediately (early playback).
+    - Optionally pace subsequent frames by ~20ms to match realtime.
+    """
+    first = True
+    for frame in iter_mulaw_20ms_frames(audio_bytes):
+        payload = base64.b64encode(frame).decode("utf-8")
+        await websocket.send_json({
+            "event": "media",
+            "streamSid": stream_sid,
+            "media": {"payload": payload}
+        })
+        if first:
+            first = False
+            # Early playback: no initial sleep
+        elif pace_20ms:
+            await asyncio.sleep(CHUNK_DURATION_SEC)
+
+
+async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_gemini_flash: bool = True) -> bytes:
+    """
+    Generate mu-law (8kHz) TTS audio using the existing Google TTS service.
+    Caches audio for instant reuse.
+    """
+    # Cache key aligned with existing cache strategy
+    cache_key = generate_cache_key(text, lang, voice, use_gemini_flash, "mulaw")
+
+    if cache_key in audio_cache:
+        return audio_cache[cache_key]
+
+    # Use 8kHz MULAW for Twilio
+    audio_content = google_tts_service.text_to_speech(
+        text=text,
+        language=lang,
+        voice_type=voice,
+        speaking_rate=1.0,   # clear at 8kHz MULAW
+        pitch=0.0,
+        output_format="mulaw",
+        use_gemini_flash=use_gemini_flash
+    )
+
+    audio_cache[cache_key] = audio_content
+    return audio_content
+
+
+def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
+    """
+    Replace <Play> with <Start><Stream> to enable realtime MULAW streaming.
+    Configure Twilio edge/region via settings.TWILIO_EDGE if available.
+    """
+    from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Parameter
+    
+    # Your public WebSocket endpoint that handles Twilio Media Streams:
+    # Example: wss://your-domain.com/api/v1/voice/ws/bidirectional/{callSessionId}/{agentId}
+    ws_url = f"{settings.WEBHOOK_BASE_URL.replace('http', 'ws')}/api/v1/voice/ws/bidirectional/{call_session_id}/{agent_id}"
+    if ws_url.startswith("ws://"):
+        ws_url = "wss://" + ws_url[len("ws://"):]  # enforce TLS for Twilio
+
+    edge = getattr(settings, "TWILIO_EDGE", None)  # e.g., "ashburn", "singapore", "dublin"
+    vr = VoiceResponse()
+    with vr.start() as s:
+        stream = Stream(url=ws_url, name=f"tts-stream-{agent_id}")
+        # Forward region hint to your WS (for observability); set real Twilio edge via account/call config.
+        if edge:
+            stream.parameter(Parameter(name="edge", value=edge))
+        s.append(stream)
+
+    return str(vr)
 
 
 class BidirectionalStreamHandler:
@@ -218,38 +319,28 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def stream_tts_response(self, text: str):
-        """Stream TTS audio in chunks for immediate playback"""
+        """Stream TTS audio in 20ms chunks for immediate playback"""
         try:
             # Get agent voice settings
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
             
-            # Split into sentences for streaming
-            sentences = self._split_into_sentences(text)
-            
-            print(f"🎵 Streaming {len(sentences)} sentence(s)...")
+            print(f"🎵 Streaming TTS with 20ms chunks: '{text[:50]}...'")
             sys.stdout.flush()
             
-            for i, sentence in enumerate(sentences):
-                if not sentence.strip():
-                    continue
-                
-                # Generate audio for this sentence
-                audio_content = google_tts_service.text_to_speech(
-                    text=sentence,
-                    language=lang,
-                    voice_type=voice,
-                    speaking_rate=1.1,
-                    pitch=0.0,
-                    output_format="mulaw",  # Twilio format
-                    use_gemini_flash=True  # Fast generation
-                )
-                
-                # Send to Twilio immediately!
-                await self.send_audio_to_twilio(audio_content)
-                
-                print(f"⚡ Streamed sentence {i+1}/{len(sentences)}")
-                sys.stdout.flush()
+            # Generate or fetch cached MULAW audio
+            audio_bytes = await generate_mulaw_tts(text=text, lang=lang, voice=voice, use_gemini_flash=True)
+            
+            # Stream as 20ms frames with early playback
+            await stream_mulaw_bytes_over_twilio(
+                websocket=self.websocket,
+                stream_sid=self.stream_sid,
+                audio_bytes=audio_bytes,
+                pace_20ms=True,
+            )
+            
+            print(f"⚡ Streamed {len(audio_bytes)} bytes in 20ms chunks")
+            sys.stdout.flush()
         
         except Exception as e:
             print(f"❌ Error streaming TTS: {e}")
@@ -263,21 +354,17 @@ class BidirectionalStreamHandler:
         return [s.strip() for s in sentences if s.strip()]
     
     async def send_audio_to_twilio(self, audio_data: bytes):
-        """Send audio chunk to Twilio for immediate playback"""
+        """Send audio chunk to Twilio for immediate playback (legacy method)"""
         try:
-            # Encode audio as base64
-            encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+            # Use new 20ms chunked streaming method
+            await stream_mulaw_bytes_over_twilio(
+                websocket=self.websocket,
+                stream_sid=self.stream_sid,
+                audio_bytes=audio_data,
+                pace_20ms=True,
+            )
             
-            # Send media message to Twilio
-            await self.websocket.send_json({
-                "event": "media",
-                "streamSid": self.stream_sid,
-                "media": {
-                    "payload": encoded_audio
-                }
-            })
-            
-            print(f"📤 Sent {len(audio_data)} bytes to Twilio")
+            print(f"📤 Sent {len(audio_data)} bytes to Twilio (20ms chunks)")
             sys.stdout.flush()
         
         except Exception as e:

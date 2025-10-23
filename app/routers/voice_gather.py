@@ -29,6 +29,7 @@ from app.utils.twilio_validation import get_request_body
 from app.routers.general_websocket import broadcast_transcript_update, broadcast_call_event
 from urllib.parse import quote
 import hashlib
+from app.routers.bidirectional_stream import build_streaming_twiml
 
 router = APIRouter()
 model_service = ModelService()
@@ -642,53 +643,24 @@ async def gather_speech_callback_webhook(
             print(f"⚠️ TTS pre-generation failed (will generate on-demand): {e}")
             sys.stdout.flush()
         
-        # STEP 8: Create TwiML response with Google TTS + <Gather>
-        response = VoiceResponse()
-        
-        # Check if WebSocket TTS is enabled for faster delivery
-        use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
-        
-        # Say agent's response using Google TTS (now instant from cache)
-        # Use optimized format if WebSocket TTS enabled
-        format_param = "&format=mulaw" if use_websocket_tts else ""
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}&gemini_flash=true{format_param}"
-        response.play(tts_url)
-        
         # Check if this is a goodbye
         is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
         if is_goodbye or "goodbye" in response_text.lower() or "bye" in response_text.lower():
             print(f"👋 Goodbye detected - ending call")
             sys.stdout.flush()
+            response = VoiceResponse()
             response.hangup()
             return HTMLResponse(str(response), media_type="application/xml")
         
-        # Continue conversation - gather next input with optimized timeout
-        callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
+        # STEP 8: Use streaming TwiML instead of <Play> for real-time TTS
+        if call_session and agent:
+            streaming_twiml = build_streaming_twiml(str(call_session.id), str(agent.id))
+            return HTMLResponse(streaming_twiml, media_type="application/xml")
         
-        gather = response.gather(
-            input='speech',
-            action=callback_url,
-            method='POST',
-            speechTimeout=1.0,  # Balanced silence detection for accuracy
-            timeout=5,  # Quick timeout for responsive UX
-            language=gather_language,
-            enhanced=True,
-            profanity_filter=False,
-            speech_model='phone_call'
-        )
-        
-        # Timeout fallback
-        text = "Thank you for calling. Have a great day!"
-        lang = agent.language if agent and agent.language else "en"
-        voice = agent.voice_type if agent and agent.voice_type else "female"
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
-        response.play(tts_url)
+        # Fallback if no session info
+        response = VoiceResponse()
+        response.say("Thank you for calling. Have a great day!")
         response.hangup()
-        
-        print(f"🔄 Continuing conversation - waiting for next user input")
-        print(f"✅ Response TwiML generated")
-        sys.stdout.flush()
-        
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:

@@ -34,6 +34,7 @@ from app.services.transcript_service import transcript_service
 from app.services.model_service import ModelService
 from app.services.gemini_service import gemini_service
 from urllib.parse import quote
+from app.routers.bidirectional_stream import build_streaming_twiml
 
 router = APIRouter()
 
@@ -758,10 +759,6 @@ async def handle_call_events_webhook(
                 
                 # Simple greeting
                 greeting_text = "Hello"
-                lang = agent.language if agent and agent.language else "en"
-                voice = agent.voice_type if agent and agent.voice_type else "female"
-                tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(greeting_text)}&lang={lang}&voice={voice}"
-                response.play(tts_url)
                 
                 # Add initial greeting to transcript
                 await _add_to_transcript(call_session, "agent", greeting_text, db)
@@ -781,43 +778,9 @@ async def handle_call_events_webhook(
                 except Exception as e:
                     print(f"⚠️ Failed to queue greeting event (non-critical): {e}")
                 
-                # Log call answered event
-                try:
-                    await VoiceLoggingService.log_call_events(
-                        db=db,
-                        call_session_id=call_session.id,
-                        event_type="call_answered",
-                        event_data={
-                            "call_sid": call_sid,
-                            "agent_name": agent_name,
-                            "agent_id": str(agent.id) if agent else None,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    )
-                except Exception as e:
-                    print(f"⚠️ Error logging call answered event: {e}")
-                
-                # VAPI-style: Use <Record> with silence detection for user speech
-                # Twilio automatically detects when user stops speaking
-                recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
-                
-                response.record(
-                    action=recording_callback_url,
-                    method='POST',
-                    timeout=5,  # Wait 5 seconds of silence before considering speech complete
-                    max_length=60,  # Max 60 seconds per recording
-                    play_beep=False,  # No beep - natural conversation
-                    trim='do-not-trim',  # Keep all audio
-                    recording_status_callback=recording_callback_url,
-                    recording_status_callback_method='POST',
-                    transcribe=False  # We'll use Google STT instead
-                )
-                
-                print(f"🎙️ VAPI-style <Record> configured with automatic silence detection")
-                
-                twiml_result = str(response)
-                print(f"📝 GREETING TwiML with <Record>: {twiml_result}")
-                return HTMLResponse(twiml_result, media_type="application/xml")
+                # Use streaming TwiML instead of <Play> for real-time TTS
+                streaming_twiml = build_streaming_twiml(str(call_session.id), str(agent.id))
+                return HTMLResponse(streaming_twiml, media_type="application/xml")
             else:
                 print("🔄 ALREADY GREETED - Playing agent response and listening for next input")
                 
@@ -1464,13 +1427,16 @@ async def handle_recording_callback(
         import traceback
         traceback.print_exc()
         
-        # Ultimate fallback
-        response = VoiceResponse()
-        text = "Sorry, something went wrong. Please try calling again later. Goodbye!"
-        tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
-        response.play(tts_url)
-        response.hangup()
-        return HTMLResponse(str(response), media_type="application/xml")
+        # Ultimate fallback - use streaming TwiML if we have session info
+        if call_session and agent:
+            streaming_twiml = build_streaming_twiml(str(call_session.id), str(agent.id))
+            return HTMLResponse(streaming_twiml, media_type="application/xml")
+        else:
+            # Fallback to simple response if no session info
+            response = VoiceResponse()
+            response.say("Sorry, something went wrong. Please try calling again later. Goodbye!")
+            response.hangup()
+            return HTMLResponse(str(response), media_type="application/xml")
 
 
 @router.post("/webhook/gather-speech", response_class=HTMLResponse)

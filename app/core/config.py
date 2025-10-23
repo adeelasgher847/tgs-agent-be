@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+    
+    # Twilio Configuration
+    TWILIO_EDGE: Optional[str] = None  # e.g., "ashburn", "singapore", "dublin" for low latency
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
