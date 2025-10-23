@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
     
     # Voice Conversation Settings
-    USE_GATHER_APPROACH: bool = True  # Use <Gather> for STT (proven reliable!)
+    USE_GATHER_APPROACH: bool = False  # Disable gather approach for testing direct greeting
     USE_BIDIRECTIONAL_STREAMING: bool = False  # Disabled - using Gather for STT
     USE_WEBSOCKET_TTS: bool = True  # Disabled - Keep MP3 format for best quality (MULAW caused distortion)
     
