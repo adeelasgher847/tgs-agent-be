@@ -756,7 +756,7 @@ async def streaming_greeting_webhook(
         # Build WebSocket URL for bidirectional streaming
         ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
         ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
-        ws_url = f"{ws_protocol}://{ws_base}/api/v1/voice/ws/bidirectional/{callSessionId}/{agentId}"
+        ws_url = f"{ws_protocol}://{ws_base}/api/v1/stream/ws/bidirectional/{callSessionId}/{agentId}"
         
         print(f"🔗 WebSocket URL: {ws_url}")
         sys.stdout.flush()

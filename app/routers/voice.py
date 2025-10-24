@@ -8,6 +8,7 @@ import random
 import uuid
 import sys
 import requests
+import asyncio
 
 from app.api.deps import get_db, require_tenant
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse

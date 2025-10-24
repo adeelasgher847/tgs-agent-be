@@ -115,8 +115,8 @@ def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
     from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Parameter
     
     # Your public WebSocket endpoint that handles Twilio Media Streams:
-    # Example: wss://your-domain.com/api/v1/voice/ws/bidirectional/{callSessionId}/{agentId}
-    ws_url = f"{settings.WEBHOOK_BASE_URL.replace('http', 'ws')}/api/v1/voice/ws/bidirectional/{call_session_id}/{agent_id}"
+    # Example: wss://your-domain.com/api/v1/stream/ws/bidirectional/{callSessionId}/{agentId}
+    ws_url = f"{settings.WEBHOOK_BASE_URL.replace('http', 'ws')}/api/v1/stream/ws/bidirectional/{call_session_id}/{agent_id}"
     if ws_url.startswith("ws://"):
         ws_url = "wss://" + ws_url[len("ws://"):]  # enforce TLS for Twilio
 
