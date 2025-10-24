@@ -711,95 +711,69 @@ async def handle_call_events_webhook(
                     print(f"⚠️ Error fetching agent: {e}")
                     agent = None
             
-            # Only greet if we haven't greeted yet
+            # Only start conversation if we haven't started yet
             if not has_greeted:
-                # Check if we should use Gather-based approach (faster, 3-4s latency)
-                use_gather_approach = getattr(settings, 'USE_GATHER_APPROACH', False)
+                # Check if we should use bidirectional streaming (TTS focus)
+                use_streaming = getattr(settings, 'USE_BIDIRECTIONAL_STREAMING', True)
                 
-                if use_gather_approach:
-                    print("🎤 REDIRECTING TO GATHER-BASED APPROACH (3-4s latency)")
-                    
-                    # Redirect to streaming or gather endpoint
-                    # Use streaming for ultra-low latency (<3s) or gather for standard (4-6s)
-                    use_streaming = getattr(settings, 'USE_BIDIRECTIONAL_STREAMING', True)  # Default to streaming
+                if use_streaming:
+                    # NEW: Bidirectional WebSocket streaming (USER SPEAKS FIRST!)
+                    print("⚡ Using bidirectional streaming - USER SPEAKS FIRST (no agent greeting)")
                     
                     response = VoiceResponse()
-                    
-                    if use_streaming:
-                        # NEW: Bidirectional WebSocket streaming (FASTER!)
-                        print(f"⚡ Using bidirectional streaming for ultra-low latency")
-                        response.redirect(
-                            f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                            method='POST'
-                        )
-                    else:
-                        # OLD: Standard Gather approach (still works)
-                        print(f"📞 Using standard Gather approach")
                     response.redirect(
-                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                         method='POST'
                     )
+                    
+                    # Mark as greeted (conversation started)
+                    _update_conversation_state(call_session, "has_greeted", True)
+                    _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
+                    db.commit()
+                    
+                    print("✅ Redirecting to bidirectional streaming - TTS will stream in real-time")
+                    return HTMLResponse(str(response), media_type="application/xml")
+                
+                else:
+                    # Fallback: Use recording-based approach
+                    print("🎤 Using recording-based approach - USER SPEAKS FIRST")
                     
                     # Mark as greeted
                     _update_conversation_state(call_session, "has_greeted", True)
                     _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
                     db.commit()
                     
+                    # Start recording immediately - user speaks first
+                    response = VoiceResponse()
+                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
+                    
+                    response.record(
+                        action=recording_callback_url,
+                        method='POST',
+                        timeout=5,  # Wait 5 seconds of silence
+                        max_length=120,  # Max 2 minutes
+                        play_beep=False,  # No beep for natural conversation
+                        trim='do-not-trim',
+                        recording_status_callback=recording_callback_url,
+                        recording_status_callback_method='POST',
+                        transcribe=False  # We use Google STT
+                    )
+                    
+                    print("✅ Recording started - waiting for user to speak first")
                     return HTMLResponse(str(response), media_type="application/xml")
-                
-                print("🎤 FIRST TIME GREETING - VAPI-style with <Record> and silence detection")
-                
-                # Mark as greeted
-                _update_conversation_state(call_session, "has_greeted", True)
-                _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
-                db.commit()
-                
-                # Natural, conversational greeting with Google TTS
-                response = VoiceResponse()
-                
-                # Simple greeting
-                greeting_text = "Hello"
-                
-                # Add initial greeting to transcript
-                await _add_to_transcript(call_session, "agent", greeting_text, db)
-                
-                # Broadcast greeting event
-                try:
-                    asyncio.create_task(broadcast_call_event(
-                        call_session_id=str(call_session.id),
-                        event_type="greeting",
-                        event_data={
-                            "agent_name": agent_name,
-                            "greeting_text": greeting_text,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Queued greeting event for session {call_session.id}")
-                except Exception as e:
-                    print(f"⚠️ Failed to queue greeting event (non-critical): {e}")
-                
-                # Simple greeting without recording for testing
-                response = VoiceResponse()
-                greeting_text = "Hello! How can I help you today?"
-                response.say(greeting_text, voice="alice")
-                response.hangup()
-                
-                print(f"📝 Simple greeting TwiML generated")
-                return HTMLResponse(str(response), media_type="application/xml")
             else:
-                print("🔄 ALREADY GREETED - Playing agent response and listening for next input")
+                print("🔄 ALREADY STARTED - Continuing with bidirectional streaming")
                 
-                # Check for pending response
+                # Check for pending response (shouldn't happen with streaming, but keep for safety)
                 pending_response = None
                 if call_session.call_metadata and "pending_response" in call_session.call_metadata:
                     pending_response = call_session.call_metadata.pop("pending_response")
                     db.commit()
                 
-                response = VoiceResponse()
-                
                 # Check if timeout redirect
                 if timeout == "true":
-                    print(f"⏱️ Timeout - ending call")
+                    print(f"⏱️ Timeout - ending call gracefully")
+                    response = VoiceResponse()
                     text = pending_response if pending_response else "Thank you for calling. Goodbye!"
                     lang = agent.language if agent and agent.language else "en"
                     voice = agent.voice_type if agent and agent.voice_type else "female"
@@ -808,9 +782,10 @@ async def handle_call_events_webhook(
                     response.hangup()
                     return HTMLResponse(str(response), media_type="application/xml")
                 
-                # Play pending response if available
+                # If there's a pending response (edge case), play it
                 if pending_response:
                     print(f"🎤 Playing pending response: {pending_response}")
+                    response = VoiceResponse()
                     lang = agent.language if agent and agent.language else "en"
                     voice = agent.voice_type if agent and agent.voice_type else "female"
                     tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(pending_response)}&lang={lang}&voice={voice}"
@@ -820,18 +795,32 @@ async def handle_call_events_webhook(
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(pending_response)
                     if is_goodbye:
                         response.hangup()
-                        print(f"🛑 Goodbye - ending call")
+                        print(f"🛑 Goodbye detected - ending call")
                         return HTMLResponse(str(response), media_type="application/xml")
                     
-                    # Continue conversation - simple response for testing
-                    response.say("Thank you for calling. Have a great day!", voice="alice")
-                    response.hangup()
-                else:
-                    # No pending response - simple goodbye
-                    response.say("Thank you for calling. Have a great day!", voice="alice")
-                    response.hangup()
+                    # Continue with recording
+                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
+                    response.record(
+                        action=recording_callback_url,
+                        method='POST',
+                        timeout=5,
+                        max_length=120,
+                        play_beep=False,
+                        trim='do-not-trim',
+                        recording_status_callback=recording_callback_url,
+                        recording_status_callback_method='POST',
+                        transcribe=False
+                    )
+                    print(f"📝 Played pending response, continuing with recording")
+                    return HTMLResponse(str(response), media_type="application/xml")
                 
-                print(f"📝 CONTINUATION TwiML - Simple response (no recording)")
+                # No pending response - redirect back to streaming
+                response = VoiceResponse()
+                response.redirect(
+                    f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                    method='POST'
+                )
+                print(f"📝 Redirecting back to bidirectional streaming")
                 return HTMLResponse(str(response), media_type="application/xml")
         
         elif call_status == "completed":
