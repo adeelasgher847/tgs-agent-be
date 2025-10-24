@@ -217,8 +217,8 @@ class BidirectionalStreamHandler:
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
         self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 3.0  # Speech must be 3x louder than noise
-        self.min_speech_energy = 200  # Minimum absolute RMS for speech
+        self.speech_multiplier = 4.0  # Speech must be 4x louder than noise (increased from 3.0)
+        self.min_speech_energy = 500  # Minimum absolute RMS for speech (increased from 200)
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         
@@ -395,7 +395,11 @@ class BidirectionalStreamHandler:
             self.speech_active = False
             self.silence_counter = 0
             
-            if len(combined_audio) < 1000:
+            # Minimum audio size: ~2 seconds at 8kHz MULAW (~16000 bytes)
+            # This prevents processing tiny noise chunks
+            if len(combined_audio) < 16000:
+                print(f"⚠️ Audio chunk too small ({len(combined_audio)} bytes) - skipping")
+                sys.stdout.flush()
                 return
             
             print(f"🎙️ Transcribing {len(combined_audio)} bytes...")
@@ -416,11 +420,12 @@ class BidirectionalStreamHandler:
                 language_code=language_code
             )
             
-            if result.get("transcript"):
-                transcript = result["transcript"].strip()
-                confidence = result.get("confidence", 0.9)
-                
-                print(f"✅ Transcript: '{transcript}'")
+            transcript = result.get("transcript", "").strip()
+            confidence = result.get("confidence", 0.0)
+            
+            # Only process if we have a valid transcript with sufficient confidence
+            if transcript and confidence > 0.5:
+                print(f"✅ Transcript: '{transcript}' (confidence: {confidence:.2f})")
                 sys.stdout.flush()
                 
                 # Add to transcript
@@ -428,6 +433,9 @@ class BidirectionalStreamHandler:
                 
                 # Generate and stream response immediately!
                 await self.generate_and_stream_response(transcript, confidence)
+            else:
+                print(f"⚠️ Skipping empty/low-confidence transcript (confidence: {confidence:.2f})")
+                sys.stdout.flush()
         
         except Exception as e:
             print(f"❌ Error processing audio: {e}")
