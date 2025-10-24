@@ -223,6 +223,7 @@ class BidirectionalStreamHandler:
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         self.calibration_complete = False  # Flag to lock noise floor after calibration
+        self.max_noise_floor = 1000  # Cap noise floor at 1000 RMS to prevent false calibrations
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -308,12 +309,13 @@ class BidirectionalStreamHandler:
         if len(self.noise_samples) > self.max_noise_samples:
             self.noise_samples.pop(0)
         
-        # Calculate noise floor as average of recent low-energy frames
+        # Calculate noise floor as lower percentile of recent low-energy frames
         if len(self.noise_samples) >= 3:
-            # Use median to be robust against outliers
+            # Use 25th percentile (lower quartile) to measure true background noise
+            # This filters out transient spikes and gives more accurate noise estimate
             sorted_samples = sorted(self.noise_samples)
-            median_idx = len(sorted_samples) // 2
-            self.noise_floor = sorted_samples[median_idx]
+            percentile_25_idx = len(sorted_samples) // 4  # 25th percentile
+            self.noise_floor = sorted_samples[percentile_25_idx]
     
     async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio (STT) - VAPI-style Adaptive VAD"""
@@ -337,6 +339,12 @@ class BidirectionalStreamHandler:
                 self._update_noise_floor(energy)
                 
                 if self.calibration_frames == self.max_calibration_frames:
+                    # Cap noise floor to prevent false calibrations from loud environments
+                    if self.noise_floor > self.max_noise_floor:
+                        print(f"⚠️ Calibrated noise floor ({self.noise_floor:.1f} RMS) too high, capping at {self.max_noise_floor} RMS")
+                        self.noise_floor = self.max_noise_floor
+                        sys.stdout.flush()
+                    
                     self.calibration_complete = True  # Lock noise floor
                     print(f"🎛️ VAD calibrated - noise floor: {self.noise_floor:.1f} RMS (LOCKED)")
                     sys.stdout.flush()
