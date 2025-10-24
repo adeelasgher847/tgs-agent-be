@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     
     # Voice Conversation Settings - VAPI-STYLE REAL-TIME STREAMING
     USE_GATHER_APPROACH: bool = False  # Using real-time bidirectional streaming
-    USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with WebRTC VAD
+    USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with Adaptive VAD
     USE_WEBSOCKET_TTS: bool = True  # ✅ ENABLED - 20ms chunk streaming (MULAW 8kHz)
     
     FRONTEND_URL: str = "http://localhost:3000"  

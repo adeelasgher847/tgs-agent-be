@@ -13,9 +13,11 @@ from typing import Optional, Dict, Iterable
 from datetime import datetime, timezone
 import uuid
 import sys
-import webrtcvad
+import audioop
+import math
 
-# Using WebRTC VAD for accurate voice activity detection (VAPI-style)
+# Using advanced adaptive energy-based VAD (pure Python, no dependencies)
+# VAPI-style voice activity detection with noise floor estimation
 
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
@@ -205,14 +207,19 @@ class BidirectionalStreamHandler:
         # 0.9 seconds = 45 packets
         self.silence_threshold = 45  # 0.9 seconds of silence
         
-        # WebRTC VAD for accurate voice detection
-        # Mode 3 = most aggressive (best for noisy environments)
-        # Modes: 0 (least aggressive) to 3 (most aggressive)
-        self.vad = webrtcvad.Vad(3)
-        
-        # Frame tracking for VAD
+        # Advanced Adaptive VAD (pure Python - works everywhere!)
+        # Uses RMS energy with adaptive noise floor estimation
         self.frame_duration_ms = 20  # Twilio sends 20ms frames
         self.sample_rate = 8000  # Twilio MULAW is 8kHz
+        
+        # Adaptive VAD parameters
+        self.noise_floor = 0.0  # Dynamic noise floor
+        self.noise_samples = []  # Recent silence frames for noise estimation
+        self.max_noise_samples = 10  # Track last 10 silence frames
+        self.speech_multiplier = 3.0  # Speech must be 3x louder than noise
+        self.min_speech_energy = 200  # Minimum absolute RMS for speech
+        self.calibration_frames = 0  # Frames for initial calibration
+        self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -223,7 +230,7 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        print(f"✅ Bidirectional stream handler initialized (WebRTC VAD Mode 3, 0.9s silence threshold)")
+        print(f"✅ Bidirectional stream handler initialized (Adaptive VAD, 0.9s silence threshold)")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -245,8 +252,54 @@ class BidirectionalStreamHandler:
             print(f"⚠️ Error loading session data: {e}")
             sys.stdout.flush()
     
+    def _calculate_rms_energy(self, audio_data: bytes) -> float:
+        """Calculate RMS (Root Mean Square) energy of audio frame - accurate speech detection"""
+        try:
+            # Convert MULAW to LINEAR16 PCM for accurate energy calculation
+            pcm_data = audioop.ulaw2lin(audio_data, 2)  # 2 = 16-bit samples
+            
+            # Calculate RMS energy from 16-bit PCM samples
+            # Convert bytes to list of 16-bit integers
+            samples = []
+            for i in range(0, len(pcm_data), 2):
+                if i + 1 < len(pcm_data):
+                    # Convert two bytes to signed 16-bit integer (little-endian)
+                    sample = int.from_bytes(pcm_data[i:i+2], byteorder='little', signed=True)
+                    samples.append(sample)
+            
+            if not samples:
+                return 0.0
+            
+            # Calculate RMS: sqrt(mean(sample^2))
+            mean_square = sum(s * s for s in samples) / len(samples)
+            rms = math.sqrt(mean_square)
+            
+            return rms
+        
+        except Exception as e:
+            # Fallback: simple amplitude-based energy
+            if len(audio_data) > 0:
+                return sum(abs(b - 127) for b in audio_data) / len(audio_data)
+            return 0.0
+    
+    def _update_noise_floor(self, energy: float):
+        """Update adaptive noise floor estimation"""
+        # Add to noise samples
+        self.noise_samples.append(energy)
+        
+        # Keep only recent samples
+        if len(self.noise_samples) > self.max_noise_samples:
+            self.noise_samples.pop(0)
+        
+        # Calculate noise floor as average of recent low-energy frames
+        if len(self.noise_samples) >= 3:
+            # Use median to be robust against outliers
+            sorted_samples = sorted(self.noise_samples)
+            median_idx = len(sorted_samples) // 2
+            self.noise_floor = sorted_samples[median_idx]
+    
     async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio (STT) - VAPI-style VAD"""
+        """Handle incoming audio from Twilio (STT) - VAPI-style Adaptive VAD"""
         try:
             media = message.get("media", {})
             payload = media.get("payload")
@@ -258,79 +311,50 @@ class BidirectionalStreamHandler:
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
             
-            # WebRTC VAD requires LINEAR16 PCM for detection
-            # Convert MULAW to LINEAR16 for VAD analysis
-            try:
-                import audioop
-                # MULAW to LINEAR16 conversion
-                pcm_data = audioop.ulaw2lin(audio_data, 2)  # 2 = 16-bit samples
-                
-                # WebRTC VAD expects exactly 160, 320, or 480 samples for 8kHz
-                # Twilio sends 20ms = 160 bytes MULAW = 160 samples @ 8kHz
-                # LINEAR16 = 320 bytes (160 samples * 2 bytes/sample)
-                
-                # Ensure correct frame size (320 bytes for 20ms at 8kHz LINEAR16)
-                frame_size = int(self.sample_rate * self.frame_duration_ms / 1000) * 2  # 320 bytes
-                
-                if len(pcm_data) == frame_size:
-                    # Use WebRTC VAD to detect speech
-                    is_speech = self.vad.is_speech(pcm_data, self.sample_rate)
-                    
-                    if is_speech:
-                        # Speech detected
-                        self.silence_counter = 0
-                        if not self.speech_active:
-                            self.speech_active = True
-                            print(f"🎤 User started speaking (WebRTC VAD detected speech)...")
-                            sys.stdout.flush()
-                    else:
-                        # Silence detected
-                        if self.speech_active:
-                            self.silence_counter += 1
-                            
-                            # Debug logging for silence progression
-                            if self.silence_counter == 1:
-                                print(f"🔇 Silence detected (WebRTC VAD), counter started...")
-                                sys.stdout.flush()
-                            elif self.silence_counter % 10 == 0:
-                                remaining = self.silence_threshold - self.silence_counter
-                                print(f"🔇 Silence continuing... ({self.silence_counter}/{self.silence_threshold} packets, {remaining} until processing)")
-                                sys.stdout.flush()
-                        else:
-                            # Not speaking yet, just background noise
-                            pass
-                else:
-                    # Frame size mismatch - pad or skip
-                    if len(pcm_data) < frame_size:
-                        # Pad with silence
-                        pcm_data = pcm_data + b'\x00' * (frame_size - len(pcm_data))
-                        is_speech = self.vad.is_speech(pcm_data, self.sample_rate)
-                        if is_speech and not self.speech_active:
-                            self.speech_active = True
-                            self.silence_counter = 0
-                    else:
-                        # Truncate to correct size
-                        pcm_data = pcm_data[:frame_size]
-                        is_speech = self.vad.is_speech(pcm_data, self.sample_rate)
-                        if is_speech:
-                            self.silence_counter = 0
-                            if not self.speech_active:
-                                self.speech_active = True
+            # Calculate RMS energy of this frame
+            energy = self._calculate_rms_energy(audio_data)
             
-            except Exception as vad_error:
-                # Fallback to amplitude-based detection if VAD fails
-                print(f"⚠️ VAD error, using amplitude fallback: {vad_error}")
-                sys.stdout.flush()
+            # Initial calibration phase - estimate noise floor
+            if self.calibration_frames < self.max_calibration_frames:
+                self.calibration_frames += 1
+                self._update_noise_floor(energy)
                 
-                if len(audio_data) > 0:
-                    avg_amplitude = sum(abs(b - 127) for b in audio_data) / len(audio_data)
-                    if avg_amplitude > 50:  # Higher threshold for fallback
-                        self.silence_counter = 0
-                        if not self.speech_active:
-                            self.speech_active = True
-                    else:
-                        if self.speech_active:
-                            self.silence_counter += 1
+                if self.calibration_frames == self.max_calibration_frames:
+                    print(f"🎛️ VAD calibrated - noise floor: {self.noise_floor:.1f} RMS")
+                    sys.stdout.flush()
+                return
+            
+            # Adaptive speech detection
+            # Speech must be both:
+            # 1. Above minimum absolute threshold (200 RMS)
+            # 2. At least 3x louder than noise floor
+            speech_threshold = max(self.min_speech_energy, self.noise_floor * self.speech_multiplier)
+            is_speech = energy > speech_threshold
+            
+            if is_speech:
+                # Speech detected
+                self.silence_counter = 0
+                if not self.speech_active:
+                    self.speech_active = True
+                    print(f"🎤 User started speaking (energy: {energy:.0f} RMS, threshold: {speech_threshold:.0f})...")
+                    sys.stdout.flush()
+            else:
+                # Silence/noise detected
+                if self.speech_active:
+                    # User was speaking, now silent
+                    self.silence_counter += 1
+                    
+                    # Debug logging
+                    if self.silence_counter == 1:
+                        print(f"🔇 Silence detected (energy: {energy:.0f}, threshold: {speech_threshold:.0f})...")
+                        sys.stdout.flush()
+                    elif self.silence_counter % 10 == 0:
+                        remaining = self.silence_threshold - self.silence_counter
+                        print(f"🔇 Silence continuing... ({self.silence_counter}/{self.silence_threshold}, {remaining} until processing)")
+                        sys.stdout.flush()
+                else:
+                    # Not speaking yet, update noise floor
+                    self._update_noise_floor(energy)
             
             # Process when 0.9 seconds of silence detected (VAPI-style)
             if self.speech_active and self.silence_counter >= self.silence_threshold:
