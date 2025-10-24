@@ -336,9 +336,18 @@ class BidirectionalStreamHandler:
             # Initial calibration phase - estimate noise floor
             if self.calibration_frames < self.max_calibration_frames:
                 self.calibration_frames += 1
-                self._update_noise_floor(energy)
+                
+                # Only update noise floor if energy is below 2500 RMS (treat higher as speech/noise, not background)
+                if energy < 2500:
+                    self._update_noise_floor(energy)
                 
                 if self.calibration_frames == self.max_calibration_frames:
+                    # If we didn't get enough samples (noisy environment), use default
+                    if len(self.noise_samples) < 3:
+                        print(f"⚠️ Calibration insufficient samples ({len(self.noise_samples)}), using default noise floor")
+                        self.noise_floor = 200  # Conservative default
+                        sys.stdout.flush()
+                    
                     # Cap noise floor to prevent false calibrations from loud environments
                     if self.noise_floor > self.max_noise_floor:
                         print(f"⚠️ Calibrated noise floor ({self.noise_floor:.1f} RMS) too high, capping at {self.max_noise_floor} RMS")
