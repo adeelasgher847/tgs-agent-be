@@ -6,7 +6,6 @@ from twilio.twiml.voice_response import VoiceResponse, Start, Stream
 from datetime import datetime, timezone
 import random
 import uuid
-import asyncio
 import sys
 import requests
 
@@ -317,9 +316,9 @@ async def initiate_call(
         print(f"Making call with webhook_url: {webhook_url}")
         print(f"Making call with status_callback_url: {status_callback_url}")
         
-        # Optional WebSocket broadcast (non-blocking - fire and forget)
+        # Optional WebSocket broadcast
         try:
-            asyncio.create_task(broadcast_call_status_update(
+            await broadcast_call_status_update(
                 call_session_id=str(call_session.id),
                 status="initiating",
                 metadata={
@@ -329,8 +328,8 @@ async def initiate_call(
                     "from_number": twilio_service.get_phone_number(),
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-            ))
-            print(f"✅ WebSocket: Call initiating event queued")
+            )
+            print(f"✅ WebSocket: Call initiating event sent")
         except Exception as e:
             print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         
@@ -348,9 +347,9 @@ async def initiate_call(
         db.commit()
         print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
         
-        # Broadcast call initiated event AFTER Twilio confirms (non-blocking - fire and forget)
+        # Broadcast call initiated event AFTER Twilio confirms
         try:
-            asyncio.create_task(broadcast_call_status_update(
+            await broadcast_call_status_update(
                 call_session_id=str(call_session.id),
                 status="initiated",
                 metadata={
@@ -361,10 +360,10 @@ async def initiate_call(
                     "from_number": twilio_service.get_phone_number(),
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
-            ))
-            print(f"✅ Queued call initiated event for session {call_session.id}")
+            )
+            print(f"✅ Call initiated event sent for session {call_session.id}")
         except Exception as e:
-            print(f"⚠️ Failed to queue call initiated event (non-critical): {e}")
+            print(f"⚠️ Failed to send call initiated event (non-critical): {e}")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -566,12 +565,12 @@ async def handle_call_events_webhook(
                 elif call_status == "completed":
                     metadata["message"] = "Call has been completed"
                 
-                asyncio.create_task(broadcast_call_status_update(
+                await broadcast_call_status_update(
                     call_session_id=str(call_session.id),
                     status=call_status,
                     metadata=metadata
-                ))
-                print(f"✅ Queued call status update: {call_status} for session {call_session.id}")
+                )
+                print(f"✅ Call status update sent: {call_status} for session {call_session.id}")
                 
                 # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
                 if call_status == "completed":
