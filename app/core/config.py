@@ -49,10 +49,10 @@ class Settings(BaseSettings):
     GOOGLE_STT_SAMPLE_RATE: int = 8000  # Twilio uses 8kHz for MULAW
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
     
-    # Voice Conversation Settings
-    USE_GATHER_APPROACH: bool = False  # Using hybrid approach: Recording STT + WebSocket TTS
-    USE_BIDIRECTIONAL_STREAMING: bool = False  # DISABLED - Using recording for STT
-    USE_WEBSOCKET_TTS: bool = True  # ENABLED - WebSocket TTS streaming (TTS-only)
+    # Voice Conversation Settings - VAPI-STYLE REAL-TIME STREAMING
+    USE_GATHER_APPROACH: bool = False  # Using real-time bidirectional streaming
+    USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with Twilio VAD
+    USE_WEBSOCKET_TTS: bool = True  # ✅ ENABLED - 20ms chunk streaming (MULAW 8kHz)
     
     FRONTEND_URL: str = "http://localhost:3000"  
     
