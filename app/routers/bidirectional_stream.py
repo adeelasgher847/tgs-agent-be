@@ -13,8 +13,9 @@ from typing import Optional, Dict, Iterable
 from datetime import datetime, timezone
 import uuid
 import sys
+import webrtcvad
 
-# Using simple Twilio-based silence detection for maximum speed and reliability
+# Using WebRTC VAD for accurate voice activity detection (VAPI-style)
 
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
@@ -198,10 +199,20 @@ class BidirectionalStreamHandler:
         self.current_speech = ""
         self.speech_active = False
         self.silence_counter = 0
-        self.silence_threshold = 45  # ~0.9 second silence (faster!)
         
-        # Using simple Twilio-based silence detection (fastest and most reliable!)
-        # No need for complex VAD - Twilio sends empty payloads during silence
+        # VAPI-style VAD settings: 0.9 seconds silence detection
+        # Twilio sends 20ms packets (50 packets/second)
+        # 0.9 seconds = 45 packets
+        self.silence_threshold = 45  # 0.9 seconds of silence
+        
+        # WebRTC VAD for accurate voice detection
+        # Mode 3 = most aggressive (best for noisy environments)
+        # Modes: 0 (least aggressive) to 3 (most aggressive)
+        self.vad = webrtcvad.Vad(3)
+        
+        # Frame tracking for VAD
+        self.frame_duration_ms = 20  # Twilio sends 20ms frames
+        self.sample_rate = 8000  # Twilio MULAW is 8kHz
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -212,7 +223,7 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        print(f"✅ Bidirectional stream handler initialized for call {call_session_id}")
+        print(f"✅ Bidirectional stream handler initialized (WebRTC VAD Mode 3, 0.9s silence threshold)")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -235,7 +246,7 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio (STT)"""
+        """Handle incoming audio from Twilio (STT) - VAPI-style VAD"""
         try:
             media = message.get("media", {})
             payload = media.get("payload")
@@ -243,47 +254,94 @@ class BidirectionalStreamHandler:
             if not payload:
                 return
             
-            # Decode audio
+            # Decode audio (MULAW from Twilio)
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
             
-            # Audio energy-based silence detection (MULAW never empty!)
-            # Twilio sends continuous MULAW audio - use amplitude to detect silence
-            if len(audio_data) > 0:
-                # Calculate simple audio amplitude (fast!)
-                # MULAW: center = 127, deviation = sound amplitude
-                avg_amplitude = sum(abs(b - 127) for b in audio_data) / len(audio_data)
+            # WebRTC VAD requires LINEAR16 PCM for detection
+            # Convert MULAW to LINEAR16 for VAD analysis
+            try:
+                import audioop
+                # MULAW to LINEAR16 conversion
+                pcm_data = audioop.ulaw2lin(audio_data, 2)  # 2 = 16-bit samples
                 
-                # Threshold: speech > 40, silence/noise < 40
-                # Background noise typically 20-35, speech 50-80
-                if avg_amplitude > 40:  # Speech detected (above background noise)
-                    self.silence_counter = 0
-                    if not self.speech_active:
-                        self.speech_active = True
-                        print(f"🎤 User started speaking (amplitude: {avg_amplitude:.1f})...")
-                        sys.stdout.flush()
-                else:  # Silence (low amplitude)
-                    self.silence_counter += 1
-                    if self.silence_counter == 1 and self.speech_active:
-                        print(f"🔇 Silence detected (amplitude: {avg_amplitude:.1f}, counter started)...")
-                        sys.stdout.flush()
-                    # Debug: Show when approaching threshold
-                    elif self.speech_active and self.silence_counter % 10 == 0:
-                        remaining = self.silence_threshold - self.silence_counter
-                        print(f"🔇 Silence continuing... (amp: {avg_amplitude:.1f}, {remaining} packets until processing)")
-                        sys.stdout.flush()
-            else:
-                # Rare case: truly empty
-                self.silence_counter += 1
+                # WebRTC VAD expects exactly 160, 320, or 480 samples for 8kHz
+                # Twilio sends 20ms = 160 bytes MULAW = 160 samples @ 8kHz
+                # LINEAR16 = 320 bytes (160 samples * 2 bytes/sample)
+                
+                # Ensure correct frame size (320 bytes for 20ms at 8kHz LINEAR16)
+                frame_size = int(self.sample_rate * self.frame_duration_ms / 1000) * 2  # 320 bytes
+                
+                if len(pcm_data) == frame_size:
+                    # Use WebRTC VAD to detect speech
+                    is_speech = self.vad.is_speech(pcm_data, self.sample_rate)
+                    
+                    if is_speech:
+                        # Speech detected
+                        self.silence_counter = 0
+                        if not self.speech_active:
+                            self.speech_active = True
+                            print(f"🎤 User started speaking (WebRTC VAD detected speech)...")
+                            sys.stdout.flush()
+                    else:
+                        # Silence detected
+                        if self.speech_active:
+                            self.silence_counter += 1
+                            
+                            # Debug logging for silence progression
+                            if self.silence_counter == 1:
+                                print(f"🔇 Silence detected (WebRTC VAD), counter started...")
+                                sys.stdout.flush()
+                            elif self.silence_counter % 10 == 0:
+                                remaining = self.silence_threshold - self.silence_counter
+                                print(f"🔇 Silence continuing... ({self.silence_counter}/{self.silence_threshold} packets, {remaining} until processing)")
+                                sys.stdout.flush()
+                        else:
+                            # Not speaking yet, just background noise
+                            pass
+                else:
+                    # Frame size mismatch - pad or skip
+                    if len(pcm_data) < frame_size:
+                        # Pad with silence
+                        pcm_data = pcm_data + b'\x00' * (frame_size - len(pcm_data))
+                        is_speech = self.vad.is_speech(pcm_data, self.sample_rate)
+                        if is_speech and not self.speech_active:
+                            self.speech_active = True
+                            self.silence_counter = 0
+                    else:
+                        # Truncate to correct size
+                        pcm_data = pcm_data[:frame_size]
+                        is_speech = self.vad.is_speech(pcm_data, self.sample_rate)
+                        if is_speech:
+                            self.silence_counter = 0
+                            if not self.speech_active:
+                                self.speech_active = True
             
-            # Process when silence detected
+            except Exception as vad_error:
+                # Fallback to amplitude-based detection if VAD fails
+                print(f"⚠️ VAD error, using amplitude fallback: {vad_error}")
+                sys.stdout.flush()
+                
+                if len(audio_data) > 0:
+                    avg_amplitude = sum(abs(b - 127) for b in audio_data) / len(audio_data)
+                    if avg_amplitude > 50:  # Higher threshold for fallback
+                        self.silence_counter = 0
+                        if not self.speech_active:
+                            self.speech_active = True
+                    else:
+                        if self.speech_active:
+                            self.silence_counter += 1
+            
+            # Process when 0.9 seconds of silence detected (VAPI-style)
             if self.speech_active and self.silence_counter >= self.silence_threshold:
-                print(f"🔕 Silence detected - processing speech...")
+                print(f"🔕 0.9s silence detected - processing speech and sending to STT → LLM → TTS...")
                 sys.stdout.flush()
                 await self.process_audio_buffer()
         
         except Exception as e:
             print(f"❌ Error handling media: {e}")
+            import traceback
+            traceback.print_exc()
             sys.stdout.flush()
     
     async def process_audio_buffer(self):
