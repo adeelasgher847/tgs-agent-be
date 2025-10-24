@@ -13,11 +13,12 @@ from typing import Optional, Dict, Iterable
 from datetime import datetime, timezone
 import uuid
 import sys
-import audioop
 import math
+import struct
 
-# Using advanced adaptive energy-based VAD (pure Python, no dependencies)
+# Using advanced adaptive energy-based VAD (100% pure Python, zero dependencies)
 # VAPI-style voice activity detection with noise floor estimation
+# Compatible with Python 3.13+ (no audioop needed)
 
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
@@ -252,20 +253,34 @@ class BidirectionalStreamHandler:
             print(f"⚠️ Error loading session data: {e}")
             sys.stdout.flush()
     
+    def _mulaw_to_linear(self, mulaw_byte: int) -> int:
+        """
+        Convert a single mu-law byte to linear PCM (16-bit)
+        Pure Python implementation - no audioop needed
+        """
+        # Mu-law decoding table (ITU-T G.711)
+        mulaw_byte = ~mulaw_byte & 0xFF
+        sign = (mulaw_byte & 0x80)
+        exponent = (mulaw_byte >> 4) & 0x07
+        mantissa = mulaw_byte & 0x0F
+        
+        sample = ((mantissa << 3) + 0x84) << exponent
+        if sign:
+            sample = -sample
+        
+        return sample
+    
     def _calculate_rms_energy(self, audio_data: bytes) -> float:
-        """Calculate RMS (Root Mean Square) energy of audio frame - accurate speech detection"""
+        """
+        Calculate RMS (Root Mean Square) energy of audio frame - accurate speech detection
+        100% Pure Python - no audioop dependency
+        """
         try:
-            # Convert MULAW to LINEAR16 PCM for accurate energy calculation
-            pcm_data = audioop.ulaw2lin(audio_data, 2)  # 2 = 16-bit samples
-            
-            # Calculate RMS energy from 16-bit PCM samples
-            # Convert bytes to list of 16-bit integers
+            # Convert MULAW to LINEAR16 PCM samples
             samples = []
-            for i in range(0, len(pcm_data), 2):
-                if i + 1 < len(pcm_data):
-                    # Convert two bytes to signed 16-bit integer (little-endian)
-                    sample = int.from_bytes(pcm_data[i:i+2], byteorder='little', signed=True)
-                    samples.append(sample)
+            for mulaw_byte in audio_data:
+                linear_sample = self._mulaw_to_linear(mulaw_byte)
+                samples.append(linear_sample)
             
             if not samples:
                 return 0.0
@@ -279,7 +294,7 @@ class BidirectionalStreamHandler:
         except Exception as e:
             # Fallback: simple amplitude-based energy
             if len(audio_data) > 0:
-                return sum(abs(b - 127) for b in audio_data) / len(audio_data)
+                return sum(abs(b - 127) for b in audio_data) / len(audio_data) * 10
             return 0.0
     
     def _update_noise_floor(self, energy: float):
