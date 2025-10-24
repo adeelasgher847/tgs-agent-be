@@ -66,7 +66,7 @@ async def serve_google_tts_audio(
             print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
             # Use normal speed for MULAW (clearer), slightly faster for MP3
-            rate = 1.0 if format == "mulaw" else 1.1
+            rate = 1.0  # Normal speed for all formats
             
             audio_content = google_tts_service.text_to_speech(
                 text=text,

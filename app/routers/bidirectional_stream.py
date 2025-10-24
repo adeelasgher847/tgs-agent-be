@@ -419,11 +419,19 @@ class BidirectionalStreamHandler:
                 }
                 language_code = language_map.get(self.agent.language, "en-US")
             
+            # Measure STT latency
+            from datetime import datetime, timezone
+            stt_start = datetime.now(timezone.utc)
+            
             # Transcribe
             result = google_stt_service.transcribe_audio_chunk_streaming(
                 audio_content=combined_audio,
                 language_code=language_code
             )
+            
+            stt_time = (datetime.now(timezone.utc) - stt_start).total_seconds()
+            print(f"⏱️ STT latency: {stt_time:.2f}s")
+            sys.stdout.flush()
             
             transcript = result.get("transcript", "").strip()
             confidence = result.get("confidence", 0.0)
@@ -433,11 +441,18 @@ class BidirectionalStreamHandler:
                 print(f"✅ Transcript: '{transcript}' (confidence: {confidence:.2f})")
                 sys.stdout.flush()
                 
+                # Track total processing time
+                total_start = datetime.now(timezone.utc)
+                
                 # Add to transcript
                 await self._add_to_transcript("client", transcript, "speech", confidence)
                 
                 # Generate and stream response immediately!
                 await self.generate_and_stream_response(transcript, confidence)
+                
+                total_time = (datetime.now(timezone.utc) - total_start).total_seconds()
+                print(f"📊 Total processing latency: {total_time:.2f}s (STT: {stt_time:.2f}s included)")
+                sys.stdout.flush()
             else:
                 print(f"⚠️ Skipping empty/low-confidence transcript (confidence: {confidence:.2f})")
                 sys.stdout.flush()
@@ -451,8 +466,13 @@ class BidirectionalStreamHandler:
     async def generate_and_stream_response(self, user_text: str, confidence: float):
         """Generate AI response and stream TTS in real-time"""
         try:
+            from datetime import datetime, timezone
+            
             print(f"🤖 Generating streaming response for: '{user_text}'")
             sys.stdout.flush()
+            
+            # Measure LLM latency
+            llm_start = datetime.now(timezone.utc)
             
             # Get AI response with streaming
             response_text = await VoiceLoggingService.generate_agent_response(
@@ -463,7 +483,8 @@ class BidirectionalStreamHandler:
                 call_session_id=self.call_session.id if self.call_session else None
             )
             
-            print(f"✅ AI Response: '{response_text}'")
+            llm_time = (datetime.now(timezone.utc) - llm_start).total_seconds()
+            print(f"✅ AI Response: '{response_text}' (LLM latency: {llm_time:.2f}s)")
             sys.stdout.flush()
             
             # Add to transcript
@@ -479,6 +500,8 @@ class BidirectionalStreamHandler:
     async def stream_tts_response(self, text: str):
         """Stream TTS audio in 20ms chunks for immediate playback"""
         try:
+            from datetime import datetime, timezone
+            
             # Get agent voice settings
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
@@ -486,8 +509,15 @@ class BidirectionalStreamHandler:
             print(f"🎵 Streaming TTS with 20ms chunks: '{text[:50]}...'")
             sys.stdout.flush()
             
+            # Measure TTS generation latency
+            tts_start = datetime.now(timezone.utc)
+            
             # Generate or fetch cached MULAW audio
             audio_bytes = await generate_mulaw_tts(text=text, lang=lang, voice=voice, use_gemini_flash=True)
+            
+            tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
+            print(f"⏱️ TTS generation latency: {tts_gen_time:.2f}s")
+            sys.stdout.flush()
             
             # Stream as 20ms frames with early playback
             await stream_mulaw_bytes_over_twilio(
