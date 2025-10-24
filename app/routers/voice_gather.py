@@ -267,7 +267,7 @@ async def gather_greeting_webhook(
             action=callback_url,
             method='POST',
             speechTimeout=1.0,  # Balanced silence detection for natural speech
-            timeout=5,  # Quick timeout for responsive UX
+            timeout=3,  # Faster timeout for responsive UX
             language=gather_language,
             enhanced=True,  # Use enhanced model for better accuracy
             profanity_filter=False,  # Don't filter for natural conversation
@@ -287,7 +287,7 @@ async def gather_greeting_webhook(
             action=callback_url,
             method='POST',
             speechTimeout=1.0,  # Balanced detection on retry
-            timeout=5,  # Shorter timeout for retry
+            timeout=3,  # Faster timeout for retry
             language=gather_language,
             enhanced=True,
             profanity_filter=False,
@@ -502,7 +502,7 @@ async def gather_speech_callback_webhook(
                 action=callback_url,
                 method='POST',
                 speechTimeout=1.0,  # Balanced silence detection
-                timeout=5,  # Quick timeout
+                timeout=3,  # Faster timeout
                 language=gather_language,
                 enhanced=True,
                 profanity_filter=False,
@@ -684,7 +684,7 @@ async def gather_speech_callback_webhook(
                 action=callback_url,
                 method='POST',
                 speechTimeout=1.0,  # Balanced detection for error recovery
-                timeout=5,  # Quick timeout
+                timeout=3,  # Faster timeout
                 language='en-US',
                 enhanced=True,
                 profanity_filter=False,

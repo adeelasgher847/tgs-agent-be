@@ -50,9 +50,9 @@ class Settings(BaseSettings):
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
     
     # Voice Conversation Settings
-    USE_GATHER_APPROACH: bool = False  # Using bidirectional streaming instead
-    USE_BIDIRECTIONAL_STREAMING: bool = True  # ENABLED - Real-time TTS streaming with WebSocket
-    USE_WEBSOCKET_TTS: bool = True  # ENABLED - WebSocket TTS for ultra-low latency
+    USE_GATHER_APPROACH: bool = False  # Using hybrid approach: Recording STT + WebSocket TTS
+    USE_BIDIRECTIONAL_STREAMING: bool = False  # DISABLED - Using recording for STT
+    USE_WEBSOCKET_TTS: bool = True  # ENABLED - WebSocket TTS streaming (TTS-only)
     
     FRONTEND_URL: str = "http://localhost:3000"  
     

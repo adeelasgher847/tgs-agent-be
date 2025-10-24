@@ -128,6 +128,54 @@ def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
     return str(vr)
 
 
+def build_tts_only_twiml(call_session_id: str, agent_id: str, record_callback_url: str) -> str:
+    """
+    Build TwiML for TTS-only WebSocket streaming + Recording for next input
+    
+    Flow:
+    1. Connect to TTS-only WebSocket
+    2. WebSocket auto-plays pending TTS from metadata
+    3. After playback, start recording for next user input
+    
+    Args:
+        call_session_id: Call session UUID
+        agent_id: Agent UUID
+        record_callback_url: URL for recording callback
+    
+    Returns:
+        TwiML string
+    """
+    from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+    
+    # Build TTS-only WebSocket URL
+    ws_url = f"{settings.WEBHOOK_BASE_URL.replace('http', 'ws')}/api/v1/voice/ws/tts-only/{call_session_id}/{agent_id}"
+    if ws_url.startswith("ws://"):
+        ws_url = "wss://" + ws_url[len("ws://"):]  # enforce TLS
+    
+    vr = VoiceResponse()
+    
+    # Connect to TTS-only WebSocket for streaming playback
+    connect = Connect()
+    stream = Stream(url=ws_url, name=f"tts-only-{agent_id}")
+    connect.append(stream)
+    vr.append(connect)
+    
+    # After TTS playback, start recording for next user input
+    vr.record(
+        action=record_callback_url,
+        method='POST',
+        timeout=3,  # Fast detection
+        max_length=120,
+        play_beep=False,
+        trim='do-not-trim',
+        recording_status_callback=record_callback_url,
+        recording_status_callback_method='POST',
+        transcribe=False
+    )
+    
+    return str(vr)
+
+
 class BidirectionalStreamHandler:
     """Handles real-time bidirectional voice streaming"""
     
@@ -530,5 +578,180 @@ async def bidirectional_stream_websocket(
     finally:
         db.close()
         print(f"🔚 Bidirectional stream closed")
+        sys.stdout.flush()
+
+
+@router.websocket("/ws/tts-only/{callSessionId}/{agentId}")
+async def tts_only_websocket(
+    websocket: WebSocket,
+    callSessionId: str,
+    agentId: str
+):
+    """
+    TTS-ONLY WebSocket for streaming audio playback
+    
+    Used with recording-based STT:
+    - Recording callback sends TTS text via custom event
+    - WebSocket streams audio in 20ms MULAW chunks
+    - No STT handling (recording handles that)
+    
+    Flow:
+    1. Connect to WebSocket
+    2. Receive custom {"event": "play_tts", "text": "...", "lang": "en", "voice": "female"}
+    3. Generate MULAW TTS
+    4. Stream in 20ms chunks
+    5. Send {"event": "tts_complete"} when done
+    """
+    print("=" * 80)
+    print(f"🎵 TTS-ONLY WebSocket Connection")
+    print(f"Call Session: {callSessionId}")
+    print(f"Agent: {agentId}")
+    print("=" * 80)
+    sys.stdout.flush()
+    
+    try:
+        await websocket.accept()
+        print(f"✅ WebSocket accepted (TTS-only mode)")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"❌ Failed to accept WebSocket: {e}")
+        sys.stdout.flush()
+        return
+    
+    # Get database session
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    
+    # Get agent info for voice settings
+    agent = None
+    call_session = None
+    stream_sid = None
+    
+    try:
+        session_uuid = uuid.UUID(callSessionId)
+        call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+        
+        if call_session and agentId:
+            agent_uuid = uuid.UUID(agentId)
+            agent = agent_service.get_agent_by_id(db, agent_uuid, call_session.tenant_id)
+            if agent:
+                print(f"✅ Agent: {agent.name}")
+                sys.stdout.flush()
+    except Exception as e:
+        print(f"⚠️ Error loading agent: {e}")
+        sys.stdout.flush()
+    
+    try:
+        while True:
+            # Receive message
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            event = message.get("event")
+            
+            if event == "connected":
+                print("✅ Twilio connected to TTS-only stream")
+                sys.stdout.flush()
+            
+            elif event == "start":
+                stream_sid = message.get("streamSid")
+                print(f"🎙️ TTS Stream started - SID: {stream_sid}")
+                sys.stdout.flush()
+                
+                # Auto-retrieve and play pending TTS from call session metadata
+                if call_session and call_session.call_metadata:
+                    pending_tts = call_session.call_metadata.get("pending_tts")
+                    if pending_tts:
+                        text = pending_tts.get("text", "")
+                        lang = pending_tts.get("lang", agent.language if agent else "en")
+                        voice = pending_tts.get("voice", agent.voice_type if agent else "female")
+                        
+                        if text:
+                            print(f"🎵 Auto-playing pending TTS: '{text[:50]}...'")
+                            sys.stdout.flush()
+                            
+                            # Generate MULAW TTS
+                            audio_bytes = await generate_mulaw_tts(
+                                text=text,
+                                lang=lang,
+                                voice=voice,
+                                use_gemini_flash=True
+                            )
+                            
+                            # Stream in 20ms chunks
+                            await stream_mulaw_bytes_over_twilio(
+                                websocket=websocket,
+                                stream_sid=stream_sid,
+                                audio_bytes=audio_bytes,
+                                pace_20ms=True
+                            )
+                            
+                            # Clear pending TTS
+                            call_session.call_metadata.pop("pending_tts", None)
+                            db.commit()
+                            
+                            print(f"✅ Auto-playback complete, cleared pending TTS")
+                            sys.stdout.flush()
+            
+            elif event == "play_tts":
+                # Custom event to trigger TTS playback
+                text = message.get("text", "")
+                lang = message.get("lang", agent.language if agent else "en")
+                voice = message.get("voice", agent.voice_type if agent else "female")
+                
+                if text and stream_sid:
+                    print(f"🎵 Playing TTS: '{text[:50]}...'")
+                    sys.stdout.flush()
+                    
+                    # Generate MULAW TTS
+                    audio_bytes = await generate_mulaw_tts(
+                        text=text,
+                        lang=lang,
+                        voice=voice,
+                        use_gemini_flash=True
+                    )
+                    
+                    # Stream in 20ms chunks
+                    await stream_mulaw_bytes_over_twilio(
+                        websocket=websocket,
+                        stream_sid=stream_sid,
+                        audio_bytes=audio_bytes,
+                        pace_20ms=True
+                    )
+                    
+                    # Send completion event
+                    await websocket.send_json({
+                        "event": "tts_complete",
+                        "text_length": len(text),
+                        "audio_bytes": len(audio_bytes)
+                    })
+                    print(f"✅ TTS playback complete")
+                    sys.stdout.flush()
+            
+            elif event == "media":
+                # Ignore incoming media (we're TTS-only)
+                pass
+            
+            elif event == "stop":
+                print("🛑 TTS stream stopped")
+                sys.stdout.flush()
+                break
+            
+            elif event == "mark":
+                pass  # Synchronization marks
+    
+    except WebSocketDisconnect:
+        print(f"📡 WebSocket disconnected (TTS-only)")
+        sys.stdout.flush()
+    
+    except Exception as e:
+        print(f"❌ Error in TTS-only stream: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+    
+    finally:
+        db.close()
+        print(f"🔚 TTS-only stream closed")
         sys.stdout.flush()
 

@@ -750,7 +750,7 @@ async def handle_call_events_webhook(
                     response.record(
                         action=recording_callback_url,
                         method='POST',
-                        timeout=5,  # Wait 5 seconds of silence
+                        timeout=3,  # Wait 3 seconds of silence (faster detection)
                         max_length=120,  # Max 2 minutes
                         play_beep=False,  # No beep for natural conversation
                         trim='do-not-trim',
@@ -803,7 +803,7 @@ async def handle_call_events_webhook(
                     response.record(
                         action=recording_callback_url,
                         method='POST',
-                        timeout=5,
+                        timeout=3,  # Faster speech detection
                         max_length=120,
                         play_beep=False,
                         trim='do-not-trim',
@@ -1268,46 +1268,47 @@ async def handle_recording_callback(
                         message_type="agent_response"
                     )
                     
-                    # Create TwiML response
-                    response = VoiceResponse()
-                    
-                    # Say agent's response using Google TTS
-                    lang = agent.language if agent and agent.language else "en"
-                    voice = agent.voice_type if agent and agent.voice_type else "female"
-                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}"
-                    response.play(tts_url)
-                    print(f"🎤 Google TTS configured: text='{response_text[:50]}...'")
-                    sys.stdout.flush()
-                    
                     # Check if this is a goodbye
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
                     if is_goodbye:
                         print(f"🛑 Goodbye detected - ending call")
                         sys.stdout.flush()
+                        response = VoiceResponse()
                         response.hangup()
                         twiml_str = str(response)
                         print(f"📤 Returning TwiML (goodbye): {twiml_str[:200]}...")
                         sys.stdout.flush()
                         return HTMLResponse(twiml_str, media_type="application/xml")
                     
-                    # Continue conversation - record next user input
+                    # Store TTS text in call session metadata for WebSocket to retrieve
+                    lang = agent.language if agent and agent.language else "en"
+                    voice_type = agent.voice_type if agent and agent.voice_type else "female"
+                    
+                    if not call_session.call_metadata:
+                        call_session.call_metadata = {}
+                    
+                    call_session.call_metadata["pending_tts"] = {
+                        "text": response_text,
+                        "lang": lang,
+                        "voice": voice_type
+                    }
+                    db.commit()
+                    
+                    print(f"💾 Stored pending TTS in metadata: '{response_text[:50]}...'")
+                    sys.stdout.flush()
+                    
+                    # Build TwiML for TTS-only WebSocket streaming + Recording
                     recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
                     
-                    response.record(
-                        action=recording_callback_url,
-                        method='POST',
-                        timeout=5,  # Wait 5 seconds of silence
-                        max_length=60,  # Max 60 seconds
-                        play_beep=False,  # No beep for natural conversation
-                        trim='do-not-trim',
-                        recording_status_callback=recording_callback_url,
-                        recording_status_callback_method='POST',
-                        transcribe=False  # We use Google STT
+                    from app.routers.bidirectional_stream import build_tts_only_twiml
+                    twiml_str = build_tts_only_twiml(
+                        call_session_id=str(call_session.id),
+                        agent_id=str(agent.id) if agent else agentId,
+                        record_callback_url=recording_callback_url
                     )
                     
-                    twiml_str = str(response)
-                    print(f"🔄 Continuing conversation - waiting for next user input")
-                    print(f"📤 Returning TwiML with TTS: {twiml_str[:200]}...")
+                    print(f"🎵 Returning TwiML with TTS WebSocket streaming")
+                    print(f"📤 TwiML: {twiml_str[:200]}...")
                     sys.stdout.flush()
                     return HTMLResponse(twiml_str, media_type="application/xml")
                 
@@ -1329,7 +1330,7 @@ async def handle_recording_callback(
                     response.record(
                         action=recording_callback_url,
                         method='POST',
-                        timeout=5,
+                        timeout=3,  # Faster detection
                         max_length=60,
                         play_beep=False,
                         trim='do-not-trim',
@@ -1358,7 +1359,7 @@ async def handle_recording_callback(
                 response.record(
                     action=recording_callback_url,
                     method='POST',
-                    timeout=5,
+                    timeout=3,  # Faster detection
                     max_length=60,
                     play_beep=False,
                     trim='do-not-trim',
@@ -1383,7 +1384,7 @@ async def handle_recording_callback(
         response.record(
             action=recording_callback_url,
             method='POST',
-            timeout=5,
+            timeout=3,  # Faster detection
             max_length=60,
             play_beep=False,
             trim='do-not-trim',
