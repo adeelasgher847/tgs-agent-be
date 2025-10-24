@@ -222,6 +222,7 @@ class BidirectionalStreamHandler:
         self.min_speech_energy = 400  # Minimum absolute RMS for speech (tuned for softest voice ~548 RMS)
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
+        self.calibration_complete = False  # Flag to lock noise floor after calibration
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -336,7 +337,8 @@ class BidirectionalStreamHandler:
                 self._update_noise_floor(energy)
                 
                 if self.calibration_frames == self.max_calibration_frames:
-                    print(f"🎛️ VAD calibrated - noise floor: {self.noise_floor:.1f} RMS")
+                    self.calibration_complete = True  # Lock noise floor
+                    print(f"🎛️ VAD calibrated - noise floor: {self.noise_floor:.1f} RMS (LOCKED)")
                     sys.stdout.flush()
                 return
             
@@ -369,8 +371,10 @@ class BidirectionalStreamHandler:
                         print(f"🔇 Silence continuing... ({self.silence_counter}/{self.silence_threshold}, {remaining} until processing)")
                         sys.stdout.flush()
                 else:
-                    # Not speaking yet, update noise floor
-                    self._update_noise_floor(energy)
+                    # Not speaking yet - only update noise floor during calibration
+                    # After calibration is complete, noise floor stays LOCKED to prevent feedback loops
+                    if not self.calibration_complete:
+                        self._update_noise_floor(energy)
             
             # Process when 0.9 seconds of silence detected (VAPI-style)
             if self.speech_active and self.silence_counter >= self.silence_threshold:
