@@ -213,12 +213,13 @@ class BidirectionalStreamHandler:
         self.frame_duration_ms = 20  # Twilio sends 20ms frames
         self.sample_rate = 8000  # Twilio MULAW is 8kHz
         
-        # Adaptive VAD parameters
+        # Adaptive VAD parameters - Tuned for your environment
+        # Background noise: ~0.0001 RMS (-80 dB), Voice: ~0.0116 RMS (-39 dB)
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
         self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 4.0  # Speech must be 4x louder than noise (increased from 3.0)
-        self.min_speech_energy = 500  # Minimum absolute RMS for speech (increased from 200)
+        self.speech_multiplier = 4.0  # Speech must be 4x louder than noise
+        self.min_speech_energy = 400  # Minimum absolute RMS for speech (tuned for softest voice ~548 RMS)
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         
@@ -341,8 +342,8 @@ class BidirectionalStreamHandler:
             
             # Adaptive speech detection
             # Speech must be both:
-            # 1. Above minimum absolute threshold (200 RMS)
-            # 2. At least 3x louder than noise floor
+            # 1. Above minimum absolute threshold (400 RMS)
+            # 2. At least 4x louder than noise floor
             speech_threshold = max(self.min_speech_energy, self.noise_floor * self.speech_multiplier)
             is_speech = energy > speech_threshold
             
