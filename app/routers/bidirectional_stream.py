@@ -203,10 +203,10 @@ class BidirectionalStreamHandler:
         self.speech_active = False
         self.silence_counter = 0
         
-        # VAPI-style VAD settings: 0.4 seconds silence detection (faster response)
+        # VAPI-style VAD settings: 0.9 seconds silence detection
         # Twilio sends 20ms packets (50 packets/second)
-        # 0.4 seconds = 20 packets
-        self.silence_threshold = 20  # 0.4 seconds of silence
+        # 0.9 seconds = 45 packets
+        self.silence_threshold = 45  # 0.9 seconds of silence
         
         # Advanced Adaptive VAD (pure Python - works everywhere!)
         # Uses RMS energy with adaptive noise floor estimation
@@ -234,7 +234,7 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        print(f"✅ Bidirectional stream handler initialized (Adaptive VAD, 0.4s silence threshold)")
+        print(f"✅ Bidirectional stream handler initialized (Adaptive VAD, 0.9s silence threshold)")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -393,9 +393,9 @@ class BidirectionalStreamHandler:
                     if not self.calibration_complete:
                         self._update_noise_floor(energy)
             
-            # Process when 0.4 seconds of silence detected (VAPI-style)
+            # Process when 0.9 seconds of silence detected (VAPI-style)
             if self.speech_active and self.silence_counter >= self.silence_threshold:
-                print(f"🔕 0.4s silence detected - processing speech and sending to STT → LLM → TTS...")
+                print(f"🔕 0.9s silence detected - processing speech and sending to STT → LLM → TTS...")
                 sys.stdout.flush()
                 await self.process_audio_buffer()
         
