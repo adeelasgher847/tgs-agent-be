@@ -6,9 +6,11 @@ Handles streaming audio from Twilio and returns transcriptions
 import os
 import asyncio
 import base64
+import time
 from typing import Optional, Callable, Dict, Any
 from google.cloud import speech_v1p1beta1 as speech
 from google.cloud.speech_v1p1beta1 import types
+from google.api_core import exceptions as gcp_exceptions
 from app.core.config import settings
 import json
 
@@ -148,7 +150,7 @@ class GoogleSTTService:
         on_error: Optional[Callable] = None
     ):
         """
-        Transcribe audio stream from Twilio
+        Transcribe audio stream from Twilio with automatic stream restart
         
         Args:
             audio_generator: Async generator yielding audio chunks
@@ -163,99 +165,130 @@ class GoogleSTTService:
                 await on_error("Google Speech client not initialized")
             return
         
-        try:
-            # Get streaming config
-            streaming_config = self.get_streaming_config(language_code=language_code)
-            
-            # Bridge async to sync using queue
-            import queue
-            audio_queue_sync = queue.Queue()
-            generator_done = False
-            
-            # Background task to consume async generator
-            async def consume_audio():
-                nonlocal generator_done
-                try:
-                    async for audio_chunk in audio_generator:
-                        audio_queue_sync.put(audio_chunk)
-                except Exception as e:
-                    print(f"⚠️ Error consuming audio: {e}")
-                    import traceback
-                    traceback.print_exc()
-                finally:
-                    generator_done = True
-                    audio_queue_sync.put(None)  # Sentinel to signal end
-            
-            # Start consuming audio in background
-            consume_task = asyncio.create_task(consume_audio())
-            
-            # Create synchronous request generator for Google's API
-            def request_generator():
-                # Only send audio chunks - config is passed separately
-                while True:
-                    try:
-                        audio_chunk = audio_queue_sync.get(timeout=0.1)
-                        if audio_chunk is None:  # Sentinel - generator done
-                            break
-                        if audio_chunk:
-                            yield types.StreamingRecognizeRequest(audio_content=audio_chunk)
-                    except queue.Empty:
-                        # Keep sending empty chunks to keep stream alive
-                        yield types.StreamingRecognizeRequest(audio_content=b'')
-            
-            # Start streaming recognition
-            print("🎤 Starting Google Cloud STT streaming recognition...")
-            
-            # Create requests and get responses (synchronous call)
-            # Google's API expects both config and requests as keyword arguments
-            responses = self.client.streaming_recognize(
-                config=streaming_config,
-                requests=request_generator()
-            )
-            
-            # Process responses
-            for response in responses:
-                if not response.results:
-                    continue
-                
-                # Get the first result
-                result = response.results[0]
-                
-                if not result.alternatives:
-                    continue
-                
-                # Get the top alternative
-                alternative = result.alternatives[0]
-                transcript = alternative.transcript
-                confidence = alternative.confidence if hasattr(alternative, 'confidence') else 0.0
-                
-                # Handle interim vs final results
-                if result.is_final:
-                    print(f"✅ Final transcript: '{transcript}' (confidence: {confidence:.2f})")
-                    if on_final_result:
-                        await on_final_result({
-                            "transcript": transcript,
-                            "confidence": confidence,
-                            "is_final": True
-                        })
-                else:
-                    print(f"⏳ Interim transcript: '{transcript}'")
-                    if on_interim_result:
-                        await on_interim_result({
-                            "transcript": transcript,
-                            "confidence": confidence,
-                            "is_final": False
-                        })
-            
-            # Wait for consume task to finish
-            await consume_task
+        # Track stream duration and restart count
+        stream_start_time = time.time()
+        restart_count = 0
+        max_restarts = 10  # Prevent infinite restart loops
         
-        except Exception as e:
-            print(f"❌ Error in streaming transcription: {e}")
-            import traceback
-            traceback.print_exc()
-            if on_error:
-                await on_error(str(e))
+        while restart_count <= max_restarts:
+            try:
+                # Get streaming config
+                streaming_config = self.get_streaming_config(language_code=language_code)
+                
+                # Bridge async to sync using queue
+                import queue
+                audio_queue_sync = queue.Queue()
+                generator_done = False
+                
+                # Background task to consume async generator
+                async def consume_audio():
+                    nonlocal generator_done
+                    try:
+                        async for audio_chunk in audio_generator:
+                            audio_queue_sync.put(audio_chunk)
+                    except Exception as e:
+                        print(f"⚠️ Error consuming audio: {e}")
+                        import traceback
+                        traceback.print_exc()
+                    finally:
+                        generator_done = True
+                        audio_queue_sync.put(None)  # Sentinel to signal end
+                
+                # Start consuming audio in background
+                consume_task = asyncio.create_task(consume_audio())
+                
+                # Create synchronous request generator for Google's API
+                def request_generator():
+                    # Only send audio chunks - config is passed separately
+                    while True:
+                        try:
+                            audio_chunk = audio_queue_sync.get(timeout=0.1)
+                            if audio_chunk is None:  # Sentinel - generator done
+                                break
+                            if audio_chunk:
+                                yield types.StreamingRecognizeRequest(audio_content=audio_chunk)
+                        except queue.Empty:
+                            # Keep sending empty chunks to keep stream alive
+                            yield types.StreamingRecognizeRequest(audio_content=b'')
+                
+                # Start streaming recognition
+                if restart_count == 0:
+                    print("🎤 Starting Google Cloud STT streaming recognition...")
+                else:
+                    print(f"🔄 Restarting Google Cloud STT stream (restart #{restart_count})...")
+                
+                # Create requests and get responses (synchronous call)
+                # Google's API expects both config and requests as keyword arguments
+                responses = self.client.streaming_recognize(
+                    config=streaming_config,
+                    requests=request_generator()
+                )
+                
+                # Process responses
+                for response in responses:
+                    if not response.results:
+                        continue
+                    
+                    # Get the first result
+                    result = response.results[0]
+                    
+                    if not result.alternatives:
+                        continue
+                    
+                    # Get the top alternative
+                    alternative = result.alternatives[0]
+                    transcript = alternative.transcript
+                    confidence = alternative.confidence if hasattr(alternative, 'confidence') else 0.0
+                    
+                    # Handle interim vs final results
+                    if result.is_final:
+                        print(f"✅ Final transcript: '{transcript}' (confidence: {confidence:.2f})")
+                        if on_final_result:
+                            await on_final_result({
+                                "transcript": transcript,
+                                "confidence": confidence,
+                                "is_final": True
+                            })
+                    else:
+                        print(f"⏳ Interim transcript: '{transcript}'")
+                        if on_interim_result:
+                            await on_interim_result({
+                                "transcript": transcript,
+                                "confidence": confidence,
+                                "is_final": False
+                            })
+                
+                # Wait for consume task to finish
+                await consume_task
+                
+                # If we reach here, the stream completed normally
+                print("✅ Stream completed normally")
+                break
+                
+            except gcp_exceptions.OutOfRange as e:
+                # Handle the 305-second duration limit
+                elapsed_time = time.time() - stream_start_time
+                print(f"⏰ Stream duration limit reached after {elapsed_time:.1f}s (restart #{restart_count + 1})")
+                
+                restart_count += 1
+                if restart_count <= max_restarts:
+                    print(f"🔄 Restarting stream automatically...")
+                    # Small delay before restart to avoid rapid reconnection
+                    await asyncio.sleep(1)
+                    continue
+                else:
+                    print(f"❌ Maximum restart attempts ({max_restarts}) exceeded")
+                    if on_error:
+                        await on_error(f"Stream duration limit exceeded after {max_restarts} restarts")
+                    break
+                    
+            except Exception as e:
+                print(f"❌ Error in streaming transcription: {e}")
+                import traceback
+                traceback.print_exc()
+                if on_error:
+                    await on_error(str(e))
+                break
     
     def create_streaming_request_generator(self, audio_queue):
         """
