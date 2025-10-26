@@ -218,7 +218,7 @@ class BidirectionalStreamHandler:
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
         self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 1.3  # Speech must be 1.3x louder than noise (very sensitive)
+        self.speech_multiplier = 1.1  # Speech must be 1.2x louder than noise (ultra sensitive)
         self.min_speech_energy = 50  # Minimum absolute RMS for speech (very sensitive for soft voices)
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
