@@ -217,13 +217,13 @@ class BidirectionalStreamHandler:
         # Background noise: ~0.0001 RMS (-80 dB), Voice: ~0.0116 RMS (-39 dB)
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
-        self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 0.6  # Aggressive - voice can be quieter than background noise
-        self.min_speech_energy = 30  # Very low threshold for very soft voice with noise
+        self.max_noise_samples = 10  # Track last 10 silence frames for noise estimation
+        self.speech_multiplier = 0.5  # VAPI-aggressive: voice can be quieter than noise
+        self.min_speech_energy = 20  # VAPI-sensitive: very low threshold for soft voices
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         self.calibration_complete = False  # Flag to lock noise floor after calibration
-        self.max_noise_floor = 100  # Cap noise floor at 100 RMS to prevent false calibrations
+        self.max_noise_floor = 60  # VAPI: Cap noise floor at 60 RMS (lower = more sensitive)
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -337,15 +337,15 @@ class BidirectionalStreamHandler:
             if self.calibration_frames < self.max_calibration_frames:
                 self.calibration_frames += 1
                 
-                # Only update noise floor if energy is below 150 RMS (treat higher as speech/noise, not background)
-                if energy < 150:
+                # VAPI: Only update noise floor if energy is below 80 RMS (treat higher as speech/noise, not background)
+                if energy < 80:
                     self._update_noise_floor(energy)
                 
                 if self.calibration_frames == self.max_calibration_frames:
                     # If we didn't get enough samples (noisy environment), use default
                     if len(self.noise_samples) < 3:
                         print(f"⚠️ Calibration insufficient samples ({len(self.noise_samples)}), using default noise floor")
-                        self.noise_floor = 30  # Very aggressive default for soft voice
+                        self.noise_floor = 20  # VAPI-aggressive default for soft voice
                         sys.stdout.flush()
                     
                     # Cap noise floor to prevent false calibrations from loud environments
@@ -359,10 +359,10 @@ class BidirectionalStreamHandler:
                     sys.stdout.flush()
                 return
             
-            # Adaptive speech detection
+            # VAPI-style Adaptive speech detection
             # Speech must be both:
-            # 1. Above minimum absolute threshold (60 RMS for soft voices)
-            # 2. At least 1.5x louder than noise floor
+            # 1. Above minimum absolute threshold (20 RMS for soft voices)
+            # 2. At least 0.5x louder than noise floor (very aggressive)
             speech_threshold = max(self.min_speech_energy, self.noise_floor * self.speech_multiplier)
             is_speech = energy > speech_threshold
             
