@@ -203,10 +203,10 @@ class BidirectionalStreamHandler:
         self.speech_active = False
         self.silence_counter = 0
         
-        # VAPI-style VAD settings: 0.9 seconds silence detection
+        # VAPI-style VAD settings: 0.4 seconds silence detection (faster response)
         # Twilio sends 20ms packets (50 packets/second)
-        # 0.9 seconds = 45 packets
-        self.silence_threshold = 45  # 0.9 seconds of silence
+        # 0.4 seconds = 20 packets
+        self.silence_threshold = 20  # 0.4 seconds of silence
         
         # Advanced Adaptive VAD (pure Python - works everywhere!)
         # Uses RMS energy with adaptive noise floor estimation
@@ -234,7 +234,7 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        print(f"✅ Bidirectional stream handler initialized (Adaptive VAD, 0.9s silence threshold)")
+        print(f"✅ Bidirectional stream handler initialized (Adaptive VAD, 0.4s silence threshold)")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -393,9 +393,9 @@ class BidirectionalStreamHandler:
                     if not self.calibration_complete:
                         self._update_noise_floor(energy)
             
-            # Process when 0.9 seconds of silence detected (VAPI-style)
+            # Process when 0.4 seconds of silence detected (VAPI-style)
             if self.speech_active and self.silence_counter >= self.silence_threshold:
-                print(f"🔕 0.9s silence detected - processing speech and sending to STT → LLM → TTS...")
+                print(f"🔕 0.4s silence detected - processing speech and sending to STT → LLM → TTS...")
                 sys.stdout.flush()
                 await self.process_audio_buffer()
         
@@ -417,9 +417,9 @@ class BidirectionalStreamHandler:
             self.speech_active = False
             self.silence_counter = 0
             
-            # Minimum audio size: ~2 seconds at 8kHz MULAW (~16000 bytes)
+            # Minimum audio size: ~1 second at 8kHz MULAW (~8000 bytes)
             # This prevents processing tiny noise chunks
-            if len(combined_audio) < 16000:
+            if len(combined_audio) < 8000:
                 print(f"⚠️ Audio chunk too small ({len(combined_audio)} bytes) - skipping")
                 sys.stdout.flush()
                 return
@@ -454,7 +454,7 @@ class BidirectionalStreamHandler:
             confidence = result.get("confidence", 0.0)
             
             # Only process if we have a valid transcript with sufficient confidence
-            if transcript and confidence > 0.5:
+            if transcript and confidence > 0.0:
                 print(f"✅ Transcript: '{transcript}' (confidence: {confidence:.2f})")
                 sys.stdout.flush()
                 
@@ -491,7 +491,7 @@ class BidirectionalStreamHandler:
             # Measure LLM latency
             llm_start = datetime.now(timezone.utc)
             
-            # Get AI response with streaming
+            # Get AI response
             response_text = await VoiceLoggingService.generate_agent_response(
                 speech_text=user_text,
                 confidence=confidence,
@@ -507,8 +507,18 @@ class BidirectionalStreamHandler:
             # Add to transcript
             await self._add_to_transcript("agent", response_text, "agent_response")
             
-            # Stream TTS in chunks (sentence by sentence)
-            await self.stream_tts_response(response_text)
+            # Stream TTS sentence-by-sentence for faster response
+            sentences = self._split_into_sentences(response_text)
+            
+            if len(sentences) > 1:
+                # Stream each sentence immediately
+                for i, sentence in enumerate(sentences):
+                    print(f"🎵 Streaming sentence {i+1}/{len(sentences)}: '{sentence[:30]}...'")
+                    sys.stdout.flush()
+                    await self.stream_tts_response(sentence)
+            else:
+                # Single sentence - stream as usual
+                await self.stream_tts_response(response_text)
         
         except Exception as e:
             print(f"❌ Error generating response: {e}")
