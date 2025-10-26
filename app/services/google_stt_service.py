@@ -212,8 +212,8 @@ class GoogleSTTService:
             print("🎤 Starting Google Cloud STT streaming recognition...")
             
             # Create requests and get responses (synchronous call)
-            # Google's API expects requests generator directly
-            responses = self.client.streaming_recognize(request_generator())
+            # Google's API expects requests as a keyword argument
+            responses = self.client.streaming_recognize(requests=request_generator())
             
             # Process responses
             for response in responses:
