@@ -218,12 +218,12 @@ class BidirectionalStreamHandler:
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
         self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 1.8  # Speech must be 1.8x louder than noise (very sensitive for normal voice)
-        self.min_speech_energy = 150  # Minimum absolute RMS for speech (very low for soft voices)
+        self.speech_multiplier = 1.5  # Speech must be 1.5x louder than noise (more sensitive)
+        self.min_speech_energy = 80  # Minimum absolute RMS for speech (very sensitive for soft voices)
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         self.calibration_complete = False  # Flag to lock noise floor after calibration
-        self.max_noise_floor = 1000  # Cap noise floor at 1000 RMS to prevent false calibrations
+        self.max_noise_floor = 300  # Cap noise floor at 300 RMS to prevent false calibrations
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -337,15 +337,15 @@ class BidirectionalStreamHandler:
             if self.calibration_frames < self.max_calibration_frames:
                 self.calibration_frames += 1
                 
-                # Only update noise floor if energy is below 1000 RMS (treat higher as speech/noise, not background)
-                if energy < 1000:
+                # Only update noise floor if energy is below 300 RMS (treat higher as speech/noise, not background)
+                if energy < 300:
                     self._update_noise_floor(energy)
                 
                 if self.calibration_frames == self.max_calibration_frames:
                     # If we didn't get enough samples (noisy environment), use default
                     if len(self.noise_samples) < 3:
                         print(f"⚠️ Calibration insufficient samples ({len(self.noise_samples)}), using default noise floor")
-                        self.noise_floor = 200  # Conservative default
+                        self.noise_floor = 120  # Conservative default
                         sys.stdout.flush()
                     
                     # Cap noise floor to prevent false calibrations from loud environments
@@ -361,8 +361,8 @@ class BidirectionalStreamHandler:
             
             # Adaptive speech detection
             # Speech must be both:
-            # 1. Above minimum absolute threshold (400 RMS)
-            # 2. At least 4x louder than noise floor
+            # 1. Above minimum absolute threshold (80 RMS for soft voices)
+            # 2. At least 1.5x louder than noise floor
             speech_threshold = max(self.min_speech_energy, self.noise_floor * self.speech_multiplier)
             is_speech = energy > speech_threshold
             
