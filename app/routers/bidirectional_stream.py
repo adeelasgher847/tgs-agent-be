@@ -203,27 +203,11 @@ class BidirectionalStreamHandler:
         self.speech_active = False
         self.silence_counter = 0
         
-        # VAPI-style VAD settings: 0.9 seconds silence detection
-        # Twilio sends 20ms packets (50 packets/second)
-        # 0.9 seconds = 45 packets
-        self.silence_threshold = 45  # 0.9 seconds of silence
-        
-        # Advanced Adaptive VAD (pure Python - works everywhere!)
-        # Uses RMS energy with adaptive noise floor estimation
-        self.frame_duration_ms = 20  # Twilio sends 20ms frames
-        self.sample_rate = 8000  # Twilio MULAW is 8kHz
-        
-        # Adaptive VAD parameters - Tuned for your environment
-        # Background noise: ~0.0001 RMS (-80 dB), Voice: ~0.0116 RMS (-39 dB)
-        self.noise_floor = 0.0  # Dynamic noise floor
-        self.noise_samples = []  # Recent silence frames for noise estimation
-        self.max_noise_samples = 10  # Track last 10 silence frames for noise estimation
-        self.speech_multiplier = 0.5  # VAPI-aggressive: voice can be quieter than noise
-        self.min_speech_energy = 20  # VAPI-sensitive: very low threshold for soft voices
-        self.calibration_frames = 0  # Frames for initial calibration
-        self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
-        self.calibration_complete = False  # Flag to lock noise floor after calibration
-        self.max_noise_floor = 60  # VAPI: Cap noise floor at 60 RMS (lower = more sensitive)
+        # Hybrid approach: buffer-based with silence detection
+        # Let Google STT handle VAD for noise filtering, but detect silence for timing
+        self.silence_threshold = 45  # 0.9 seconds of silence (45 × 20ms = 0.9s)
+        self.max_buffer_duration = 5.0  # Max 5 seconds (fallback for continuous speech)
+        self.packet_count = 0  # Track packets for timing
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -234,7 +218,7 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        print(f"✅ Bidirectional stream handler initialized (Adaptive VAD, 0.9s silence threshold)")
+        print(f"✅ Bidirectional stream handler initialized (Google STT VAD, 0.9s silence threshold)")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -256,69 +240,10 @@ class BidirectionalStreamHandler:
             print(f"⚠️ Error loading session data: {e}")
             sys.stdout.flush()
     
-    def _mulaw_to_linear(self, mulaw_byte: int) -> int:
-        """
-        Convert a single mu-law byte to linear PCM (16-bit)
-        Pure Python implementation - no audioop needed
-        """
-        # Mu-law decoding table (ITU-T G.711)
-        mulaw_byte = ~mulaw_byte & 0xFF
-        sign = (mulaw_byte & 0x80)
-        exponent = (mulaw_byte >> 4) & 0x07
-        mantissa = mulaw_byte & 0x0F
-        
-        sample = ((mantissa << 3) + 0x84) << exponent
-        if sign:
-            sample = -sample
-        
-        return sample
     
-    def _calculate_rms_energy(self, audio_data: bytes) -> float:
-        """
-        Calculate RMS (Root Mean Square) energy of audio frame - accurate speech detection
-        100% Pure Python - no audioop dependency
-        """
-        try:
-            # Convert MULAW to LINEAR16 PCM samples
-            samples = []
-            for mulaw_byte in audio_data:
-                linear_sample = self._mulaw_to_linear(mulaw_byte)
-                samples.append(linear_sample)
-            
-            if not samples:
-                return 0.0
-            
-            # Calculate RMS: sqrt(mean(sample^2))
-            mean_square = sum(s * s for s in samples) / len(samples)
-            rms = math.sqrt(mean_square)
-            
-            return rms
-        
-        except Exception as e:
-            # Fallback: simple amplitude-based energy
-            if len(audio_data) > 0:
-                return sum(abs(b - 127) for b in audio_data) / len(audio_data) * 10
-            return 0.0
-    
-    def _update_noise_floor(self, energy: float):
-        """Update adaptive noise floor estimation"""
-        # Add to noise samples
-        self.noise_samples.append(energy)
-        
-        # Keep only recent samples
-        if len(self.noise_samples) > self.max_noise_samples:
-            self.noise_samples.pop(0)
-        
-        # Calculate noise floor as lower percentile of recent low-energy frames
-        if len(self.noise_samples) >= 3:
-            # Use 25th percentile (lower quartile) to measure true background noise
-            # This filters out transient spikes and gives more accurate noise estimate
-            sorted_samples = sorted(self.noise_samples)
-            percentile_25_idx = len(sorted_samples) // 4  # 25th percentile
-            self.noise_floor = sorted_samples[percentile_25_idx]
     
     async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio (STT) - VAPI-style Adaptive VAD"""
+        """Handle incoming audio from Twilio (STT) - Hybrid VAD approach"""
         try:
             media = message.get("media", {})
             payload = media.get("payload")
@@ -329,73 +254,33 @@ class BidirectionalStreamHandler:
             # Decode audio (MULAW from Twilio)
             audio_data = base64.b64decode(payload)
             self.audio_buffer.append(audio_data)
+            self.packet_count += 1
             
-            # Calculate RMS energy of this frame
-            energy = self._calculate_rms_energy(audio_data)
+            # Simple energy-based silence detection
+            energy = sum(abs(b - 127) for b in audio_data) / len(audio_data)
+            is_silent = energy < 15  # Low energy threshold for silence
             
-            # Initial calibration phase - estimate noise floor
-            if self.calibration_frames < self.max_calibration_frames:
-                self.calibration_frames += 1
+            if is_silent and self.speech_active:
+                # User was speaking, now silent
+                self.silence_counter += 1
                 
-                # VAPI: Only update noise floor if energy is below 80 RMS (treat higher as speech/noise, not background)
-                if energy < 80:
-                    self._update_noise_floor(energy)
-                
-                if self.calibration_frames == self.max_calibration_frames:
-                    # If we didn't get enough samples (noisy environment), use default
-                    if len(self.noise_samples) < 3:
-                        print(f"⚠️ Calibration insufficient samples ({len(self.noise_samples)}), using default noise floor")
-                        self.noise_floor = 20  # VAPI-aggressive default for soft voice
-                        sys.stdout.flush()
-                    
-                    # Cap noise floor to prevent false calibrations from loud environments
-                    if self.noise_floor > self.max_noise_floor:
-                        print(f"⚠️ Calibrated noise floor ({self.noise_floor:.1f} RMS) too high, capping at {self.max_noise_floor} RMS")
-                        self.noise_floor = self.max_noise_floor
-                        sys.stdout.flush()
-                    
-                    self.calibration_complete = True  # Lock noise floor
-                    print(f"🎛️ VAD calibrated - noise floor: {self.noise_floor:.1f} RMS (LOCKED)")
+                # Check if silence detected for threshold period
+                if self.silence_counter >= self.silence_threshold:
+                    print(f"🔕 0.9s silence detected - processing speech...")
                     sys.stdout.flush()
-                return
-            
-            # VAPI-style Adaptive speech detection
-            # Speech must be both:
-            # 1. Above minimum absolute threshold (20 RMS for soft voices)
-            # 2. At least 0.5x louder than noise floor (very aggressive)
-            speech_threshold = max(self.min_speech_energy, self.noise_floor * self.speech_multiplier)
-            is_speech = energy > speech_threshold
-            
-            if is_speech:
+                    await self.process_audio_buffer()
+            elif not is_silent:
                 # Speech detected
-                self.silence_counter = 0
                 if not self.speech_active:
-                    self.speech_active = True
-                    print(f"🎤 User started speaking (energy: {energy:.0f} RMS, threshold: {speech_threshold:.0f})...")
+                    print(f"🎤 Speech started...")
                     sys.stdout.flush()
-            else:
-                # Silence/noise detected
-                if self.speech_active:
-                    # User was speaking, now silent
-                    self.silence_counter += 1
-                    
-                    # Debug logging
-                    if self.silence_counter == 1:
-                        print(f"🔇 Silence detected (energy: {energy:.0f}, threshold: {speech_threshold:.0f})...")
-                        sys.stdout.flush()
-                    elif self.silence_counter % 10 == 0:
-                        remaining = self.silence_threshold - self.silence_counter
-                        print(f"🔇 Silence continuing... ({self.silence_counter}/{self.silence_threshold}, {remaining} until processing)")
-                        sys.stdout.flush()
-                else:
-                    # Not speaking yet - only update noise floor during calibration
-                    # After calibration is complete, noise floor stays LOCKED to prevent feedback loops
-                    if not self.calibration_complete:
-                        self._update_noise_floor(energy)
+                    self.speech_active = True
+                self.silence_counter = 0
             
-            # Process when 0.9 seconds of silence detected (VAPI-style)
-            if self.speech_active and self.silence_counter >= self.silence_threshold:
-                print(f"🔕 0.9s silence detected - processing speech and sending to STT → LLM → TTS...")
+            # Fallback: Force process after max duration (continuous speech)
+            buffer_duration = len(self.audio_buffer) * 0.02  # 20ms per packet
+            if buffer_duration >= self.max_buffer_duration:
+                print(f"⏱️ Max duration ({self.max_buffer_duration}s) reached - processing...")
                 sys.stdout.flush()
                 await self.process_audio_buffer()
         
@@ -417,9 +302,9 @@ class BidirectionalStreamHandler:
             self.speech_active = False
             self.silence_counter = 0
             
-            # Minimum audio size: ~1 second at 8kHz MULAW (~8000 bytes)
-            # This prevents processing tiny noise chunks
-            if len(combined_audio) < 8000:
+            # Minimum audio size: 0.5 seconds at 8kHz MULAW (~4000 bytes)
+            # Let Google STT handle VAD - it's more accurate
+            if len(combined_audio) < 4000:
                 print(f"⚠️ Audio chunk too small ({len(combined_audio)} bytes) - skipping")
                 sys.stdout.flush()
                 return
