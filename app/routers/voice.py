@@ -1208,7 +1208,7 @@ async def handle_recording_callback(
                 # Transcribe with Google STT
                 from app.services.google_stt_service import google_stt_service
                 
-                stt_result = google_stt_service.transcribe_audio_chunk_streaming(
+                stt_result = await google_stt_service.transcribe_audio_chunk_streaming(
                     audio_content=audio_content,
                     language_code=language_code
                 )
@@ -1502,7 +1502,7 @@ async def handle_gather_speech_webhook(
                 print(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
                 
                 # Transcribe with Google STT
-                stt_result = google_stt_service.transcribe_audio_chunk_streaming(
+                stt_result = await google_stt_service.transcribe_audio_chunk_streaming(
                     audio_content=audio_content,
                     language_code=language_code
                 )

@@ -206,7 +206,7 @@ class TwilioMediaStreamHandler:
             print(f"🎙️ Sending {len(combined_audio)} bytes to Google Cloud STT (Vapi-style)...")
             sys.stdout.flush()
             
-            result = google_stt_service.transcribe_audio_chunk_streaming(
+            result = await google_stt_service.transcribe_audio_chunk_streaming(
                 audio_content=combined_audio,
                 language_code=language_code
             )

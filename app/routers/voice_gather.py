@@ -449,7 +449,7 @@ async def gather_speech_callback_webhook(
                     sys.stdout.flush()
                     
                     # Transcribe with Google STT
-                    stt_result = google_stt_service.transcribe_audio_chunk_streaming(
+                    stt_result = await google_stt_service.transcribe_audio_chunk_streaming(
                         audio_content=audio_content,
                         language_code=stt_language_code
                     )
