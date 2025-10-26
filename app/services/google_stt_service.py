@@ -167,22 +167,50 @@ class GoogleSTTService:
             # Get streaming config
             streaming_config = self.get_streaming_config(language_code=language_code)
             
-            # Create request generator
-            async def request_generator():
+            # Bridge async to sync using queue
+            import queue
+            audio_queue_sync = queue.Queue()
+            generator_done = False
+            
+            # Background task to consume async generator
+            async def consume_audio():
+                nonlocal generator_done
+                try:
+                    async for audio_chunk in audio_generator:
+                        audio_queue_sync.put(audio_chunk)
+                except Exception as e:
+                    print(f"⚠️ Error consuming audio: {e}")
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    generator_done = True
+                    audio_queue_sync.put(None)  # Sentinel to signal end
+            
+            # Start consuming audio in background
+            consume_task = asyncio.create_task(consume_audio())
+            
+            # Create synchronous request generator for Google's API
+            def request_generator():
                 # First request with config
                 yield types.StreamingRecognizeRequest(streaming_config=streaming_config)
                 
                 # Subsequent requests with audio
-                async for audio_chunk in audio_generator:
-                    if audio_chunk:
-                        yield types.StreamingRecognizeRequest(audio_content=audio_chunk)
+                while True:
+                    try:
+                        audio_chunk = audio_queue_sync.get(timeout=0.1)
+                        if audio_chunk is None:  # Sentinel - generator done
+                            break
+                        if audio_chunk:
+                            yield types.StreamingRecognizeRequest(audio_content=audio_chunk)
+                    except queue.Empty:
+                        # Keep sending empty chunks to keep stream alive
+                        yield types.StreamingRecognizeRequest(audio_content=b'')
             
             # Start streaming recognition
             print("🎤 Starting Google Cloud STT streaming recognition...")
             
-            # Create requests and get responses
-            requests = request_generator()
-            responses = self.client.streaming_recognize(requests)
+            # Create requests and get responses (synchronous call)
+            responses = self.client.streaming_recognize(request_generator())
             
             # Process responses
             for response in responses:
@@ -217,6 +245,9 @@ class GoogleSTTService:
                             "confidence": confidence,
                             "is_final": False
                         })
+            
+            # Wait for consume task to finish
+            await consume_task
         
         except Exception as e:
             print(f"❌ Error in streaming transcription: {e}")
