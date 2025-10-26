@@ -195,19 +195,17 @@ class BidirectionalStreamHandler:
         self.agent_id = agent_id
         self.db = db
         
-        # STT (Input) state
-        self.audio_buffer = []
+        # STT (Input) state - Streaming mode
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
-        self.speech_active = False
-        self.silence_counter = 0
         
-        # Hybrid approach: buffer-based with silence detection
-        # Let Google STT handle VAD for noise filtering, but detect silence for timing
-        self.silence_threshold = 45  # 0.9 seconds of silence (45 × 20ms = 0.9s)
-        self.max_buffer_duration = 5.0  # Max 5 seconds (fallback for continuous speech)
-        self.packet_count = 0  # Track packets for timing
+        # Streaming STT state
+        self.audio_queue = asyncio.Queue()
+        self.is_listening = False
+        self.streaming_task = None
+        self.interim_buffer = ""
+        self.final_buffer = ""
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -218,7 +216,7 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        print(f"✅ Bidirectional stream handler initialized (Google STT VAD, 0.9s silence threshold)")
+        print(f"✅ Bidirectional stream handler initialized (Google Streaming STT, 3-4s latency)")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -243,7 +241,7 @@ class BidirectionalStreamHandler:
     
     
     async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio (STT) - Hybrid VAD approach"""
+        """Handle incoming audio from Twilio (STT) - Streaming mode"""
         try:
             media = message.get("media", {})
             payload = media.get("payload")
@@ -253,36 +251,14 @@ class BidirectionalStreamHandler:
             
             # Decode audio (MULAW from Twilio)
             audio_data = base64.b64decode(payload)
-            self.audio_buffer.append(audio_data)
-            self.packet_count += 1
             
-            # Simple energy-based silence detection
-            energy = sum(abs(b - 127) for b in audio_data) / len(audio_data)
-            is_silent = energy < 15  # Low energy threshold for silence
+            # Queue audio for streaming STT
+            await self.audio_queue.put(audio_data)
             
-            if is_silent and self.speech_active:
-                # User was speaking, now silent
-                self.silence_counter += 1
-                
-                # Check if silence detected for threshold period
-                if self.silence_counter >= self.silence_threshold:
-                    print(f"🔕 0.9s silence detected - processing speech...")
-                    sys.stdout.flush()
-                    await self.process_audio_buffer()
-            elif not is_silent:
-                # Speech detected
-                if not self.speech_active:
-                    print(f"🎤 Speech started...")
-                    sys.stdout.flush()
-                    self.speech_active = True
-                self.silence_counter = 0
-            
-            # Fallback: Force process after max duration (continuous speech)
-            buffer_duration = len(self.audio_buffer) * 0.02  # 20ms per packet
-            if buffer_duration >= self.max_buffer_duration:
-                print(f"⏱️ Max duration ({self.max_buffer_duration}s) reached - processing...")
-                sys.stdout.flush()
-                await self.process_audio_buffer()
+            # Start streaming STT if not already started
+            if not self.is_listening:
+                self.is_listening = True
+                self.streaming_task = asyncio.create_task(self._streaming_stt_loop())
         
         except Exception as e:
             print(f"❌ Error handling media: {e}")
@@ -290,26 +266,10 @@ class BidirectionalStreamHandler:
             traceback.print_exc()
             sys.stdout.flush()
     
-    async def process_audio_buffer(self):
-        """Process accumulated audio with Google STT"""
-        if not self.audio_buffer:
-            return
-        
+    async def _streaming_stt_loop(self):
+        """Continuous streaming STT loop (Vapi-style)"""
         try:
-            # Combine audio chunks
-            combined_audio = b''.join(self.audio_buffer)
-            self.audio_buffer = []
-            self.speech_active = False
-            self.silence_counter = 0
-            
-            # Minimum audio size: 0.5 seconds at 8kHz MULAW (~4000 bytes)
-            # Let Google STT handle VAD - it's more accurate
-            if len(combined_audio) < 4000:
-                print(f"⚠️ Audio chunk too small ({len(combined_audio)} bytes) - skipping")
-                sys.stdout.flush()
-                return
-            
-            print(f"🎙️ Transcribing {len(combined_audio)} bytes...")
+            print("🎤 Starting continuous streaming STT...")
             sys.stdout.flush()
             
             # Get language from agent
@@ -321,46 +281,74 @@ class BidirectionalStreamHandler:
                 }
                 language_code = language_map.get(self.agent.language, "en-US")
             
-            # Measure STT latency
-            from datetime import datetime, timezone
-            stt_start = datetime.now(timezone.utc)
+            # Async generator for audio chunks
+            async def audio_generator():
+                while self.is_listening:
+                    try:
+                        audio_chunk = await asyncio.wait_for(
+                            self.audio_queue.get(), 
+                            timeout=0.1
+                        )
+                        yield audio_chunk
+                    except asyncio.TimeoutError:
+                        yield b''  # Keep stream alive
             
-            # Transcribe
-            result = google_stt_service.transcribe_audio_chunk_streaming(
-                audio_content=combined_audio,
-                language_code=language_code
+            # Callbacks for Google STT streaming
+            from typing import Dict, Any
+            async def on_interim_result(result: Dict[str, Any]):
+                transcript = result.get("transcript", "").strip()
+                if transcript and transcript != self.interim_buffer:
+                    self.interim_buffer = transcript
+                    print(f"⏳ Interim: '{transcript}'")
+                    sys.stdout.flush()
+            
+            async def on_final_result(result: Dict[str, Any]):
+                transcript = result.get("transcript", "").strip()
+                confidence = result.get("confidence", 0.0)
+                
+                if transcript and transcript != self.final_buffer:
+                    self.final_buffer = transcript
+                    print(f"✅ Final: '{transcript}' (confidence: {confidence:.2f})")
+                    sys.stdout.flush()
+                    await self._process_transcript(transcript, confidence)
+            
+            async def on_error(error: str):
+                print(f"❌ Streaming STT error: {error}")
+                sys.stdout.flush()
+                self.is_listening = False
+            
+            # Start streaming recognition
+            await google_stt_service.transcribe_stream(
+                audio_generator=audio_generator(),
+                language_code=language_code,
+                on_interim_result=on_interim_result,
+                on_final_result=on_final_result,
+                on_error=on_error
             )
             
-            stt_time = (datetime.now(timezone.utc) - stt_start).total_seconds()
-            print(f"⏱️ STT latency: {stt_time:.2f}s")
-            sys.stdout.flush()
-            
-            transcript = result.get("transcript", "").strip()
-            confidence = result.get("confidence", 0.0)
-            
-            # Only process if we have a valid transcript with sufficient confidence
-            if transcript and confidence > 0.0:
-                print(f"✅ Transcript: '{transcript}' (confidence: {confidence:.2f})")
-                sys.stdout.flush()
-                
-                # Track total processing time
-                total_start = datetime.now(timezone.utc)
-                
-                # Add to transcript
-                await self._add_to_transcript("client", transcript, "speech", confidence)
-                
-                # Generate and stream response immediately!
-                await self.generate_and_stream_response(transcript, confidence)
-                
-                total_time = (datetime.now(timezone.utc) - total_start).total_seconds()
-                print(f"📊 Total processing latency: {total_time:.2f}s (STT: {stt_time:.2f}s included)")
-                sys.stdout.flush()
-            else:
-                print(f"⚠️ Skipping empty/low-confidence transcript (confidence: {confidence:.2f})")
-                sys.stdout.flush()
-        
         except Exception as e:
-            print(f"❌ Error processing audio: {e}")
+            print(f"❌ Error in streaming STT loop: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+            self.is_listening = False
+    
+    async def _process_transcript(self, transcript: str, confidence: float):
+        """Process a transcript (final result)"""
+        try:
+            if not transcript or confidence < 0.3:
+                print(f"⚠️ Skipping low-confidence transcript (confidence: {confidence:.2f})")
+                sys.stdout.flush()
+                return
+            
+            # Add to transcript
+            await self._add_to_transcript("client", transcript, "speech", confidence)
+            
+            # Generate and stream response
+            await self.generate_and_stream_response(transcript, confidence)
+            
+        except Exception as e:
+            print(f"❌ Error processing transcript: {e}")
             import traceback
             traceback.print_exc()
             sys.stdout.flush()
@@ -532,9 +520,19 @@ class BidirectionalStreamHandler:
             print("=" * 80)
             sys.stdout.flush()
             
+            # Stop streaming STT
+            self.is_listening = False
+            if self.streaming_task and not self.streaming_task.done():
+                self.streaming_task.cancel()
+                try:
+                    await self.streaming_task
+                except asyncio.CancelledError:
+                    print("✅ Streaming STT task cancelled")
+                    sys.stdout.flush()
+            
             # Finalize any pending speech
-            if self.current_speech.strip():
-                await self.process_audio_buffer()
+            if self.final_buffer.strip():
+                await self._process_transcript(self.final_buffer, 1.0)
         
         except Exception as e:
             print(f"❌ Error handling stop: {e}")

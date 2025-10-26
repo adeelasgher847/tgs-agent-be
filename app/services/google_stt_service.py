@@ -133,8 +133,8 @@ class GoogleSTTService:
         # Create streaming config optimized for phone calls (Vapi-style)
         streaming_config = types.StreamingRecognitionConfig(
             config=config,
-            interim_results=interim_results,  # Configurable interim results
-            single_utterance=True,  # End stream after utterance (better for turn-based conversation)
+            interim_results=True,  # Enable interim results for real-time transcription
+            single_utterance=False,  # Keep stream alive for continuous speech
         )
         
         return streaming_config
