@@ -218,8 +218,8 @@ class BidirectionalStreamHandler:
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
         self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 1.5  # Speech must be 1.5x louder than noise (more sensitive)
-        self.min_speech_energy = 60  # Minimum absolute RMS for speech (very sensitive for soft voices)
+        self.speech_multiplier = 1.3  # Speech must be 1.3x louder than noise (very sensitive)
+        self.min_speech_energy = 50  # Minimum absolute RMS for speech (very sensitive for soft voices)
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         self.calibration_complete = False  # Flag to lock noise floor after calibration
@@ -345,7 +345,7 @@ class BidirectionalStreamHandler:
                     # If we didn't get enough samples (noisy environment), use default
                     if len(self.noise_samples) < 3:
                         print(f"⚠️ Calibration insufficient samples ({len(self.noise_samples)}), using default noise floor")
-                        self.noise_floor = 100  # More sensitive default
+                        self.noise_floor = 80  # Very sensitive default
                         sys.stdout.flush()
                     
                     # Cap noise floor to prevent false calibrations from loud environments
