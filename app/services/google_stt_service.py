@@ -191,10 +191,12 @@ class GoogleSTTService:
             
             # Create synchronous request generator for Google's API
             def request_generator():
-                # First request with config
-                yield types.StreamingRecognizeRequest(streaming_config=streaming_config)
+                # First request: send config
+                yield types.StreamingRecognizeRequest(
+                    streaming_config=streaming_config
+                )
                 
-                # Subsequent requests with audio
+                # Subsequent requests: audio chunks
                 while True:
                     try:
                         audio_chunk = audio_queue_sync.get(timeout=0.1)
@@ -210,6 +212,7 @@ class GoogleSTTService:
             print("🎤 Starting Google Cloud STT streaming recognition...")
             
             # Create requests and get responses (synchronous call)
+            # Google's API expects requests generator directly
             responses = self.client.streaming_recognize(request_generator())
             
             # Process responses
