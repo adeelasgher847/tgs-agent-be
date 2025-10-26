@@ -218,12 +218,12 @@ class BidirectionalStreamHandler:
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
         self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 1.1  # Speech must be 1.2x louder than noise (ultra sensitive)
-        self.min_speech_energy = 50  # Minimum absolute RMS for speech (very sensitive for soft voices)
+        self.speech_multiplier = 0.6  # Aggressive - voice can be quieter than background noise
+        self.min_speech_energy = 30  # Very low threshold for very soft voice with noise
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         self.calibration_complete = False  # Flag to lock noise floor after calibration
-        self.max_noise_floor = 160  # Cap noise floor at 300 RMS to prevent false calibrations
+        self.max_noise_floor = 100  # Cap noise floor at 100 RMS to prevent false calibrations
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -345,7 +345,7 @@ class BidirectionalStreamHandler:
                     # If we didn't get enough samples (noisy environment), use default
                     if len(self.noise_samples) < 3:
                         print(f"⚠️ Calibration insufficient samples ({len(self.noise_samples)}), using default noise floor")
-                        self.noise_floor = 80  # Very sensitive default
+                        self.noise_floor = 30  # Very aggressive default for soft voice
                         sys.stdout.flush()
                     
                     # Cap noise floor to prevent false calibrations from loud environments
