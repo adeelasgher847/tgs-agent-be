@@ -218,8 +218,8 @@ class BidirectionalStreamHandler:
         self.noise_floor = 0.0  # Dynamic noise floor
         self.noise_samples = []  # Recent silence frames for noise estimation
         self.max_noise_samples = 10  # Track last 10 silence frames
-        self.speech_multiplier = 2.5  # Speech must be 2.5x louder than noise (more sensitive for normal voice)
-        self.min_speech_energy = 250  # Minimum absolute RMS for speech (lowered for soft voices)
+        self.speech_multiplier = 1.8  # Speech must be 1.8x louder than noise (very sensitive for normal voice)
+        self.min_speech_energy = 150  # Minimum absolute RMS for speech (very low for soft voices)
         self.calibration_frames = 0  # Frames for initial calibration
         self.max_calibration_frames = 25  # Calibrate for 0.5 seconds
         self.calibration_complete = False  # Flag to lock noise floor after calibration
@@ -337,8 +337,8 @@ class BidirectionalStreamHandler:
             if self.calibration_frames < self.max_calibration_frames:
                 self.calibration_frames += 1
                 
-                # Only update noise floor if energy is below 2500 RMS (treat higher as speech/noise, not background)
-                if energy < 2500:
+                # Only update noise floor if energy is below 1000 RMS (treat higher as speech/noise, not background)
+                if energy < 1000:
                     self._update_noise_floor(energy)
                 
                 if self.calibration_frames == self.max_calibration_frames:
