@@ -16,9 +16,7 @@ import sys
 import math
 import struct
 
-# Using advanced adaptive energy-based VAD (100% pure Python, zero dependencies)
-# VAPI-style voice activity detection with noise floor estimation
-# Compatible with Python 3.13+ (no audioop needed)
+# Google built-in endpointing (VAD) will be used via streaming_recognize
 
 from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
@@ -195,14 +193,12 @@ class BidirectionalStreamHandler:
         self.agent_id = agent_id
         self.db = db
         
-        # STT (Input) state - Recording-based mode
+        # STT (Input) state - Google streaming_recognize with built-in VAD
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
-        
-        # Simple audio processing state
-        self.audio_buffer = []
-        self.is_listening = False
+        self._stt_session = None
+        self._stt_task = None
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -213,7 +209,7 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        print(f"✅ Bidirectional stream handler initialized (Recording-based STT + Streaming TTS)")
+        print(f"✅ Bidirectional stream handler initialized (Google streaming STT + Streaming TTS)")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -238,7 +234,7 @@ class BidirectionalStreamHandler:
     
     
     async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio (STT) - Recording-based mode"""
+        """Handle incoming audio from Twilio and feed to Google streaming STT"""
         try:
             media = message.get("media", {})
             payload = media.get("payload")
@@ -248,13 +244,55 @@ class BidirectionalStreamHandler:
             
             # Decode audio (MULAW from Twilio)
             audio_data = base64.b64decode(payload)
-            
-            # Accumulate audio chunks (simple approach)
-            self.audio_buffer.append(audio_data)
-            
-            # Process audio when we have enough chunks (every ~0.9 seconds)
-            if len(self.audio_buffer) >= 10:  # Process every 10 chunks (~0.9s)
-                await self.process_audio_chunk()
+            # Lazily create a streaming session
+            if self._stt_session is None:
+                self._stt_session = google_stt_service.create_streaming_session(
+                    language_code=(self.agent.language + "-US") if getattr(self.agent, "language", None) == "en" else None,
+                    encoding="MULAW",
+                    sample_rate=8000,
+                    interim_results=True,
+                    single_utterance=False,
+                )
+
+                async def consume_results():
+                    try:
+                        # Start underlying blocking stream in executor
+                        await self._stt_session.start()
+                    except Exception as e:
+                        print(f"❌ STT streaming start error: {e}")
+                        sys.stdout.flush()
+                    # Drain any remaining
+                
+                # Start the session in background and concurrently read results
+                async def reader_loop():
+                    while True:
+                        result = await self._stt_session.get_result()
+                        if not result:
+                            continue
+                        if result.get("error"):
+                            print(f"❌ STT error: {result['error']}")
+                            sys.stdout.flush()
+                            continue
+                        transcript = (result.get("transcript") or "").strip()
+                        if not transcript:
+                            continue
+                        is_final = bool(result.get("is_final"))
+                        confidence = float(result.get("confidence") or 0.0)
+                        if is_final:
+                            print(f"📝 Final STT: '{transcript}' ({confidence:.2f})")
+                            sys.stdout.flush()
+                            await self._process_transcript(transcript, confidence)
+                        else:
+                            # Interim transcripts can be broadcast to UI if desired
+                            print(f"⌛ Interim STT: '{transcript[:60]}...'")
+                            sys.stdout.flush()
+
+                # kick off background readers
+                self._stt_task = asyncio.create_task(reader_loop())
+                asyncio.create_task(consume_results())
+
+            # Push audio to Google
+            self._stt_session.push_audio(audio_data)
         
         except Exception as e:
             print(f"❌ Error handling media: {e}")
@@ -262,50 +300,7 @@ class BidirectionalStreamHandler:
             traceback.print_exc()
             sys.stdout.flush()
     
-    async def process_audio_chunk(self):
-        """Process accumulated audio chunks with Google STT (simple approach)"""
-        try:
-            if not self.audio_buffer:
-                return
-            
-            # Combine audio chunks
-            combined_audio = b''.join(self.audio_buffer)
-            self.audio_buffer.clear()
-            
-            print(f"🎙️ Processing {len(combined_audio)} bytes of audio...")
-            sys.stdout.flush()
-            
-            # Get language from agent
-            language_code = "en-US"
-            if self.agent and hasattr(self.agent, 'language'):
-                language_map = {
-                    "en": "en-US", "es": "es-ES", "hi": "hi-IN",
-                    "ar": "ar-SA", "zh": "zh-CN", "ur": "ur-PK"
-                }
-                language_code = language_map.get(self.agent.language, "en-US")
-            
-            # Transcribe with Google STT (simple chunk processing)
-            result = await google_stt_service.transcribe_audio_chunk_streaming(
-                audio_content=combined_audio,
-                language_code=language_code
-            )
-            
-            transcript = result.get("transcript", "").strip()
-            confidence = result.get("confidence", 0.0)
-            
-            if transcript:
-                print(f"✅ Transcript: '{transcript}' (confidence: {confidence:.2f})")
-                sys.stdout.flush()
-                await self._process_transcript(transcript, confidence)
-            else:
-                print(f"⚠️ No transcript detected")
-                sys.stdout.flush()
-                
-        except Exception as e:
-            print(f"❌ Error processing audio chunk: {e}")
-            import traceback
-            traceback.print_exc()
-            sys.stdout.flush()
+    # Removed chunk-based STT processing; relying on Google streaming endpointing
     
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
@@ -335,37 +330,38 @@ class BidirectionalStreamHandler:
             print(f"🤖 Generating streaming response for: '{user_text}'")
             sys.stdout.flush()
             
-            # Measure LLM latency
-            llm_start = datetime.now(timezone.utc)
-            
-            # Get AI response
-            response_text = await VoiceLoggingService.generate_agent_response(
-                speech_text=user_text,
-                confidence=confidence,
-                agent=self.agent,
-                db=self.db,
-                call_session_id=self.call_session.id if self.call_session else None
-            )
-            
-            llm_time = (datetime.now(timezone.utc) - llm_start).total_seconds()
-            print(f"✅ AI Response: '{response_text}' (LLM latency: {llm_time:.2f}s)")
-            sys.stdout.flush()
-            
-            # Add to transcript
-            await self._add_to_transcript("agent", response_text, "agent_response")
-            
-            # Stream TTS sentence-by-sentence for faster response
-            sentences = self._split_into_sentences(response_text)
-            
-            if len(sentences) > 1:
-                # Stream each sentence immediately
-                for i, sentence in enumerate(sentences):
-                    print(f"🎵 Streaming sentence {i+1}/{len(sentences)}: '{sentence[:30]}...'")
-                    sys.stdout.flush()
-                    await self.stream_tts_response(sentence)
-            else:
-                # Single sentence - stream as usual
-                await self.stream_tts_response(response_text)
+            # Stream LLM output as it is generated
+            from app.services.gemini_service import gemini_service
+            # Build system prompt similarly to VoiceLoggingService for consistency
+            response_accum = ""
+            async for chunk in gemini_service.stream_text(
+                prompt=user_text,
+                system_prompt=None,
+                model_name="gemini-1.5-flash",
+                temperature=0.6,
+                max_tokens=100,
+            ):
+                if not chunk:
+                    continue
+                response_accum += chunk
+                # Stream sentence-sized increments to TTS
+                sentences = self._split_into_sentences(response_accum)
+                if sentences:
+                    # Keep last unfinished fragment in buffer
+                    finished = sentences[:-1]
+                    unfinished = sentences[-1]
+                    if finished:
+                        for s in finished:
+                            await self.stream_tts_response(s)
+                        # Keep only unfinished in accumulator
+                        response_accum = unfinished
+
+            final_text = response_accum.strip()
+            if final_text:
+                await self.stream_tts_response(final_text)
+            # Add to transcript once at the end
+            complete_text = final_text
+            await self._add_to_transcript("agent", complete_text, "agent_response")
         
         except Exception as e:
             print(f"❌ Error generating response: {e}")
@@ -494,14 +490,14 @@ class BidirectionalStreamHandler:
             print("=" * 80)
             sys.stdout.flush()
             
-            # Stop STT processing
-            self.is_listening = False
-            
-            # Process any remaining audio in buffer before clearing
-            if self.audio_buffer:
-                await self.process_audio_chunk()
-                print("✅ Final audio chunk processed")
-                sys.stdout.flush()
+            # Close STT session
+            try:
+                if self._stt_session:
+                    self._stt_session.finish()
+                if self._stt_task:
+                    await asyncio.sleep(0)  # yield
+            except Exception:
+                pass
         
         except Exception as e:
             print(f"❌ Error handling stop: {e}")

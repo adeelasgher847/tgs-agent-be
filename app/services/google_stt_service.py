@@ -141,6 +141,124 @@ class GoogleSTTService:
         
         return streaming_config
     
+    class StreamingSTTSession:
+        """Manage a single long-lived Google streaming_recognize session.
+        Uses Google built-in endpointing (VAD) to emit interim and final results.
+        """
+        def __init__(self, client: speech.SpeechClient, config: "GoogleSTTService", language_code: str = None, encoding: str = None, sample_rate: int = None, interim_results: bool = True, single_utterance: bool = False):
+            import queue
+            import threading
+            self._client = client
+            self._language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
+            self._encoding = (encoding or settings.GOOGLE_STT_ENCODING)
+            self._sample_rate = sample_rate or settings.GOOGLE_STT_SAMPLE_RATE
+            self._interim_results = interim_results
+            self._single_utterance = single_utterance
+            self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue()
+            self._results_q: "queue.Queue[dict]" = queue.Queue()
+            self._closed = False
+            self._task_started = False
+            self._thread: Optional[threading.Thread] = None
+
+            # Build configs
+            encoding_map = {
+                "MULAW": speech.RecognitionConfig.AudioEncoding.MULAW,
+                "LINEAR16": speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            }
+            audio_encoding = encoding_map.get(self._encoding, speech.RecognitionConfig.AudioEncoding.MULAW)
+
+            self._recognition_config = speech.RecognitionConfig(
+                encoding=audio_encoding,
+                sample_rate_hertz=self._sample_rate,
+                language_code=self._language_code,
+                enable_automatic_punctuation=True,
+                model="phone_call" if self._encoding == "MULAW" else "default",
+                use_enhanced=False,
+            )
+            # Let Google do endpointing; keep stream open for multiple utterances
+            self._streaming_config = types.StreamingRecognitionConfig(
+                config=self._recognition_config,
+                interim_results=self._interim_results,
+                single_utterance=self._single_utterance,
+            )
+
+        def push_audio(self, audio_chunk: bytes) -> None:
+            if self._closed:
+                return
+            self._audio_q.put(audio_chunk)
+
+        def finish(self) -> None:
+            if not self._closed:
+                self._closed = True
+                self._audio_q.put(None)  # sentinel
+
+        async def start(self) -> None:
+            if self._task_started:
+                return
+            self._task_started = True
+            import threading
+            self._thread = threading.Thread(target=self._run_blocking_stream, daemon=True)
+            self._thread.start()
+
+        def _run_blocking_stream(self):
+            def request_iter():
+                # First message is config
+                yield speech.StreamingRecognizeRequest(streaming_config=self._streaming_config)
+                # Then audio chunks
+                while True:
+                    chunk = self._audio_q.get()
+                    if chunk is None:
+                        break
+                    if not chunk:
+                        continue
+                    yield speech.StreamingRecognizeRequest(audio_content=chunk)
+
+            try:
+                responses = self._client.streaming_recognize(requests=request_iter())
+                for response in responses:
+                    # Each response may contain multiple results; only the most recent is of interest
+                    if not response.results:
+                        continue
+                    result = response.results[0]
+                    if not result.alternatives:
+                        continue
+                    alt = result.alternatives[0]
+                    payload = {
+                        "transcript": alt.transcript or "",
+                        "confidence": getattr(alt, "confidence", 0.0) or 0.0,
+                        "is_final": bool(result.is_final),
+                    }
+                    self._results_q.put(payload)
+            except Exception as e:
+                self._results_q.put({"error": str(e), "transcript": "", "confidence": 0.0, "is_final": True})
+            finally:
+                # Signal completion
+                self._results_q.put({"done": True})
+
+        async def get_result(self) -> Dict[str, Any]:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._results_q.get)
+
+    def create_streaming_session(
+        self,
+        language_code: str = None,
+        encoding: str = None,
+        sample_rate: int = None,
+        interim_results: bool = True,
+        single_utterance: bool = False
+    ) -> "GoogleSTTService.StreamingSTTSession":
+        if not self.client:
+            raise Exception("Google Speech client not initialized")
+        return GoogleSTTService.StreamingSTTSession(
+            client=self.client,
+            config=self,
+            language_code=language_code,
+            encoding=encoding,
+            sample_rate=sample_rate,
+            interim_results=interim_results,
+            single_utterance=single_utterance,
+        )
+    
     async def transcribe_stream(
         self,
         audio_generator,

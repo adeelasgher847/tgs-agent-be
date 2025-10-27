@@ -105,6 +105,62 @@ class GeminiService:
             
         except Exception as e:
             raise Exception(f"Error in Gemini text generation: {str(e)}")
+
+    async def stream_text(self, prompt: str, system_prompt: str = None,
+                          model_name: str = "gemini-1.5-flash",
+                          temperature: float = 0.7,
+                          max_tokens: int = 1000,
+                          api_key: str = None):
+        """Yield text chunks from Gemini as they arrive (streaming).
+        This returns an async iterator of strings.
+        """
+        import asyncio
+        import threading
+        from queue import Queue
+
+        # Prepare prompt
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
+
+        # Get model instance (thread-safe via global client)
+        model = self.get_model(model_name, api_key)
+
+        q: Queue = Queue()
+        SENTINEL = object()
+
+        def producer():
+            try:
+                response = model.generate_content(
+                    full_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=temperature,
+                        max_output_tokens=max_tokens,
+                    ),
+                    stream=True,
+                )
+                for event in response:
+                    try:
+                        text = getattr(event, "text", None)
+                        if text:
+                            q.put(text)
+                    except Exception:
+                        # Skip malformed events
+                        continue
+            except Exception as e:
+                q.put(str(e))
+            finally:
+                q.put(SENTINEL)
+
+        threading.Thread(target=producer, daemon=True).start()
+
+        loop = asyncio.get_event_loop()
+
+        while True:
+            chunk = await loop.run_in_executor(None, q.get)
+            if chunk is SENTINEL:
+                break
+            yield str(chunk)
     
     def chat_completion(self, messages: List[Dict[str, str]], 
                        system_prompt: str = None, 
