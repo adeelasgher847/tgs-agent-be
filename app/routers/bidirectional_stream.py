@@ -204,6 +204,12 @@ class BidirectionalStreamHandler:
         self.current_speech = ""
         self._stt_session = None
         self._stt_task = None
+        # Ultra-low-latency interim processing state
+        self._last_interim_text = ""
+        self._last_interim_sent_ts = 0.0
+        self._min_interim_words = 2  # require at least 2 words to reduce noise
+        self._min_interim_confidence = 0.65
+        self._min_interim_interval_sec = 0.35  # throttle interim responses
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -288,9 +294,8 @@ class BidirectionalStreamHandler:
                             sys.stdout.flush()
                             await self._process_transcript(transcript, confidence)
                         else:
-                            # Interim transcripts can be broadcast to UI if desired
-                            print(f"⌛ Interim STT: '{transcript[:60]}...'")
-                            sys.stdout.flush()
+                            # Process interim for ultra-low latency (Vapi-like)
+                            await self._maybe_process_interim(transcript, confidence)
 
                 # kick off background readers
                 self._stt_task = asyncio.create_task(reader_loop())
@@ -325,6 +330,42 @@ class BidirectionalStreamHandler:
             print(f"❌ Error processing transcript: {e}")
             import traceback
             traceback.print_exc()
+            sys.stdout.flush()
+
+    async def _maybe_process_interim(self, transcript: str, confidence: float):
+        """Heuristics to process interim STT results for minimal latency without flooding."""
+        try:
+            if not transcript:
+                return
+            # Basic gating: confidence and minimum words
+            word_count = len(transcript.split())
+            if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
+                # Still log interim for observability
+                print(f"⌛ Interim (gated) [{confidence:.2f}]: '{transcript[:60]}...'")
+                sys.stdout.flush()
+                return
+            # Throttle by time to avoid over-triggering
+            now = asyncio.get_event_loop().time()
+            if (now - self._last_interim_sent_ts) < self._min_interim_interval_sec:
+                print(f"⌛ Interim (throttled): '{transcript[:60]}...'")
+                sys.stdout.flush()
+                return
+            # Avoid re-sending if prefix hasn't meaningfully advanced
+            if self._last_interim_text and transcript.startswith(self._last_interim_text):
+                advanced = transcript[len(self._last_interim_text):].strip()
+                if len(advanced.split()) < 1:
+                    # Not enough new content
+                    print(f"⌛ Interim (no-advance): '{transcript[:60]}...'")
+                    sys.stdout.flush()
+                    return
+            # Passed heuristics → process like final to generate response incrementally
+            print(f"⚡ Processing interim [{confidence:.2f}]: '{transcript[:60]}'")
+            sys.stdout.flush()
+            self._last_interim_text = transcript
+            self._last_interim_sent_ts = now
+            await self.generate_and_stream_response(transcript, confidence)
+        except Exception as e:
+            print(f"❌ Error in interim processing: {e}")
             sys.stdout.flush()
     
     async def generate_and_stream_response(self, user_text: str, confidence: float):
