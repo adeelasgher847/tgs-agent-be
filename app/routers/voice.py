@@ -1643,7 +1643,8 @@ async def handle_gather_speech_webhook(
                         method='POST',
                         enhanced=True,
                         profanity_filter=False,
-                        language=get_gather_language(agent)
+                        language=get_gather_language(agent),
+                        record=True  # Enable recording for Google STT
                     )
                     
                     # Fallback
@@ -1681,7 +1682,8 @@ async def handle_gather_speech_webhook(
             method='POST',
             enhanced=True,
             profanity_filter=False,
-            language=get_gather_language(agent)
+            language=get_gather_language(agent),
+            record=True  # Enable recording for Google STT
         )
         
         return HTMLResponse(str(response), media_type="application/xml")
