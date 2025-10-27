@@ -82,17 +82,21 @@ async def stream_mulaw_bytes_over_twilio(websocket, stream_sid: str, audio_bytes
 async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_gemini_flash: bool = True) -> bytes:
     """
     Generate mu-law (8kHz) TTS audio using the existing Google TTS service.
-    Caches audio for instant reuse.
+    Optimized for word-by-word streaming with caching.
     """
+    # Skip empty text
+    if not text or not text.strip():
+        return b''
+    
     # Cache key aligned with existing cache strategy
-    cache_key = generate_cache_key(text, lang, voice, use_gemini_flash, "mulaw")
+    cache_key = generate_cache_key(text.strip(), lang, voice, use_gemini_flash, "mulaw")
 
     if cache_key in audio_cache:
         return audio_cache[cache_key]
 
-    # Use 8kHz MULAW for Twilio
+    # Use 8kHz MULAW for Twilio - Optimized for small chunks
     audio_content = google_tts_service.text_to_speech(
-        text=text,
+        text=text.strip(),
         language=lang,
         voice_type=voice,
         speaking_rate=1.0,   # clear at 8kHz MULAW
@@ -101,6 +105,7 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
         use_gemini_flash=use_gemini_flash
     )
 
+    # Cache for instant reuse (especially useful for repeated words/phrases)
     audio_cache[cache_key] = audio_content
     return audio_content
 
@@ -330,7 +335,7 @@ class BidirectionalStreamHandler:
             print(f"🤖 Generating streaming response for: '{user_text}'")
             sys.stdout.flush()
             
-            # Stream LLM output as it is generated
+            # Stream LLM output as it is generated - Word-by-Word Streaming
             from app.services.gemini_service import gemini_service
             # Build system prompt similarly to VoiceLoggingService for consistency
             async def try_stream(model_name: str) -> str:
@@ -344,15 +349,14 @@ class BidirectionalStreamHandler:
                 ):
                     if not chunk:
                         continue
+                    
+                    # 🚀 Word-by-Word Streaming: Send each chunk immediately to TTS
+                    # This eliminates jerk and provides smooth audio flow
+                    await self.stream_tts_response(chunk)
+                    
+                    # Still accumulate for transcript and final response
                     response_accum += chunk
-                    sentences = self._split_into_sentences(response_accum)
-                    if sentences:
-                        finished = sentences[:-1]
-                        unfinished = sentences[-1]
-                        if finished:
-                            for s in finished:
-                                await self.stream_tts_response(s)
-                            response_accum = unfinished
+                
                 return response_accum.strip()
 
             final_text = None
@@ -384,25 +388,29 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def stream_tts_response(self, text: str):
-        """Stream TTS audio in 20ms chunks for immediate playback"""
+        """Stream TTS audio in 20ms chunks for immediate playback - Optimized for word-by-word streaming"""
         try:
             from datetime import datetime, timezone
+            
+            # Skip empty or whitespace-only chunks
+            if not text or not text.strip():
+                return
             
             # Get agent voice settings
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
             
-            print(f"🎵 Streaming TTS with 20ms chunks: '{text[:50]}...'")
+            print(f"🎵 Streaming TTS chunk: '{text.strip()[:30]}...'")
             sys.stdout.flush()
             
             # Measure TTS generation latency
             tts_start = datetime.now(timezone.utc)
             
             # Generate or fetch cached MULAW audio
-            audio_bytes = await generate_mulaw_tts(text=text, lang=lang, voice=voice, use_gemini_flash=True)
+            audio_bytes = await generate_mulaw_tts(text=text.strip(), lang=lang, voice=voice, use_gemini_flash=True)
             
             tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
-            print(f"⏱️ TTS generation latency: {tts_gen_time:.2f}s")
+            print(f"⏱️ TTS latency: {tts_gen_time:.3f}s for '{text.strip()[:20]}...'")
             sys.stdout.flush()
             
             # Stream as 20ms frames with early playback
@@ -413,15 +421,19 @@ class BidirectionalStreamHandler:
                 pace_20ms=True,
             )
             
-            print(f"⚡ Streamed {len(audio_bytes)} bytes in 20ms chunks")
+            print(f"⚡ Streamed {len(audio_bytes)} bytes")
             sys.stdout.flush()
         
         except Exception as e:
-            print(f"❌ Error streaming TTS: {e}")
+            print(f"❌ Error streaming TTS chunk '{text[:20]}...': {e}")
             sys.stdout.flush()
     
     def _split_into_sentences(self, text: str) -> list:
-        """Split text into sentences for streaming"""
+        """
+        Split text into sentences for streaming
+        NOTE: This function is now deprecated with word-by-word streaming
+        Kept for potential fallback or future use
+        """
         import re
         # Split on sentence boundaries
         sentences = re.split(r'(?<=[.!?])\s+', text)
