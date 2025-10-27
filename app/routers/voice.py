@@ -33,6 +33,7 @@ from app.routers.general_websocket import (
 from app.services.transcript_service import transcript_service
 from app.services.model_service import ModelService
 from app.services.gemini_service import gemini_service
+from app.services.credit_service import credit_service
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
 
@@ -295,6 +296,27 @@ async def initiate_call(
         if not twilio_service.validate_phone_number(request.userPhoneNumber):
             raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
         
+        # Check credits before initiating call
+        if not agent.model:
+            raise HTTPException(status_code=400, detail="Agent does not have a model configured")
+        
+        model_name = agent.model.model_name
+        has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
+            db=db,
+            tenant_id=user.current_tenant_id,
+            model_name=model_name,
+            estimated_minutes=1  # Check for at least 1 minute
+        )
+        
+        if not has_sufficient:
+            print(f"❌ Insufficient credits: {current_credits} < {required_credits}")
+            raise HTTPException(
+                status_code=402,  # Payment Required
+                detail=f"Insufficient credits to initiate call. Current balance: {current_credits} credits, Required: {required_credits} credits. Model: {model_name}"
+            )
+        
+        print(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
+        
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL
         
@@ -537,6 +559,13 @@ async def handle_call_events_webhook(
                     print(f"✅ Queued call ended event for session {call_session.id}")
                 except Exception as e:
                     print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
+                
+                # Stop credit monitoring when call completes
+                try:
+                    credit_service.stop_credit_monitoring(call_session.id)
+                    print(f"✅ Stopped credit monitoring for call session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             # Commit the status update
             db.commit()
@@ -673,6 +702,18 @@ async def handle_call_events_webhook(
                     print(f"✅ Broadcasted call in-progress event for session {call_session.id}")
                 except Exception as e:
                     print(f"❌ Failed to broadcast call in-progress event: {e}")
+                
+                # Start credit monitoring for the call (only when status is "in-progress")
+                try:
+                    asyncio.create_task(credit_service.start_credit_monitoring(
+                        db=db,
+                        call_session_id=call_session.id,
+                        tenant_id=call_session.tenant_id,
+                        agent_id=call_session.agent_id
+                    ))
+                    print(f"✅ Started credit monitoring for call session {call_session.id} (30s intervals)")
+                except Exception as e:
+                    print(f"❌ Failed to start credit monitoring: {e}")
             
             # Get call session to check conversation state
             call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
@@ -864,6 +905,13 @@ async def handle_call_events_webhook(
                     print(f"✅ Queued call ended (failed) event for session {call_session.id}")
                 except Exception as e:
                     print(f"❌ Failed to broadcast call failed event: {e}")
+                
+                # Stop credit monitoring when call fails
+                try:
+                    credit_service.stop_credit_monitoring(call_session.id)
+                    print(f"✅ Stopped credit monitoring for failed call session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
@@ -899,6 +947,13 @@ async def handle_call_events_webhook(
                     print(f"✅ Queued call ended (busy) event for session {call_session.id}")
                 except Exception as e:
                     print(f"❌ Failed to broadcast call busy event: {e}")
+                
+                # Stop credit monitoring when call is busy
+                try:
+                    credit_service.stop_credit_monitoring(call_session.id)
+                    print(f"✅ Stopped credit monitoring for busy call session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
@@ -934,6 +989,13 @@ async def handle_call_events_webhook(
                     print(f"✅ Queued call ended (no-answer) event for session {call_session.id}")
                 except Exception as e:
                     print(f"❌ Failed to broadcast call no-answer event: {e}")
+                
+                # Stop credit monitoring when call has no-answer
+                try:
+                    credit_service.stop_credit_monitoring(call_session.id)
+                    print(f"✅ Stopped credit monitoring for no-answer call session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
