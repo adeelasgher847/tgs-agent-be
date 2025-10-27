@@ -654,47 +654,7 @@ def get_user_profile(
             detail="User not found"
         )
     
-    # Auto-verify and credit latest paid Stripe session for current tenant (idempotent)
-    if current_user.current_tenant_id:
-        tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
-        if tenant and getattr(tenant, 'stripe_customer_id', None):
-            import stripe
-            stripe.api_key = settings.STRIPE_SECRET_KEY
-            try:
-                sessions = stripe.checkout.Session.list(
-                    customer=tenant.stripe_customer_id,
-                    limit=10
-                )
-                # Sort newest first just in case
-                sorted_sessions = sorted(sessions.data or [], key=lambda s: s.get('created', 0), reverse=True)
-                for session in sorted_sessions:
-                    md = session.get('metadata') or {}
-                    if md.get('tenant_id') != str(current_user.current_tenant_id):
-                        continue
-                    if session.get('payment_status') != 'paid':
-                        continue
-                    sid = session.get('id')
-                    if sid and is_session_already_credited(sid):
-                        continue
-                    purchase_type = md.get('purchase_type')
-                    if purchase_type == 'credit_purchase':
-                        amount_total_cents = session.get('amount_total') or 0
-                        credits_to_add = int((amount_total_cents / 100.0) * 10)
-                        if credits_to_add > 0:
-                            tenant.credits += credits_to_add
-                            tenant.status = 'paid'
-                            db.commit()
-                            mark_session_credited(sid)
-                            break
-                    elif purchase_type == 'plan_purchase':
-                        from app.services.stripe_service import StripeService
-                        StripeService.handle_checkout_completed({'data': {'object': session}}, db)
-                        if sid:
-                            mark_session_credited(sid)
-                        break
-            except Exception:
-                # Ignore errors; profile should still return
-                pass
+    # Stripe credits are now processed via webhook; no crediting logic here.
 
     # Get role information for the current tenant
     role_info = None
