@@ -727,17 +727,17 @@ async def handle_call_events_webhook(
                     if use_streaming:
                         # NEW: Bidirectional WebSocket streaming (FASTER!)
                         print(f"⚡ Using bidirectional streaming for ultra-low latency")
-                    response.redirect(
-                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                        method='POST'
-                    )
+                        response.redirect(
+                            f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                            method='POST'
+                        )
                     else:
                         # OLD: Standard Gather approach (still works)
                         print(f"📞 Using standard Gather approach")
-                    response.redirect(
-                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                        method='POST'
-                    )
+                        response.redirect(
+                            f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/greeting?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                            method='POST'
+                        )
                     
                     # Mark as greeted
                     _update_conversation_state(call_session, "has_greeted", True)
@@ -747,14 +747,9 @@ async def handle_call_events_webhook(
                     return HTMLResponse(str(response), media_type="application/xml")
                 
                 print("🎤 FIRST TIME GREETING - VAPI-style with <Record> and silence detection")
-                    
-                    # Mark as greeted
-                    _update_conversation_state(call_session, "has_greeted", True)
-                    _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
-                    db.commit()
-                    
+                
                 # Natural, conversational greeting with Google TTS
-                    response = VoiceResponse()
+                response = VoiceResponse()
                 
                 # Simple greeting
                 greeting_text = "Hello"
@@ -1334,7 +1329,7 @@ async def handle_recording_callback(
                     )
                     
                     # Create TwiML response
-                        response = VoiceResponse()
+                    response = VoiceResponse()
                     
                     # Use TTS streaming for immediate response
                     lang = agent.language if agent and agent.language else "en"
@@ -1475,12 +1470,12 @@ async def handle_recording_callback(
         traceback.print_exc()
         
         # Ultimate fallback
-            response = VoiceResponse()
+        response = VoiceResponse()
         text = "Sorry, something went wrong. Please try calling again later. Goodbye!"
         tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
         response.play(tts_url)
-            response.hangup()
-            return HTMLResponse(str(response), media_type="application/xml")
+        response.hangup()
+        return HTMLResponse(str(response), media_type="application/xml")
 
 
 @router.post("/webhook/gather-speech", response_class=HTMLResponse)
