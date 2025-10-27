@@ -1336,45 +1336,55 @@ async def handle_recording_callback(
                     # Create TwiML response
                     response = VoiceResponse()
                     
-                    # Say agent's response using Google TTS
+                    # Use TTS streaming for immediate response
                     lang = agent.language if agent and agent.language else "en"
                     voice = agent.voice_type if agent and agent.voice_type else "female"
-                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(response_text)}&lang={lang}&voice={voice}"
-                    response.play(tts_url)
-                    print(f"🎤 Google TTS configured: text='{response_text[:50]}...'")
+                    
+                    # Store TTS text in call session metadata for WebSocket streaming
+                    if not call_session.call_metadata:
+                        call_session.call_metadata = {}
+                    
+                    call_session.call_metadata["pending_tts"] = {
+                        "text": response_text,
+                        "lang": lang,
+                        "voice": voice
+                    }
+                    db.commit()
+                    
+                    print(f"💾 Stored pending TTS for streaming: '{response_text[:50]}...'")
                     sys.stdout.flush()
                     
-                    # Check if this is a goodbye
-                    is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
-                    if is_goodbye:
-                        print(f"🛑 Goodbye detected - ending call")
-                        sys.stdout.flush()
-                        response.hangup()
-                        twiml_str = str(response)
-                        print(f"📤 Returning TwiML (goodbye): {twiml_str[:200]}...")
-                        sys.stdout.flush()
-                        return HTMLResponse(twiml_str, media_type="application/xml")
-                    
-                    # Continue conversation - record next user input
-                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
-                    
-                    response.record(
-                        action=recording_callback_url,
-                        method='POST',
-                        timeout=5,  # Wait 5 seconds of silence
-                        max_length=60,  # Max 60 seconds
-                        play_beep=False,  # No beep for natural conversation
-                        trim='do-not-trim',
-                        recording_status_callback=recording_callback_url,
-                        recording_status_callback_method='POST',
-                        transcribe=False  # We use Google STT
+                    # Trigger TTS playback via WebSocket
+                    from app.routers.general_websocket import websocket_manager
+                    await websocket_manager.broadcast_to_all(
+                        message={
+                            "type": "play_tts",
+                            "event": "play_tts",
+                            "text": response_text,
+                            "lang": lang,
+                            "voice": voice,
+                            "session_id": str(call_session.id)
+                        },
+                        event_type="play_tts"
                     )
                     
-                    twiml_str = str(response)
-                    print(f"🔄 Continuing conversation - waiting for next user input")
-                    print(f"📤 Returning TwiML with TTS: {twiml_str[:200]}...")
+                    print(f"🎵 Triggered TTS playback via WebSocket")
                     sys.stdout.flush()
-                    return HTMLResponse(twiml_str, media_type="application/xml")
+                    
+                    # Build TwiML for TTS streaming + Recording for next input
+                    from app.routers.bidirectional_stream import build_tts_only_twiml
+                    
+                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
+                    
+                    tts_twiml = build_tts_only_twiml(
+                        call_session_id=str(call_session.id),
+                        agent_id=str(agent.id) if agent else agentId,
+                        record_callback_url=recording_callback_url
+                    )
+                    
+                    print(f"🎵 Returning TTS streaming TwiML for immediate response")
+                    sys.stdout.flush()
+                    return HTMLResponse(tts_twiml, media_type="application/xml")
                 
                 else:
                     # No transcript - ask user to repeat
