@@ -333,35 +333,51 @@ class BidirectionalStreamHandler:
             # Stream LLM output as it is generated
             from app.services.gemini_service import gemini_service
             # Build system prompt similarly to VoiceLoggingService for consistency
-            response_accum = ""
-            async for chunk in gemini_service.stream_text(
-                prompt=user_text,
-                system_prompt=None,
-                model_name="gemini-1.5-flash",
-                temperature=0.6,
-                max_tokens=100,
-            ):
-                if not chunk:
-                    continue
-                response_accum += chunk
-                # Stream sentence-sized increments to TTS
-                sentences = self._split_into_sentences(response_accum)
-                if sentences:
-                    # Keep last unfinished fragment in buffer
-                    finished = sentences[:-1]
-                    unfinished = sentences[-1]
-                    if finished:
-                        for s in finished:
-                            await self.stream_tts_response(s)
-                        # Keep only unfinished in accumulator
-                        response_accum = unfinished
+            async def try_stream(model_name: str) -> str:
+                response_accum = ""
+                async for chunk in gemini_service.stream_text(
+                    prompt=user_text,
+                    system_prompt=None,
+                    model_name=model_name,
+                    temperature=0.6,
+                    max_tokens=100,
+                ):
+                    if not chunk:
+                        continue
+                    response_accum += chunk
+                    sentences = self._split_into_sentences(response_accum)
+                    if sentences:
+                        finished = sentences[:-1]
+                        unfinished = sentences[-1]
+                        if finished:
+                            for s in finished:
+                                await self.stream_tts_response(s)
+                            response_accum = unfinished
+                return response_accum.strip()
 
-            final_text = response_accum.strip()
+            final_text = None
+            try:
+                final_text = await try_stream("gemini-1.5-flash")
+            except Exception as e1:
+                print(f"⚠️ Streaming with gemini-1.5-flash failed: {e1}")
+                sys.stdout.flush()
+                try:
+                    final_text = await try_stream("gemini-1.5-pro")
+                except Exception as e2:
+                    print(f"⚠️ Streaming with gemini-1.5-pro failed: {e2}")
+                    sys.stdout.flush()
+                    # Last fallback: non-streaming fast response via VoiceLoggingService
+                    final_text = await VoiceLoggingService.generate_agent_response(
+                        speech_text=user_text,
+                        confidence=confidence,
+                        agent=self.agent,
+                        db=self.db,
+                        call_session_id=self.call_session.id if self.call_session else None
+                    )
+
             if final_text:
                 await self.stream_tts_response(final_text)
-            # Add to transcript once at the end
-            complete_text = final_text
-            await self._add_to_transcript("agent", complete_text, "agent_response")
+                await self._add_to_transcript("agent", final_text, "agent_response")
         
         except Exception as e:
             print(f"❌ Error generating response: {e}")

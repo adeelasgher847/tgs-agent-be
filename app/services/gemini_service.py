@@ -148,7 +148,7 @@ class GeminiService:
                         # Skip malformed events
                         continue
             except Exception as e:
-                q.put(str(e))
+                q.put(("__error__", str(e)))
             finally:
                 q.put(SENTINEL)
 
@@ -158,6 +158,9 @@ class GeminiService:
 
         while True:
             chunk = await loop.run_in_executor(None, q.get)
+            if isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "__error__":
+                # Raise so caller can handle fallback logic instead of speaking error text
+                raise Exception(chunk[1])
             if chunk is SENTINEL:
                 break
             yield str(chunk)
