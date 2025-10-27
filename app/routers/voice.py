@@ -527,15 +527,29 @@ async def handle_call_events_webhook(
         # Update call session status if we have a call session and status
         if call_session and call_status:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
-            call_session.status = call_status
             
-            # Set start time when call becomes in-progress
-            if call_status == "in-progress" and not call_session.start_time:
+            # Map Twilio statuses to our internal statuses for better UX
+            status_mapping = {
+                "initiating": "initiating",
+                "initiated": "initiated",
+                "ringing": "ringing", 
+                "in-progress": "connected",  # Map to "connected" for better UX
+                "completed": "completed",
+                "failed": "failed",
+                "busy": "busy",
+                "no-answer": "no-answer"
+            }
+            
+            mapped_status = status_mapping.get(call_status, call_status)
+            call_session.status = mapped_status
+            
+            # Set start time when call becomes connected (receiver picks up)
+            if mapped_status == "connected" and not call_session.start_time:
                 call_session.start_time = datetime.now(timezone.utc)
                 print(f"⏰ Set start time for session {call_session.id}")
             
             # Set end time and calculate duration when call completes
-            if call_status == "completed":
+            if mapped_status == "completed":
                 call_session.end_time = datetime.now(timezone.utc)
                 if call_session.start_time:
                     duration = (call_session.end_time - call_session.start_time).total_seconds()
@@ -569,15 +583,14 @@ async def handle_call_events_webhook(
             
             # Commit the status update
             db.commit()
-            print(f"✅ Updated call session {call_session.id} status to: {call_status}")
+            print(f"✅ Updated call session {call_session.id} status to: {mapped_status}")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
             try:
-                print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
+                print(f"🚀 Broadcasting call status update: {mapped_status} for session {call_session.id}")
                 
                 # Prepare comprehensive metadata
                 metadata = {
-                    # "call_sid": call_sid,
                     "from_number": from_number,
                     "to_number": to_number,
                     "direction": direction,
@@ -588,22 +601,32 @@ async def handle_call_events_webhook(
                 }
                 
                 # Add status-specific messages
-                if call_status == "ringing":
+                if mapped_status == "initiating":
+                    metadata["message"] = "Call is being initiated"
+                elif mapped_status == "initiated":
+                    metadata["message"] = "Call has been initiated"
+                elif mapped_status == "ringing":
                     metadata["message"] = "Call is ringing"
-                elif call_status == "in-progress":
-                    metadata["message"] = "Call is now in progress"
-                elif call_status == "completed":
+                elif mapped_status == "connected":
+                    metadata["message"] = "Call is now connected"
+                elif mapped_status == "completed":
                     metadata["message"] = "Call has been completed"
+                elif mapped_status == "failed":
+                    metadata["message"] = "Call failed"
+                elif mapped_status == "busy":
+                    metadata["message"] = "Call busy"
+                elif mapped_status == "no-answer":
+                    metadata["message"] = "No answer"
                 
                 await broadcast_call_status_update(
                     call_session_id=str(call_session.id),
-                    status=call_status,
+                    status=mapped_status,
                     metadata=metadata
                 )
-                print(f"✅ Call status update sent: {call_status} for session {call_session.id}")
+                print(f"✅ Call status update sent: {mapped_status} for session {call_session.id}")
                 
                 # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                if call_status == "completed":
+                if mapped_status == "completed":
                     asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="Call completed",

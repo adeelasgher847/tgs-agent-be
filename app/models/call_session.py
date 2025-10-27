@@ -16,7 +16,7 @@ class CallSession(Base):
     # Call metadata
     start_time = Column(DateTime(timezone=True), nullable=False)
     end_time = Column(DateTime(timezone=True), nullable=True)
-    status = Column(String(50), nullable=False, default="active")  # active, completed, failed, busy
+    status = Column(String(50), nullable=False, default="initiated")  # initiated, ringing, connected, completed, failed, busy
     duration = Column(Integer, nullable=True)  # duration in seconds
     
     # Call type and classification
