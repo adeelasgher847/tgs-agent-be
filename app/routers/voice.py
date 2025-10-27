@@ -34,7 +34,8 @@ from app.services.transcript_service import transcript_service
 from app.services.model_service import ModelService
 from app.services.gemini_service import gemini_service
 from urllib.parse import quote
-
+from app.models.tenant import Tenant
+from math import ceil
 router = APIRouter()
 
 # Initialize services
@@ -68,6 +69,91 @@ def _get_random_follow_up_response() -> str:
     """Get a random follow-up response to make interactions feel more human"""
     return random.choice(FOLLOW_UP_RESPONSES)
 
+async def monitor_call_credits(call_session_id: uuid.UUID, tenant_id: uuid.UUID, db: Session):
+    """
+    Background task to monitor and deduct credits every minute during the call.
+    Ends call if credits drop below 10.
+    Also handles manual call ending for final credit deduction.
+    """
+    import time
+    from app.services.twilio_service import twilio_service
+    
+    try:
+        while True:
+            # Wait 60 seconds (1 minute)
+            await asyncio.sleep(60)
+            
+            # Get fresh database session
+            from app.db.session import SessionLocal
+            local_db = SessionLocal()
+            
+            try:
+                # Get call session
+                call_session = call_session_service.get_call_session_by_id(local_db, call_session_id)
+                
+                # Check if call is still active
+                if not call_session or call_session.status not in ["in-progress", "ringing"]:
+                    print(f"💰 Call {call_session_id} is no longer active. Stopping credit monitor.")
+                    break
+                
+                # Handle manual call ending - deduct final credits for partial minute
+                if call_session.status == "completed":
+                    print(f"💰 Manual call end detected. Calculating final credits for call {call_session_id}")
+                    
+                    # Get tenant
+                    tenant = local_db.query(Tenant).filter(Tenant.id == tenant_id).first()
+                    if not tenant:
+                        print(f"⚠️ Tenant not found for final credit deduction")
+                        break
+                    
+                    # Calculate final credits needed
+                    if call_session.start_time and call_session.duration:
+                        duration_minutes = ceil(call_session.duration / 60)
+                        total_credits_needed = duration_minutes * 10
+                        completed_minutes = call_session.duration // 60
+                        credits_already_deducted = completed_minutes * 10
+                        remaining_credits = total_credits_needed - credits_already_deducted
+                        
+                        if remaining_credits > 0:
+                            tenant.credits -= remaining_credits
+                            print(f"💰 Manual call end: Deducted {remaining_credits} credits for partial minute. Remaining: {tenant.credits}")
+                        else:
+                            print(f"💰 Manual call end: No additional credits to deduct (already charged for complete minutes)")
+                        
+                        local_db.commit()
+                    
+                    break
+                
+                # Get tenant and check credits
+                tenant = local_db.query(Tenant).filter(Tenant.id == tenant_id).first()
+                
+                if not tenant:
+                    print(f"⚠️ Tenant not found for credit monitoring")
+                    break
+                
+                # Check if credits are below 10
+                if tenant.credits < 10:
+                    print(f"⚠️ Credits dropped below 10 ({tenant.credits}). Ending call.")
+                    
+                    # End the call using Twilio
+                    if call_session.twilio_call_sid:
+                        twilio_service.end_call(call_session.twilio_call_sid)
+                        print(f"✅ Ended call {call_session.twilio_call_sid} due to low credits")
+                    
+                    break
+                
+                # Deduct 10 credits for this minute
+                tenant.credits -= 10
+                local_db.commit()
+                print(f"💰 Deducted 10 credits for minute. Remaining: {tenant.credits}")
+                
+            finally:
+                local_db.close()
+                
+    except asyncio.CancelledError:
+        print(f"💰 Credit monitoring cancelled for call {call_session_id}")
+    except Exception as e:
+        print(f"❌ Error in credit monitoring: {e}")
 
 async def _add_to_transcript(
     call_session, 
@@ -293,6 +379,18 @@ async def initiate_call(
         # Validate phone number format
         if not twilio_service.validate_phone_number(request.userPhoneNumber):
             raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
+        # Check if tenant has sufficient credits (minimum 10 credits = 1 minute)
+        tenant = db.query(Tenant).filter(Tenant.id == user.current_tenant_id).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        
+        if tenant.credits < 10:
+            raise HTTPException(
+                status_code=402, 
+                detail=f"Insufficient credits. You have {tenant.credits} credits. Minimum 10 credits required to start a call."
+            )
+        
+        print(f"💰 Tenant has {tenant.credits} credits - proceeding with call")
         
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL
@@ -510,14 +608,23 @@ async def handle_call_events_webhook(
             if call_status == "in-progress" and not call_session.start_time:
                 call_session.start_time = datetime.now(timezone.utc)
                 print(f"⏰ Set start time for session {call_session.id}")
+                
+                # Start background task to monitor and deduct credits every minute
+                asyncio.create_task(monitor_call_credits(call_session.id, call_session.tenant_id, db))
+                print(f"💰 Started credit monitoring for call {call_session.id}")
             
             # Set end time and calculate duration when call completes
-            if call_status == "completed":
+            if call_status in ["completed", "failed", "busy", "no-answer"]:
                 call_session.end_time = datetime.now(timezone.utc)
                 if call_session.start_time:
                     duration = (call_session.end_time - call_session.start_time).total_seconds()
                     call_session.duration = int(duration)
                     print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+                    
+            else:
+                call_session.duration = 0
+                db.commit()
+                print(f"✅ Updated call session {call_session.id} status to: {call_status}")
                 
                 # Broadcast call ended event (non-blocking - fire and forget)
                 try:
@@ -573,7 +680,7 @@ async def handle_call_events_webhook(
                 print(f"✅ Queued call status update: {call_status} for session {call_session.id}")
                 
                 # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                if call_status == "completed":
+                if call_status in ["completed", "failed", "busy", "no-answer"]:
                     asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="Call completed",
@@ -584,7 +691,7 @@ async def handle_call_events_webhook(
                             "transcript": call_session.call_transcript or []
                         }
                     ))
-                    print(f"✅ Queued call ended event for session {call_session.id}")
+                    print(f"✅ Queued call ended event for session {call_session.id}  (status={call_status})")
                     
             except Exception as e:
                 print(f"❌ Failed to broadcast call status update: {e}")
@@ -603,7 +710,12 @@ async def handle_call_events_webhook(
         # Handle different call statuses and trigger agent logic
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
-        if call_status == "initiated" and direction == "outbound-api":
+        # if call_status == "initiated" and direction == "outbound-api":
+        if call_status=="initiated":
+            call_session.status = "initiated"
+            call_session.start_time = datetime.now(timezone.utc)
+            db.commit()
+            print(f"✅ Marked session {call_session.id} as initiated")
             # Call has been initiated - just log and return empty response
             print(f"Call initiated - SID: {call_sid}")
             
@@ -1786,7 +1898,10 @@ async def end_call(
         if call_session.start_time:
             duration = (call_session.end_time - call_session.start_time).total_seconds()
             call_session.duration = int(duration)
-        
+
+        # Call monitor_call_credits function for final credit deduction
+        await monitor_call_credits(call_session.id, call_session.tenant_id, db)
+    
         db.commit()
         
         # Add goodbye message to transcript
