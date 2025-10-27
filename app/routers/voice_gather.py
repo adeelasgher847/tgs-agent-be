@@ -270,7 +270,8 @@ async def gather_greeting_webhook(
             language=gather_language,
             enhanced=True,  # Use enhanced model for better accuracy
             profanity_filter=False,  # Don't filter for natural conversation
-            speech_model='phone_call'  # Optimized for phone calls
+            speech_model='phone_call',  # Optimized for phone calls
+            record=True  # Enable recording for Google STT
         )
         
         # Timeout fallback (if user doesn't speak)
@@ -290,7 +291,8 @@ async def gather_greeting_webhook(
             language=gather_language,
             enhanced=True,
             profanity_filter=False,
-            speech_model='phone_call'
+            speech_model='phone_call',
+            record=True  # Enable recording for Google STT
         )
         
         text = "I still can't hear you. Please call back. Goodbye!"
@@ -505,7 +507,8 @@ async def gather_speech_callback_webhook(
                 language=gather_language,
                 enhanced=True,
                 profanity_filter=False,
-                speech_model='phone_call'
+                speech_model='phone_call',
+                record=True  # Enable recording for Google STT
             )
             
             text = "I'm still not hearing you. Please call back if you need help. Goodbye!"
@@ -674,7 +677,8 @@ async def gather_speech_callback_webhook(
             language=gather_language,
             enhanced=True,
             profanity_filter=False,
-            speech_model='phone_call'
+            speech_model='phone_call',
+            record=True  # Enable recording for Google STT
         )
         
         # Timeout fallback
@@ -716,7 +720,8 @@ async def gather_speech_callback_webhook(
                 language='en-US',
                 enhanced=True,
                 profanity_filter=False,
-                speech_model='phone_call'
+                speech_model='phone_call',
+                record=True  # Enable recording for Google STT
             )
             
             text = "If you're still having trouble, please call back. Goodbye!"
