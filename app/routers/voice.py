@@ -727,8 +727,8 @@ async def handle_call_events_webhook(
                     if use_streaming:
                         # NEW: Bidirectional WebSocket streaming (FASTER!)
                         print(f"⚡ Using bidirectional streaming for ultra-low latency")
-                        response.redirect(
-                            f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
+                    response.redirect(
+                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
                             method='POST'
                         )
                     else:
@@ -747,14 +747,14 @@ async def handle_call_events_webhook(
                     return HTMLResponse(str(response), media_type="application/xml")
                 
                 print("🎤 FIRST TIME GREETING - VAPI-style with <Record> and silence detection")
-                
-                # Mark as greeted
-                _update_conversation_state(call_session, "has_greeted", True)
-                _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
-                db.commit()
-                
+                    
+                    # Mark as greeted
+                    _update_conversation_state(call_session, "has_greeted", True)
+                    _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
+                    db.commit()
+                    
                 # Natural, conversational greeting with Google TTS
-                response = VoiceResponse()
+                    response = VoiceResponse()
                 
                 # Simple greeting
                 greeting_text = "Hello"
@@ -799,17 +799,17 @@ async def handle_call_events_webhook(
                 
                 # VAPI-style: Use <Record> with silence detection for user speech
                 # Twilio automatically detects when user stops speaking
-                recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
-                
-                response.record(
-                    action=recording_callback_url,
-                    method='POST',
+                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
+                    
+                    response.record(
+                        action=recording_callback_url,
+                        method='POST',
                     timeout=5,  # Wait 5 seconds of silence before considering speech complete
                     max_length=60,  # Max 60 seconds per recording
                     play_beep=False,  # No beep - natural conversation
                     trim='do-not-trim',  # Keep all audio
-                    recording_status_callback=recording_callback_url,
-                    recording_status_callback_method='POST',
+                        recording_status_callback=recording_callback_url,
+                        recording_status_callback_method='POST',
                     transcribe=False  # We'll use Google STT instead
                 )
                 
@@ -1334,7 +1334,7 @@ async def handle_recording_callback(
                     )
                     
                     # Create TwiML response
-                    response = VoiceResponse()
+                        response = VoiceResponse()
                     
                     # Use TTS streaming for immediate response
                     lang = agent.language if agent and agent.language else "en"
@@ -1475,12 +1475,12 @@ async def handle_recording_callback(
         traceback.print_exc()
         
         # Ultimate fallback
-        response = VoiceResponse()
+            response = VoiceResponse()
         text = "Sorry, something went wrong. Please try calling again later. Goodbye!"
         tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
         response.play(tts_url)
-        response.hangup()
-        return HTMLResponse(str(response), media_type="application/xml")
+            response.hangup()
+            return HTMLResponse(str(response), media_type="application/xml")
 
 
 @router.post("/webhook/gather-speech", response_class=HTMLResponse)

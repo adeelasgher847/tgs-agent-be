@@ -211,7 +211,7 @@ class OpenAIService:
         except Exception as e:
             raise Exception(f"Error in OpenAI agent conversation: {str(e)}")
     
-    def generate_streaming_text(self, prompt: str, system_prompt: str = None, model_name: str = None, temperature: float = 0.7, max_tokens: int = 1000, api_key: str = None):
+    async def generate_streaming_text(self, prompt: str, system_prompt: str = None, model_name: str = None, temperature: float = 0.7, max_tokens: int = 1000, api_key: str = None):
         """
         Generate streaming text response from OpenAI
         """
@@ -234,57 +234,48 @@ class OpenAIService:
             # 💬 Generate streaming response
             print(f"🎯 Starting OpenAI streaming response...")
             
-            # Create streaming generator
-            async def streaming_generator():
-                try:
-                    # Generate response with streaming
-                    response = client.chat.completions.create(
-                        model=model_name,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        stream=True  # Enable streaming
-                    )
+            # Generate response with streaming
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True  # Enable streaming
+            )
+            
+            # Stream the response
+            response_text = ""
+            chunk_count = 0
+            
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    response_text += content
+                    chunk_count += 1
                     
-                    # Stream the response
-                    response_text = ""
-                    chunk_count = 0
-                    
-                    for chunk in response:
-                        if chunk.choices[0].delta.content:
-                            content = chunk.choices[0].delta.content
-                            response_text += content
-                            chunk_count += 1
-                            
-                            yield {
-                                "content": content,
-                                "chunk_id": chunk_count,
-                                "is_final": False
-                            }
-                    
-                    # Send final chunk
                     yield {
-                        "content": "",
-                        "chunk_id": chunk_count + 1,
-                        "is_final": True,
-                        "response_time": time.time() - start_time
-                    }
-                    
-                except Exception as e:
-                    print(f"❌ Error in OpenAI streaming: {e}")
-                    yield {
-                        "content": "",
-                        "error": str(e),
-                        "is_final": True
+                        "content": content,
+                        "chunk_id": chunk_count,
+                        "is_final": False
                     }
             
-            return streaming_generator()
+            # Send final chunk
+            yield {
+                "content": "",
+                "chunk_id": chunk_count + 1,
+                "is_final": True,
+                "response_time": time.time() - start_time
+            }
             
         except Exception as e:
             print(f"❌ Error in OpenAI streaming service: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            yield {
+                "content": "",
+                "error": str(e),
+                "is_final": True
+            }
     
     def text_to_speech(self, text: str, voice: str = "alloy", 
                       model: str = "tts-1", output_format: str = "mp3",

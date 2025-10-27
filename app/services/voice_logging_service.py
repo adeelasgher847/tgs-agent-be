@@ -393,8 +393,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 
                 # Use streaming response for real-time TTS
                 streaming_response = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        ai_service.generate_streaming_text,
+                    ai_service.generate_streaming_text(
                         prompt=speech_text,
                         system_prompt=system_prompt,
                         model_name=model_name,

@@ -261,7 +261,7 @@ def process_agent_conversation(self, user_input: str,
     except Exception as e:
         raise Exception(f"Error in Gemini agent conversation: {str(e)}")
     
-    def generate_streaming_text(self, prompt: str, system_prompt: str = None, model_name: str = None, temperature: float = 0.7, max_tokens: int = 1000, api_key: str = None):
+    async def generate_streaming_text(self, prompt: str, system_prompt: str = None, model_name: str = None, temperature: float = 0.7, max_tokens: int = 1000, api_key: str = None):
         """
         Generate streaming text response from Gemini
         """
@@ -281,73 +281,64 @@ def process_agent_conversation(self, user_input: str,
             # 💬 Generate streaming response
             print(f"🎯 Starting Gemini streaming response...")
             
-            # Create streaming generator
-            async def streaming_generator():
-                try:
-                    # Generate response with streaming
-                    response = model.generate_content(
-                        full_prompt,
-                        generation_config={
-                            "temperature": temperature,
-                            "max_output_tokens": max_tokens,
-                        }
-                    )
-                    
-                    # Stream the response
-                    response_text = ""
-                    chunk_count = 0
-                    
-                    # Gemini doesn't have true streaming, so we simulate it
-                    # by breaking the response into chunks
-                    if response.text:
-                        words = response.text.split()
-                        current_chunk = ""
-                        
-                        for word in words:
-                            current_chunk += word + " "
-                            
-                            # Send chunk every 3-5 words
-                            if len(current_chunk.split()) >= 3:
-                                chunk_count += 1
-                                response_text += current_chunk
-                                
-                                yield {
-                                    "content": current_chunk.strip(),
-                                    "chunk_id": chunk_count,
-                                    "is_final": False
-                                }
-                                
-                                current_chunk = ""
-                                # Small delay to simulate streaming
-                                await asyncio.sleep(0.1)
-                        
-                        # Send remaining chunk
-                        if current_chunk.strip():
-                            chunk_count += 1
-                            response_text += current_chunk
-                            
-                            yield {
-                                "content": current_chunk.strip(),
-                                "chunk_id": chunk_count,
-                                "is_final": True,
-                                "response_time": time.time() - start_time
-                            }
-                    
-                except Exception as e:
-                    print(f"❌ Error in Gemini streaming: {e}")
-                    yield {
-                        "content": "",
-                        "error": str(e),
-                        "is_final": True
-                    }
+            # Generate response with streaming
+            response = model.generate_content(
+                full_prompt,
+                generation_config={
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                }
+            )
             
-            return streaming_generator()
+            # Stream the response
+            response_text = ""
+            chunk_count = 0
+            
+            # Gemini doesn't have true streaming, so we simulate it
+            # by breaking the response into chunks
+            if response.text:
+                words = response.text.split()
+                current_chunk = ""
+                
+                for word in words:
+                    current_chunk += word + " "
+                    
+                    # Send chunk every 3-5 words
+                    if len(current_chunk.split()) >= 3:
+                        chunk_count += 1
+                        response_text += current_chunk
+                        
+                        yield {
+                            "content": current_chunk.strip(),
+                            "chunk_id": chunk_count,
+                            "is_final": False
+                        }
+                        
+                        current_chunk = ""
+                        # Small delay to simulate streaming
+                        await asyncio.sleep(0.1)
+                
+                # Send remaining chunk
+                if current_chunk.strip():
+                    chunk_count += 1
+                    response_text += current_chunk
+                    
+                    yield {
+                        "content": current_chunk.strip(),
+                        "chunk_id": chunk_count,
+                        "is_final": True,
+                        "response_time": time.time() - start_time
+                    }
             
         except Exception as e:
             print(f"❌ Error in Gemini streaming service: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            yield {
+                "content": "",
+                "error": str(e),
+                "is_final": True
+            }
         
 # Create a singleton instance
 gemini_service = GeminiService()
