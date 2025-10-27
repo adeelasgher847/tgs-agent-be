@@ -387,11 +387,14 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             if conversation_context:
                 print(f"🧠 Conversation Context Preview: {conversation_context[:300]}...")
             
-            # Generate response with 5-second timeout for voice calls
+            # Generate response with streaming for real-time TTS
             try:
-                ai_response = await asyncio.wait_for(
+                print(f"🎯 Starting streaming LLM response...")
+                
+                # Use streaming response for real-time TTS
+                streaming_response = await asyncio.wait_for(
                     asyncio.to_thread(
-                        ai_service.generate_text,
+                        ai_service.generate_streaming_text,
                         prompt=speech_text,
                         system_prompt=system_prompt,
                         model_name=model_name,
@@ -401,12 +404,31 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                     ),
                     timeout=5.0  # 5 second timeout for faster response
                 )
+                
+                # Process streaming chunks for real-time TTS
+                response_text = ""
+                chunk_count = 0
+                
+                async for chunk in streaming_response:
+                    if chunk.get("content"):
+                        chunk_text = chunk["content"]
+                        response_text += chunk_text
+                        chunk_count += 1
+                        
+                        print(f"📝 Chunk {chunk_count}: '{chunk_text}'")
+                        
+                        # Trigger TTS for this chunk immediately
+                        if chunk_text.strip():
+                            await VoiceLoggingService._trigger_chunk_tts(
+                                chunk_text, agent, call_session_id
+                            )
+                
+                response_time = chunk.get("response_time", 0.0)
+                print(f"✅ Streaming complete: {chunk_count} chunks, {response_time:.2f}s")
+                
             except asyncio.TimeoutError:
                 print(f"⚠️ LLM timeout after 5s - using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
-            
-            response_text = ai_response["content"]
-            response_time = ai_response["response_time"]
             
             # Check if the response indicates conversation completion
             if VoiceLoggingService._check_conversation_completion(
@@ -422,6 +444,43 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             print(f"❌ Error generating AI response: {e}")
             # Fall back to simple response
             return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+    
+    @staticmethod
+    async def _trigger_chunk_tts(chunk_text: str, agent: Optional[Agent], call_session_id: Optional[uuid.UUID]):
+        """
+        Trigger TTS for a chunk of text immediately
+        """
+        try:
+            if not chunk_text.strip():
+                return
+            
+            print(f"🎵 Triggering TTS for chunk: '{chunk_text[:50]}...'")
+            
+            # Get language and voice settings
+            lang = agent.language if agent and agent.language else "en"
+            voice = agent.voice_type if agent and agent.voice_type else "female"
+            
+            # Trigger TTS playback via WebSocket
+            from app.routers.general_websocket import websocket_manager
+            
+            await websocket_manager.broadcast_to_all(
+                message={
+                    "type": "play_tts_chunk",
+                    "event": "play_tts_chunk",
+                    "text": chunk_text,
+                    "lang": lang,
+                    "voice": voice,
+                    "session_id": str(call_session_id) if call_session_id else None
+                },
+                event_type="play_tts_chunk"
+            )
+            
+            print(f"🎵 TTS chunk triggered successfully")
+            
+        except Exception as e:
+            print(f"❌ Error triggering chunk TTS: {e}")
+            import traceback
+            traceback.print_exc()
     
     @staticmethod
     def _check_conversation_completion(system_prompt: str, conversation_context: str, current_text: str) -> bool:
