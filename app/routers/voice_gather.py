@@ -261,17 +261,17 @@ async def gather_greeting_webhook(
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
         
         # Gather speech input with optimized settings for low latency
-        gather = response.gather(
-            input='speech',
+        # Use Record instead of Gather for proper recording support
+        response.record(
             action=callback_url,
             method='POST',
-            speechTimeout=1.0,  # Balanced silence detection for natural speech
-            timeout=5,  # Quick timeout for responsive UX
-            language=gather_language,
-            enhanced=True,  # Use enhanced model for better accuracy
-            profanity_filter=False,  # Don't filter for natural conversation
-            speech_model='phone_call',  # Optimized for phone calls
-            record=True  # Enable recording for Google STT
+            timeout=1,  # Twilio VAD: 1 second of silence detection
+            max_length=120,  # Max 2 minutes
+            play_beep=False,  # No beep for natural conversation
+            trim='do-not-trim',
+            recording_status_callback=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status",
+            recording_status_callback_method='POST',
+            transcribe=False  # We use Google STT
         )
         
         # Timeout fallback (if user doesn't speak)
@@ -281,18 +281,17 @@ async def gather_greeting_webhook(
         tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}&gemini_flash=true"
         response.play(tts_url)
         
-        # Give one more chance to speak
-        gather_retry = response.gather(
-            input='speech',
+        # Give one more chance to speak with Record
+        response.record(
             action=callback_url,
             method='POST',
-            speechTimeout=1.0,  # Balanced detection on retry
-            timeout=5,  # Shorter timeout for retry
-            language=gather_language,
-            enhanced=True,
-            profanity_filter=False,
-            speech_model='phone_call',
-            record=True  # Enable recording for Google STT
+            timeout=1,  # Balanced detection on retry
+            max_length=120,  # Max 2 minutes
+            play_beep=False,  # No beep for natural conversation
+            trim='do-not-trim',
+            recording_status_callback=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status",
+            recording_status_callback_method='POST',
+            transcribe=False  # We use Google STT
         )
         
         text = "I still can't hear you. Please call back. Goodbye!"
@@ -498,17 +497,17 @@ async def gather_speech_callback_webhook(
             # Gather again
             callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
             
-            gather = response.gather(
-                input='speech',
+            # Use Record instead of Gather for proper recording support
+            response.record(
                 action=callback_url,
                 method='POST',
-                speechTimeout=1.0,  # Balanced silence detection
-                timeout=5,  # Quick timeout
-                language=gather_language,
-                enhanced=True,
-                profanity_filter=False,
-                speech_model='phone_call',
-                record=True  # Enable recording for Google STT
+                timeout=1,  # Balanced silence detection
+                max_length=120,  # Max 2 minutes
+                play_beep=False,  # No beep for natural conversation
+                trim='do-not-trim',
+                recording_status_callback=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status",
+                recording_status_callback_method='POST',
+                transcribe=False  # We use Google STT
             )
             
             text = "I'm still not hearing you. Please call back if you need help. Goodbye!"
@@ -665,20 +664,19 @@ async def gather_speech_callback_webhook(
             response.hangup()
             return HTMLResponse(str(response), media_type="application/xml")
         
-        # Continue conversation - gather next input with optimized timeout
+        # Continue conversation - use Record for next input
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
         
-        gather = response.gather(
-            input='speech',
+        response.record(
             action=callback_url,
             method='POST',
-            speechTimeout=1.0,  # Balanced silence detection for accuracy
-            timeout=5,  # Quick timeout for responsive UX
-            language=gather_language,
-            enhanced=True,
-            profanity_filter=False,
-            speech_model='phone_call',
-            record=True  # Enable recording for Google STT
+            timeout=1,  # Balanced silence detection for accuracy
+            max_length=120,  # Max 2 minutes
+            play_beep=False,  # No beep for natural conversation
+            trim='do-not-trim',
+            recording_status_callback=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status",
+            recording_status_callback_method='POST',
+            transcribe=False  # We use Google STT
         )
         
         # Timeout fallback
@@ -711,17 +709,17 @@ async def gather_speech_callback_webhook(
         try:
             callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
             
-            gather = response.gather(
-                input='speech',
+            # Use Record instead of Gather for proper recording support
+            response.record(
                 action=callback_url,
                 method='POST',
-                speechTimeout=1.0,  # Balanced detection for error recovery
-                timeout=5,  # Quick timeout
-                language='en-US',
-                enhanced=True,
-                profanity_filter=False,
-                speech_model='phone_call',
-                record=True  # Enable recording for Google STT
+                timeout=1,  # Balanced detection for error recovery
+                max_length=120,  # Max 2 minutes
+                play_beep=False,  # No beep for natural conversation
+                trim='do-not-trim',
+                recording_status_callback=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status",
+                recording_status_callback_method='POST',
+                transcribe=False  # We use Google STT
             )
             
             text = "If you're still having trouble, please call back. Goodbye!"

@@ -1634,17 +1634,17 @@ async def handle_gather_speech_webhook(
                         print(f"🛑 Goodbye detected - ending call")
                         return HTMLResponse(str(response), media_type="application/xml")
                     
-                    # Continue conversation - gather next input
-                    gather = response.gather(
-                        input='speech',
-                        timeout=10,
-                        speech_timeout='auto',
+                    # Continue conversation - use Record for next input
+                    response.record(
                         action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
                         method='POST',
-                        enhanced=True,
-                        profanity_filter=False,
-                        language=get_gather_language(agent),
-                        record=True  # Enable recording for Google STT
+                        timeout=1,  # Twilio VAD: 1 second of silence detection
+                        max_length=120,  # Max 2 minutes
+                        play_beep=False,  # No beep for natural conversation
+                        trim='do-not-trim',
+                        recording_status_callback=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status",
+                        recording_status_callback_method='POST',
+                        transcribe=False  # We use Google STT
                     )
                     
                     # Fallback
@@ -1674,16 +1674,17 @@ async def handle_gather_speech_webhook(
         tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
         response.play(tts_url)
         
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speech_timeout='auto',
+        # Use Record instead of Gather for proper recording support
+        response.record(
             action=f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/gather-speech?agentId={agentId}&callSessionId={call_session.id}',
             method='POST',
-            enhanced=True,
-            profanity_filter=False,
-            language=get_gather_language(agent),
-            record=True  # Enable recording for Google STT
+            timeout=1,  # Twilio VAD: 1 second of silence detection
+            max_length=120,  # Max 2 minutes
+            play_beep=False,  # No beep for natural conversation
+            trim='do-not-trim',
+            recording_status_callback=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status",
+            recording_status_callback_method='POST',
+            transcribe=False  # We use Google STT
         )
         
         return HTMLResponse(str(response), media_type="application/xml")
