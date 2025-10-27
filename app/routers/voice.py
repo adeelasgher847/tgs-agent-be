@@ -729,8 +729,8 @@ async def handle_call_events_webhook(
                         print(f"⚡ Using bidirectional streaming for ultra-low latency")
                     response.redirect(
                         f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                            method='POST'
-                        )
+                        method='POST'
+                    )
                     else:
                         # OLD: Standard Gather approach (still works)
                         print(f"📞 Using standard Gather approach")
