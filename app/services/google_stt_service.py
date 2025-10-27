@@ -202,9 +202,7 @@ class GoogleSTTService:
 
         def _run_blocking_stream(self):
             def request_iter():
-                # First message is config
-                yield speech.StreamingRecognizeRequest(streaming_config=self._streaming_config)
-                # Then audio chunks
+                # Audio chunks only; config passed via API 'config' arg (helper signature)
                 while True:
                     chunk = self._audio_q.get()
                     if chunk is None:
@@ -214,7 +212,11 @@ class GoogleSTTService:
                     yield speech.StreamingRecognizeRequest(audio_content=chunk)
 
             try:
-                responses = self._client.streaming_recognize(requests=request_iter())
+                # Some builds route through SpeechHelpers which requires 'config' arg
+                responses = self._client.streaming_recognize(
+                    config=self._streaming_config,
+                    requests=request_iter(),
+                )
                 for response in responses:
                     # Each response may contain multiple results; only the most recent is of interest
                     if not response.results:
