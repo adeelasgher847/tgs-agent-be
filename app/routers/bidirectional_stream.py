@@ -65,6 +65,7 @@ async def stream_mulaw_bytes_over_twilio(
     audio_bytes: bytes,
     pace_20ms: bool = True,
     cancel: Optional[asyncio.Event] = None,
+    prime_frames: int = 0,
 ):
     """
     Send mu-law audio to Twilio as 20ms 'media' frames.
@@ -74,6 +75,19 @@ async def stream_mulaw_bytes_over_twilio(
     first = True
     send_interval = 0.02  # 20ms
     next_send = time.perf_counter()
+    # Optional: prime Twilio jitter buffer with mu-law silence frames
+    if prime_frames and prime_frames > 0:
+        silent_frame = bytes([0xFF]) * MULAW_FRAME_BYTES
+        for _ in range(prime_frames):
+            if cancel and cancel.is_set():
+                break
+            payload = base64.b64encode(silent_frame).decode("utf-8")
+            await websocket.send_json({
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {"payload": payload}
+            })
+            # do not pace priming frames to quickly fill buffer
     for frame in iter_mulaw_20ms_frames(audio_bytes):
         if cancel and cancel.is_set():
             break
@@ -120,7 +134,7 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
         text=text.strip(),
         language=lang,
         voice_type=voice,
-        speaking_rate=1.0,   # clear at 8kHz MULAW
+        speaking_rate=0.95,   # slightly slower for more stable 8kHz MULAW
         pitch=0.0,
         output_format="mulaw",
         use_gemini_flash=use_gemini_flash
@@ -525,6 +539,7 @@ class BidirectionalStreamHandler:
                         audio_bytes=prefix_audio,
                         pace_20ms=True,
                         cancel=self._tts_cancel,
+                        prime_frames=1,
                     )
 
                     # Stream remainder when ready and not cancelled
@@ -542,6 +557,7 @@ class BidirectionalStreamHandler:
                                 audio_bytes=suffix_audio,
                                 pace_20ms=True,
                                 cancel=self._tts_cancel,
+                                prime_frames=1,
                             )
                             print(f"⚡ Streamed remainder ({len(suffix_audio)} bytes)")
                             sys.stdout.flush()
