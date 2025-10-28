@@ -436,6 +436,8 @@ async def handle_call_events_webhook(
         form_data = await request.form()
         call_sid = form_data.get("CallSid", "")
         call_status = form_data.get("CallStatus", "")
+        callback_event = form_data.get("CallStatusCallbackEvent", "")  # initiated | ringing | answered | completed
+        answered_by = form_data.get("AnsweredBy", "")  # human | machine-start | etc.
         from_number = form_data.get("From", "")
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
@@ -514,122 +516,119 @@ async def handle_call_events_webhook(
         # Update call session status if we have a call session and status
         if call_session and call_status:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
-            
-            # Map Twilio statuses to our internal statuses for better UX
-            status_mapping = {
-                "initiating": "initiating",
-                "initiated": "initiated",
-                "ringing": "ringing", 
-                "in-progress": "connected",  # Map to "connected" for better UX
-                "completed": "completed",
-                "failed": "failed",
-                "busy": "busy",
-                "no-answer": "no-answer"
-            }
-            
-            mapped_status = status_mapping.get(call_status, call_status)
-            call_session.status = mapped_status
-            
-            # Set start time when call becomes connected (receiver picks up)
-            if mapped_status == "connected" and not call_session.start_time:
-                call_session.start_time = datetime.now(timezone.utc)
-                print(f"⏰ Set start time for session {call_session.id}")
-            
-            # Set end time and calculate duration when call completes
-            if mapped_status == "completed":
-                call_session.end_time = datetime.now(timezone.utc)
-                if call_session.start_time:
-                    duration = (call_session.end_time - call_session.start_time).total_seconds()
-                    call_session.duration = int(duration)
-                    print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
-                
-                # Broadcast call ended event (non-blocking - fire and forget)
-                try:
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="completed",
-                        final_data={
-                            "call_sid": call_sid,
-                            "from_number": from_number,
-                            "to_number": to_number,
-                            "direction": direction,
-                            "duration": call_session.duration,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Queued call ended event for session {call_session.id}")
-                except Exception as e:
-                    print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
-                
-                # Stop credit monitoring when call completes
-                try:
-                    credit_service.stop_credit_monitoring(call_session.id)
-                    print(f"✅ Stopped credit monitoring for call session {call_session.id}")
-                except Exception as e:
-                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-            
-            # Commit the status update
-            db.commit()
-            print(f"✅ Updated call session {call_session.id} status to: {mapped_status}")
-            
-            # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
-            try:
-                print(f"🚀 Broadcasting call status update: {mapped_status} for session {call_session.id}")
-                
-                # Prepare comprehensive metadata
-                metadata = {
-                    "from_number": from_number,
-                    "to_number": to_number,
-                    "direction": direction,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                    "duration": call_session.duration
+
+            # For statuses we explicitly handle below (initiated, ringing, in-progress),
+            # skip the generic broadcast/update path to avoid out-of-order/duplicate emits.
+            if call_status not in ["initiated", "ringing", "in-progress"]:
+                # Map Twilio statuses to our internal statuses for better UX
+                status_mapping = {
+                    "initiating": "initiating",
+                    "initiated": "initiated",
+                    "ringing": "ringing",
+                    "in-progress": "connected",  # Map to "connected" for better UX
+                    "completed": "completed",
+                    "failed": "failed",
+                    "busy": "busy",
+                    "no-answer": "no-answer"
                 }
-                
-                # Add status-specific messages
-                if mapped_status == "initiating":
-                    metadata["message"] = "Call is being initiated"
-                elif mapped_status == "initiated":
-                    metadata["message"] = "Call has been initiated"
-                elif mapped_status == "ringing":
-                    metadata["message"] = "Call is ringing"
-                elif mapped_status == "connected":
-                    metadata["message"] = "Call is now connected"
-                elif mapped_status == "completed":
-                    metadata["message"] = "Call has been completed"
-                elif mapped_status == "failed":
-                    metadata["message"] = "Call failed"
-                elif mapped_status == "busy":
-                    metadata["message"] = "Call busy"
-                elif mapped_status == "no-answer":
-                    metadata["message"] = "No answer"
-                
-                await broadcast_call_status_update(
-                    call_session_id=str(call_session.id),
-                    status=mapped_status,
-                    metadata=metadata
-                )
-                print(f"✅ Call status update sent: {mapped_status} for session {call_session.id}")
-                
-                # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
+
+                mapped_status = status_mapping.get(call_status, call_status)
+                call_session.status = mapped_status
+
+                # Set start time when call becomes connected (receiver picks up)
+                if mapped_status == "connected" and not call_session.start_time:
+                    call_session.start_time = datetime.now(timezone.utc)
+                    print(f"⏰ Set start time for session {call_session.id}")
+
+                # Set end time and calculate duration when call completes
                 if mapped_status == "completed":
-                    asyncio.create_task(broadcast_call_ended(
+                    call_session.end_time = datetime.now(timezone.utc)
+                    if call_session.start_time:
+                        duration = (call_session.end_time - call_session.start_time).total_seconds()
+                        call_session.duration = int(duration)
+                        print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+
+                    # Broadcast call ended event (non-blocking - fire and forget)
+                    try:
+                        asyncio.create_task(broadcast_call_ended(
+                            call_session_id=str(call_session.id),
+                            reason="completed",
+                            final_data={
+                                "call_sid": call_sid,
+                                "from_number": from_number,
+                                "to_number": to_number,
+                                "direction": direction,
+                                "duration": call_session.duration,
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }
+                        ))
+                        print(f"✅ Queued call ended event for session {call_session.id}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
+
+                    # Stop credit monitoring when call completes
+                    try:
+                        credit_service.stop_credit_monitoring(call_session.id)
+                        print(f"✅ Stopped credit monitoring for call session {call_session.id}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+
+                # Commit the status update
+                db.commit()
+                print(f"✅ Updated call session {call_session.id} status to: {mapped_status}")
+
+                # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
+                try:
+                    print(f"🚀 Broadcasting call status update: {mapped_status} for session {call_session.id}")
+
+                    # Prepare comprehensive metadata
+                    metadata = {
+                        "from_number": from_number,
+                        "to_number": to_number,
+                        "direction": direction,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                        "duration": call_session.duration
+                    }
+
+                    # Add status-specific messages
+                    if mapped_status == "initiating":
+                        metadata["message"] = "Call is being initiated"
+                    elif mapped_status == "completed":
+                        metadata["message"] = "Call has been completed"
+                    elif mapped_status == "failed":
+                        metadata["message"] = "Call failed"
+                    elif mapped_status == "busy":
+                        metadata["message"] = "Call busy"
+                    elif mapped_status == "no-answer":
+                        metadata["message"] = "No answer"
+
+                    await broadcast_call_status_update(
                         call_session_id=str(call_session.id),
-                        reason="Call completed",
-                        final_data={
-                            "call_sid": call_sid,
-                            "duration": call_session.duration,
-                            "end_time": call_session.end_time.isoformat(),
-                            "transcript": call_session.call_transcript or []
-                        }
-                    ))
-                    print(f"✅ Queued call ended event for session {call_session.id}")
-                    
-            except Exception as e:
-                print(f"❌ Failed to broadcast call status update: {e}")
-                import traceback
-                traceback.print_exc()
+                        status=mapped_status,
+                        metadata=metadata
+                    )
+                    print(f"✅ Call status update sent: {mapped_status} for session {call_session.id}")
+
+                    # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
+                    if mapped_status == "completed":
+                        asyncio.create_task(broadcast_call_ended(
+                            call_session_id=str(call_session.id),
+                            reason="Call completed",
+                            final_data={
+                                "call_sid": call_sid,
+                                "duration": call_session.duration,
+                                "end_time": call_session.end_time.isoformat(),
+                                "transcript": call_session.call_transcript or []
+                            }
+                        ))
+                        print(f"✅ Queued call ended event for session {call_session.id}")
+
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call status update: {e}")
+                    import traceback
+                    traceback.print_exc()
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
@@ -675,10 +674,14 @@ async def handle_call_events_webhook(
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
         
-        elif call_status == "in-progress":
-            # Call is in progress - person answered, check if we already greeted
+        elif call_status == "in-progress" or callback_event == "answered":
+            # Only treat as connected if Twilio says 'answered'
+            if callback_event != "answered":
+                print(f"ℹ️ Ignoring in-progress without 'answered' event (possible early carrier status). SID: {call_sid}")
+                return HTMLResponse("", media_type="application/xml")
+
             print("=" * 50)
-            print(f"📞 CALL IN PROGRESS - SID: {call_sid}")
+            print(f"📞 CALL ANSWERED - SID: {call_sid} (AnsweredBy={answered_by})")
             print("=" * 50)
             
             # Broadcast call connected event (non-blocking - fire and forget)
@@ -690,6 +693,7 @@ async def handle_call_events_webhook(
                         metadata={
                             "call_sid": call_sid,
                             "direction": direction,
+                            "answered_by": answered_by,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
