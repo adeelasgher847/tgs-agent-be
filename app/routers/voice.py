@@ -522,10 +522,15 @@ async def handle_call_events_webhook(
         
         # Check if this is a transition to "connected" BEFORE updating database
         should_broadcast_connected = False
-        if call_session and call_status == "in-progress":
+        if call_session and callback_event == "answered":
+            # Twilio explicitly says receiver answered - broadcast "connected"
+            should_broadcast_connected = True
+            print(f"✅ Twilio answered event - broadcasting 'connected' status")
+        elif call_session and call_status == "in-progress":
+            # Fallback: check if previous status was ringing
             previous_status = call_session.status
             should_broadcast_connected = previous_status in ["ringing", "initiated"]
-            print(f"📊 Transition check - Previous: {previous_status}, Current: {call_status}, Should broadcast: {should_broadcast_connected}")
+            print(f"📊 Fallback check - Previous: {previous_status}, Current: {call_status}, Should broadcast: {should_broadcast_connected}")
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
