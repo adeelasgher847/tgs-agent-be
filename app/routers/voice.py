@@ -520,6 +520,13 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
+        # Check if this is a transition to "connected" BEFORE updating database
+        should_broadcast_connected = False
+        if call_session and call_status == "in-progress":
+            previous_status = call_session.status
+            should_broadcast_connected = previous_status in ["ringing", "initiated"]
+            print(f"📊 Transition check - Previous: {previous_status}, Current: {call_status}, Should broadcast: {should_broadcast_connected}")
+        
         # Update call session status if we have a call session and status
         if call_session and call_status:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
@@ -689,21 +696,8 @@ async def handle_call_events_webhook(
             print(f"📊 CallStatusCallbackEvent: {callback_event}")
             print("=" * 50)
             
-            # Check if this is the FIRST time we're getting "in-progress" status
-            # Only broadcast "connected" if previous status was "ringing" or "initiated"
-            previous_status = call_session.status if call_session else None
-            
-            # Only broadcast "connected" if we're transitioning from ringing to in-progress
-            is_transition_to_connected = (
-                previous_status in ["ringing", "initiated"] and 
-                call_status == "in-progress"
-            )
-            
-            should_broadcast_connected = is_transition_to_connected
-            
-            print(f"📊 Previous status: {previous_status}")
-            print(f"📊 Current status: {call_status}")
-            print(f"📊 Should broadcast connected: {should_broadcast_connected}")
+            # Use the should_broadcast_connected flag set earlier (before database update)
+            print(f"📊 Using pre-calculated should_broadcast_connected: {should_broadcast_connected}")
             
             if should_broadcast_connected:
                 print(f"✅ Call in progress - broadcasting 'connected' status")
