@@ -10,6 +10,7 @@ import json
 import base64
 import asyncio
 from typing import Optional, Dict, Iterable
+import time
 from datetime import datetime, timezone
 import uuid
 import sys
@@ -71,6 +72,8 @@ async def stream_mulaw_bytes_over_twilio(
     - Optionally pace subsequent frames by ~20ms to match realtime.
     """
     first = True
+    send_interval = 0.02  # 20ms
+    next_send = time.perf_counter()
     for frame in iter_mulaw_20ms_frames(audio_bytes):
         if cancel and cancel.is_set():
             break
@@ -80,12 +83,21 @@ async def stream_mulaw_bytes_over_twilio(
             "streamSid": stream_sid,
             "media": {"payload": payload}
         })
+        if not pace_20ms:
+            continue
         if first:
             first = False
-            # Early playback: no initial sleep
-        elif pace_20ms:
-            # Slightly slower pacing (~22ms) for smoother playback and buffer headroom
-            await asyncio.sleep(0.022)
+            next_send = time.perf_counter() + send_interval
+            continue
+        # Precise pacing with drift correction
+        next_send += send_interval
+        now = time.perf_counter()
+        sleep_dur = next_send - now
+        if sleep_dur > 0:
+            await asyncio.sleep(sleep_dur)
+        elif sleep_dur < -0.03:
+            # We're late by >30ms; reset schedule to avoid cumulative jitter
+            next_send = time.perf_counter()
 
 
 async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_gemini_flash: bool = True) -> bytes:
@@ -491,7 +503,7 @@ class BidirectionalStreamHandler:
 
                     # Split into a short prefix for instant speech and a suffix to follow
                     words = clean.split()
-                    prefix_words = 6
+            prefix_words = 8
                     prefix = " ".join(words[:prefix_words])
                     suffix = " ".join(words[prefix_words:]) if len(words) > prefix_words else ""
 
