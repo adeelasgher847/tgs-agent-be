@@ -339,22 +339,9 @@ async def initiate_call(
         print(f"Making call with webhook_url: {webhook_url}")
         print(f"Making call with status_callback_url: {status_callback_url}")
         
-        # Optional WebSocket broadcast
-        try:
-            await broadcast_call_status_update(
-                call_session_id=str(call_session.id),
-                status="initiating",
-                metadata={
-                    "agent_id": str(agent.id),
-                    "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
-                    "from_number": twilio_service.get_phone_number(),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-            print(f"✅ WebSocket: Call initiating event sent")
-        except Exception as e:
-            print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+        # Don't broadcast "initiating" status - wait for proper webhook status
+        # This ensures consistent status flow
+        print(f"✅ Call initiated - waiting for proper webhook status updates")
         
         # Make the call using Twilio
         call = twilio_service.make_call(
@@ -643,12 +630,24 @@ async def handle_call_events_webhook(
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "initiated" and direction == "outbound-api":
-            # Call has been initiated - just log, don't broadcast yet
+            # Call has been initiated - broadcast "initiated" status consistently
             print(f"Call initiated - SID: {call_sid}")
-            print(f"⏳ Waiting for ringing status before showing to user")
             
-            # Don't broadcast "initiated" status - wait for "ringing" status
-            # This prevents showing "connected" status immediately
+            # Broadcast call initiated event consistently
+            if call_session:
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="initiated",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    print(f"✅ Broadcasted call initiated event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call initiated event: {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
