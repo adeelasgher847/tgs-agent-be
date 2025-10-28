@@ -522,22 +522,47 @@ async def handle_call_events_webhook(
         
         # Update call session status in database (but broadcasts are handled individually below)
         if call_session and call_status:
-            print(f"🔄 Updating call session {call_session.id} database status to: {call_status}")
+            print(f"🔄 Checking if database update needed for status: {call_status}")
 
-            # Map status for database
-            status_mapping = {
-                "initiated": "initiated",
-                "ringing": "ringing",
-                "in-progress": "connected",
-                "completed": "completed",
-                "failed": "failed",
-                "busy": "busy",
-                "no-answer": "no-answer"
-            }
-            mapped_status = status_mapping.get(call_status, call_status)
-            call_session.status = mapped_status
-            db.commit()
-            print(f"✅ Database updated with status: {mapped_status}")
+            # For "in-progress", only update database if callback_event == "answered"
+            should_update_db = True
+            if call_status == "in-progress" and callback_event != "answered":
+                print(f"⏸️ Skipping database update for in-progress without 'answered' event")
+                should_update_db = False
+
+            if should_update_db:
+                print(f"🔄 Updating call session {call_session.id} database status to: {call_status}")
+                
+                # Map status for database
+                status_mapping = {
+                    "initiated": "initiated",
+                    "ringing": "ringing",
+                    "in-progress": "connected",
+                    "completed": "completed",
+                    "failed": "failed",
+                    "busy": "busy",
+                    "no-answer": "no-answer"
+                }
+                mapped_status = status_mapping.get(call_status, call_status)
+                
+                # Special handling for "in-progress" -> only set "connected" if answered
+                if call_status == "in-progress":
+                    if callback_event == "answered":
+                        call_session.status = "connected"
+                        # Set start time when call is actually answered
+                        if not call_session.start_time:
+                            call_session.start_time = datetime.now(timezone.utc)
+                            print(f"⏰ Set start time for session {call_session.id}")
+                    else:
+                        # Don't update status for early in-progress
+                        print(f"⏸️ Not updating status to connected (waiting for 'answered' event)")
+                        should_update_db = False
+                else:
+                    call_session.status = mapped_status
+                
+                if should_update_db:
+                    db.commit()
+                    print(f"✅ Database updated with status: {call_session.status}")
 
             # For completed/failed/busy/no-answer, also broadcast generically
             if call_status not in ["initiated", "ringing", "in-progress"]:
