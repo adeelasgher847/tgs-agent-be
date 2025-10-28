@@ -452,6 +452,10 @@ async def handle_call_events_webhook(
         from_number = form_data.get("From", "")
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
+
+        # Normalize for comparisons
+        call_status = (call_status or "").lower()
+        direction = (direction or "").lower()
         
         # Note: Speech input is now handled by Google Cloud STT via WebSocket
         # The old Twilio SpeechResult is no longer used
@@ -510,7 +514,8 @@ async def handle_call_events_webhook(
         has_media = bool(call_session and getattr(call_session, "call_metadata", None) and call_session.call_metadata.get("has_media"))
         if call_status == "in-progress" and direction == "outbound-api" and not (answered_by == "human" or has_media):
             print(f"🛑 Ignoring in-progress (AnsweredBy='{answered_by}', has_media={has_media}) for SID: {call_sid}")
-            return HTMLResponse("", media_type="application/xml")
+            # Return minimal TwiML to avoid Twilio error prompt
+            return HTMLResponse("<Response></Response>", media_type="application/xml")
 
         # Log the call event
         print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
