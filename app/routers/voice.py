@@ -357,9 +357,23 @@ async def initiate_call(
         db.commit()
         print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
         
-        # Don't broadcast "initiated" status immediately - let webhook handle it
-        # This prevents showing "connected" status before receiver picks up
-        print(f"✅ Call initiated - waiting for webhook status updates")
+        # Broadcast "initiated" status immediately when call starts
+        try:
+            await broadcast_call_status_update(
+                call_session_id=str(call_session.id),
+                status="initiated",
+                metadata={
+                    "call_sid": call.sid,
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "to_number": request.userPhoneNumber,
+                    "from_number": twilio_service.get_phone_number(),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            print(f"✅ Broadcasted call initiated status for session {call_session.id}")
+        except Exception as e:
+            print(f"⚠️ Failed to broadcast call initiated status: {e}")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -630,24 +644,9 @@ async def handle_call_events_webhook(
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "initiated" and direction == "outbound-api":
-            # Call has been initiated - broadcast "initiated" status consistently
-            print(f"Call initiated - SID: {call_sid}")
-            
-            # Broadcast call initiated event consistently
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="initiated",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Broadcasted call initiated event for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call initiated event: {e}")
+            # Call has been initiated - already broadcasted during call initiation
+            print(f"Call initiated webhook received - SID: {call_sid}")
+            print(f"ℹ️ Status already broadcasted during call initiation")
             
             return HTMLResponse("", media_type="application/xml")
         
