@@ -76,7 +76,8 @@ async def stream_mulaw_bytes_over_twilio(websocket, stream_sid: str, audio_bytes
             first = False
             # Early playback: no initial sleep
         elif pace_20ms:
-            await asyncio.sleep(CHUNK_DURATION_SEC)
+            # Slightly slower pacing (~22ms) for smoother playback and buffer headroom
+            await asyncio.sleep(0.022)
 
 
 async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_gemini_flash: bool = True) -> bytes:
@@ -383,11 +384,14 @@ class BidirectionalStreamHandler:
             print(f"🤖 Generating streaming response for: '{user_text}'")
             sys.stdout.flush()
             
-            # Stream LLM output as it is generated - Word-by-Word Streaming
+            # Stream LLM output as it is generated - Phrase-batched for stability
             from app.services.gemini_service import gemini_service
             # Build system prompt similarly to VoiceLoggingService for consistency
             async def try_stream(model_name: str) -> str:
                 response_accum = ""
+                phrase_buf = ""
+                last_flush = asyncio.get_event_loop().time()
+
                 async for chunk in gemini_service.stream_text(
                     prompt=user_text,
                     system_prompt=None,
@@ -397,14 +401,25 @@ class BidirectionalStreamHandler:
                 ):
                     if not chunk:
                         continue
-                    
-                    # 🚀 Word-by-Word Streaming: Send each chunk immediately to TTS
-                    # This eliminates jerk and provides smooth audio flow
-                    await self.stream_tts_response(chunk)
-                    
-                    # Still accumulate for transcript and final response
+
                     response_accum += chunk
-                
+                    phrase_buf += chunk
+
+                    # flush on punctuation, size, or small timeout to avoid tiny TTS units
+                    now = asyncio.get_event_loop().time()
+                    has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
+                    if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
+                        to_speak = phrase_buf.strip()
+                        if to_speak:
+                            await self.stream_tts_response(to_speak)
+                        phrase_buf = ""
+                        last_flush = now
+
+                # flush any tail
+                tail = phrase_buf.strip()
+                if tail:
+                    await self.stream_tts_response(tail)
+
                 return response_accum.strip()
 
             final_text = None
@@ -457,12 +472,12 @@ class BidirectionalStreamHandler:
 
             # Begin generating suffix in parallel (if any)
             suffix_task = asyncio.create_task(
-                generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_gemini_flash=True)
+                generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_gemini_flash=False)
             ) if suffix else None
 
             # Generate and stream prefix immediately
             tts_start = datetime.now(timezone.utc)
-            prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_gemini_flash=True)
+            prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_gemini_flash=False)
             tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
             print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
             sys.stdout.flush()
