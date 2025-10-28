@@ -58,7 +58,13 @@ def iter_mulaw_20ms_frames(audio_bytes: bytes) -> Iterable[bytes]:
         yield bytes(last)
 
 
-async def stream_mulaw_bytes_over_twilio(websocket, stream_sid: str, audio_bytes: bytes, pace_20ms: bool = True):
+async def stream_mulaw_bytes_over_twilio(
+    websocket,
+    stream_sid: str,
+    audio_bytes: bytes,
+    pace_20ms: bool = True,
+    cancel: Optional[asyncio.Event] = None,
+):
     """
     Send mu-law audio to Twilio as 20ms 'media' frames.
     - Sends first frame immediately (early playback).
@@ -66,6 +72,8 @@ async def stream_mulaw_bytes_over_twilio(websocket, stream_sid: str, audio_bytes
     """
     first = True
     for frame in iter_mulaw_20ms_frames(audio_bytes):
+        if cancel and cancel.is_set():
+            break
         payload = base64.b64encode(frame).decode("utf-8")
         await websocket.send_json({
             "event": "media",
@@ -215,6 +223,8 @@ class BidirectionalStreamHandler:
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
         self.is_speaking = False
+        self._tts_cancel = asyncio.Event()   # barge-in cancel signal
+        self._tts_lock = asyncio.Lock()      # serialize TTS streams
         
         # Session data
         self.call_session = None
@@ -347,11 +357,18 @@ class BidirectionalStreamHandler:
                 return
             # Basic gating: confidence and minimum words
             word_count = len(transcript.split())
-            if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
+        if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
                 # Still log interim for observability
                 print(f"⌛ Interim (gated) [{confidence:.2f}]: '{transcript[:60]}...'")
                 sys.stdout.flush()
                 return
+        # Barge-in: if we are speaking and user starts talking with decent confidence, cancel TTS immediately
+        if self.is_speaking and confidence >= max(0.6, self._min_interim_confidence):
+            if not self._tts_cancel.is_set():
+                print("🛑 Barge-in: cancelling current TTS due to user speech")
+                sys.stdout.flush()
+                self._tts_cancel.set()
+            return
             # Throttle by time to avoid over-triggering
             now = asyncio.get_event_loop().time()
             if (now - self._last_interim_sent_ts) < self._min_interim_interval_sec:
@@ -387,7 +404,7 @@ class BidirectionalStreamHandler:
             # Stream LLM output as it is generated - Phrase-batched for stability
             from app.services.gemini_service import gemini_service
             # Build system prompt similarly to VoiceLoggingService for consistency
-            async def try_stream(model_name: str) -> str:
+    async def try_stream(model_name: str) -> str:
                 response_accum = ""
                 phrase_buf = ""
                 last_flush = asyncio.get_event_loop().time()
@@ -399,8 +416,13 @@ class BidirectionalStreamHandler:
                     temperature=0.5,
                     max_tokens=80,
                 ):
-                    if not chunk:
+            if not chunk:
                         continue
+            # If barge-in requested, stop generating more audio for this response
+            if self._tts_cancel.is_set():
+                print("🛑 Barge-in: aborting current LLM stream")
+                sys.stdout.flush()
+                break
 
                     response_accum += chunk
                     phrase_buf += chunk
@@ -408,16 +430,16 @@ class BidirectionalStreamHandler:
                     # flush on punctuation, size, or small timeout to avoid tiny TTS units
                     now = asyncio.get_event_loop().time()
                     has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
-                    if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
+            if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
                         to_speak = phrase_buf.strip()
-                        if to_speak:
+                if to_speak and not self._tts_cancel.is_set():
                             await self.stream_tts_response(to_speak)
                         phrase_buf = ""
                         last_flush = now
 
                 # flush any tail
-                tail = phrase_buf.strip()
-                if tail:
+        tail = phrase_buf.strip()
+        if tail and not self._tts_cancel.is_set():
                     await self.stream_tts_response(tail)
 
                 return response_accum.strip()
@@ -451,61 +473,68 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def stream_tts_response(self, text: str):
-        """Fast-first TTS: stream first ~6 words immediately; generate remainder in parallel."""
+        """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy."""
         try:
             from datetime import datetime, timezone
             
             if not text or not text.strip():
                 return
-            
-            lang = self.agent.language if self.agent and self.agent.language else "en"
-            voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
-            clean = text.strip()
-            print(f"🎵 Streaming TTS chunk: '{clean[:30]}...'")
-            sys.stdout.flush()
-
-            # Split into a short prefix for instant speech and a suffix to follow
-            words = clean.split()
-            prefix_words = 6
-            prefix = " ".join(words[:prefix_words])
-            suffix = " ".join(words[prefix_words:]) if len(words) > prefix_words else ""
-
-            # Begin generating suffix in parallel (if any)
-            suffix_task = asyncio.create_task(
-                generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_gemini_flash=False)
-            ) if suffix else None
-
-            # Generate and stream prefix immediately
-            tts_start = datetime.now(timezone.utc)
-            prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_gemini_flash=False)
-            tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
-            print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
-            sys.stdout.flush()
-
-            await stream_mulaw_bytes_over_twilio(
-                websocket=self.websocket,
-                stream_sid=self.stream_sid,
-                audio_bytes=prefix_audio,
-                pace_20ms=True,
-            )
-
-            # Stream remainder when ready
-            if suffix_task:
+            async with self._tts_lock:
+                self._tts_cancel.clear()
+                self.is_speaking = True
                 try:
-                    suffix_audio = await suffix_task
-                except Exception as e:
-                    print(f"⚠️ TTS remainder generation failed: {e}")
+                    lang = self.agent.language if self.agent and self.agent.language else "en"
+                    voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+                    clean = text.strip()
+                    print(f"🎵 Streaming TTS chunk: '{clean[:30]}...'")
                     sys.stdout.flush()
-                    suffix_audio = b""
-                if suffix_audio:
+
+                    # Split into a short prefix for instant speech and a suffix to follow
+                    words = clean.split()
+                    prefix_words = 6
+                    prefix = " ".join(words[:prefix_words])
+                    suffix = " ".join(words[prefix_words:]) if len(words) > prefix_words else ""
+
+                    # Begin generating suffix in parallel (if any)
+                    suffix_task = asyncio.create_task(
+                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_gemini_flash=False)
+                    ) if suffix else None
+
+                    # Generate and stream prefix immediately
+                    tts_start = datetime.now(timezone.utc)
+                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_gemini_flash=False)
+                    tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
+                    print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
+                    sys.stdout.flush()
+
                     await stream_mulaw_bytes_over_twilio(
                         websocket=self.websocket,
                         stream_sid=self.stream_sid,
-                        audio_bytes=suffix_audio,
+                        audio_bytes=prefix_audio,
                         pace_20ms=True,
+                        cancel=self._tts_cancel,
                     )
-                    print(f"⚡ Streamed remainder ({len(suffix_audio)} bytes)")
-                    sys.stdout.flush()
+
+                    # Stream remainder when ready and not cancelled
+                    if suffix_task and not self._tts_cancel.is_set():
+                        try:
+                            suffix_audio = await suffix_task
+                        except Exception as e:
+                            print(f"⚠️ TTS remainder generation failed: {e}")
+                            sys.stdout.flush()
+                            suffix_audio = b""
+                        if suffix_audio and not self._tts_cancel.is_set():
+                            await stream_mulaw_bytes_over_twilio(
+                                websocket=self.websocket,
+                                stream_sid=self.stream_sid,
+                                audio_bytes=suffix_audio,
+                                pace_20ms=True,
+                                cancel=self._tts_cancel,
+                            )
+                            print(f"⚡ Streamed remainder ({len(suffix_audio)} bytes)")
+                            sys.stdout.flush()
+                finally:
+                    self.is_speaking = False
         
         except Exception as e:
             print(f"❌ Error streaming TTS chunk '{text[:20]}...': {e}")
