@@ -491,9 +491,16 @@ async def handle_call_events_webhook(
             # For testing purposes, allow requests without validation
             print("No authentication headers found, allowing for testing")
         
-        # Log the call event
-        print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
-        print(f"AgentId from query: {agentId}")
+        # Log the call event with detailed Twilio information
+        print("=" * 80)
+        print(f"🔔 WEBHOOK RECEIVED - SID: {call_sid}")
+        print(f"📊 CallStatus: {call_status}")
+        print(f"📊 CallStatusCallbackEvent: {callback_event}")
+        print(f"📊 AnsweredBy: {answered_by}")
+        print(f"📊 Direction: {direction}")
+        print(f"📊 From: {from_number} → To: {to_number}")
+        print(f"📊 AgentId: {agentId}")
+        print("=" * 80)
         
         # Test WebSocket connection if we have a call session (non-blocking - fire and forget)
         # if call_session:
@@ -513,33 +520,27 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
-        # Update call session status if we have a call session and status
+        # Update call session status in database (but broadcasts are handled individually below)
         if call_session and call_status:
-            print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
+            print(f"🔄 Updating call session {call_session.id} database status to: {call_status}")
 
-            # For statuses we explicitly handle below (initiated, ringing, in-progress),
-            # skip the generic broadcast/update path to avoid out-of-order/duplicate emits.
+            # Map status for database
+            status_mapping = {
+                "initiated": "initiated",
+                "ringing": "ringing",
+                "in-progress": "connected",
+                "completed": "completed",
+                "failed": "failed",
+                "busy": "busy",
+                "no-answer": "no-answer"
+            }
+            mapped_status = status_mapping.get(call_status, call_status)
+            call_session.status = mapped_status
+            db.commit()
+            print(f"✅ Database updated with status: {mapped_status}")
+
+            # For completed/failed/busy/no-answer, also broadcast generically
             if call_status not in ["initiated", "ringing", "in-progress"]:
-                # Map Twilio statuses to our internal statuses for better UX
-                status_mapping = {
-                    "initiating": "initiating",
-                    "initiated": "initiated",
-                    "ringing": "ringing",
-                    "in-progress": "connected",  # Map to "connected" for better UX
-                    "completed": "completed",
-                    "failed": "failed",
-                    "busy": "busy",
-                    "no-answer": "no-answer"
-                }
-
-                mapped_status = status_mapping.get(call_status, call_status)
-                call_session.status = mapped_status
-
-                # Set start time when call becomes connected (receiver picks up)
-                if mapped_status == "connected" and not call_session.start_time:
-                    call_session.start_time = datetime.now(timezone.utc)
-                    print(f"⏰ Set start time for session {call_session.id}")
-
                 # Set end time and calculate duration when call completes
                 if mapped_status == "completed":
                     call_session.end_time = datetime.now(timezone.utc)
@@ -572,10 +573,8 @@ async def handle_call_events_webhook(
                         print(f"✅ Stopped credit monitoring for call session {call_session.id}")
                     except Exception as e:
                         print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-
-                # Commit the status update
-                db.commit()
-                print(f"✅ Updated call session {call_session.id} status to: {mapped_status}")
+                    
+                    db.commit()
 
                 # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
                 try:
