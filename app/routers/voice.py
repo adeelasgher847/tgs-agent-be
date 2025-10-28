@@ -520,59 +520,37 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
-        # Update call session status in database (but broadcasts are handled individually below)
+        # Update call session status if we have a call session and status
         if call_session and call_status:
-            print(f"🔄 Checking if database update needed for status: {call_status}")
-
-            # For "in-progress", only update database if callback_event == "answered"
-            should_update_db = True
-            if call_status == "in-progress" and callback_event != "answered":
-                print(f"⏸️ Skipping database update for in-progress without 'answered' event")
-                should_update_db = False
-
-            if should_update_db:
-                print(f"🔄 Updating call session {call_session.id} database status to: {call_status}")
-                
-                # Map status for database
-                status_mapping = {
-                    "initiated": "initiated",
-                    "ringing": "ringing",
-                    "in-progress": "connected",
-                    "completed": "completed",
-                    "failed": "failed",
-                    "busy": "busy",
-                    "no-answer": "no-answer"
-                }
-                mapped_status = status_mapping.get(call_status, call_status)
-                
-                # Special handling for "in-progress" -> only set "connected" if answered
-                if call_status == "in-progress":
-                    if callback_event == "answered":
-                        call_session.status = "connected"
-                        # Set start time when call is actually answered
-                        if not call_session.start_time:
-                            call_session.start_time = datetime.now(timezone.utc)
-                            print(f"⏰ Set start time for session {call_session.id}")
-                    else:
-                        # Don't update status for early in-progress
-                        print(f"⏸️ Not updating status to connected (waiting for 'answered' event)")
-                        should_update_db = False
-                else:
-                    call_session.status = mapped_status
-                
-                if should_update_db:
-                    db.commit()
-                    print(f"✅ Database updated with status: {call_session.status}")
-
-            # For completed/failed/busy/no-answer, also broadcast generically
-            if call_status not in ["initiated", "ringing", "in-progress"]:
-                # Set end time and calculate duration when call completes
-                if mapped_status == "completed":
-                    call_session.end_time = datetime.now(timezone.utc)
-                    if call_session.start_time:
-                        duration = (call_session.end_time - call_session.start_time).total_seconds()
-                        call_session.duration = int(duration)
-                        print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+            print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
+            
+            # Map Twilio statuses to our internal statuses for better UX
+            status_mapping = {
+                "initiating": "initiating",
+                "initiated": "initiated",
+                "ringing": "ringing", 
+                "in-progress": "connected",  # Map to "connected" for better UX
+                "completed": "completed",
+                "failed": "failed",
+                "busy": "busy",
+                "no-answer": "no-answer"
+            }
+            
+            mapped_status = status_mapping.get(call_status, call_status)
+            call_session.status = mapped_status
+            
+            # Set start time when call becomes connected (receiver picks up)
+            if mapped_status == "connected" and not call_session.start_time:
+                call_session.start_time = datetime.now(timezone.utc)
+                print(f"⏰ Set start time for session {call_session.id}")
+            
+            # Set end time and calculate duration when call completes
+            if mapped_status == "completed":
+                call_session.end_time = datetime.now(timezone.utc)
+                if call_session.start_time:
+                    duration = (call_session.end_time - call_session.start_time).total_seconds()
+                    call_session.duration = int(duration)
+                    print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
 
                     # Broadcast call ended event (non-blocking - fire and forget)
                     try:
@@ -698,34 +676,35 @@ async def handle_call_events_webhook(
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
         
-        elif call_status == "in-progress" or callback_event == "answered":
-            # Broadcast "connected" status only when Twilio confirms 'answered'
-            if callback_event == "answered":
-                print("=" * 50)
-                print(f"📞 CALL ANSWERED - SID: {call_sid} (AnsweredBy={answered_by})")
-                print("=" * 50)
+        elif call_status == "in-progress":
+            # Call is in progress - person answered, check if we already greeted
+            print("=" * 50)
+            print(f"📞 CALL IN PROGRESS - SID: {call_sid}")
+            print("=" * 50)
+            
+            # Only broadcast "connected" if callback_event is "answered"
+            should_broadcast_connected = (callback_event == "answered")
+            
+            # Broadcast call connected event (non-blocking - fire and forget)
+            if call_session and should_broadcast_connected:
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="connected",  # Map to "connected" for better UX
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    print(f"✅ Broadcasted call connected event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call connected event: {e}")
+            elif not should_broadcast_connected:
+                print(f"ℹ️ Skipping 'connected' broadcast - waiting for answered event (CallStatusCallbackEvent={callback_event})")
                 
-                # Broadcast call connected event (non-blocking - fire and forget)
-                if call_session:
-                    try:
-                        asyncio.create_task(broadcast_call_status_update(
-                            call_session_id=str(call_session.id),
-                            status="connected",  # Map to "connected" for better UX
-                            metadata={
-                                "call_sid": call_sid,
-                                "direction": direction,
-                                "answered_by": answered_by,
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            }
-                        ))
-                        print(f"✅ Broadcasted call connected event for session {call_session.id}")
-                    except Exception as e:
-                        print(f"❌ Failed to broadcast call connected event: {e}")
-            else:
-                # Early in-progress - don't broadcast "connected" yet
-                print(f"ℹ️ in-progress without 'answered' event - not broadcasting 'connected' status yet. SID: {call_sid}")
-                
-                # Start credit monitoring for the call (only when status is "in-progress")
+            # Start credit monitoring for the call (only when status is "in-progress")
+            if call_session:
                 try:
                     asyncio.create_task(credit_service.start_credit_monitoring(
                         db=db,
