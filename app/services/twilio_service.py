@@ -43,10 +43,7 @@ class TwilioService:
             status_callback_method='POST',
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
-            recording_status_callback=recording_status_callback_url,  # Get recording status updates
-            # Enhanced settings for better status detection
-            timeout=30,  # Wait up to 30 seconds for answer
-            webhook_timeout=60  # Wait up to 60 seconds for webhook response
+            recording_status_callback=recording_status_callback_url  # Get recording status updates
         )
         
         return call
