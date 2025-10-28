@@ -689,11 +689,24 @@ async def handle_call_events_webhook(
             print(f"📊 CallStatusCallbackEvent: {callback_event}")
             print("=" * 50)
             
-            # Only broadcast "connected" if callback_event is "answered" (receiver actually picked up)
-            should_broadcast_connected = (callback_event == "answered")
+            # Check if this is the FIRST time we're getting "in-progress" status
+            # Only broadcast "connected" if previous status was "ringing" or "initiated"
+            previous_status = call_session.status if call_session else None
+            
+            # Only broadcast "connected" if we're transitioning from ringing to in-progress
+            is_transition_to_connected = (
+                previous_status in ["ringing", "initiated"] and 
+                call_status == "in-progress"
+            )
+            
+            should_broadcast_connected = is_transition_to_connected
+            
+            print(f"📊 Previous status: {previous_status}")
+            print(f"📊 Current status: {call_status}")
+            print(f"📊 Should broadcast connected: {should_broadcast_connected}")
             
             if should_broadcast_connected:
-                print(f"✅ Receiver answered - broadcasting 'connected' status")
+                print(f"✅ Call in progress - broadcasting 'connected' status")
                 
                 # Broadcast call connected event (non-blocking - fire and forget)
                 if call_session:
