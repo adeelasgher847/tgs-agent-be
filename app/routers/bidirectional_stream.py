@@ -207,9 +207,9 @@ class BidirectionalStreamHandler:
         # Ultra-low-latency interim processing state
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
-        self._min_interim_words = 2  # require at least 2 words to reduce noise
-        self._min_interim_confidence = 0.65
-        self._min_interim_interval_sec = 0.35  # throttle interim responses
+        self._min_interim_words = 1  # speak sooner on shorter interim
+        self._min_interim_confidence = 0.50
+        self._min_interim_interval_sec = 0.20  # more aggressive throttle
         
         # TTS (Output) state
         self.tts_queue = asyncio.Queue()
@@ -220,6 +220,13 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
+        # Pre-warm Google TTS client to avoid first-call penalty
+        try:
+            google_tts_service.get_client()
+        except Exception as e:
+            print(f"⚠️ TTS pre-warm failed: {e}")
+            sys.stdout.flush()
+
         print(f"✅ Bidirectional stream handler initialized (Google streaming STT + Streaming TTS)")
         sys.stdout.flush()
     
@@ -385,8 +392,8 @@ class BidirectionalStreamHandler:
                     prompt=user_text,
                     system_prompt=None,
                     model_name=model_name,
-                    temperature=0.6,
-                    max_tokens=100,
+                    temperature=0.5,
+                    max_tokens=80,
                 ):
                     if not chunk:
                         continue
@@ -429,41 +436,61 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def stream_tts_response(self, text: str):
-        """Stream TTS audio in 20ms chunks for immediate playback - Optimized for word-by-word streaming"""
+        """Fast-first TTS: stream first ~6 words immediately; generate remainder in parallel."""
         try:
             from datetime import datetime, timezone
             
-            # Skip empty or whitespace-only chunks
             if not text or not text.strip():
                 return
             
-            # Get agent voice settings
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
-            
-            print(f"🎵 Streaming TTS chunk: '{text.strip()[:30]}...'")
+            clean = text.strip()
+            print(f"🎵 Streaming TTS chunk: '{clean[:30]}...'")
             sys.stdout.flush()
-            
-            # Measure TTS generation latency
+
+            # Split into a short prefix for instant speech and a suffix to follow
+            words = clean.split()
+            prefix_words = 6
+            prefix = " ".join(words[:prefix_words])
+            suffix = " ".join(words[prefix_words:]) if len(words) > prefix_words else ""
+
+            # Begin generating suffix in parallel (if any)
+            suffix_task = asyncio.create_task(
+                generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_gemini_flash=True)
+            ) if suffix else None
+
+            # Generate and stream prefix immediately
             tts_start = datetime.now(timezone.utc)
-            
-            # Generate or fetch cached MULAW audio
-            audio_bytes = await generate_mulaw_tts(text=text.strip(), lang=lang, voice=voice, use_gemini_flash=True)
-            
+            prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_gemini_flash=True)
             tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
-            print(f"⏱️ TTS latency: {tts_gen_time:.3f}s for '{text.strip()[:20]}...'")
+            print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
             sys.stdout.flush()
-            
-            # Stream as 20ms frames with early playback
+
             await stream_mulaw_bytes_over_twilio(
                 websocket=self.websocket,
                 stream_sid=self.stream_sid,
-                audio_bytes=audio_bytes,
+                audio_bytes=prefix_audio,
                 pace_20ms=True,
             )
-            
-            print(f"⚡ Streamed {len(audio_bytes)} bytes")
-            sys.stdout.flush()
+
+            # Stream remainder when ready
+            if suffix_task:
+                try:
+                    suffix_audio = await suffix_task
+                except Exception as e:
+                    print(f"⚠️ TTS remainder generation failed: {e}")
+                    sys.stdout.flush()
+                    suffix_audio = b""
+                if suffix_audio:
+                    await stream_mulaw_bytes_over_twilio(
+                        websocket=self.websocket,
+                        stream_sid=self.stream_sid,
+                        audio_bytes=suffix_audio,
+                        pace_20ms=True,
+                    )
+                    print(f"⚡ Streamed remainder ({len(suffix_audio)} bytes)")
+                    sys.stdout.flush()
         
         except Exception as e:
             print(f"❌ Error streaming TTS chunk '{text[:20]}...': {e}")

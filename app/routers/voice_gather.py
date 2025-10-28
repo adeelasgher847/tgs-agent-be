@@ -762,10 +762,17 @@ async def streaming_greeting_webhook(
         sys.stdout.flush()
         
         # Start bidirectional media stream
-        from twilio.twiml.voice_response import Connect, Stream
+        from twilio.twiml.voice_response import Connect, Stream, Parameter
         
         connect = Connect()
         stream = Stream(url=ws_url)
+        # Pass Twilio edge hint (observability); actual edge must be set in Twilio
+        edge = getattr(settings, "TWILIO_EDGE", None)
+        if edge:
+            try:
+                stream.parameter(Parameter(name="edge", value=edge))
+            except Exception:
+                pass
         
         # Add parameters to stream
         stream.parameter(name="callSid", value=call_sid)

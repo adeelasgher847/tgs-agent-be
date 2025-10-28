@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
 
 class Settings(BaseSettings):
     
@@ -96,8 +97,8 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     
-    # Twilio Configuration
-    # TWILIO_EDGE: Optional[str] = None  # e.g., "ashburn", "singapore", "dublin" for low latency
+    # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
+    TWILIO_EDGE: Optional[str] = "ashburn"  # e.g., "ashburn", "singapore", "dublin"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
