@@ -251,7 +251,6 @@ class BidirectionalStreamHandler:
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._media_marked = False           # set when first media arrives
         
         # Session data
         self.call_session = None
@@ -301,20 +300,7 @@ class BidirectionalStreamHandler:
             # Decode audio (MULAW from Twilio)
             audio_data = base64.b64decode(payload)
 
-            # On first media arrival, mark in DB for outbound in-progress gating
-            if not self._media_marked:
-                try:
-                    if self.call_session:
-                        if not getattr(self.call_session, "call_metadata", None):
-                            self.call_session.call_metadata = {}
-                        self.call_session.call_metadata["has_media"] = True
-                        self.db.commit()
-                        print("✅ Marked has_media=True for call session")
-                        sys.stdout.flush()
-                except Exception as e:
-                    print(f"⚠️ Failed to mark has_media: {e}")
-                    sys.stdout.flush()
-                self._media_marked = True
+            # (Removed first-media DB marker for outbound gating)
             # Lazily create a streaming session
             if self._stt_session is None:
                 self._stt_session = google_stt_service.create_streaming_session(
