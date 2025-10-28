@@ -357,8 +357,27 @@ async def initiate_call(
         db.commit()
         print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
         
-        # Don't broadcast "initiated" here - let webhook handle all status updates
-        print(f"✅ Call initiated - waiting for proper webhook status updates")
+        # FORCE STATUS BROADCAST - Bypass webhook issues
+        try:
+            await broadcast_call_status_update(
+                call_session_id=str(call_session.id),
+                status="initiated",
+                metadata={
+                    "call_sid": call.sid,
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "to_number": request.userPhoneNumber,
+                    "from_number": twilio_service.get_phone_number(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "message": "Call has been initiated"
+                }
+            )
+            print(f"✅ FORCED: Broadcasted call initiated status for session {call_session.id}")
+            
+            # REMOVED: Auto-timer - we'll use webhook detection instead
+            
+        except Exception as e:
+            print(f"⚠️ Failed to broadcast call initiated status: {e}")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -505,20 +524,20 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
-        # Smart detection: Use multiple methods to detect when receiver picks up
+        # PROPER FIX: Only broadcast "connected" when receiver actually picks up
         should_broadcast_connected = False
         
         # Method 1: Twilio answered event (most reliable)
         if call_session and callback_event == "answered":
             should_broadcast_connected = True
-            print(f"✅ Method 1: Twilio answered event - broadcasting 'connected' status")
+            print(f"✅ Method 1: Receiver answered - broadcasting 'connected' status")
         
-        # Method 2: in-progress + answered_by human (backup)
+        # Method 2: in-progress + human answered (backup)
         elif call_session and call_status == "in-progress" and answered_by == "human":
             should_broadcast_connected = True
             print(f"✅ Method 2: in-progress + human answered - broadcasting 'connected' status")
         
-        # Method 3: in-progress + previous status was ringing (fallback)
+        # Method 3: in-progress + previous was ringing (fallback)
         elif call_session and call_status == "in-progress":
             previous_status = call_session.status
             if previous_status in ["ringing", "initiated"]:
@@ -528,7 +547,7 @@ async def handle_call_events_webhook(
                 print(f"📊 Method 3: in-progress but previous status was {previous_status} - skipping")
         
         else:
-            print(f"📊 No connection detected - callback_event: {callback_event}, call_status: {call_status}, answered_by: {answered_by}")
+            print(f"📊 No receiver pickup detected - callback_event: {callback_event}, call_status: {call_status}, answered_by: {answered_by}")
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
