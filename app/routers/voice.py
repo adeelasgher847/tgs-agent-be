@@ -370,23 +370,9 @@ async def initiate_call(
         db.commit()
         print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
         
-        # Broadcast call initiated event AFTER Twilio confirms
-        try:
-            await broadcast_call_status_update(
-                call_session_id=str(call_session.id),
-                status="initiated",
-                metadata={
-                    "call_sid": call.sid,
-                    "agent_id": str(agent.id),
-                    "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
-                    "from_number": twilio_service.get_phone_number(),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-            print(f"✅ Call initiated event sent for session {call_session.id}")
-        except Exception as e:
-            print(f"⚠️ Failed to send call initiated event (non-critical): {e}")
+        # Don't broadcast "initiated" status immediately - let webhook handle it
+        # This prevents showing "connected" status before receiver picks up
+        print(f"✅ Call initiated - waiting for webhook status updates")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -657,25 +643,12 @@ async def handle_call_events_webhook(
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "initiated" and direction == "outbound-api":
-            # Call has been initiated - just log and return empty response
+            # Call has been initiated - just log, don't broadcast yet
             print(f"Call initiated - SID: {call_sid}")
+            print(f"⏳ Waiting for ringing status before showing to user")
             
-            # Broadcast call initiated event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="initiated",
-                        metadata={
-                            "check":"just checking",
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Broadcasted call initiated event for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call initiated event: {e}")
+            # Don't broadcast "initiated" status - wait for "ringing" status
+            # This prevents showing "connected" status immediately
             
             return HTMLResponse("", media_type="application/xml")
         
@@ -710,21 +683,21 @@ async def handle_call_events_webhook(
             print(f"📞 CALL IN PROGRESS - SID: {call_sid}")
             print("=" * 50)
             
-            # Broadcast call in-progress event (non-blocking - fire and forget)
+            # Broadcast call connected event (non-blocking - fire and forget)
             if call_session:
                 try:
                     asyncio.create_task(broadcast_call_status_update(
                         call_session_id=str(call_session.id),
-                        status="in-progress",
+                        status="connected",  # Map to "connected" for better UX
                         metadata={
                             "call_sid": call_sid,
                             "direction": direction,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Broadcasted call in-progress event for session {call_session.id}")
+                    print(f"✅ Broadcasted call connected event for session {call_session.id}")
                 except Exception as e:
-                    print(f"❌ Failed to broadcast call in-progress event: {e}")
+                    print(f"❌ Failed to broadcast call connected event: {e}")
                 
                 # Start credit monitoring for the call (only when status is "in-progress")
                 try:
