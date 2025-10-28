@@ -502,14 +502,14 @@ async def handle_call_events_webhook(
             # For testing purposes, allow requests without validation
             print("No authentication headers found, allowing for testing")
         
-        # Guard against premature in-progress before human answers (outbound only)
+        # Guard against premature in-progress on outbound until human OR media flows
         try:
             answered_by = (form_data.get("AnsweredBy") or form_data.get("answered_by") or "").lower()
         except Exception:
             answered_by = ""
-        if call_status == "in-progress" and direction == "outbound-api" and answered_by and answered_by != "human":
-            # Ignore Twilio's early in-progress when not human-answered (e.g., machine/voicemail)
-            print(f"🛑 Ignoring premature in-progress (AnsweredBy='{answered_by}') for SID: {call_sid}")
+        has_media = bool(call_session and getattr(call_session, "call_metadata", None) and call_session.call_metadata.get("has_media"))
+        if call_status == "in-progress" and direction == "outbound-api" and not (answered_by == "human" or has_media):
+            print(f"🛑 Ignoring in-progress (AnsweredBy='{answered_by}', has_media={has_media}) for SID: {call_sid}")
             return HTMLResponse("", media_type="application/xml")
 
         # Log the call event
