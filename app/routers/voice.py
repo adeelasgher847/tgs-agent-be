@@ -699,31 +699,31 @@ async def handle_call_events_webhook(
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "in-progress" or callback_event == "answered":
-            # Only treat as connected if Twilio says 'answered'
-            if callback_event != "answered":
-                print(f"ℹ️ Ignoring in-progress without 'answered' event (possible early carrier status). SID: {call_sid}")
-                return HTMLResponse("", media_type="application/xml")
-
-            print("=" * 50)
-            print(f"📞 CALL ANSWERED - SID: {call_sid} (AnsweredBy={answered_by})")
-            print("=" * 50)
-            
-            # Broadcast call connected event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="connected",  # Map to "connected" for better UX
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "answered_by": answered_by,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Broadcasted call connected event for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call connected event: {e}")
+            # Broadcast "connected" status only when Twilio confirms 'answered'
+            if callback_event == "answered":
+                print("=" * 50)
+                print(f"📞 CALL ANSWERED - SID: {call_sid} (AnsweredBy={answered_by})")
+                print("=" * 50)
+                
+                # Broadcast call connected event (non-blocking - fire and forget)
+                if call_session:
+                    try:
+                        asyncio.create_task(broadcast_call_status_update(
+                            call_session_id=str(call_session.id),
+                            status="connected",  # Map to "connected" for better UX
+                            metadata={
+                                "call_sid": call_sid,
+                                "direction": direction,
+                                "answered_by": answered_by,
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }
+                        ))
+                        print(f"✅ Broadcasted call connected event for session {call_session.id}")
+                    except Exception as e:
+                        print(f"❌ Failed to broadcast call connected event: {e}")
+            else:
+                # Early in-progress - don't broadcast "connected" yet
+                print(f"ℹ️ in-progress without 'answered' event - not broadcasting 'connected' status yet. SID: {call_sid}")
                 
                 # Start credit monitoring for the call (only when status is "in-progress")
                 try:
