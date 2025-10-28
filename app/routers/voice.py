@@ -357,23 +357,8 @@ async def initiate_call(
         db.commit()
         print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
         
-        # Broadcast "initiated" status immediately when call starts
-        try:
-            await broadcast_call_status_update(
-                call_session_id=str(call_session.id),
-                status="initiated",
-                metadata={
-                    "call_sid": call.sid,
-                    "agent_id": str(agent.id),
-                    "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
-                    "from_number": twilio_service.get_phone_number(),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-            print(f"✅ Broadcasted call initiated status for session {call_session.id}")
-        except Exception as e:
-            print(f"⚠️ Failed to broadcast call initiated status: {e}")
+        # Don't broadcast "initiated" here - let webhook handle all status updates
+        print(f"✅ Call initiated - waiting for proper webhook status updates")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -520,17 +505,13 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
-        # Check if this is a transition to "connected" BEFORE updating database
+        # Simple and reliable: Only broadcast "connected" when Twilio says "answered"
         should_broadcast_connected = False
         if call_session and callback_event == "answered":
-            # Twilio explicitly says receiver answered - broadcast "connected"
             should_broadcast_connected = True
             print(f"✅ Twilio answered event - broadcasting 'connected' status")
-        elif call_session and call_status == "in-progress":
-            # Fallback: check if previous status was ringing
-            previous_status = call_session.status
-            should_broadcast_connected = previous_status in ["ringing", "initiated"]
-            print(f"📊 Fallback check - Previous: {previous_status}, Current: {call_status}, Should broadcast: {should_broadcast_connected}")
+        else:
+            print(f"📊 No answered event - callback_event: {callback_event}, call_status: {call_status}")
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
@@ -634,7 +615,7 @@ async def handle_call_events_webhook(
                     import traceback
                     traceback.print_exc()
             else:
-                print(f"⏸️ Skipping generic broadcast for 'connected' - handled separately in in-progress section")
+                print(f"⏸️ Skipping generic broadcast for 'connected' - handled separately")
 
         # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
         if mapped_status == "completed":
@@ -663,9 +644,25 @@ async def handle_call_events_webhook(
         print(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "initiated" and direction == "outbound-api":
-            # Call has been initiated - already broadcasted during call initiation
+            # Call has been initiated - broadcast "initiated" status
             print(f"Call initiated webhook received - SID: {call_sid}")
-            print(f"ℹ️ Status already broadcasted during call initiation")
+            
+            # Broadcast "initiated" status
+            if call_session:
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="initiated",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "Call has been initiated"
+                        }
+                    )
+                    print(f"✅ Broadcasted call initiated status for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call initiated status: {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
