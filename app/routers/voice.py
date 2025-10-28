@@ -686,41 +686,51 @@ async def handle_call_events_webhook(
             # Call is in progress - person answered, check if we already greeted
             print("=" * 50)
             print(f"📞 CALL IN PROGRESS - SID: {call_sid}")
+            print(f"📊 CallStatusCallbackEvent: {callback_event}")
             print("=" * 50)
             
-            # Broadcast call connected event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    # Specific broadcast for in-progress
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="connected",  # Map to "connected" for better UX
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    print(f"✅ Broadcasted call connected event for session {call_session.id}")
-                    
-                    # ALSO do generic broadcast to ensure frontend gets it
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="connected",
-                        metadata={
-                            "from_number": from_number,
-                            "to_number": to_number,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "Call is now connected"
-                        }
-                    ))
-                    print(f"✅ Broadcasted generic connected event for session {call_session.id}")
-                    
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call connected event: {e}")
+            # Only broadcast "connected" if callback_event is "answered" (receiver actually picked up)
+            should_broadcast_connected = (callback_event == "answered")
+            
+            if should_broadcast_connected:
+                print(f"✅ Receiver answered - broadcasting 'connected' status")
                 
-                # Start credit monitoring for the call (only when status is "in-progress")
+                # Broadcast call connected event (non-blocking - fire and forget)
+                if call_session:
+                    try:
+                        # Specific broadcast for in-progress
+                        asyncio.create_task(broadcast_call_status_update(
+                            call_session_id=str(call_session.id),
+                            status="connected",  # Map to "connected" for better UX
+                            metadata={
+                                "call_sid": call_sid,
+                                "direction": direction,
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }
+                        ))
+                        print(f"✅ Broadcasted call connected event for session {call_session.id}")
+                        
+                        # ALSO do generic broadcast to ensure frontend gets it
+                        asyncio.create_task(broadcast_call_status_update(
+                            call_session_id=str(call_session.id),
+                            status="connected",
+                            metadata={
+                                "from_number": from_number,
+                                "to_number": to_number,
+                                "direction": direction,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "message": "Call is now connected"
+                            }
+                        ))
+                        print(f"✅ Broadcasted generic connected event for session {call_session.id}")
+                        
+                    except Exception as e:
+                        print(f"❌ Failed to broadcast call connected event: {e}")
+            else:
+                print(f"⏸️ Skipping 'connected' broadcast - waiting for answered event (CallStatusCallbackEvent={callback_event})")
+            
+            # Start credit monitoring for the call (only when status is "in-progress")
+            if call_session:
                 try:
                     asyncio.create_task(credit_service.start_credit_monitoring(
                         db=db,
