@@ -369,18 +369,18 @@ class BidirectionalStreamHandler:
                 return
             # Basic gating: confidence and minimum words
             word_count = len(transcript.split())
-        if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
+            if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
                 # Still log interim for observability
                 print(f"⌛ Interim (gated) [{confidence:.2f}]: '{transcript[:60]}...'")
                 sys.stdout.flush()
                 return
-        # Barge-in: if we are speaking and user starts talking with decent confidence, cancel TTS immediately
-        if self.is_speaking and confidence >= max(0.6, self._min_interim_confidence):
-            if not self._tts_cancel.is_set():
-                print("🛑 Barge-in: cancelling current TTS due to user speech")
-                sys.stdout.flush()
-                self._tts_cancel.set()
-            return
+            # Barge-in: if we are speaking and user starts talking with decent confidence, cancel TTS immediately
+            if self.is_speaking and confidence >= max(0.6, self._min_interim_confidence):
+                if not self._tts_cancel.is_set():
+                    print("🛑 Barge-in: cancelling current TTS due to user speech")
+                    sys.stdout.flush()
+                    self._tts_cancel.set()
+                return
             # Throttle by time to avoid over-triggering
             now = asyncio.get_event_loop().time()
             if (now - self._last_interim_sent_ts) < self._min_interim_interval_sec:
@@ -416,7 +416,7 @@ class BidirectionalStreamHandler:
             # Stream LLM output as it is generated - Phrase-batched for stability
             from app.services.gemini_service import gemini_service
             # Build system prompt similarly to VoiceLoggingService for consistency
-    async def try_stream(model_name: str) -> str:
+            async def try_stream(model_name: str) -> str:
                 response_accum = ""
                 phrase_buf = ""
                 last_flush = asyncio.get_event_loop().time()
@@ -428,13 +428,13 @@ class BidirectionalStreamHandler:
                     temperature=0.5,
                     max_tokens=80,
                 ):
-            if not chunk:
+                    if not chunk:
                         continue
-            # If barge-in requested, stop generating more audio for this response
-            if self._tts_cancel.is_set():
-                print("🛑 Barge-in: aborting current LLM stream")
-                sys.stdout.flush()
-                break
+                    # If barge-in requested, stop generating more audio for this response
+                    if self._tts_cancel.is_set():
+                        print("🛑 Barge-in: aborting current LLM stream")
+                        sys.stdout.flush()
+                        break
 
                     response_accum += chunk
                     phrase_buf += chunk
@@ -442,16 +442,16 @@ class BidirectionalStreamHandler:
                     # flush on punctuation, size, or small timeout to avoid tiny TTS units
                     now = asyncio.get_event_loop().time()
                     has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
-            if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
+                    if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
                         to_speak = phrase_buf.strip()
-                if to_speak and not self._tts_cancel.is_set():
+                        if to_speak and not self._tts_cancel.is_set():
                             await self.stream_tts_response(to_speak)
                         phrase_buf = ""
                         last_flush = now
 
                 # flush any tail
-        tail = phrase_buf.strip()
-        if tail and not self._tts_cancel.is_set():
+                tail = phrase_buf.strip()
+                if tail and not self._tts_cancel.is_set():
                     await self.stream_tts_response(tail)
 
                 return response_accum.strip()
@@ -503,7 +503,7 @@ class BidirectionalStreamHandler:
 
                     # Split into a short prefix for instant speech and a suffix to follow
                     words = clean.split()
-            prefix_words = 8
+                    prefix_words = 8
                     prefix = " ".join(words[:prefix_words])
                     suffix = " ".join(words[prefix_words:]) if len(words) > prefix_words else ""
 
