@@ -505,13 +505,30 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
-        # Simple and reliable: Only broadcast "connected" when Twilio says "answered"
+        # Smart detection: Use multiple methods to detect when receiver picks up
         should_broadcast_connected = False
+        
+        # Method 1: Twilio answered event (most reliable)
         if call_session and callback_event == "answered":
             should_broadcast_connected = True
-            print(f"✅ Twilio answered event - broadcasting 'connected' status")
+            print(f"✅ Method 1: Twilio answered event - broadcasting 'connected' status")
+        
+        # Method 2: in-progress + answered_by human (backup)
+        elif call_session and call_status == "in-progress" and answered_by == "human":
+            should_broadcast_connected = True
+            print(f"✅ Method 2: in-progress + human answered - broadcasting 'connected' status")
+        
+        # Method 3: in-progress + previous status was ringing (fallback)
+        elif call_session and call_status == "in-progress":
+            previous_status = call_session.status
+            if previous_status in ["ringing", "initiated"]:
+                should_broadcast_connected = True
+                print(f"✅ Method 3: in-progress + transition from {previous_status} - broadcasting 'connected' status")
+            else:
+                print(f"📊 Method 3: in-progress but previous status was {previous_status} - skipping")
+        
         else:
-            print(f"📊 No answered event - callback_event: {callback_event}, call_status: {call_status}")
+            print(f"📊 No connection detected - callback_event: {callback_event}, call_status: {call_status}, answered_by: {answered_by}")
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
