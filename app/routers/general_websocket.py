@@ -315,10 +315,23 @@ async def broadcast_call_status_update(call_session_id: str, status: str, metada
     print(f"🔔 broadcast_call_status_update called: session={call_session_id}, status={status}")
     print(f"🔔 Active connections: {len(websocket_manager.active_connections)}")
     
+    # Map internal statuses to user-friendly messages
+    status_messages = {
+        "initiating": "Call Initiating",
+        "initiated": "Call Initiated",
+        "ringing": "Call Ringing", 
+        "connected": "Call Connected",
+        "completed": "Call Completed",
+        "failed": "Call Failed",
+        "busy": "Call Busy",
+        "no-answer": "No Answer"
+    }
+    
     message = {
         "type": "call_status_update",
         "call_session_id": call_session_id,
         "status": status,
+        "status_message": status_messages.get(status, status),
         "metadata": metadata or {},
         "timestamp": datetime.now(timezone.utc).isoformat()
     }

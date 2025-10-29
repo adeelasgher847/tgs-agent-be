@@ -39,15 +39,11 @@ class TwilioService:
             from_=from_number,
             url=webhook_url,
             status_callback=status_callback_url,
-            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed', 'in-progress'],
             status_callback_method='POST',
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
-            recording_status_callback=recording_status_callback_url,  # Get recording status updates
-            # Add timeout settings for better reliability
-            # timeout=30,  # Wait up to 30 seconds for answer
-            # Add webhook timeout
-            # webhook_timeout=60  # Wait up to 10 seconds for webhook response
+            recording_status_callback=recording_status_callback_url  # Get recording status updates
         )
         
         return call

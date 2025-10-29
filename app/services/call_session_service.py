@@ -45,7 +45,7 @@ class CallSessionService:
             agent_id=agent_id,
             tenant_id=tenant_id,
             start_time=datetime.utcnow(),
-            status="active",
+            status="initiated",  # Set initial status as initiated
             call_type=call_type,
             twilio_call_sid=twilio_call_sid,
             from_number=from_number,
