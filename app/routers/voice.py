@@ -532,8 +532,8 @@ async def handle_call_events_webhook(
                 "initiating": "initiating",
                 "initiated": "initiated",
                 "ringing": "ringing",
-                "in-progress": "connected",  # receiver picked up
-                "answered": "connected",     # backup
+                "in-progress": "in-progress",  # Keep as in-progress, don't map to connected yet
+                "answered": "connected",       # Only answered means connected
                 "completed": "completed",
                 "failed": "failed",
                 "busy": "busy",
@@ -541,6 +541,25 @@ async def handle_call_events_webhook(
             }
             mapped_status = status_mapping.get(call_status, call_status)
             previous_status = call_session.status
+            
+            # SMART DETECTION: Only set as "connected" when receiver actually picks up
+            if call_status == "in-progress":
+                # Method 1: Check for answered event (most reliable)
+                if callback_event == "answered":
+                    mapped_status = "connected"
+                    print(f"✅ Method 1: answered event - setting status to 'connected'")
+                # Method 2: Check for human answered
+                elif answered_by == "human":
+                    mapped_status = "connected"
+                    print(f"✅ Method 2: human answered - setting status to 'connected'")
+                # Method 3: Check if previous status was ringing (fallback)
+                elif previous_status == "ringing":
+                    mapped_status = "connected"
+                    print(f"✅ Method 3: in-progress after ringing - setting status to 'connected'")
+                else:
+                    mapped_status = "ringing"  # Keep as ringing until real pickup
+                    print(f"📞 in-progress but no real pickup detected - keeping as 'ringing' (callback_event: {callback_event}, answered_by: {answered_by}, previous: {previous_status})")
+            
             call_session.status = mapped_status
 
             # Set start time when connected
