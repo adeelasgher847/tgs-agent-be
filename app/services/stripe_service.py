@@ -284,8 +284,8 @@ class StripeService:
         tenant_id = session.get("metadata", {}).get("tenant_id")
         plan_id = session.get("metadata", {}).get("plan_id")
 
-        if not tenant_id or not plan_id:
-            print("Tenant ID or Plan ID not found in checkout session metadata")
+        if not tenant_id:
+            print("Tenant ID not found in checkout session metadata")
             return
 
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
@@ -293,17 +293,27 @@ class StripeService:
             print(f"Tenant with ID {tenant_id} not found")
             return
 
-        plan = db.query(Plan).filter(Plan.id == plan_id).first()
-        if not plan:
-            print(f"Plan with ID {plan_id} not found")
+        credits_to_add = 0
+
+        plan = db.query(Plan).filter(Plan.id == plan_id).first() if plan_id else None
+        if plan and isinstance(getattr(plan, 'credits', None), int) and plan.credits > 0:
+            credits_to_add = int(plan.credits)
+        else:
+            amount_total_cents = session.get('amount_total') or 0
+            try:
+                credits_to_add = int((float(amount_total_cents) / 100.0) * 10)
+            except Exception:
+                credits_to_add = 0
+
+        if credits_to_add <= 0:
+            print("No credits computed from plan or amount_total; skipping")
             return
 
-        # Add credits from the plan to the tenant's account
-        tenant.credits += plan.credits
+        tenant.credits = (tenant.credits or 0) + credits_to_add
         tenant.status = 'active'
         db.commit()
         db.refresh(tenant)
 
-        print(f"Added {plan.credits} credits to tenant {tenant.id}")
+        print(f"Added {credits_to_add} credits to tenant {tenant.id}")
 
     # Note: Idempotency is now handled at the endpoint level using in-memory store in deps

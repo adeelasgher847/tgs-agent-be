@@ -72,10 +72,21 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     plan_uuid = uuid.UUID(plan_id_str) if plan_id_str else None
                 except Exception:
                     plan_uuid = None
+                plan_credits = None
                 if plan_uuid:
                     plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
-                    if plan and getattr(plan, 'credits', None) is not None:
-                        credits_to_add = int(plan.credits)
+                    # Prefer plan.credits if schema supports it
+                    if plan and isinstance(getattr(plan, 'credits', None), int) and plan.credits > 0:
+                        plan_credits = int(plan.credits)
+                if plan_credits:
+                    credits_to_add = plan_credits
+                else:
+                    # Fallback to $1 = 10 credits based on amount_total
+                    amount_total_cents = session.get('amount_total') or 0
+                    try:
+                        credits_to_add = int((float(amount_total_cents) / 100.0) * 10)
+                    except Exception:
+                        credits_to_add = 0
 
             if credits_to_add and credits_to_add > 0:
                 tenant.credits = (tenant.credits or 0) + credits_to_add
