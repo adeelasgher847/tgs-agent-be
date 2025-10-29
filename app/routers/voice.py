@@ -500,7 +500,7 @@ async def handle_call_events_webhook(
         print(f"🔔 WEBHOOK RECEIVED - SID: {call_sid}")
         print(f"📊 CallStatus: {call_status}")
         print(f"📊 CallStatusCallbackEvent: {callback_event}")
-        print(f"📊 AnsweredBy: {answered_by}")
+        print(f"📊 AnsweredBy: '{answered_by}'")
         print(f"📊 Direction: {direction}")
         print(f"📊 From: {from_number} → To: {to_number}")
         print(f"📊 AgentId: {agentId}")
@@ -527,40 +527,60 @@ async def handle_call_events_webhook(
         if call_session and call_status:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             
-            # Map Twilio status to internal status
-            status_mapping = {
-                "initiating": "initiating",
-                "initiated": "initiated",
-                "ringing": "ringing",
-                "in-progress": "in-progress",  # Keep as in-progress, don't map to connected yet
-                "answered": "connected",       # Only answered means connected
-                "completed": "completed",
-                "failed": "failed",
-                "busy": "busy",
-                "no-answer": "no-answer"
-            }
-            mapped_status = status_mapping.get(call_status, call_status)
+            # Map Twilio status to our internal status (simplified approach)
+            twilio_status = call_status
+            answered_by = form_data.get("AnsweredBy", "")
             previous_status = call_session.status
             
-            # SMART DETECTION: Only set as "connected" when receiver actually picks up
-            if call_status == "in-progress":
-                # Method 1: Check for answered event (most reliable)
-                if callback_event == "answered":
-                    mapped_status = "connected"
-                    print(f"✅ Method 1: answered event - setting status to 'connected'")
-                # Method 2: Check for human answered
-                elif answered_by == "human":
-                    mapped_status = "connected"
-                    print(f"✅ Method 2: human answered - setting status to 'connected'")
-                # Method 3: Check if previous status was ringing (fallback)
-                elif previous_status == "ringing":
-                    mapped_status = "connected"
-                    print(f"✅ Method 3: in-progress after ringing - setting status to 'connected'")
+            # Determine internal status based on Twilio status and AnsweredBy
+            if twilio_status in ["initiating", "initiated"]:
+                internal_status = "initiated"
+            elif twilio_status == "ringing":
+                internal_status = "ringing"
+            elif twilio_status == "in-progress":
+                # VERY STRICT: Only mark connected with clear evidence of pickup
+                if answered_by and answered_by.strip() and answered_by.lower() in ["human", "machine"]:
+                    internal_status = "connected"
+                    print(f"✅ Receiver picked up (AnsweredBy: {answered_by}) - setting status to 'connected'")
+                elif callback_event == "answered":
+                    internal_status = "connected"
+                    print(f"✅ Receiver picked up (answered event) - setting status to 'connected'")
                 else:
-                    mapped_status = "ringing"  # Keep as ringing until real pickup
-                    print(f"📞 in-progress but no real pickup detected - keeping as 'ringing' (callback_event: {callback_event}, answered_by: {answered_by}, previous: {previous_status})")
+                    # Check if we've been in ringing status for a while (timeout fallback)
+                    if previous_status == "ringing":
+                        # Check if call session was created recently (within last 30 seconds)
+                        if call_session.created_at:
+                            time_since_created = (datetime.now(timezone.utc) - call_session.created_at).total_seconds()
+                            if time_since_created > 10:  # 10 seconds timeout
+                                internal_status = "connected"
+                                print(f"✅ Timeout fallback: in-progress after 10+ seconds of ringing - setting status to 'connected'")
+                            else:
+                                internal_status = "ringing"
+                                print(f"📞 in-progress too early ({time_since_created:.1f}s) - keeping as 'ringing'")
+                        else:
+                            internal_status = "ringing"
+                            print(f"📞 in-progress but no created_at timestamp - keeping as 'ringing'")
+                    else:
+                        internal_status = "ringing"
+                        print(f"📞 in-progress but previous status was {previous_status} - keeping as 'ringing'")
+                    
+                    print(f"   AnsweredBy: '{answered_by}' (empty={not answered_by})")
+                    print(f"   CallbackEvent: {callback_event}")
+                    print(f"   PreviousStatus: {previous_status}")
+            elif twilio_status == "completed":
+                internal_status = "completed"
+            elif twilio_status == "busy":
+                internal_status = "busy"
+            elif twilio_status == "no-answer":
+                internal_status = "no-answer"
+            elif twilio_status == "failed":
+                internal_status = "failed"
+            else:
+                internal_status = twilio_status  # fallback
+                print(f"📊 Unknown status '{twilio_status}' - using as fallback")
             
-            call_session.status = mapped_status
+            call_session.status = internal_status
+            mapped_status = internal_status
 
             # Set start time when connected
             if mapped_status == "connected" and not call_session.start_time:
@@ -595,7 +615,10 @@ async def handle_call_events_webhook(
                     "previous_status": previous_status,
                     "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
                     "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                    "duration": call_session.duration
+                    "duration": call_session.duration,
+                    "twilio_status": twilio_status,
+                    "answered_by": answered_by,
+                    "callback_event": callback_event
                 }
                 
                 # Add status-specific messages
