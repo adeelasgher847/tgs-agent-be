@@ -387,7 +387,7 @@
                 }
 
                 this.currentSessionId = sessionId;
-                const wsUrl = `wss://voiceagentapi.site/api/v1/general/ws?token=${encodeURIComponent(token)}`;
+                const wsUrl = `wss://https://tgs-agent-be-r9fj.onrender.com/api/v1/general/ws?token=${encodeURIComponent(token)}`;
                 
                 updateStatus('connecting', 'Connecting...');
                 this.logEvent('connection_attempt', { sessionId, timestamp: new Date().toISOString() });
@@ -737,7 +737,7 @@
         function updateWebSocketUrl() {
             const token = localStorage.getItem('jwt_token');
             if (token) {
-                const wsUrl = `wss://voiceagentapi.site/api/v1/general/ws?token=${encodeURIComponent(token)}`;
+                const wsUrl = `wss://https://tgs-agent-be-r9fj.onrender.com/api/v1/general/ws?token=${encodeURIComponent(token)}`;
                 document.getElementById('wsUrl').value = wsUrl;
             }
         }

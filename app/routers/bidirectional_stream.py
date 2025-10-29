@@ -27,6 +27,7 @@ from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
+from app.routers.general_websocket import broadcast_call_status_update
 
 # Real-time TTS MULAW streaming constants
 MULAW_SAMPLE_RATE_HZ = 8000  # Twilio-friendly
@@ -646,6 +647,37 @@ class BidirectionalStreamHandler:
             print(f"📡 Real-time STT + TTS streaming enabled")
             print("=" * 80)
             sys.stdout.flush()
+            
+            # Broadcast "in-progress" status when media stream starts
+            if self.call_session:
+                try:
+                    # Update call session status to "in-progress" if not already
+                    if self.call_session.status != "in-progress":
+                        self.call_session.status = "in-progress"
+                        
+                        # Set start time when call becomes in-progress
+                        if not self.call_session.start_time:
+                            self.call_session.start_time = datetime.now(timezone.utc)
+                        
+                        self.db.commit()
+                        print(f"✅ Updated call session status to 'in-progress'")
+                    
+                    # Broadcast the in-progress status via WebSocket
+                    await broadcast_call_status_update(
+                        call_session_id=str(self.call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "call_sid": self.call_sid,
+                            "stream_sid": self.stream_sid,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "Call picked up and media stream started"
+                        }
+                    )
+                    print(f"✅ Broadcasted 'in-progress' status via WebSocket (media stream started)")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast in-progress status: {e}")
+                    import traceback
+                    traceback.print_exc()
         
         except Exception as e:
             print(f"❌ Error handling start: {e}")
