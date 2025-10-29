@@ -523,52 +523,27 @@ async def handle_call_events_webhook(
         #         print(f"⚠️ Test broadcast failed (non-critical): {e}")
         
         # Status broadcasts will be handled in the main status update section below
-        
-        # PROPER FIX: Only broadcast "connected" when receiver actually picks up
-        should_broadcast_connected = False
-        
-        # Method 1: Twilio answered event (most reliable)
-        if call_session and callback_event == "answered":
-            should_broadcast_connected = True
-            print(f"✅ Method 1: Receiver answered - broadcasting 'connected' status")
-        
-        # Method 2: in-progress + human answered (backup)
-        elif call_session and call_status == "in-progress" and answered_by == "human":
-            should_broadcast_connected = True
-            print(f"✅ Method 2: in-progress + human answered - broadcasting 'connected' status")
-        
-        # Method 3: in-progress + previous was ringing (fallback)
-        elif call_session and call_status == "in-progress":
-            previous_status = call_session.status
-            if previous_status in ["ringing", "initiated"]:
-                should_broadcast_connected = True
-                print(f"✅ Method 3: in-progress + transition from {previous_status} - broadcasting 'connected' status")
-            else:
-                print(f"📊 Method 3: in-progress but previous status was {previous_status} - skipping")
-        
-        else:
-            print(f"📊 No receiver pickup detected - callback_event: {callback_event}, call_status: {call_status}, answered_by: {answered_by}")
-        
         # Update call session status if we have a call session and status
         if call_session and call_status:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             
-            # Map Twilio statuses to our internal statuses for better UX
+            # Map Twilio status to internal status
             status_mapping = {
                 "initiating": "initiating",
                 "initiated": "initiated",
-                "ringing": "ringing", 
-                "in-progress": "connected",  # Map to "connected" for better UX
+                "ringing": "ringing",
+                "in-progress": "connected",  # receiver picked up
+                "answered": "connected",     # backup
                 "completed": "completed",
                 "failed": "failed",
                 "busy": "busy",
                 "no-answer": "no-answer"
             }
-            
             mapped_status = status_mapping.get(call_status, call_status)
+            previous_status = call_session.status
             call_session.status = mapped_status
-            
-            # Set start time when call becomes connected (receiver picks up)
+
+            # Set start time when connected
             if mapped_status == "connected" and not call_session.start_time:
                 call_session.start_time = datetime.now(timezone.utc)
                 print(f"⏰ Set start time for session {call_session.id}")
@@ -581,91 +556,74 @@ async def handle_call_events_webhook(
                     call_session.duration = int(duration)
                     print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
 
-                    # Broadcast call ended event (non-blocking - fire and forget)
-                    try:
-                        asyncio.create_task(broadcast_call_ended(
-                            call_session_id=str(call_session.id),
-                            reason="completed",
-                            final_data={
-                                "call_sid": call_sid,
-                                "from_number": from_number,
-                                "to_number": to_number,
-                                "direction": direction,
-                                "duration": call_session.duration,
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            }
-                        ))
-                        print(f"✅ Queued call ended event for session {call_session.id}")
-                    except Exception as e:
-                        print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
-
                     # Stop credit monitoring when call completes
                     try:
                         credit_service.stop_credit_monitoring(call_session.id)
                         print(f"✅ Stopped credit monitoring for call session {call_session.id}")
                     except Exception as e:
                         print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-                    
-                    db.commit()
 
-            # Broadcast status update to WebSocket for ALL statuses EXCEPT "connected" (handled separately)
-            if mapped_status != "connected":
-                try:
-                    print(f"🚀 Broadcasting call status update: {mapped_status} for session {call_session.id}")
+            # Commit DB first to avoid race condition
+            db.commit()
 
-                    # Prepare comprehensive metadata
-                    metadata = {
-                        "from_number": from_number,
-                        "to_number": to_number,
-                        "direction": direction,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                        "duration": call_session.duration
-                    }
-
-                    # Add status-specific messages
-                    if mapped_status == "initiating":
-                        metadata["message"] = "Call is being initiated"
-                    elif mapped_status == "initiated":
-                        metadata["message"] = "Call has been initiated"
-                    elif mapped_status == "ringing":
-                        metadata["message"] = "Call is ringing"
-                    elif mapped_status == "completed":
-                        metadata["message"] = "Call has been completed"
-                    elif mapped_status == "failed":
-                        metadata["message"] = "Call failed"
-                    elif mapped_status == "busy":
-                        metadata["message"] = "Call busy"
-                    elif mapped_status == "no-answer":
-                        metadata["message"] = "No answer"
-
-                    await broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status=mapped_status,
-                        metadata=metadata
-                    )
-                    print(f"✅ Call status update sent: {mapped_status} for session {call_session.id}")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call status update: {e}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print(f"⏸️ Skipping generic broadcast for 'connected' - handled separately")
-
-        # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-        if mapped_status == "completed":
-            asyncio.create_task(broadcast_call_ended(
-                call_session_id=str(call_session.id),
-                reason="Call completed",
-                final_data={
-                    "call_sid": call_sid,
-                    "duration": call_session.duration,
-                    "end_time": call_session.end_time.isoformat(),
-                    "transcript": call_session.call_transcript or []
+            # Broadcast ALL statuses, including connected
+            try:
+                metadata = {
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "direction": direction,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "previous_status": previous_status,
+                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                    "duration": call_session.duration
                 }
-            ))
-            print(f"✅ Queued call ended event for session {call_session.id}")
+                
+                # Add status-specific messages
+                if mapped_status == "initiating":
+                    metadata["message"] = "Call is being initiated"
+                elif mapped_status == "initiated":
+                    metadata["message"] = "Call has been initiated"
+                elif mapped_status == "ringing":
+                    metadata["message"] = "Call is ringing"
+                elif mapped_status == "connected":
+                    metadata["message"] = "Call is now connected"
+                elif mapped_status == "completed":
+                    metadata["message"] = "Call has been completed"
+                elif mapped_status == "failed":
+                    metadata["message"] = "Call failed"
+                elif mapped_status == "busy":
+                    metadata["message"] = "Call busy"
+                elif mapped_status == "no-answer":
+                    metadata["message"] = "No answer"
+                
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status=mapped_status,
+                    metadata=metadata
+                )
+                print(f"✅ Broadcasted call status: {mapped_status} for session {call_session.id}")
+            except Exception as e:
+                print(f"❌ Failed to broadcast status: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Broadcast call ended event for completed calls (non-blocking - fire and forget)
+            if mapped_status == "completed":
+                try:
+                    asyncio.create_task(broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="Call completed",
+                        final_data={
+                            "call_sid": call_sid,
+                            "duration": call_session.duration,
+                            "end_time": call_session.end_time.isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
+                    ))
+                    print(f"✅ Queued call ended event for session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
@@ -734,46 +692,7 @@ async def handle_call_events_webhook(
             print(f"📊 CallStatusCallbackEvent: {callback_event}")
             print("=" * 50)
             
-            # Use the should_broadcast_connected flag set earlier (before database update)
-            print(f"📊 Using pre-calculated should_broadcast_connected: {should_broadcast_connected}")
-            
-            if should_broadcast_connected:
-                print(f"✅ Call in progress - broadcasting 'connected' status")
-                
-                # Broadcast call connected event (non-blocking - fire and forget)
-                if call_session:
-                    try:
-                        # Specific broadcast for in-progress
-                        asyncio.create_task(broadcast_call_status_update(
-                            call_session_id=str(call_session.id),
-                            status="connected",  # Map to "connected" for better UX
-                            metadata={
-                                "call_sid": call_sid,
-                                "direction": direction,
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            }
-                        ))
-                        print(f"✅ Broadcasted call connected event for session {call_session.id}")
-                        
-                        # ALSO do generic broadcast to ensure frontend gets it
-                        asyncio.create_task(broadcast_call_status_update(
-                            call_session_id=str(call_session.id),
-                            status="connected",
-                            metadata={
-                                "from_number": from_number,
-                                "to_number": to_number,
-                                "direction": direction,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                                "message": "Call is now connected"
-                            }
-                        ))
-                        print(f"✅ Broadcasted generic connected event for session {call_session.id}")
-                        
-                    except Exception as e:
-                        print(f"❌ Failed to broadcast call connected event: {e}")
-            else:
-                print(f"⏸️ Skipping 'connected' broadcast - waiting for answered event (CallStatusCallbackEvent={callback_event})")
-            
+            # Status broadcast is already handled in the main status update section above
             # Start credit monitoring for the call (only when status is "in-progress")
             if call_session:
                 try:
