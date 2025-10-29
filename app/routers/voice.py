@@ -402,6 +402,9 @@ async def initiate_call(
             "Call initiated successfully"
         )
         
+    except HTTPException:
+        # Re-raise HTTPException to preserve status codes (402, 404, etc.)
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -209,7 +209,7 @@ def require_active_tenant(
     if tenant.status == "pending_payment":
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Payment required. Please complete your subscription to access this feature."
+            detail="Insufficient credits. Please complete your payment to access this feature."
         )
     elif tenant.status != "active":
         raise HTTPException(

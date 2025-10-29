@@ -128,15 +128,19 @@ class CreditService:
         
         current_credits = tenant.credits or 0
         
-        # Change: Allow deduction if credits are 0 or less (call will end when credits reach 0)
+        # Check if we have sufficient credits to deduct
         if current_credits <= 0:
             logger.warning(f"Insufficient credits for tenant {tenant_id}: {current_credits} <= 0")
             return (False, current_credits)
         
-        # Deduct credits
-        tenant.credits = current_credits - amount
+        # Deduct credits but never allow negative balance
+        new_credits = max(0, current_credits - amount)
+        tenant.credits = new_credits
         db.commit()
         db.refresh(tenant)
+        
+        # If credits reached 0, signal that deduction was the last one
+        credits_exhausted = (new_credits == 0 and current_credits > 0)
         
         logger.info(
             f"Deducted {amount} credits from tenant {tenant_id}. "
@@ -145,7 +149,8 @@ class CreditService:
             f"Description: {description}"
         )
         
-        return (True, tenant.credits)
+        # Return success=True if credits available, False if exhausted
+        return (not credits_exhausted, tenant.credits)
     
     async def start_credit_monitoring(
         self,
