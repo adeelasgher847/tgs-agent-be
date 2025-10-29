@@ -686,11 +686,15 @@ async def handle_call_events_webhook(
         elif call_status == "in-progress":
             # Call is in progress - person answered, check if we already greeted
             print("=" * 50)
-            print(f"📞 CALL IN PROGRESS - SID: {call_sid}")
+            print(f"📞 CALL IN PROGRESS WEBHOOK - SID: {call_sid}")
             print("=" * 50)
             
-            # Broadcast call in-progress event (non-blocking - fire and forget)
-            if call_session:
+            # Check if status was already in-progress (media stream might have already broadcast this)
+            was_already_in_progress = call_session and call_session.status == "in-progress"
+            
+            # Only broadcast if this is the FIRST time we're seeing in-progress status
+            # The actual "in-progress" status should be sent when media stream starts (in stt_websocket.py)
+            if call_session and not was_already_in_progress:
                 try:
                     asyncio.create_task(broadcast_call_status_update(
                         call_session_id=str(call_session.id),
@@ -698,12 +702,16 @@ async def handle_call_events_webhook(
                         metadata={
                             "call_sid": call_sid,
                             "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "Call webhook received in-progress status"
                         }
                     ))
-                    print(f"✅ Broadcasted call in-progress event for session {call_session.id}")
+                    print(f"✅ Broadcasted call in-progress event for session {call_session.id} (first time)")
                 except Exception as e:
                     print(f"❌ Failed to broadcast call in-progress event: {e}")
+            else:
+                if was_already_in_progress:
+                    print(f"ℹ️ Call already in-progress (media stream started first) - skipping duplicate broadcast")
                 
                 # Start credit monitoring for the call (only when status is "in-progress")
                 try:

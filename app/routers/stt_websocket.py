@@ -16,7 +16,7 @@ from app.services.google_stt_service import google_stt_service
 from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
-from app.routers.general_websocket import broadcast_transcript_update
+from app.routers.general_websocket import broadcast_transcript_update, broadcast_call_status_update
 from app.services.transcript_service import transcript_service
 from app.services.twilio_service import twilio_service
 from app.core.config import settings
@@ -424,6 +424,37 @@ class TwilioMediaStreamHandler:
             sys.stdout.flush()
             
             self.is_connected = True
+            
+            # Broadcast "in-progress" status ONLY when media stream actually starts (call is picked up)
+            if self.call_session:
+                try:
+                    # Update call session status to "in-progress" if not already
+                    if self.call_session.status != "in-progress":
+                        self.call_session.status = "in-progress"
+                        
+                        # Set start time when call becomes in-progress
+                        if not self.call_session.start_time:
+                            self.call_session.start_time = datetime.now(timezone.utc)
+                        
+                        self.db.commit()
+                        print(f"✅ Updated call session status to 'in-progress'")
+                    
+                    # Broadcast the in-progress status via WebSocket
+                    await broadcast_call_status_update(
+                        call_session_id=str(self.call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "call_sid": self.call_sid,
+                            "stream_sid": self.stream_sid,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "Call picked up and media stream started"
+                        }
+                    )
+                    print(f"✅ Broadcasted 'in-progress' status via WebSocket (media stream started)")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast in-progress status: {e}")
+                    import traceback
+                    traceback.print_exc()
         
         except Exception as e:
             print(f"❌ Error handling start message: {e}")
