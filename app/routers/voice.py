@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Depends
+from fastapi import APIRouter, Request, HTTPException, Query, Depends, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -310,16 +310,10 @@ async def initiate_call(
         
         if not has_sufficient:
             print(f"❌ Insufficient credits: {current_credits} < {required_credits}")
-            error_detail = {
-                "error": "insufficient_credits",
-                "message": "Insufficient credits to initiate call",
-                "current_credits": current_credits,
-                "required_credits": required_credits,
-                "model": model_name
-            }
+            error_message = f"Insufficient credits to initiate call. Current balance: {current_credits} credits, Required: {required_credits} credits. Model: {model_name}"
             raise HTTPException(
-                status_code=402,  # Payment Required
-                detail=str(error_detail)  # Convert to string for detail field
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=error_message
             )
         
         print(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
