@@ -538,35 +538,24 @@ async def handle_call_events_webhook(
             elif twilio_status == "ringing":
                 internal_status = "ringing"
             elif twilio_status == "in-progress":
-                # VERY STRICT: Only mark connected with clear evidence of pickup
+                # STRICT: Only mark connected when AnsweredBy indicates human/machine
                 if answered_by and answered_by.strip() and answered_by.lower() in ["human", "machine"]:
                     internal_status = "connected"
                     print(f"✅ Receiver picked up (AnsweredBy: {answered_by}) - setting status to 'connected'")
-                elif callback_event == "answered":
-                    internal_status = "connected"
-                    print(f"✅ Receiver picked up (answered event) - setting status to 'connected'")
                 else:
-                    # Check if we've been in ringing status for a while (timeout fallback)
-                    if previous_status == "ringing":
-                        # Check if call session was created recently (within last 30 seconds)
-                        if call_session.created_at:
-                            time_since_created = (datetime.now(timezone.utc) - call_session.created_at).total_seconds()
-                            if time_since_created > 10:  # 10 seconds timeout
-                                internal_status = "connected"
-                                print(f"✅ Timeout fallback: in-progress after 10+ seconds of ringing - setting status to 'connected'")
-                            else:
-                                internal_status = "ringing"
-                                print(f"📞 in-progress too early ({time_since_created:.1f}s) - keeping as 'ringing'")
-                        else:
-                            internal_status = "ringing"
-                            print(f"📞 in-progress but no created_at timestamp - keeping as 'ringing'")
-                    else:
-                        internal_status = "ringing"
-                        print(f"📞 in-progress but previous status was {previous_status} - keeping as 'ringing'")
-                    
+                    internal_status = "ringing"
+                    print(f"📞 in-progress but no AnsweredBy evidence - keeping as 'ringing'")
                     print(f"   AnsweredBy: '{answered_by}' (empty={not answered_by})")
                     print(f"   CallbackEvent: {callback_event}")
                     print(f"   PreviousStatus: {previous_status}")
+            elif twilio_status == "answered":
+                # Treat 'answered' same way: only connected if AnsweredBy proves pickup
+                if answered_by and answered_by.strip() and answered_by.lower() in ["human", "machine"]:
+                    internal_status = "connected"
+                    print(f"✅ Receiver picked up (AnsweredBy with answered event) - setting status to 'connected'")
+                else:
+                    internal_status = "ringing"
+                    print(f"📞 'answered' without AnsweredBy evidence - keeping as 'ringing'")
             elif twilio_status == "completed":
                 internal_status = "completed"
             elif twilio_status == "busy":
