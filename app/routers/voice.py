@@ -574,54 +574,56 @@ async def handle_call_events_webhook(
             print(f"✅ Updated call session {call_session.id} status to: {call_status}")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
-            try:
-                print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
-                
-                # Prepare comprehensive metadata
-                metadata = {
-                    # "call_sid": call_sid,
-                    "from_number": from_number,
-                    "to_number": to_number,
-                    "direction": direction,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                    "duration": call_session.duration
-                }
-                
-                # Add status-specific messages
-                if call_status == "ringing":
-                    metadata["message"] = "Call is ringing"
-                elif call_status == "in-progress":
-                    metadata["message"] = "Call is now in progress"
-                elif call_status == "completed":
-                    metadata["message"] = "Call has been completed"
-                
-                await broadcast_call_status_update(
-                    call_session_id=str(call_session.id),
-                    status=call_status,
-                    metadata=metadata
-                )
-                print(f"✅ Call status update sent: {call_status} for session {call_session.id}")
-                
-                # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                if call_status == "completed":
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="Call completed",
-                        final_data={
-                            "call_sid": call_sid,
-                            "duration": call_session.duration,
-                            "end_time": call_session.end_time.isoformat(),
-                            "transcript": call_session.call_transcript or []
-                        }
-                    ))
-                    print(f"✅ Queued call ended event for session {call_session.id}")
+            # SKIP "in-progress" status here - it will be sent when media stream starts
+            if call_status == "in-progress":
+                print(f"ℹ️ Skipping 'in-progress' broadcast here - will be sent by media stream handler")
+            else:
+                try:
+                    print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
                     
-            except Exception as e:
-                print(f"❌ Failed to broadcast call status update: {e}")
-                import traceback
-                traceback.print_exc()
+                    # Prepare comprehensive metadata
+                    metadata = {
+                        # "call_sid": call_sid,
+                        "from_number": from_number,
+                        "to_number": to_number,
+                        "direction": direction,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                        "duration": call_session.duration
+                    }
+                    
+                    # Add status-specific messages
+                    if call_status == "ringing":
+                        metadata["message"] = "Call is ringing"
+                    elif call_status == "completed":
+                        metadata["message"] = "Call has been completed"
+                    
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status=call_status,
+                        metadata=metadata
+                    )
+                    print(f"✅ Call status update sent: {call_status} for session {call_session.id}")
+                    
+                    # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
+                    if call_status == "completed":
+                        asyncio.create_task(broadcast_call_ended(
+                            call_session_id=str(call_session.id),
+                            reason="Call completed",
+                            final_data={
+                                "call_sid": call_sid,
+                                "duration": call_session.duration,
+                                "end_time": call_session.end_time.isoformat(),
+                                "transcript": call_session.call_transcript or []
+                            }
+                        ))
+                        print(f"✅ Queued call ended event for session {call_session.id}")
+                        
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call status update: {e}")
+                    import traceback
+                    traceback.print_exc()
         else:
             if not call_session:
                 print(f"⚠️ No call session found - cannot update status or broadcast")
@@ -689,29 +691,19 @@ async def handle_call_events_webhook(
             print(f"📞 CALL IN PROGRESS WEBHOOK - SID: {call_sid}")
             print("=" * 50)
             
-            # Check if status was already in-progress (media stream might have already broadcast this)
-            was_already_in_progress = call_session and call_session.status == "in-progress"
+            # IGNORE: Don't broadcast in-progress status from Twilio webhook
+            # The actual in-progress status will be sent when media stream starts in stt_websocket.py
+            print("ℹ️ Ignoring Twilio in-progress webhook - waiting for media stream to start")
             
-            # Only broadcast if this is the FIRST time we're seeing in-progress status
-            # The actual "in-progress" status should be sent when media stream starts (in stt_websocket.py)
-            if call_session and not was_already_in_progress:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "Call webhook received in-progress status"
-                        }
-                    ))
-                    print(f"✅ Broadcasted call in-progress event for session {call_session.id} (first time)")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast call in-progress event: {e}")
-            else:
-                if was_already_in_progress:
-                    print(f"ℹ️ Call already in-progress (media stream started first) - skipping duplicate broadcast")
+            # Just start credit monitoring and update DB silently (don't broadcast)
+            if call_session:
+                # Update DB status silently (for tracking)
+                if call_session.status != "in-progress":
+                    call_session.status = "in-progress"
+                    if not call_session.start_time:
+                        call_session.start_time = datetime.now(timezone.utc)
+                    db.commit()
+                    print(f"✅ Updated DB status to 'in-progress' (silent)")
                 
                 # Start credit monitoring for the call (only when status is "in-progress")
                 try:
