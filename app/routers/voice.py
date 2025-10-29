@@ -452,6 +452,9 @@ async def handle_call_events_webhook(
         from_number = form_data.get("From", "")
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
+        # Additional status insight from Twilio callbacks
+        answered_by = form_data.get("AnsweredBy", "")
+        callback_event = form_data.get("StatusCallbackEvent", "")
         
         # Note: Speech input is now handled by Google Cloud STT via WebSocket
         # The old Twilio SpeechResult is no longer used
@@ -528,22 +531,69 @@ async def handle_call_events_webhook(
         
         # Update call session status if we have a call session and status
         if call_session and call_status:
-            print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
-            call_session.status = call_status
-            
-            # Set start time when call becomes in-progress
-            if call_status == "in-progress" and not call_session.start_time:
+            # Debug overview
+            print(f"🔔 WEBHOOK RECEIVED - SID: {call_sid}")
+            print(f"📊 CallStatus: {call_status}")
+            print(f"📊 StatusCallbackEvent: {callback_event}")
+            print(f"📊 AnsweredBy: '{answered_by}'")
+            print(f"📊 Direction: {direction}")
+            print(f"📊 From: {from_number} → To: {to_number}")
+            print(f"📊 AgentId: {agentId}")
+
+            # Map Twilio status to internal status with smarter 'connected' detection
+            twilio_status = call_status
+            previous_status = call_session.status or ""
+
+            if twilio_status in ["initiating", "initiated"]:
+                internal_status = "initiated"
+            elif twilio_status == "ringing":
+                internal_status = "ringing"
+            elif twilio_status == "in-progress":
+                # Reliable signals first
+                if callback_event == "answered":
+                    internal_status = "connected"
+                    print("✅ answered event → connected")
+                elif answered_by and answered_by.strip().lower() in ["human", "machine"]:
+                    internal_status = "connected"
+                    print(f"✅ AnsweredBy={answered_by} → connected")
+                elif previous_status == "ringing":
+                    internal_status = "connected"
+                    print("✅ in-progress after ringing → connected")
+                else:
+                    internal_status = "ringing"
+                    print(
+                        f"📞 in-progress but no pickup evidence → keep 'ringing' (callback_event={callback_event}, "
+                        f"answered_by={answered_by}, previous={previous_status})"
+                    )
+                    # Optional timeout fallback to avoid stuck 'ringing'
+                    if previous_status == "ringing" and getattr(call_session, "created_at", None):
+                        time_since_created = (datetime.now(timezone.utc) - call_session.created_at).total_seconds()
+                        if time_since_created > 10:
+                            internal_status = "connected"
+                            print("✅ Timeout fallback (10s) → connected")
+            elif twilio_status == "completed":
+                internal_status = "completed"
+            elif twilio_status in ["busy", "no-answer", "failed"]:
+                internal_status = twilio_status
+            else:
+                internal_status = twilio_status
+                print(f"📊 Unknown status '{twilio_status}' - using as fallback")
+
+            # Apply internal status
+            call_session.status = internal_status
+
+            # Start time when truly connected
+            if internal_status == "connected" and not call_session.start_time:
                 call_session.start_time = datetime.now(timezone.utc)
                 print(f"⏰ Set start time for session {call_session.id}")
-            
-            # Set end time and calculate duration when call completes
-            if call_status == "completed":
+
+            # End time and duration on completion
+            if internal_status == "completed":
                 call_session.end_time = datetime.now(timezone.utc)
                 if call_session.start_time:
                     duration = (call_session.end_time - call_session.start_time).total_seconds()
                     call_session.duration = int(duration)
                     print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
-                
                 # Broadcast call ended event (non-blocking - fire and forget)
                 try:
                     asyncio.create_task(broadcast_call_ended(
@@ -561,51 +611,53 @@ async def handle_call_events_webhook(
                     print(f"✅ Queued call ended event for session {call_session.id}")
                 except Exception as e:
                     print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
-                
                 # Stop credit monitoring when call completes
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
                     print(f"✅ Stopped credit monitoring for call session {call_session.id}")
                 except Exception as e:
                     print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-            
+
             # Commit the status update
             db.commit()
-            print(f"✅ Updated call session {call_session.id} status to: {call_status}")
-            
+            print(f"✅ Updated call session {call_session.id} status to: {internal_status}")
+
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
             try:
-                print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
-                
-                # Prepare comprehensive metadata
+                print(f"🚀 Broadcasting call status update: {internal_status} for session {call_session.id}")
+
                 metadata = {
-                    # "call_sid": call_sid,
                     "from_number": from_number,
                     "to_number": to_number,
                     "direction": direction,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
                     "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                    "duration": call_session.duration
+                    "duration": call_session.duration,
+                    "twilio_status": twilio_status,
+                    "answered_by": answered_by,
+                    "callback_event": callback_event,
+                    "previous_status": previous_status,
                 }
-                
-                # Add status-specific messages
-                if call_status == "ringing":
+
+                if internal_status == "ringing":
                     metadata["message"] = "Call is ringing"
-                elif call_status == "in-progress":
+                elif internal_status == "connected":
+                    metadata["message"] = "Call is connected"
+                elif internal_status == "in-progress":
                     metadata["message"] = "Call is now in progress"
-                elif call_status == "completed":
+                elif internal_status == "completed":
                     metadata["message"] = "Call has been completed"
-                
+
                 await broadcast_call_status_update(
                     call_session_id=str(call_session.id),
-                    status=call_status,
+                    status=internal_status,
                     metadata=metadata
                 )
-                print(f"✅ Call status update sent: {call_status} for session {call_session.id}")
-                
+                print(f"✅ Call status update sent: {internal_status} for session {call_session.id}")
+
                 # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                if call_status == "completed":
+                if internal_status == "completed":
                     asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="Call completed",
@@ -617,7 +669,7 @@ async def handle_call_events_webhook(
                         }
                     ))
                     print(f"✅ Queued call ended event for session {call_session.id}")
-                    
+
             except Exception as e:
                 print(f"❌ Failed to broadcast call status update: {e}")
                 import traceback
