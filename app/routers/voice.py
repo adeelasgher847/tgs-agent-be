@@ -545,28 +545,26 @@ async def handle_call_events_webhook(
             elif twilio_status == "ringing":
                 internal_status = "ringing"
             elif twilio_status == "in-progress":
-                # Reliable signals first
+                # STRICT: Only mark connected with clear evidence
                 if callback_event == "answered":
                     internal_status = "connected"
                     print("✅ answered event → connected")
                 elif answered_by and answered_by.strip().lower() in ["human", "machine"]:
                     internal_status = "connected"
                     print(f"✅ AnsweredBy={answered_by} → connected")
-                elif previous_status == "ringing":
-                    internal_status = "connected"
-                    print("✅ in-progress after ringing → connected")
                 else:
+                    # Keep as ringing until we have proof of pickup
                     internal_status = "ringing"
                     print(
-                        f"📞 in-progress but no pickup evidence → keep 'ringing' (callback_event={callback_event}, "
-                        f"answered_by={answered_by}, previous={previous_status})"
+                        f"📞 in-progress but NO PICKUP PROOF → keep 'ringing' (callback_event={callback_event}, "
+                        f"answered_by='{answered_by}', previous={previous_status})"
                     )
-                    # Optional timeout fallback to avoid stuck 'ringing'
+                    # Timeout fallback (only if stuck too long)
                     if previous_status == "ringing" and getattr(call_session, "created_at", None):
                         time_since_created = (datetime.now(timezone.utc) - call_session.created_at).total_seconds()
-                        if time_since_created > 10:
+                        if time_since_created > 15:  # 15 seconds timeout (increased from 10)
                             internal_status = "connected"
-                            print("✅ Timeout fallback (10s) → connected")
+                            print("⚠️ Timeout fallback (15s) → connected (no AnsweredBy received)")
             elif twilio_status == "completed":
                 internal_status = "completed"
             elif twilio_status in ["busy", "no-answer", "failed"]:
