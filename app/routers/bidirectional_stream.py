@@ -670,7 +670,7 @@ class BidirectionalStreamHandler:
                             "call_sid": self.call_sid,
                             "stream_sid": self.stream_sid,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "Call picked up and media stream started"
+                            "message": "Connected"
                         }
                     )
                     print(f"✅ Broadcasted 'in-progress' status via WebSocket (media stream started)")
