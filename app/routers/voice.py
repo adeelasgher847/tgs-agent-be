@@ -310,9 +310,16 @@ async def initiate_call(
         
         if not has_sufficient:
             print(f"❌ Insufficient credits: {current_credits} < {required_credits}")
+            error_detail = {
+                "error": "insufficient_credits",
+                "message": "Insufficient credits to initiate call",
+                "current_credits": current_credits,
+                "required_credits": required_credits,
+                "model": model_name
+            }
             raise HTTPException(
                 status_code=402,  # Payment Required
-                detail=f"Insufficient credits to initiate call. Current balance: {current_credits} credits, Required: {required_credits} credits. Model: {model_name}"
+                detail=str(error_detail)  # Convert to string for detail field
             )
         
         print(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")

@@ -82,12 +82,13 @@ class CreditService:
     ) -> tuple[bool, int, int]:
         """
         Check if tenant has sufficient credits for a call
+        Now requires credits > 0 (not >= required amount for 1 minute)
         
         Args:
             db: Database session
             tenant_id: Tenant UUID
             model_name: Name of the model being used
-            estimated_minutes: Estimated call duration in minutes
+            estimated_minutes: Estimated call duration in minutes (used for calculation)
             
         Returns:
             Tuple of (has_sufficient, current_credits, required_credits)
@@ -96,7 +97,8 @@ class CreditService:
         cost_per_minute = self.get_credit_cost_for_model(model_name)
         required_credits = cost_per_minute * estimated_minutes
         
-        return (current_credits >= required_credits, current_credits, required_credits)
+        # Change: Only require credits > 0 (call will end when reaching 0 during monitoring)
+        return (current_credits > 0, current_credits, required_credits)
     
     def deduct_credits(
         self, 
@@ -126,8 +128,9 @@ class CreditService:
         
         current_credits = tenant.credits or 0
         
-        if current_credits < amount:
-            logger.warning(f"Insufficient credits for tenant {tenant_id}: {current_credits} < {amount}")
+        # Change: Allow deduction if credits are 0 or less (call will end when credits reach 0)
+        if current_credits <= 0:
+            logger.warning(f"Insufficient credits for tenant {tenant_id}: {current_credits} <= 0")
             return (False, current_credits)
         
         # Deduct credits
