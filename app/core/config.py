@@ -24,13 +24,10 @@ class Settings(BaseSettings):
     
     # Webhook Configuration
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
-    # Email settings for password reset
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USERNAME: str = "mubeenhussain8@gmail.com"
-    SMTP_PASSWORD: str = "luse tpvz rsqb ahij"
-    SMTP_TLS: bool = True
-    SMTP_SSL: bool = False
+    # Email settings (SendGrid)
+    SENDGRID_API_KEY: str = ""
+    SENDGRID_SENDER_EMAIL: str = ""
+    # Legacy SMTP settings (no longer used)
     
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
