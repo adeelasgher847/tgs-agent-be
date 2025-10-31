@@ -11,13 +11,14 @@ from app.core.security import get_password_hash, create_user_token, create_refre
 from app.models.refresh_token import RefreshToken
 from app.utils.response import create_success_response
 from datetime import datetime, timezone
+from typing import Optional
 
 router = APIRouter()
 
 @router.post("/accept-invite", response_model=SuccessResponse[UserOut])
 def accept_invite(
     token: str,
-    password: str,
+    password: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
@@ -55,7 +56,14 @@ def accept_invite(
     # Check if user already exists with this email
     existing_user = db.query(User).filter(User.email == invite.email).first()
     
-    membership_exists = False
+    members_exists = False
+
+    # If user does not exist yet, password is mandatory
+    if not existing_user and not password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password is required for new users accepting invites."
+        )
 
     if existing_user:
         # User already exists; allow password reset via invite
@@ -70,7 +78,7 @@ def accept_invite(
             WHERE user_id = :user_id AND tenant_id = :tenant_id
         """), {"user_id": str(user.id), "tenant_id": str(invite.tenant_id)})
 
-        membership_exists = result.scalar() > 0
+        members_exists = result.scalar() > 0
     else:
         # Create new user - use email prefix as name for now
         hashed_password = get_password_hash(password)
@@ -96,7 +104,7 @@ def accept_invite(
         )
 
     # Associate user with tenant and set role
-    if not membership_exists:
+    if not members_exists:
         if invite.tenant not in user.tenants:
             user.tenants.append(invite.tenant)
             db.flush()
@@ -158,7 +166,7 @@ def accept_invite(
     
     # Determine response message based on whether user was new or existing
     if existing_user:
-        if membership_exists:
+        if members_exists:
             message = "Invitation accepted successfully. Your account has been updated for this tenant."
         else:
             message = "Invitation accepted successfully. You have been added to the tenant."
