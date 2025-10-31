@@ -104,6 +104,9 @@ def accept_invite(
         )
     )
     
+    # Update user's current_tenant_id to the invited tenant
+    user.current_tenant_id = invite.tenant_id
+    
     # Update invitation status
     invite.status = "ACCEPTED"
     invite.accepted_at = datetime.now(timezone.utc)
