@@ -4,6 +4,7 @@ from typing import List, Optional
 import uuid
 
 from app.api.deps import get_db, require_admin_or_owner, require_tenant
+from app.models import user
 from app.models.user import User
 from app.schemas.phone_number import (
     PhoneNumberResponse, PhoneNumberList,
