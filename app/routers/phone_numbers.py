@@ -19,7 +19,7 @@ router = APIRouter()
 
 @router.get("/", response_model=SuccessResponse[PhoneNumberList])
 async def get_phone_numbers(
-    user: User = Depends(require_admin_or_owner),
+    
     db: Session = Depends(get_db)
 ):
     """Get all phone numbers for the tenant"""
