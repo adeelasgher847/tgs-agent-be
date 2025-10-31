@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
 
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_admin_or_owner, require_tenant
 from app.models.user import User
 from app.schemas.phone_number import (
     PhoneNumberResponse, PhoneNumberList,
@@ -19,7 +19,7 @@ router = APIRouter()
 
 @router.get("/", response_model=SuccessResponse[PhoneNumberList])
 async def get_phone_numbers(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin_or_owner),
     db: Session = Depends(get_db)
 ):
     """Get all phone numbers for the tenant"""
@@ -54,7 +54,7 @@ async def get_phone_numbers(
 @router.post("/", response_model=SuccessResponse[CreatePhoneNumberResponse])
 async def create_phone_number(
     request: CreatePhoneNumberRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin_or_owner),
     db: Session = Depends(get_db)
 ):
     """Create a new phone number"""
@@ -111,7 +111,7 @@ async def get_available_phone_numbers(
     voice_enabled: bool = Query(default=True, description="Whether numbers should support voice"),
     sms_enabled: bool = Query(default=True, description="Whether numbers should support SMS"),
     limit: int = Query(default=20, ge=1, le=100, description="Maximum number of results to return"),
-    user: User = Depends(require_tenant)
+    user: User = Depends(require_admin_or_owner)
 ):
     """Get available phone numbers from Twilio"""
     try:
@@ -153,7 +153,7 @@ async def get_available_phone_numbers(
 @router.get("/available-number")
 async def get_owned_phone_numbers(
     limit: int = Query(default=50, ge=1, le=100, description="Maximum number of results to return"),
-    user: User = Depends(require_tenant)
+    user: User = Depends(require_admin_or_owner)
 ):
     """Get all phone numbers owned by your Twilio account"""
     try:
@@ -177,7 +177,7 @@ async def get_owned_phone_numbers(
 
 @router.get("/twilio/account-info", include_in_schema=False)
 async def get_twilio_account_info(
-    user: User = Depends(require_tenant)
+    user: User = Depends(require_admin_or_owner)
 ):
     """Get Twilio account information"""
     try:
@@ -203,7 +203,7 @@ async def purchase_phone_number(
     phone_number: str = Query(..., description="Phone number to purchase (e.g., +1234567890)"),
     webhook_url: Optional[str] = Query(default=None, description="Webhook URL for incoming calls"),
     status_callback_url: Optional[str] = Query(default=None, description="Webhook URL for call status updates"),
-    user: User = Depends(require_tenant)
+    user: User = Depends(require_admin_or_owner)
 ):
     """Purchase a phone number from Twilio"""
     try:
@@ -277,7 +277,7 @@ async def get_verified_phone_numbers(
 @router.get("/{phone_number_id}", response_model=SuccessResponse[PhoneNumberResponse])
 async def get_phone_number(
     phone_number_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin_or_owner),
     db: Session = Depends(get_db)
 ):
     """Get a specific phone number"""
@@ -311,7 +311,7 @@ async def get_phone_number(
 async def update_phone_number(
     phone_number_id: uuid.UUID,
     request: PhoneNumberUpdate,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin_or_owner),
     db: Session = Depends(get_db)
 ):
     """Update a phone number"""
@@ -344,7 +344,7 @@ async def update_phone_number(
 @router.delete("/{phone_number_id}", response_model=SuccessResponse[dict])
 async def delete_phone_number(
     phone_number_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin_or_owner),
     db: Session = Depends(get_db)
 ):
     """Delete a phone number"""
