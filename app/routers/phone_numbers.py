@@ -4,7 +4,6 @@ from typing import List, Optional
 import uuid
 
 from app.api.deps import get_db, require_admin_or_owner, require_tenant
-from app.models import user
 from app.models.user import User
 from app.schemas.phone_number import (
     PhoneNumberResponse, PhoneNumberList,
@@ -20,7 +19,7 @@ router = APIRouter()
 
 @router.get("/", response_model=SuccessResponse[PhoneNumberList])
 async def get_phone_numbers(
-    
+    user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """Get all phone numbers for the tenant"""
