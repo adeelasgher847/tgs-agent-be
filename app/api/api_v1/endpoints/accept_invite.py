@@ -55,21 +55,22 @@ def accept_invite(
     # Check if user already exists with this email
     existing_user = db.query(User).filter(User.email == invite.email).first()
     
+    membership_exists = False
+
     if existing_user:
-        # User already exists, just add them to the new tenant
+        # User already exists; allow password reset via invite
         user = existing_user
-        
+
+        if password:
+            user.hashed_password = get_password_hash(password)
+
         # Check if user is already in this tenant
         result = db.execute(text("""
             SELECT COUNT(*) FROM user_tenant_association 
             WHERE user_id = :user_id AND tenant_id = :tenant_id
         """), {"user_id": str(user.id), "tenant_id": str(invite.tenant_id)})
-        
-        if result.scalar() > 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="User is already a member of this tenant."
-            )
+
+        membership_exists = result.scalar() > 0
     else:
         # Create new user - use email prefix as name for now
         hashed_password = get_password_hash(password)
@@ -95,16 +96,25 @@ def accept_invite(
         )
 
     # Associate user with tenant and set role
-    if invite.tenant not in user.tenants:
-        user.tenants.append(invite.tenant)
-        db.flush()
+    if not membership_exists:
+        if invite.tenant not in user.tenants:
+            user.tenants.append(invite.tenant)
+            db.flush()
 
-    stmt = update(user_tenant_association).where(
-        (user_tenant_association.c.user_id == user.id) &
-        (user_tenant_association.c.tenant_id == invite.tenant_id)
-    ).values(role_id=member_role.id)
+        stmt = update(user_tenant_association).where(
+            (user_tenant_association.c.user_id == user.id) &
+            (user_tenant_association.c.tenant_id == invite.tenant_id)
+        ).values(role_id=member_role.id)
 
-    db.execute(stmt)
+        db.execute(stmt)
+    else:
+        # Ensure role is kept in sync for existing members as well
+        stmt = update(user_tenant_association).where(
+            (user_tenant_association.c.user_id == user.id) &
+            (user_tenant_association.c.tenant_id == invite.tenant_id)
+        ).values(role_id=member_role.id)
+
+        db.execute(stmt)
 
     # Ensure user's current tenant reflects the invite tenant
     user.current_tenant_id = invite.tenant_id
@@ -148,7 +158,10 @@ def accept_invite(
     
     # Determine response message based on whether user was new or existing
     if existing_user:
-        message = "Invitation accepted successfully. You have been added to the tenant."
+        if membership_exists:
+            message = "Invitation accepted successfully. Your account has been updated for this tenant."
+        else:
+            message = "Invitation accepted successfully. You have been added to the tenant."
     else:
         message = "Invitation accepted successfully. You are now a member of the tenant."
     
