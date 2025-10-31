@@ -1,16 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.models.invite import Invite
 from app.models.user import User, user_tenant_association
 from app.models.role import Role
-from app.schemas.user import UserCreate, UserOut
+from app.schemas.user import UserOut
 from app.schemas.base import SuccessResponse
 from app.core.security import get_password_hash, create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.models.refresh_token import RefreshToken
 from app.utils.response import create_success_response
 from datetime import datetime, timezone
-import uuid
 
 router = APIRouter()
 
@@ -60,7 +60,6 @@ def accept_invite(
         user = existing_user
         
         # Check if user is already in this tenant
-        from sqlalchemy import text
         result = db.execute(text("""
             SELECT COUNT(*) FROM user_tenant_association 
             WHERE user_id = :user_id AND tenant_id = :tenant_id
@@ -94,15 +93,21 @@ def accept_invite(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Member role not found. Please contact administrator."
         )
-    
-    # Insert into user_tenant_association table
-    db.execute(
-        user_tenant_association.insert().values(
-            user_id=user.id,
-            tenant_id=invite.tenant_id,
-            role_id=member_role.id
-        )
-    )
+
+    # Associate user with tenant and set role
+    if invite.tenant not in user.tenants:
+        user.tenants.append(invite.tenant)
+        db.flush()
+
+    stmt = update(user_tenant_association).where(
+        (user_tenant_association.c.user_id == user.id) &
+        (user_tenant_association.c.tenant_id == invite.tenant_id)
+    ).values(role_id=member_role.id)
+
+    db.execute(stmt)
+
+    # Ensure user's current tenant reflects the invite tenant
+    user.current_tenant_id = invite.tenant_id
     
     # Update invitation status
     invite.status = "ACCEPTED"
