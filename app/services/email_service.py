@@ -1,6 +1,9 @@
 import logging
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+import certifi
+import requests
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -8,23 +11,16 @@ logger = logging.getLogger(__name__)
 
 class EmailService:
     def __init__(self):
-        self.sg_client = SendGridAPIClient(settings.SENDGRID_API_KEY) if settings.SENDGRID_API_KEY else None
+        self.api_key = settings.SENDGRID_API_KEY
         self.sender_email = settings.SENDGRID_SENDER_EMAIL
-    
+
     def send_password_reset_email(self, email: str, reset_token: str, user_name: str) -> bool:
-        """
-        Send password reset email to user
-        
-        Args:
-            email: User's email address
-            reset_token: Password reset token
-            user_name: User's name for personalization
-            
-        Returns:
-            bool: True if email sent successfully, False otherwise
-        """
         try:
-            subject = "Password Reset Request - Voice Agent Platform"
+            msg = MIMEMultipart()
+            msg['From'] = self.sender_email
+            msg['To'] = email
+            msg['Subject'] = "Password Reset Request - Voice Agent Platform"
+
             reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
             body = f"""
             <html>
@@ -42,50 +38,19 @@ class EmailService:
             </body>
             </html>
             """
-            return self._send_email(to_email=email, subject=subject, html_body=body)
+            msg.attach(MIMEText(body, 'html'))
+            return self._send_email(msg)
         except Exception as e:
             logger.error(f"Error sending password reset email to {email}: {str(e)}")
             return False
-    
-    def _send_email(self, to_email: str, subject: str, html_body: str) -> bool:
-        """
-        Send an email using SendGrid API.
-        """
-        try:
-            if not self.sg_client:
-                logger.error("SendGrid client is not configured. Missing SENDGRID_API_KEY.")
-                return False
-            message = Mail(
-                from_email=self.sender_email,
-                to_emails=to_email,
-                subject=subject,
-                html_content=html_body,
-            )
-            response = self.sg_client.send(message)
-            if 200 <= response.status_code < 300:
-                logger.info(f"Email sent successfully to {to_email}")
-                return True
-            logger.error(f"Failed to send email to {to_email}. Status: {response.status_code}")
-            return False
-        except Exception as e:
-            logger.error(f"Error sending email via SendGrid: {str(e)}")
-            return False
-    
+
     def send_invite_email(self, email: str, invite_token: str, inviter_name: str, tenant_name: str) -> bool:
-        """
-        Send team invitation email via Gmail
-        
-        Args:
-            email: Invitee's email address
-            invite_token: Invitation token
-            inviter_name: Name of person sending invite
-            tenant_name: Name of the team/tenant
-            
-        Returns:
-            bool: True if email sent successfully, False otherwise
-        """
         try:
-            subject = f"You're invited to join {tenant_name} on Voice Agent Platform"
+            msg = MIMEMultipart()
+            msg['From'] = self.sender_email
+            msg['To'] = email
+            msg['Subject'] = f"You're invited to join {tenant_name} on Voice Agent Platform"
+
             invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={invite_token}"
             body = f"""
             <html>
@@ -103,10 +68,59 @@ class EmailService:
             </body>
             </html>
             """
-            return self._send_email(to_email=email, subject=subject, html_body=body)
+            msg.attach(MIMEText(body, 'html'))
+            return self._send_email(msg)
         except Exception as e:
             logger.error(f"Error sending invite email to {email}: {str(e)}")
             return False
+
+    def _send_email(self, msg: MIMEMultipart) -> bool:
+        if not self.api_key:
+            logger.error("SendGrid API key is missing.")
+            return False
+        if not self.sender_email:
+            logger.error("SENDGRID_SENDER_EMAIL is missing.")
+            return False
+        payload = self._build_payload(msg)
+        try:
+            response = requests.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=10,
+                verify=certifi.where(),
+            )
+            if 200 <= response.status_code < 300:
+                logger.info(f"Email sent successfully to {msg['To']}")
+                return True
+            logger.error(
+                "Failed to send email to %s. Status: %s, Body: %s",
+                msg['To'],
+                response.status_code,
+                response.text,
+            )
+            return False
+        except Exception as e:
+            logger.error(f"Error sending email via SendGrid HTTP: {str(e)}")
+            return False
+
+    @staticmethod
+    def _build_payload(msg: MIMEMultipart) -> dict:
+        html_content = ""
+        for part in msg.walk():
+            if part.get_content_type() == "text/html":
+                html_content = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8")
+                break
+        return {
+            "personalizations": [{"to": [{"email": msg['To']}]}],
+            "from": {"email": msg['From']},
+            "subject": msg['Subject'],
+            "content": [{"type": "text/html", "value": html_content}],
+        }
+
 
 # Create a global instance
 email_service = EmailService()
