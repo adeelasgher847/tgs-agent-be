@@ -67,6 +67,10 @@ class TwilioMediaStreamHandler:
         self.confidence_threshold = 0.6  # Minimum confidence to trigger interruption
         self.user_speech_confidence = 0.0  # Latest speech confidence
         
+        # Interruption debouncing - prevent multiple stop calls
+        self.interruption_triggered = False  # Flag to prevent duplicate stops
+        self.last_interruption_time = None  # Track last interruption
+        
         # Get call session and agent
         self.call_session = None
         self.agent = None
@@ -126,13 +130,25 @@ class TwilioMediaStreamHandler:
                 sys.stdout.flush()
                 return True
             else:
-                print(f"⚠️ Failed to stop TTS playback")
+                print(f"⚠️ Failed to stop TTS playback via redirect")
+                print(f"🔧 FALLBACK: Force-stopping agent state anyway")
+                # Even if redirect fails, stop generating new responses
+                self.tts_playing = False
+                self.agent_is_speaking = False
+                self.llm_stream_active = False
                 sys.stdout.flush()
                 return False
         except Exception as e:
             print(f"❌ Error stopping TTS playback: {e}")
             import traceback
             traceback.print_exc()
+            # Force state reset even on exception
+            print(f"🔧 EXCEPTION FALLBACK: Force-stopping agent state")
+            self.tts_playing = False
+            self.agent_is_speaking = False
+            self.llm_stream_active = False
+            import sys
+            sys.stdout.flush()
             return False
     
     async def handle_media_message(self, message: dict):
@@ -151,12 +167,17 @@ class TwilioMediaStreamHandler:
             # Detect user speech activity (non-empty audio indicates speech)
             is_user_speaking = len(audio_data) > 0
             
-            # CRITICAL: Real-time interruption detection
+            # CRITICAL: Real-time interruption detection with debouncing
             # If user starts speaking while agent is responding, IMMEDIATELY stop agent
-            if is_user_speaking and (self.agent_is_speaking or self.tts_playing):
+            # BUT only trigger once per interruption to avoid multiple concurrent API calls
+            if is_user_speaking and (self.agent_is_speaking or self.tts_playing) and not self.interruption_triggered:
                 print(f"🔴 REAL-TIME INTERRUPTION - User speaking during agent response!")
                 import sys
                 sys.stdout.flush()
+                
+                # Set flag to prevent duplicate triggers
+                self.interruption_triggered = True
+                self.last_interruption_time = datetime.now(timezone.utc)
                 
                 # Stop LLM generation if active
                 if self.llm_stream_active:
@@ -164,9 +185,9 @@ class TwilioMediaStreamHandler:
                     self.llm_stream_active = False
                     sys.stdout.flush()
                 
-                # Stop TTS playback immediately
+                # Stop TTS playback immediately (only once)
                 if self.tts_playing or self.agent_is_speaking:
-                    print(f"🛑 Stopping TTS playback NOW")
+                    print(f"🛑 Stopping TTS playback NOW (first interruption packet)")
                     sys.stdout.flush()
                     
                     # Call the stop function to interrupt Twilio
@@ -193,6 +214,14 @@ class TwilioMediaStreamHandler:
                     sys.stdout.flush()
             else:
                 self.silence_counter += 1
+                
+                # Reset interruption flag after some silence (user done speaking)
+                # This allows agent to respond again after user finishes
+                if self.interruption_triggered and self.silence_counter > 25:  # ~0.5s silence
+                    print(f"🔄 Resetting interruption flag after silence")
+                    self.interruption_triggered = False
+                    import sys
+                    sys.stdout.flush()
             
             # Check for inactivity timeout (no speech for 15 seconds)
             if self.last_activity_time:
@@ -351,11 +380,8 @@ class TwilioMediaStreamHandler:
                     print(f"🎤 Total accumulated speech: '{self.current_speech.strip()}'")
                     sys.stdout.flush()
                     
-                    # High confidence speech during agent speaking = definite interruption
-                    if confidence > self.confidence_threshold and (self.agent_is_speaking or self.tts_playing):
-                        print(f"🔴 HIGH-CONFIDENCE INTERRUPTION (confidence: {confidence:.2f} > {self.confidence_threshold})")
-                        sys.stdout.flush()
-                        await self.stop_tts_playback()
+                    # Note: Interruption already handled in real-time via handle_media_message
+                    # No need for duplicate stop here - it's already been triggered
             else:
                 print(f"⚠️ No transcript in result")
                 sys.stdout.flush()
@@ -517,12 +543,18 @@ class TwilioMediaStreamHandler:
                             asyncio.create_task(self._reset_agent_speaking_after_delay(estimated_tts_duration))
                         else:
                             print(f"⚠️ Call redirect failed - call may have ended")
+                            print(f"🔧 Resetting agent state due to redirect failure")
                             self.agent_is_speaking = False
+                            self.tts_playing = False
+                            self.llm_stream_active = False
                             sys.stdout.flush()
                 except Exception as e:
                     print(f"⚠️ Failed to trigger TwiML redirect: {e}")
+                    print(f"🔧 EXCEPTION: Resetting agent state")
+                    self.agent_is_speaking = False
+                    self.tts_playing = False
+                    self.llm_stream_active = False
                     sys.stdout.flush()
-                    # Non-critical - the call will redirect on its own after the pause timeout
         
         except Exception as e:
             print(f"❌ Error finalizing speech: {e}")
