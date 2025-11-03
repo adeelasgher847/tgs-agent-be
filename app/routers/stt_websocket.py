@@ -48,8 +48,9 @@ class TwilioMediaStreamHandler:
         # Smart silence detection for end-of-speech
         # Twilio sends ~50 packets per second (20ms each)
         # We wait for actual silence before processing
-        # 40-50 empty chunks = ~0.8-1 second of silence (Vapi-like speed)
-        self.silence_threshold = 45  # ~1 second silence (optimal for clean speech detection)
+        # Increase threshold to ensure user completes their thought
+        # 75-100 empty chunks = ~1.5-2 seconds of silence (ensures user is done speaking)
+        self.silence_threshold = 100  # ~2 seconds silence (gives user time to complete thought)
         
         # Inactivity timeout - end call if no speech for 15 seconds
         self.last_activity_time = None
@@ -81,6 +82,18 @@ class TwilioMediaStreamHandler:
                 print(f"✅ Loaded call session {self.call_session_id} and agent {self.agent.name if self.agent else 'Unknown'}")
         except Exception as e:
             print(f"⚠️ Error loading session data: {e}")
+    
+    async def _reset_agent_speaking_after_delay(self, delay_seconds: float):
+        """Reset agent speaking state after TTS playback duration"""
+        try:
+            await asyncio.sleep(delay_seconds)
+            if self.agent_is_speaking:
+                print(f"⏰ Auto-reset: Agent finished speaking (after {delay_seconds:.1f}s)")
+                self.agent_is_speaking = False
+                import sys
+                sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ Error resetting agent speaking state: {e}")
     
     async def handle_media_message(self, message: dict):
         """Handle incoming media message from Twilio"""
@@ -171,18 +184,35 @@ class TwilioMediaStreamHandler:
                 # User stopped speaking - process all accumulated audio
                 import sys
                 sys.stdout.flush()
-                print(f"🔕 Silence detected ({self.silence_counter} empty chunks)")
-                print(f"🔊 Processing complete speech: {len(self.audio_buffer)} audio chunks...")
+                print(f"🔕 Silence detected ({self.silence_counter} empty chunks = ~{self.silence_counter * 0.02:.1f}s)")
+                print(f"🔊 User finished speaking, processing: {len(self.audio_buffer)} audio chunks...")
                 sys.stdout.flush()
                 
-                # Only process if agent is NOT currently speaking
+                # IMPORTANT: Only process if agent is NOT currently speaking
                 if not self.agent_is_speaking:
+                    print(f"✅ Agent is idle, processing user speech now")
+                    sys.stdout.flush()
                     await self.process_audio_buffer()
                 else:
-                    # Agent is speaking, buffer user's speech for later
-                    print(f"⏸️ Agent is speaking, buffering user speech for after agent finishes")
+                    # Agent is speaking - user is interrupting!
+                    print(f"🔴 AGENT IS SPEAKING - User is trying to interrupt, stopping agent first")
                     sys.stdout.flush()
-                    # Keep the audio in buffer, will process when agent finishes
+                    
+                    # Force stop agent immediately
+                    self.agent_is_speaking = False
+                    
+                    # Clear any pending agent response
+                    if self.call_session and self.call_session.call_metadata:
+                        if "pending_response" in self.call_session.call_metadata:
+                            self.call_session.call_metadata.pop("pending_response")
+                            self.db.commit()
+                            print(f"🗑️ Cleared pending agent response due to user interruption")
+                            sys.stdout.flush()
+                    
+                    # Now process user's speech
+                    print(f"🎤 Processing user interruption speech")
+                    sys.stdout.flush()
+                    await self.process_audio_buffer()
                 
                 # Flush logs again after processing
                 sys.stdout.flush()
@@ -402,10 +432,17 @@ class TwilioMediaStreamHandler:
                             print("=" * 80)
                             sys.stdout.flush()
                             
-                            # Agent response completed - mark as no longer speaking
-                            # (Note: actual TTS playback continues, but we allow user to interrupt)
-                            print(f"🎤 Agent response sent, listening for user interruptions")
+                            # Schedule agent speaking state reset after estimated TTS duration
+                            # Estimate: ~0.5 seconds per 10 words of TTS playback
+                            word_count = len(response_text.split())
+                            estimated_tts_duration = max(3, word_count * 0.15)  # At least 3 seconds
+                            
+                            print(f"🎤 Agent response sent ({word_count} words, ~{estimated_tts_duration:.1f}s TTS)")
+                            print(f"⏰ Will reset agent_is_speaking after {estimated_tts_duration:.1f}s")
                             sys.stdout.flush()
+                            
+                            # Schedule reset after TTS completes
+                            asyncio.create_task(self._reset_agent_speaking_after_delay(estimated_tts_duration))
                         else:
                             print(f"⚠️ Call redirect failed - call may have ended")
                             self.agent_is_speaking = False
