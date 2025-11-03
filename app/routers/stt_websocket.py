@@ -60,6 +60,12 @@ class TwilioMediaStreamHandler:
         # Agent response state tracking - prevent overlapping responses
         self.agent_is_speaking = False
         self.pending_user_speech = []  # Buffer user speech during agent response
+        self.llm_stream_active = False  # Track if LLM is generating response
+        self.tts_playing = False  # Track if TTS is currently playing
+        
+        # Confidence threshold for interruption detection
+        self.confidence_threshold = 0.6  # Minimum confidence to trigger interruption
+        self.user_speech_confidence = 0.0  # Latest speech confidence
         
         # Get call session and agent
         self.call_session = None
@@ -90,10 +96,44 @@ class TwilioMediaStreamHandler:
             if self.agent_is_speaking:
                 print(f"⏰ Auto-reset: Agent finished speaking (after {delay_seconds:.1f}s)")
                 self.agent_is_speaking = False
+                self.tts_playing = False
                 import sys
                 sys.stdout.flush()
         except Exception as e:
             print(f"⚠️ Error resetting agent speaking state: {e}")
+    
+    async def stop_tts_playback(self):
+        """Stop current TTS playback by interrupting the call"""
+        try:
+            if not self.call_sid:
+                print(f"⚠️ No call_sid available to stop TTS")
+                return False
+            
+            print(f"🛑 STOPPING TTS PLAYBACK - Interrupting call {self.call_sid}")
+            import sys
+            sys.stdout.flush()
+            
+            # Immediately redirect call to stop TTS and continue listening
+            interrupt_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
+            interrupt_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}&interrupt=true"
+            
+            success = twilio_service.redirect_call(self.call_sid, interrupt_url)
+            
+            if success:
+                print(f"✅ TTS playback stopped successfully")
+                self.tts_playing = False
+                self.agent_is_speaking = False
+                sys.stdout.flush()
+                return True
+            else:
+                print(f"⚠️ Failed to stop TTS playback")
+                sys.stdout.flush()
+                return False
+        except Exception as e:
+            print(f"❌ Error stopping TTS playback: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
     
     async def handle_media_message(self, message: dict):
         """Handle incoming media message from Twilio"""
@@ -108,30 +148,37 @@ class TwilioMediaStreamHandler:
             # Decode base64 audio
             audio_data = base64.b64decode(payload)
             
-            # Detect user speech activity (non-empty audio)
+            # Detect user speech activity (non-empty audio indicates speech)
             is_user_speaking = len(audio_data) > 0
             
-            # If user starts speaking while agent is responding, interrupt agent
-            if is_user_speaking and self.agent_is_speaking:
-                print(f"🔴 USER INTERRUPTION DETECTED - Stopping agent response")
+            # CRITICAL: Real-time interruption detection
+            # If user starts speaking while agent is responding, IMMEDIATELY stop agent
+            if is_user_speaking and (self.agent_is_speaking or self.tts_playing):
+                print(f"🔴 REAL-TIME INTERRUPTION - User speaking during agent response!")
                 import sys
                 sys.stdout.flush()
                 
-                # Mark agent as no longer speaking
-                self.agent_is_speaking = False
+                # Stop LLM generation if active
+                if self.llm_stream_active:
+                    print(f"🛑 Stopping LLM generation")
+                    self.llm_stream_active = False
+                    sys.stdout.flush()
                 
-                # Stop any pending agent TTS by redirecting call to silence/listen state
-                if self.call_sid:
-                    try:
-                        # Redirect to a minimal TwiML that just continues listening
-                        interrupt_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
-                        interrupt_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}&interrupt=true"
-                        twilio_service.redirect_call(self.call_sid, interrupt_url)
-                        print(f"✅ Agent TTS interrupted, now listening to user")
-                        sys.stdout.flush()
-                    except Exception as e:
-                        print(f"⚠️ Failed to interrupt agent: {e}")
-                        sys.stdout.flush()
+                # Stop TTS playback immediately
+                if self.tts_playing or self.agent_is_speaking:
+                    print(f"🛑 Stopping TTS playback NOW")
+                    sys.stdout.flush()
+                    
+                    # Call the stop function to interrupt Twilio
+                    await self.stop_tts_playback()
+                    
+                    # Clear any pending response from metadata
+                    if self.call_session and self.call_session.call_metadata:
+                        if "pending_response" in self.call_session.call_metadata:
+                            self.call_session.call_metadata.pop("pending_response")
+                            self.db.commit()
+                            print(f"🗑️ Cleared pending agent response")
+                            sys.stdout.flush()
             
             # Add to buffer
             self.audio_buffer.append(audio_data)
@@ -179,38 +226,43 @@ class TwilioMediaStreamHandler:
                     return
             
             # Only process when silence detected (avoids duplicates)
-            # This way: User speaks → Silence → Process complete speech → Clean result!
+            # This way: User speaks → Silence (2s) → Process complete speech → Clean result!
             if self.speech_active and self.silence_counter >= self.silence_threshold:
-                # User stopped speaking - process all accumulated audio
+                silence_duration = self.silence_counter * 0.02  # Convert to seconds
+                
                 import sys
                 sys.stdout.flush()
-                print(f"🔕 Silence detected ({self.silence_counter} empty chunks = ~{self.silence_counter * 0.02:.1f}s)")
+                print(f"🔕 Silence detected ({self.silence_counter} empty chunks = ~{silence_duration:.1f}s)")
                 print(f"🔊 User finished speaking, processing: {len(self.audio_buffer)} audio chunks...")
                 sys.stdout.flush()
                 
-                # IMPORTANT: Only process if agent is NOT currently speaking
-                if not self.agent_is_speaking:
-                    print(f"✅ Agent is idle, processing user speech now")
+                # Check if agent is currently speaking/playing TTS
+                if not self.agent_is_speaking and not self.tts_playing:
+                    # Agent is idle - safe to process user speech and generate response
+                    print(f"✅ Agent is idle, processing user speech and generating response")
                     sys.stdout.flush()
                     await self.process_audio_buffer()
                 else:
-                    # Agent is speaking - user is interrupting!
-                    print(f"🔴 AGENT IS SPEAKING - User is trying to interrupt, stopping agent first")
+                    # Agent is speaking/playing - user has interrupted!
+                    print(f"🔴 AGENT WAS SPEAKING - User interrupted with complete speech")
                     sys.stdout.flush()
                     
-                    # Force stop agent immediately
-                    self.agent_is_speaking = False
+                    # Stop agent immediately
+                    await self.stop_tts_playback()
                     
                     # Clear any pending agent response
                     if self.call_session and self.call_session.call_metadata:
                         if "pending_response" in self.call_session.call_metadata:
                             self.call_session.call_metadata.pop("pending_response")
                             self.db.commit()
-                            print(f"🗑️ Cleared pending agent response due to user interruption")
+                            print(f"🗑️ Cleared pending agent response due to interruption")
                             sys.stdout.flush()
                     
-                    # Now process user's speech
-                    print(f"🎤 Processing user interruption speech")
+                    # Small delay to ensure TTS stop took effect
+                    await asyncio.sleep(0.3)
+                    
+                    # Now process user's interruption speech
+                    print(f"🎤 Processing user interruption speech (after {silence_duration:.1f}s silence)")
                     sys.stdout.flush()
                     await self.process_audio_buffer()
                 
@@ -284,6 +336,9 @@ class TwilioMediaStreamHandler:
                 transcript = result["transcript"].strip()
                 confidence = result.get("confidence", 0.0)
                 
+                # Store latest confidence for interruption detection
+                self.user_speech_confidence = confidence
+                
                 # Add this speech segment to accumulated speech
                 if transcript:
                     self.current_speech += " " + transcript
@@ -292,9 +347,15 @@ class TwilioMediaStreamHandler:
                     # Reset activity timer when speech is detected
                     self.last_activity_time = datetime.now(timezone.utc)
                     
-                    print(f"✅ Speech segment received: '{transcript}'")
+                    print(f"✅ Speech segment received: '{transcript}' (confidence: {confidence:.2f})")
                     print(f"🎤 Total accumulated speech: '{self.current_speech.strip()}'")
                     sys.stdout.flush()
+                    
+                    # High confidence speech during agent speaking = definite interruption
+                    if confidence > self.confidence_threshold and (self.agent_is_speaking or self.tts_playing):
+                        print(f"🔴 HIGH-CONFIDENCE INTERRUPTION (confidence: {confidence:.2f} > {self.confidence_threshold})")
+                        sys.stdout.flush()
+                        await self.stop_tts_playback()
             else:
                 print(f"⚠️ No transcript in result")
                 sys.stdout.flush()
@@ -363,8 +424,9 @@ class TwilioMediaStreamHandler:
                     }
                 )
                 
-                # Mark agent as starting to speak (prevent interruption)
+                # Mark agent as starting to generate response (prevent overlapping)
                 self.agent_is_speaking = True
+                self.llm_stream_active = True
                 
                 # Generate agent response (Vapi-style: fast LLM call)
                 import time
@@ -379,8 +441,15 @@ class TwilioMediaStreamHandler:
                 )
                 
                 llm_time = time.time() - start_time
+                self.llm_stream_active = False  # LLM generation complete
                 print(f"⚡ LLM response generated in {llm_time:.2f}s (Vapi-style)")
                 sys.stdout.flush()
+                
+                # Check if user interrupted during LLM generation
+                if not self.agent_is_speaking:
+                    print(f"⚠️ User interrupted during LLM generation, discarding response")
+                    sys.stdout.flush()
+                    return
                 
                 # Add agent response to transcript
                 transcript_start = time.time()
@@ -400,6 +469,9 @@ class TwilioMediaStreamHandler:
                     self.call_session.call_metadata = {}
                 self.call_session.call_metadata["pending_response"] = response_text
                 self.db.commit()
+                
+                # Mark TTS as about to play
+                self.tts_playing = True
                 
                 # Trigger a TwiML update by redirecting the call (Vapi-style instant)
                 # This will interrupt the current stream and play the response immediately
