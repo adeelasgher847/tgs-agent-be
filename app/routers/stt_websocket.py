@@ -56,6 +56,10 @@ class TwilioMediaStreamHandler:
         self.inactivity_timeout = 15  # seconds
         self.has_received_any_speech = False
         
+        # Agent response state tracking - prevent overlapping responses
+        self.agent_is_speaking = False
+        self.pending_user_speech = []  # Buffer user speech during agent response
+        
         # Get call session and agent
         self.call_session = None
         self.agent = None
@@ -91,15 +95,40 @@ class TwilioMediaStreamHandler:
             # Decode base64 audio
             audio_data = base64.b64decode(payload)
             
+            # Detect user speech activity (non-empty audio)
+            is_user_speaking = len(audio_data) > 0
+            
+            # If user starts speaking while agent is responding, interrupt agent
+            if is_user_speaking and self.agent_is_speaking:
+                print(f"🔴 USER INTERRUPTION DETECTED - Stopping agent response")
+                import sys
+                sys.stdout.flush()
+                
+                # Mark agent as no longer speaking
+                self.agent_is_speaking = False
+                
+                # Stop any pending agent TTS by redirecting call to silence/listen state
+                if self.call_sid:
+                    try:
+                        # Redirect to a minimal TwiML that just continues listening
+                        interrupt_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
+                        interrupt_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}&interrupt=true"
+                        twilio_service.redirect_call(self.call_sid, interrupt_url)
+                        print(f"✅ Agent TTS interrupted, now listening to user")
+                        sys.stdout.flush()
+                    except Exception as e:
+                        print(f"⚠️ Failed to interrupt agent: {e}")
+                        sys.stdout.flush()
+            
             # Add to buffer
             self.audio_buffer.append(audio_data)
             
             # Track silence to detect end of speech (Smart approach - no duplicates!)
-            if len(audio_data) > 0:
+            if is_user_speaking:
                 self.silence_counter = 0
                 if not self.speech_active:
                     self.speech_active = True
-                    print(f"🎤 Speech started - buffering audio...")
+                    print(f"🎤 User speech started - buffering audio...")
                     import sys
                     sys.stdout.flush()
             else:
@@ -146,7 +175,14 @@ class TwilioMediaStreamHandler:
                 print(f"🔊 Processing complete speech: {len(self.audio_buffer)} audio chunks...")
                 sys.stdout.flush()
                 
-                await self.process_audio_buffer()
+                # Only process if agent is NOT currently speaking
+                if not self.agent_is_speaking:
+                    await self.process_audio_buffer()
+                else:
+                    # Agent is speaking, buffer user's speech for later
+                    print(f"⏸️ Agent is speaking, buffering user speech for after agent finishes")
+                    sys.stdout.flush()
+                    # Keep the audio in buffer, will process when agent finishes
                 
                 # Flush logs again after processing
                 sys.stdout.flush()
@@ -250,6 +286,13 @@ class TwilioMediaStreamHandler:
             self.current_speech = ""
             return
         
+        # Don't process if agent is already speaking (turn-taking enforcement)
+        if self.agent_is_speaking:
+            print(f"⏸️ Agent is speaking, deferring user speech processing")
+            import sys
+            sys.stdout.flush()
+            return
+        
         try:
             import sys
             import time
@@ -258,7 +301,7 @@ class TwilioMediaStreamHandler:
             total_start_time = time.time()
             
             final_transcript = self.current_speech.strip()
-            print(f"✅ Final speech detected: '{final_transcript}'")
+            print(f"✅ Final user speech detected: '{final_transcript}'")
             sys.stdout.flush()
             
             # Reset speech state
@@ -289,6 +332,9 @@ class TwilioMediaStreamHandler:
                         "source": "google_stt"
                     }
                 )
+                
+                # Mark agent as starting to speak (prevent interruption)
+                self.agent_is_speaking = True
                 
                 # Generate agent response (Vapi-style: fast LLM call)
                 import time
@@ -355,8 +401,14 @@ class TwilioMediaStreamHandler:
                             print(f"   (Vapi target: ~1-2s)")
                             print("=" * 80)
                             sys.stdout.flush()
+                            
+                            # Agent response completed - mark as no longer speaking
+                            # (Note: actual TTS playback continues, but we allow user to interrupt)
+                            print(f"🎤 Agent response sent, listening for user interruptions")
+                            sys.stdout.flush()
                         else:
                             print(f"⚠️ Call redirect failed - call may have ended")
+                            self.agent_is_speaking = False
                             sys.stdout.flush()
                 except Exception as e:
                     print(f"⚠️ Failed to trigger TwiML redirect: {e}")

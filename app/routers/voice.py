@@ -416,6 +416,7 @@ async def handle_call_events_webhook(
     userId: Optional[str] = Query(None),
     callSessionId: Optional[str] = Query(None),
     timeout: Optional[str] = Query(None),
+    interrupt: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -810,6 +811,16 @@ async def handle_call_events_webhook(
                     return HTMLResponse(str(response), media_type="application/xml")
             else:
                 print("🔄 ALREADY STARTED - Continuing with bidirectional streaming")
+                
+                # Check if this is an interrupt redirect (user started speaking during agent response)
+                if interrupt == "true":
+                    print(f"🔴 INTERRUPT DETECTED - User speaking, stopping agent TTS and listening")
+                    # Return minimal TwiML that just continues the media stream
+                    response = VoiceResponse()
+                    # No additional TTS - just let the media stream continue
+                    response.pause(length=1)
+                    # Return to normal flow - media stream continues listening
+                    return HTMLResponse(str(response), media_type="application/xml")
                 
                 # Check for pending response (shouldn't happen with streaming, but keep for safety)
                 pending_response = None
