@@ -65,15 +65,15 @@ async def serve_google_tts_audio(
             voice_label = "Gemini Flash" if gemini_flash else "Neural2"
             print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
-            # Use normal speed for MULAW (clearer), slightly faster for MP3
-            rate = 1.0  # Normal speed for all formats
+            # Use natural conversational speed for more human-like sound
+            rate = 1.08  # Natural conversational speed
             
             audio_content = google_tts_service.text_to_speech(
                 text=text,
                 language=lang,
                 voice_type=voice,
-                speaking_rate=rate,  # Dynamic rate based on format
-                pitch=0.0,
+                speaking_rate=rate,  # Natural conversational rate
+                pitch=-1.8,  # Warmer tone
                 output_format=format,  # Use requested format (mp3 or mulaw)
                 use_gemini_flash=gemini_flash
             )

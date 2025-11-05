@@ -117,13 +117,13 @@ class GoogleTTSService:
             voice_type = voice_type if voice_type in ["male", "female"] else "female"
             return gemini_flash_voice_map[language][voice_type]
         
-        # Google Cloud TTS voice mapping (Standard Neural2 voices)
-        # Using NEURAL2 voices for SPEED + QUALITY balance (2x faster than Studio!)
+        # Google Cloud TTS voice mapping - Using STUDIO voices for NATURAL HUMAN-LIKE SOUND
+        # Studio voices are more expressive and warm than Neural2
         voice_map = {
-            # English voices - FAST + HIGH QUALITY (Neural2 - 60% faster than Studio)
+            # English voices - STUDIO (Most Natural & Human-like)
             "en": {
-                "male": "en-US-Neural2-A",       # Fast Male US English (0.5s vs 1.0s)
-                "female": "en-US-Neural2-C"      # Fast Female US English (0.5s vs 1.0s)
+                "male": "en-US-Studio-M",        # Natural Male (human-like, expressive)
+                "female": "en-US-Studio-O"       # Natural Female (warm, conversational)
             },
             # Spanish voices - FAST + HIGH QUALITY
             "es": {
@@ -184,8 +184,8 @@ class GoogleTTSService:
         text: str, 
         language: str = "en",
         voice_type: str = "female",
-        speaking_rate: float = 1.0,
-        pitch: float = 0.0,
+        speaking_rate: float = 1.08,  # More natural conversational speed
+        pitch: float = -1.8,           # Warmer, less robotic tone
         output_format: str = "mp3",
         use_gemini_flash: bool = False
     ) -> bytes:
@@ -231,12 +231,14 @@ class GoogleTTSService:
             
             audio_encoding = audio_encoding_map.get(output_format, texttospeech.AudioEncoding.MP3)
             
-            # Select the type of audio file you want returned
+            # Select the type of audio file you want returned - Optimized for natural sound
             audio_config = texttospeech.AudioConfig(
                 audio_encoding=audio_encoding,
                 speaking_rate=speaking_rate,
                 pitch=pitch,
-                sample_rate_hertz=8000 if output_format == "mulaw" else None  # 8kHz for MULAW (Twilio compatible)
+                volume_gain_db=2.0,  # Clearer, more present voice
+                sample_rate_hertz=8000 if output_format == "mulaw" else 24000,  # Higher quality for non-mulaw
+                effects_profile_id=["telephony-class-application"] if output_format == "mulaw" else ["small-bluetooth-speaker-class-device"]  # Optimized effects
             )
             
             # Perform the text-to-speech request

@@ -135,8 +135,8 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
         text=text.strip(),
         language=lang,
         voice_type=voice,
-        speaking_rate=0.95,   # slightly slower for more stable 8kHz MULAW
-        pitch=0.0,
+        speaking_rate=1.05,   # Natural conversational speed for 8kHz MULAW
+        pitch=-1.8,           # Warmer tone for better listener experience
         output_format="mulaw",
         use_gemini_flash=use_gemini_flash
     )
