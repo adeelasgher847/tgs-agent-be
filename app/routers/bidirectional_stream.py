@@ -115,27 +115,89 @@ async def stream_mulaw_bytes_over_twilio(
             next_send = time.perf_counter()
 
 
-async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True) -> bytes:
+def smart_chunk_text(text: str, max_words: int = 15) -> tuple[str, str]:
+    """
+    Smart text chunking that splits at natural pauses for smoother speech.
+    Prefers splitting at sentence boundaries to maintain natural flow.
+    
+    Args:
+        text: Text to split
+        max_words: Maximum words in prefix chunk
+        
+    Returns:
+        (prefix, suffix) tuple
+    """
+    if not text or not text.strip():
+        return "", ""
+    
+    text = text.strip()
+    words = text.split()
+    
+    # If text is short enough, return as-is
+    if len(words) <= max_words:
+        return text, ""
+    
+    # Try to split at sentence boundaries (., !, ?)
+    sentence_endings = ['. ', '! ', '? ']
+    best_split = None
+    
+    for ending in sentence_endings:
+        parts = text.split(ending)
+        if len(parts) > 1:
+            prefix_candidate = parts[0] + ending.strip()
+            prefix_words = len(prefix_candidate.split())
+            
+            # Use this split if it's within our word limit
+            if prefix_words <= max_words and prefix_words > max_words * 0.5:
+                best_split = (prefix_candidate, text[len(prefix_candidate):].strip())
+                break
+    
+    # If no good sentence split, try comma split
+    if not best_split and ', ' in text:
+        parts = text.split(', ', 1)
+        prefix_candidate = parts[0] + ','
+        prefix_words = len(prefix_candidate.split())
+        
+        if prefix_words <= max_words and prefix_words > 5:
+            best_split = (prefix_candidate, parts[1].strip())
+    
+    # Fallback: split at word count
+    if not best_split:
+        prefix = " ".join(words[:max_words])
+        suffix = " ".join(words[max_words:])
+        best_split = (prefix, suffix)
+    
+    return best_split
+
+
+async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True, speaking_rate: float = 0.95) -> bytes:
     """
     Generate mu-law (8kHz) TTS audio using Chirp 3: HD model.
     Optimized for word-by-word streaming with caching.
+    
+    Args:
+        text: Text to convert to speech
+        lang: Language code
+        voice: Voice type (male/female)
+        use_chirp3_hd: Use Chirp 3: HD model
+        speaking_rate: Speaking rate (0.25-4.0, default 0.95 for natural conversation)
     """
     # Skip empty text
     if not text or not text.strip():
         return b''
     
-    # Cache key aligned with existing cache strategy
-    cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw")
+    # Cache key includes speaking rate
+    cache_key = f"{generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, 'mulaw')}_{speaking_rate}"
 
     if cache_key in audio_cache:
         return audio_cache[cache_key]
 
-    # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
+    # Use 8kHz MULAW for Twilio with Chirp 3: HD model
     audio_content = google_tts_service.text_to_speech(
         text=text.strip(),
         language=lang,
         voice_type=voice,
-        speaking_rate=0.95,   # slightly slower for more stable 8kHz MULAW
+        speaking_rate=speaking_rate,  # Dynamic rate for natural flow
         pitch=0.0,
         output_format="mulaw",
         use_chirp3_hd=use_chirp3_hd
@@ -502,7 +564,14 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def stream_tts_response(self, text: str):
-        """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy."""
+        """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy.
+        
+        Enhanced with:
+        - Smart sentence-aware chunking for natural flow
+        - Larger chunks (15 words) for smoother speech
+        - Dynamic speaking rate based on text length
+        - Better buffering to eliminate "tak tak" robotic feel
+        """
         try:
             from datetime import datetime, timezone
             
@@ -518,22 +587,31 @@ class BidirectionalStreamHandler:
                     print(f"🎵 Streaming TTS chunk: '{clean[:30]}...'")
                     sys.stdout.flush()
 
-                    # Split into a short prefix for instant speech and a suffix to follow
-                    words = clean.split()
-                    prefix_words = 8
-                    prefix = " ".join(words[:prefix_words])
-                    suffix = " ".join(words[prefix_words:]) if len(words) > prefix_words else ""
+                    # Dynamic speaking rate for natural flow
+                    word_count = len(clean.split())
+                    if word_count < 10:
+                        rate = 0.95  # Slower for short responses (more clear)
+                    elif word_count < 30:
+                        rate = 1.0   # Normal for medium responses
+                    else:
+                        rate = 1.05  # Slightly faster for long responses (less choppy)
+
+                    # Smart chunking at sentence boundaries (15 words max for smooth flow)
+                    prefix, suffix = smart_chunk_text(clean, max_words=15)
+                    
+                    print(f"📊 Chunking: {len(prefix.split())} words prefix, {len(suffix.split()) if suffix else 0} words suffix")
+                    sys.stdout.flush()
 
                     # Begin generating suffix in parallel (if any)
                     suffix_task = asyncio.create_task(
-                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True)
+                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=rate)
                     ) if suffix else None
 
                     # Generate and stream prefix immediately
                     tts_start = datetime.now(timezone.utc)
-                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True)
+                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=rate)
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
-                    print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
+                    print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...' (rate={rate})")
                     sys.stdout.flush()
 
                     await stream_mulaw_bytes_over_twilio(
@@ -542,7 +620,7 @@ class BidirectionalStreamHandler:
                         audio_bytes=prefix_audio,
                         pace_20ms=True,
                         cancel=self._tts_cancel,
-                        prime_frames=1,
+                        prime_frames=3,  # Increased from 1 to 3 for smoother transitions
                     )
 
                     # Stream remainder when ready and not cancelled
@@ -560,7 +638,7 @@ class BidirectionalStreamHandler:
                                 audio_bytes=suffix_audio,
                                 pace_20ms=True,
                                 cancel=self._tts_cancel,
-                                prime_frames=1,
+                                prime_frames=0,  # No priming for continuation - seamless flow
                             )
                             print(f"⚡ Streamed remainder ({len(suffix_audio)} bytes)")
                             sys.stdout.flush()
