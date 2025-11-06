@@ -78,13 +78,13 @@ class GoogleTTSService:
         Returns:
             Google Cloud TTS voice name
         """
-        # Gemini Flash TTS voices - ULTRA FAST + PREMIUM QUALITY (Latest AI-powered voices)
+        # Gemini Pro TTS voices - ULTRA FAST + PREMIUM QUALITY (Latest AI-powered voices)
         if use_gemini_flash:
             gemini_flash_voice_map = {
-                # English voices - Gemini Flash
+                # English voices - Gemini Pro TTS
                 "en": {
-                    "male": "en-US-Journey-D",       # Gemini Flash Male (Ultra-fast, Natural)
-                    "female": "en-US-Journey-F"      # Gemini Flash Female (Ultra-fast, Natural)
+                    "male": "Achird",       # Gemini Pro Male (Ultra-fast, Natural)
+                    "female": "Achernar"      # Gemini Pro Female (Ultra-fast, Natural)
                 },
                 # Spanish voices - Gemini Flash
                 "es": {
