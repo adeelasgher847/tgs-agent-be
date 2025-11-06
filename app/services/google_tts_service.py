@@ -232,11 +232,14 @@ class GoogleTTSService:
             audio_encoding = audio_encoding_map.get(output_format, texttospeech.AudioEncoding.MP3)
             
             # Select the type of audio file you want returned
+            # Enhanced configuration for better quality and telephony optimization
             audio_config = texttospeech.AudioConfig(
                 audio_encoding=audio_encoding,
                 speaking_rate=speaking_rate,
                 pitch=pitch,
-                sample_rate_hertz=8000 if output_format == "mulaw" else None  # 8kHz for MULAW (Twilio compatible)
+                sample_rate_hertz=24000 if output_format == "mp3" else 8000,  # 24kHz for MP3 (better quality), 8kHz for MULAW
+                effects_profile_id=["telephony-class-application"],  # Optimize for phone calls/Twilio
+                volume_gain_db=2.0  # Slight volume boost for clarity on calls
             )
             
             # Perform the text-to-speech request

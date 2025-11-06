@@ -38,13 +38,21 @@ async def serve_google_tts_audio(
     This endpoint is called by Twilio's <Play> verb during calls.
     Audio is cached to improve performance.
     
+    Features:
+    - Gemini Pro TTS (Chirp 3: HD) voices - ultra-realistic, human-like
+    - Telephony-optimized audio (volume boost + effects profile)
+    - High-quality audio (24kHz MP3 / 8kHz MULAW)
+    - Smart caching for performance
+    
     Args:
         text: Text to speak
         lang: Language code (en, es, hi, ar, zh, ur)
         voice: Voice type (male or female)
+        gemini_flash: Use Gemini Pro TTS (default: True)
+        format: Audio format (mp3 or mulaw)
         
     Returns:
-        Audio file as MP3
+        Audio file as MP3 or MULAW
     """
     try:
         # Validate format
@@ -65,14 +73,14 @@ async def serve_google_tts_audio(
             voice_label = "Gemini Pro TTS (Chirp 3: HD)" if gemini_flash else "Neural2"
             print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
-            # Use normal speed for MULAW (clearer), slightly faster for MP3
-            rate = 1.0  # Normal speed for all formats
+            # Optimized speaking rate for natural conversation (slightly slower for clarity)
+            rate = 0.95  # Slightly slower and more natural
             
             audio_content = google_tts_service.text_to_speech(
                 text=text,
                 language=lang,
                 voice_type=voice,
-                speaking_rate=rate,  # Dynamic rate based on format
+                speaking_rate=rate,  # Optimized for natural conversation
                 pitch=0.0,
                 output_format=format,  # Use requested format (mp3 or mulaw)
                 use_gemini_flash=gemini_flash
