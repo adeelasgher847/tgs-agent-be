@@ -115,9 +115,9 @@ async def stream_mulaw_bytes_over_twilio(
             next_send = time.perf_counter()
 
 
-async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_gemini_flash: bool = True) -> bytes:
+async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True) -> bytes:
     """
-    Generate mu-law (8kHz) TTS audio using the existing Google TTS service.
+    Generate mu-law (8kHz) TTS audio using Chirp 3: HD model.
     Optimized for word-by-word streaming with caching.
     """
     # Skip empty text
@@ -125,12 +125,12 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
         return b''
     
     # Cache key aligned with existing cache strategy
-    cache_key = generate_cache_key(text.strip(), lang, voice, use_gemini_flash, "mulaw")
+    cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw")
 
     if cache_key in audio_cache:
         return audio_cache[cache_key]
 
-    # Use 8kHz MULAW for Twilio - Optimized for small chunks
+    # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
     audio_content = google_tts_service.text_to_speech(
         text=text.strip(),
         language=lang,
@@ -138,7 +138,7 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
         speaking_rate=0.95,   # slightly slower for more stable 8kHz MULAW
         pitch=0.0,
         output_format="mulaw",
-        use_gemini_flash=use_gemini_flash
+        use_chirp3_hd=use_chirp3_hd
     )
 
     # Cache for instant reuse (especially useful for repeated words/phrases)
@@ -526,12 +526,12 @@ class BidirectionalStreamHandler:
 
                     # Begin generating suffix in parallel (if any)
                     suffix_task = asyncio.create_task(
-                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_gemini_flash=False)
+                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True)
                     ) if suffix else None
 
                     # Generate and stream prefix immediately
                     tts_start = datetime.now(timezone.utc)
-                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_gemini_flash=False)
+                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True)
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
@@ -887,12 +887,12 @@ async def tts_only_websocket(
                             print(f"🎵 Auto-playing pending TTS: '{text[:50]}...'")
                             sys.stdout.flush()
                             
-                            # Generate MULAW TTS
+                            # Generate MULAW TTS with Chirp 3: HD
                             audio_bytes = await generate_mulaw_tts(
                                 text=text,
                                 lang=lang,
                                 voice=voice,
-                                use_gemini_flash=True
+                                use_chirp3_hd=True
                             )
                             
                             # Stream in 20ms chunks
@@ -920,12 +920,12 @@ async def tts_only_websocket(
                     print(f"🎵 Playing TTS: '{text[:50]}...'")
                     sys.stdout.flush()
                     
-                    # Generate MULAW TTS
+                    # Generate MULAW TTS with Chirp 3: HD
                     audio_bytes = await generate_mulaw_tts(
                         text=text,
                         lang=lang,
                         voice=voice,
-                        use_gemini_flash=True
+                        use_chirp3_hd=True
                     )
                     
                     # Stream in 20ms chunks

@@ -38,32 +38,32 @@ model_service = ModelService()
 from app.routers.tts_audio import audio_cache
 
 
-def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False, format: str = "mp3") -> str:
+def generate_cache_key(text: str, language: str, voice_type: str, use_chirp3_hd: bool = False, format: str = "mp3") -> str:
     """Generate unique cache key for TTS audio (same as tts_audio.py)"""
-    content = f"{text}_{language}_{voice_type}_{use_gemini}_{format}"
+    content = f"{text}_{language}_{voice_type}_{use_chirp3_hd}_{format}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
-def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = True, format: str = "mp3") -> None:
+def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female", use_chirp3_hd: bool = True, format: str = "mp3") -> None:
     """
     Pre-generate TTS audio and cache it for instant playback
-    Uses Gemini Flash TTS for ultra-fast generation (200-300ms)
+    Uses Chirp 3: HD model for ultra-realistic, human-like voices
     """
     try:
-        cache_key = generate_cache_key(text, language, voice_type, use_gemini_flash, format)
+        cache_key = generate_cache_key(text, language, voice_type, use_chirp3_hd, format)
         
         if cache_key not in audio_cache:
-            # Generate audio with Gemini Flash
-            voice_label = "Gemini Flash" if use_gemini_flash else "Neural2"
-            rate = 1.0  # Normal speed for all formats
+            # Generate audio with Chirp 3: HD model
+            voice_label = "Chirp 3: HD" if use_chirp3_hd else "Neural2"
+            rate = 0.95  # Optimized for natural conversation
             audio_content = google_tts_service.text_to_speech(
                 text=text,
                 language=language,
                 voice_type=voice_type,
-                speaking_rate=rate,  # Dynamic rate based on format
+                speaking_rate=rate,  # Optimized for natural conversation
                 pitch=0.0,
                 output_format=format,
-                use_gemini_flash=use_gemini_flash
+                use_chirp3_hd=use_chirp3_hd
             )
             
             # Cache it
@@ -612,21 +612,22 @@ async def gather_speech_callback_webhook(
             
             if cache_key not in audio_cache:
                 # Pre-generate audio BEFORE sending TwiML
-                print(f"⚡ Pre-generating TTS audio: '{response_text[:50]}...'")
+                print(f"⚡ Pre-generating TTS audio with Chirp 3: HD: '{response_text[:50]}...'")
                 sys.stdout.flush()
                 
                 # Use MULAW format for faster delivery (smaller than MP3)
                 use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
                 output_fmt = "mulaw" if use_websocket_tts else "mp3"
 
-                rate = 1.0  # Normal speed for all formats
+                rate = 0.95  # Optimized for natural conversation
                 audio_content = google_tts_service.text_to_speech(
                     text=response_text,
                     language=lang,
                     voice_type=voice,
-                    speaking_rate=rate,  # Dynamic rate based on format
+                    speaking_rate=rate,  # Optimized for natural conversation
                     pitch=0.0,
-                    output_format=output_fmt
+                    output_format=output_fmt,
+                    use_chirp3_hd=True  # Use Chirp 3: HD model
                 )
                 
                 # Cache it for instant playback

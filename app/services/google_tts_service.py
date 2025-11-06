@@ -65,26 +65,26 @@ class GoogleTTSService:
         
         return self._client
     
-    def get_voice_name(self, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = False) -> str:
+    def get_voice_name(self, language: str = "en", voice_type: str = "female", use_chirp3_hd: bool = False) -> str:
         """
         Get appropriate Google TTS voice name based on language and gender
-        BEST REALISTIC VOICES - Using Chirp 3: HD (Gemini Pro TTS), Studio, Neural2 voices
+        BEST REALISTIC VOICES - Using Chirp 3: HD, Studio, Neural2 voices
         
         Args:
             language: Language code (en, es, hi, ar, zh, ur)
             voice_type: Voice gender (male or female)
-            use_gemini_flash: Use Gemini Pro TTS (Chirp 3: HD) voices (ultra-realistic and high quality)
+            use_chirp3_hd: Use Chirp 3: HD voices (ultra-realistic and high quality)
             
         Returns:
             Google Cloud TTS voice name
         """
-        # Gemini Pro TTS (Chirp 3: HD) voices - ULTRA REALISTIC + PREMIUM QUALITY (Latest AI-powered voices)
-        if use_gemini_flash:
-            gemini_flash_voice_map = {
-                # English voices - Gemini Pro TTS (Chirp 3: HD)
+        # Chirp 3: HD voices - ULTRA REALISTIC + PREMIUM QUALITY (Google's latest AI TTS model)
+        if use_chirp3_hd:
+            chirp3_hd_voice_map = {
+                # English voices - Chirp 3: HD Model
                 "en": {
-                    "male": "en-US-Chirp3-HD-Achird",       # Gemini Pro Male - Friendly (Ultra-realistic)
-                    "female": "en-US-Chirp3-HD-Achernar"    # Gemini Pro Female - Soft (Ultra-realistic)
+                    "male": "en-US-Chirp3-HD-Achird",       # Chirp 3: HD Male - Friendly (Ultra-realistic)
+                    "female": "en-US-Chirp3-HD-Achernar"    # Chirp 3: HD Female - Soft (Ultra-realistic)
                 },
                 # Spanish voices - Gemini Flash
                 "es": {
@@ -113,9 +113,9 @@ class GoogleTTSService:
                 }
             }
             
-            language = language if language in gemini_flash_voice_map else "en"
+            language = language if language in chirp3_hd_voice_map else "en"
             voice_type = voice_type if voice_type in ["male", "female"] else "female"
-            return gemini_flash_voice_map[language][voice_type]
+            return chirp3_hd_voice_map[language][voice_type]
         
         # Google Cloud TTS voice mapping (Standard Neural2 voices)
         # Using NEURAL2 voices for SPEED + QUALITY balance (2x faster than Studio!)
@@ -187,10 +187,10 @@ class GoogleTTSService:
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
         output_format: str = "mp3",
-        use_gemini_flash: bool = False
+        use_chirp3_hd: bool = False
     ) -> bytes:
         """
-        Convert text to speech using Google Cloud TTS API
+        Convert text to speech using Google Cloud TTS API with Chirp 3: HD model
         
         Args:
             text: Text to convert to speech
@@ -199,7 +199,7 @@ class GoogleTTSService:
             speaking_rate: Speech speed (0.25 to 4.0, default 1.0)
             pitch: Voice pitch (-20.0 to 20.0, default 0.0)
             output_format: Output format (mp3, linear16, ogg_opus, mulaw, alaw)
-            use_gemini_flash: Use Gemini Pro TTS (Chirp 3: HD) voices (ultra-realistic and high quality)
+            use_chirp3_hd: Use Chirp 3: HD model (ultra-realistic and high quality)
             
         Returns:
             Audio data as bytes
@@ -211,7 +211,7 @@ class GoogleTTSService:
             synthesis_input = texttospeech.SynthesisInput(text=text)
             
             # Get voice name and language code
-            voice_name = self.get_voice_name(language, voice_type, use_gemini_flash)
+            voice_name = self.get_voice_name(language, voice_type, use_chirp3_hd)
             language_code = self.get_language_code(language)
             
             # Build the voice request

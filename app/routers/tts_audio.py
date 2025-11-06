@@ -18,9 +18,9 @@ audio_cache = {}
 MAX_CACHE_SIZE = 200  # Cache up to 200 audio files
 
 
-def generate_cache_key(text: str, language: str, voice_type: str, use_gemini: bool = False, format: str = "mp3") -> str:
+def generate_cache_key(text: str, language: str, voice_type: str, use_chirp3_hd: bool = False, format: str = "mp3") -> str:
     """Generate unique cache key for audio"""
-    content = f"{text}_{language}_{voice_type}_{use_gemini}_{format}"
+    content = f"{text}_{language}_{voice_type}_{use_chirp3_hd}_{format}"
     return hashlib.md5(content.encode()).hexdigest()
 
 
@@ -29,7 +29,7 @@ async def serve_google_tts_audio(
     text: str = Query(..., description="Text to convert to speech"),
     lang: str = Query("en", description="Language code"),
     voice: str = Query("female", description="Voice type (male/female)"),
-    gemini_flash: bool = Query(True, description="Use Gemini Pro TTS (Chirp 3: HD) - ultra-realistic voices"),
+    chirp3_hd: bool = Query(True, description="Use Chirp 3: HD model - ultra-realistic voices"),
     format: str = Query("mp3", description="Audio format (mp3, mulaw) - mulaw is faster for Twilio")
 ):
     """
@@ -39,7 +39,7 @@ async def serve_google_tts_audio(
     Audio is cached to improve performance.
     
     Features:
-    - Gemini Pro TTS (Chirp 3: HD) voices - ultra-realistic, human-like
+    - Chirp 3: HD model - ultra-realistic, human-like voices
     - Telephony-optimized audio (volume boost + effects profile)
     - High-quality audio (24kHz MP3 / 8kHz MULAW)
     - Smart caching for performance
@@ -48,7 +48,7 @@ async def serve_google_tts_audio(
         text: Text to speak
         lang: Language code (en, es, hi, ar, zh, ur)
         voice: Voice type (male or female)
-        gemini_flash: Use Gemini Pro TTS (default: True)
+        chirp3_hd: Use Chirp 3: HD model (default: True)
         format: Audio format (mp3 or mulaw)
         
     Returns:
@@ -61,16 +61,16 @@ async def serve_google_tts_audio(
             format = "mp3"
         
         # Generate cache key
-        cache_key = generate_cache_key(text, lang, voice, gemini_flash, format)
+        cache_key = generate_cache_key(text, lang, voice, chirp3_hd, format)
         
         # Check cache first
         if cache_key in audio_cache:
-            voice_label = "Gemini Pro TTS (Chirp 3: HD)" if gemini_flash else "Neural2"
+            voice_label = "Chirp 3: HD" if chirp3_hd else "Neural2"
             print(f"✅ Serving cached Google TTS audio ({voice_label}): '{text[:50]}...'")
             audio_content = audio_cache[cache_key]
         else:
             # Generate new audio
-            voice_label = "Gemini Pro TTS (Chirp 3: HD)" if gemini_flash else "Neural2"
+            voice_label = "Chirp 3: HD" if chirp3_hd else "Neural2"
             print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
             # Optimized speaking rate for natural conversation (slightly slower for clarity)
@@ -83,7 +83,7 @@ async def serve_google_tts_audio(
                 speaking_rate=rate,  # Optimized for natural conversation
                 pitch=0.0,
                 output_format=format,  # Use requested format (mp3 or mulaw)
-                use_gemini_flash=gemini_flash
+                use_chirp3_hd=chirp3_hd
             )
             
             # Cache it (with size limit)
