@@ -68,23 +68,23 @@ class GoogleTTSService:
     def get_voice_name(self, language: str = "en", voice_type: str = "female", use_gemini_flash: bool = False) -> str:
         """
         Get appropriate Google TTS voice name based on language and gender
-        BEST REALISTIC VOICES - Using Studio, Neural2, and Gemini Flash voices
+        BEST REALISTIC VOICES - Using Chirp 3: HD (Gemini Pro TTS), Studio, Neural2 voices
         
         Args:
             language: Language code (en, es, hi, ar, zh, ur)
             voice_type: Voice gender (male or female)
-            use_gemini_flash: Use Gemini TTS Flash voices (ultra-fast and high quality)
+            use_gemini_flash: Use Gemini Pro TTS (Chirp 3: HD) voices (ultra-realistic and high quality)
             
         Returns:
             Google Cloud TTS voice name
         """
-        # Gemini Pro TTS voices - ULTRA FAST + PREMIUM QUALITY (Latest AI-powered voices)
+        # Gemini Pro TTS (Chirp 3: HD) voices - ULTRA REALISTIC + PREMIUM QUALITY (Latest AI-powered voices)
         if use_gemini_flash:
             gemini_flash_voice_map = {
-                # English voices - Gemini Pro TTS
+                # English voices - Gemini Pro TTS (Chirp 3: HD)
                 "en": {
-                    "male": "Achird",       # Gemini Pro Male (Ultra-fast, Natural)
-                    "female": "Achernar"      # Gemini Pro Female (Ultra-fast, Natural)
+                    "male": "en-US-Chirp3-HD-Achird",       # Gemini Pro Male - Friendly (Ultra-realistic)
+                    "female": "en-US-Chirp3-HD-Achernar"    # Gemini Pro Female - Soft (Ultra-realistic)
                 },
                 # Spanish voices - Gemini Flash
                 "es": {
@@ -199,7 +199,7 @@ class GoogleTTSService:
             speaking_rate: Speech speed (0.25 to 4.0, default 1.0)
             pitch: Voice pitch (-20.0 to 20.0, default 0.0)
             output_format: Output format (mp3, linear16, ogg_opus, mulaw, alaw)
-            use_gemini_flash: Use Gemini TTS Flash voices (ultra-fast and high quality)
+            use_gemini_flash: Use Gemini Pro TTS (Chirp 3: HD) voices (ultra-realistic and high quality)
             
         Returns:
             Audio data as bytes

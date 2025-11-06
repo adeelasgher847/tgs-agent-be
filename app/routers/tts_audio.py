@@ -29,7 +29,7 @@ async def serve_google_tts_audio(
     text: str = Query(..., description="Text to convert to speech"),
     lang: str = Query("en", description="Language code"),
     voice: str = Query("female", description="Voice type (male/female)"),
-    gemini_flash: bool = Query(True, description="Use Gemini Flash TTS voices (ultra-fast)"),
+    gemini_flash: bool = Query(True, description="Use Gemini Pro TTS (Chirp 3: HD) - ultra-realistic voices"),
     format: str = Query("mp3", description="Audio format (mp3, mulaw) - mulaw is faster for Twilio")
 ):
     """
@@ -57,12 +57,12 @@ async def serve_google_tts_audio(
         
         # Check cache first
         if cache_key in audio_cache:
-            voice_label = "Gemini Flash" if gemini_flash else "Neural2"
+            voice_label = "Gemini Pro TTS (Chirp 3: HD)" if gemini_flash else "Neural2"
             print(f"✅ Serving cached Google TTS audio ({voice_label}): '{text[:50]}...'")
             audio_content = audio_cache[cache_key]
         else:
             # Generate new audio
-            voice_label = "Gemini Flash" if gemini_flash else "Neural2"
+            voice_label = "Gemini Pro TTS (Chirp 3: HD)" if gemini_flash else "Neural2"
             print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
             # Use normal speed for MULAW (clearer), slightly faster for MP3
