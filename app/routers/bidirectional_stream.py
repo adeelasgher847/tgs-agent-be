@@ -487,7 +487,48 @@ class BidirectionalStreamHandler:
             
             # Stream LLM output as it is generated - Phrase-batched for stability
             from app.services.gemini_service import gemini_service
-            # Build system prompt similarly to VoiceLoggingService for consistency
+            
+            # Build proper system prompt with agent instructions and conversation context
+            agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
+            agent_language = self.agent.language if self.agent and self.agent.language else "en"
+            
+            # Get conversation context from transcript
+            conversation_context = ""
+            if self.call_session and self.call_session.call_transcript:
+                try:
+                    import json
+                    history = json.loads(self.call_session.call_transcript)
+                    recent = history[-6:]  # Last 6 messages
+                    if recent:
+                        conversation_context = "\n\nPrevious conversation context:\n" + "\n".join(
+                            [f"{msg['role'].capitalize()}: {msg['content']}" for msg in recent]
+                        )
+                except:
+                    pass
+            
+            # Build personalized system prompt
+            system_prompt = f"""You are {agent_name}, a real person taking phone calls.
+
+Your identity:
+- You are {agent_name}, a real human being
+- You speak {agent_language} naturally
+- You are having a phone conversation with a customer
+
+Custom instructions:
+{self.agent.system_prompt if self.agent and self.agent.system_prompt else ''}
+
+Guidelines for phone conversations:
+- Speak naturally and conversationally like a real person
+- Be friendly and professional
+- Give complete, helpful answers
+- Keep responses between 1-3 sentences for good conversation flow
+- Ask relevant questions to gather information
+- Remember you are {agent_name}
+- Use the conversation history to avoid repeating questions
+- Don't repeat information you've already shared
+
+Always respond as {agent_name}, a real person having a conversation.{conversation_context}"""
+            
             async def try_stream(model_name: str) -> str:
                 response_accum = ""
                 phrase_buf = ""
@@ -495,7 +536,7 @@ class BidirectionalStreamHandler:
 
                 async for chunk in gemini_service.stream_text(
                     prompt=user_text,
-                    system_prompt=None,
+                    system_prompt=system_prompt,
                     model_name=model_name,
                     temperature=0.5,
                     max_tokens=80,
@@ -512,10 +553,10 @@ class BidirectionalStreamHandler:
                     phrase_buf += chunk
 
                     # flush on punctuation, size, or small timeout to avoid tiny TTS units
-                    # Optimized for low latency (Vapi-level performance)
+                    # Optimized for smooth audio with low latency
                     now = asyncio.get_event_loop().time()
-                    has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
-                    if has_punct or len(phrase_buf) >= 40 or (now - last_flush) >= 0.16:
+                    has_punct = any(p in phrase_buf for p in [".", "?", "!"]) 
+                    if has_punct or len(phrase_buf) >= 50 or (now - last_flush) >= 0.20:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
                             await self.stream_tts_response(to_speak)
@@ -552,7 +593,7 @@ class BidirectionalStreamHandler:
                     )
 
             if final_text:
-                await self.stream_tts_response(final_text)
+                # TTS already played during streaming chunks - just save transcript
                 await self._add_to_transcript("agent", final_text, "agent_response")
         
         except Exception as e:
