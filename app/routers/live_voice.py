@@ -485,11 +485,14 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
         # Get conversation history for context
         conversation_history = []
         for msg in session_data["messages"][-10:]:  # Last 10 messages for context
-            if msg["role"] in ["user", "assistant"]:
-                conversation_history.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
+            if isinstance(msg, dict) and msg.get("role") in ["user", "assistant"]:
+                # Handle both 'content' and 'message' keys safely
+                content = msg.get("content") or msg.get("message", "")
+                if content:
+                    conversation_history.append({
+                        "role": msg["role"],
+                        "content": content
+                    })
         
         # Send thinking indicator
         await manager.send_message(session_id, {

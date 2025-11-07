@@ -274,9 +274,14 @@ def process_agent_conversation(self, user_input: str,
                 conversation_history = []
 
         # 🗣️ Prepare message context
-        history_text = "\n".join(
-            [f"{msg['role'].capitalize()}: {msg['content']}" for msg in conversation_history[-6:]]
-        )
+        history_lines = []
+        for msg in conversation_history[-6:]:
+            if isinstance(msg, dict):
+                role = msg.get('role', 'user')
+                content = msg.get('content') or msg.get('message', '')
+                if content:
+                    history_lines.append(f"{role.capitalize()}: {content}")
+        history_text = "\n".join(history_lines)
 
         full_prompt = (
             f"System: {agent_system_prompt}\n\n"
@@ -298,10 +303,10 @@ def process_agent_conversation(self, user_input: str,
         end_time = time.time()
         response_time = end_time - start_time
 
-        # 🪄 Update transcript in DB
+        # 🪄 Update transcript in DB (use "message" key for consistency)
         if call_session and db:
-            conversation_history.append({"role": "user", "content": user_input})
-            conversation_history.append({"role": "assistant", "content": response.text})
+            conversation_history.append({"role": "user", "message": user_input})
+            conversation_history.append({"role": "assistant", "message": response.text})
             call_session.call_transcript = json.dumps(conversation_history)
             call_session.updated_at = datetime.utcnow()
             db.commit()

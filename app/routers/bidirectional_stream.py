@@ -497,11 +497,23 @@ class BidirectionalStreamHandler:
                 except:
                     conversation_history = []
             
-            # Build history text (last 6 messages for context)
-            history_text = "\n".join([
-                f"{msg['role'].capitalize()}: {msg['content']}" 
-                for msg in conversation_history[-6:]
-            ]) if conversation_history else ""
+            # Build history text (last 6 messages for context) - handle different formats
+            history_text = ""
+            if conversation_history:
+                try:
+                    history_lines = []
+                    for msg in conversation_history[-6:]:
+                        if isinstance(msg, dict):
+                            # Handle both 'content' and 'message' keys
+                            role = msg.get('role', 'unknown')
+                            content = msg.get('content') or msg.get('message', '')
+                            if content:
+                                history_lines.append(f"{role.capitalize()}: {content}")
+                    history_text = "\n".join(history_lines)
+                except Exception as e:
+                    print(f"⚠️ Error building history text: {e}")
+                    sys.stdout.flush()
+                    history_text = ""
             
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"

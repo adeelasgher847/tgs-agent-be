@@ -110,11 +110,14 @@ async def process_voice_input(
                     # Get last few messages for context (excluding the current one)
                     recent_messages = call_session.call_transcript[-6:]  # Last 6 messages
                     for msg in recent_messages:
-                        if msg.get("role") in ["user", "assistant"]:
-                            conversation_history.append({
-                                "role": msg["role"],
-                                "content": msg["content"]
-                            })
+                        if isinstance(msg, dict) and msg.get("role") in ["user", "assistant"]:
+                            # Handle both 'content' and 'message' keys
+                            content = msg.get("content") or msg.get("message", "")
+                            if content:
+                                conversation_history.append({
+                                    "role": msg["role"],
+                                    "content": content
+                                })
                 
                 # Use model-based routing if agent has a model_id
                 if agent.model_id:
