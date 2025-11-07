@@ -25,7 +25,6 @@ from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
-from app.services.audio_crossfade_service import AudioCrossfadeService
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.routers.general_websocket import broadcast_call_status_update
@@ -114,6 +113,74 @@ async def stream_mulaw_bytes_over_twilio(
         elif sleep_dur < -0.03:
             # We're late by >30ms; reset schedule to avoid cumulative jitter
             next_send = time.perf_counter()
+
+
+def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: int = None) -> bytes:
+    """
+    Crossfade two adjacent mu-law segments to eliminate clicks at boundaries.
+    Uses audioop for fast, lightweight processing (no numpy needed).
+    
+    Args:
+        prev_tail: Last portion of previous chunk
+        next_head: Complete next chunk
+        overlap_bytes: Overlap size (default: 160 bytes = 20ms at 8kHz)
+        
+    Returns:
+        Blended audio bytes
+    """
+    if not prev_tail and not next_head:
+        return b""
+    if overlap_bytes is None:
+        overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes = 20ms
+    
+    # If either segment too short, concatenate safely
+    if not prev_tail or len(prev_tail) < overlap_bytes:
+        return (prev_tail or b"") + (next_head or b"")
+    if not next_head or len(next_head) < overlap_bytes:
+        return (prev_tail or b"") + (next_head or b"")
+    
+    try:
+        import audioop
+        import struct
+        
+        # Extract overlap regions
+        prev_overlap = prev_tail[-overlap_bytes:]
+        next_overlap = next_head[:overlap_bytes]
+        
+        # Convert mu-law to 16-bit linear PCM
+        prev_lin = audioop.ulaw2lin(prev_overlap, 2)
+        next_lin = audioop.ulaw2lin(next_overlap, 2)
+        
+        # Ensure equal length
+        n = min(len(prev_lin), len(next_lin))
+        prev_lin = prev_lin[:n]
+        next_lin = next_lin[:n]
+        
+        # Linear crossfade: prev fades out (1→0), next fades in (0→1)
+        mixed = bytearray(n)
+        denom = max((n // 2) - 1, 1)  # Avoid division by zero
+        
+        for i in range(0, n, 2):
+            t = i // 2
+            fade_out = 1.0 - (t / denom) if denom > 0 else 0.0
+            fade_out = max(0.0, min(1.0, fade_out))
+            fade_in = 1.0 - fade_out
+            
+            s1 = struct.unpack('<h', prev_lin[i:i+2])[0]
+            s2 = struct.unpack('<h', next_lin[i:i+2])[0]
+            s = int(s1 * fade_out + s2 * fade_in)
+            s = max(-32768, min(32767, s))
+            mixed[i:i+2] = struct.pack('<h', s)
+        
+        # Convert back to mu-law
+        mixed_mulaw = audioop.lin2ulaw(bytes(mixed), 2)
+        
+        # Return: (prev without overlap) + (blended) + (next without overlap)
+        return prev_tail[:-overlap_bytes] + mixed_mulaw + next_head[overlap_bytes:]
+        
+    except Exception as e:
+        print(f"⚠️ Crossfade failed, using direct join: {e}")
+        return prev_tail + next_head
 
 
 def smart_chunk_text(text: str, max_words: int = 15) -> tuple[str, str]:
@@ -308,8 +375,6 @@ class BidirectionalStreamHandler:
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._crossfader = AudioCrossfadeService(sample_rate=8000, default_overlap_ms=50)
-        self._is_first_chunk = True
         
         # Session data
         self.call_session = None
@@ -635,25 +700,32 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                         generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95)
                     ) if suffix else None
 
-                    # Generate and stream prefix immediately
+                    # Generate prefix audio immediately
                     tts_start = datetime.now(timezone.utc)
                     prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95)
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
 
-                    # Stream directly without crossfade (better quality)
-                    # prefix_audio = self._crossfader.process_chunk(prefix_audio, is_first=self._is_first_chunk)
-                    # self._is_first_chunk = False
-
-                    await stream_mulaw_bytes_over_twilio(
-                        websocket=self.websocket,
-                        stream_sid=self.stream_sid,
-                        audio_bytes=prefix_audio,
-                        pace_20ms=True,
-                        cancel=self._tts_cancel,
-                        prime_frames=0,  # No silence padding - direct stream
-                    )
+                    # Hold back last 20ms for crossfade with next chunk
+                    overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes = 20ms
+                    if len(prefix_audio) > overlap_bytes:
+                        prefix_main = prefix_audio[:-overlap_bytes]
+                        prefix_tail = prefix_audio[-overlap_bytes:]
+                    else:
+                        prefix_main = prefix_audio
+                        prefix_tail = b""
+                    
+                    # Stream main part immediately
+                    if prefix_main:
+                        await stream_mulaw_bytes_over_twilio(
+                            websocket=self.websocket,
+                            stream_sid=self.stream_sid,
+                            audio_bytes=prefix_main,
+                            pace_20ms=True,
+                            cancel=self._tts_cancel,
+                            prime_frames=1,  # Smooth start with 20ms buffer
+                        )
 
                     # Stream remainder when ready and not cancelled
                     if suffix_task and not self._tts_cancel.is_set():
@@ -663,20 +735,36 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                             print(f"⚠️ TTS remainder generation failed: {e}")
                             sys.stdout.flush()
                             suffix_audio = b""
-                        if suffix_audio and not self._tts_cancel.is_set():
-                            # Stream directly without crossfade
-                            # suffix_audio = self._crossfader.process_chunk(suffix_audio, is_first=False)
-                            
-                            await stream_mulaw_bytes_over_twilio(
-                                websocket=self.websocket,
-                                stream_sid=self.stream_sid,
-                                audio_bytes=suffix_audio,
-                                pace_20ms=True,
-                                cancel=self._tts_cancel,
-                                prime_frames=0,  # No gap - crossfade handles transition
-                            )
-                            print(f"⚡ Streamed remainder ({len(suffix_audio)} bytes)")
-                            sys.stdout.flush()
+                        
+                        if not self._tts_cancel.is_set():
+                            if suffix_audio:
+                                # Crossfade boundary to eliminate clicks
+                                if prefix_tail and len(suffix_audio) > overlap_bytes:
+                                    merged = crossfade_mulaw_segments(prefix_tail, suffix_audio, overlap_bytes)
+                                else:
+                                    merged = (prefix_tail or b"") + suffix_audio
+                                
+                                await stream_mulaw_bytes_over_twilio(
+                                    websocket=self.websocket,
+                                    stream_sid=self.stream_sid,
+                                    audio_bytes=merged,
+                                    pace_20ms=True,
+                                    cancel=self._tts_cancel,
+                                    prime_frames=0,
+                                )
+                                print(f"⚡ Streamed remainder with crossfade ({len(merged)} bytes)")
+                                sys.stdout.flush()
+                            else:
+                                # No suffix - flush held tail
+                                if prefix_tail:
+                                    await stream_mulaw_bytes_over_twilio(
+                                        websocket=self.websocket,
+                                        stream_sid=self.stream_sid,
+                                        audio_bytes=prefix_tail,
+                                        pace_20ms=True,
+                                        cancel=self._tts_cancel,
+                                        prime_frames=0,
+                                    )
                 finally:
                     self.is_speaking = False
         
@@ -813,10 +901,6 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                     await asyncio.sleep(0)  # yield
             except Exception:
                 pass
-            
-            # Reset crossfader for next call
-            self._crossfader.reset()
-            self._is_first_chunk = True
         
         except Exception as e:
             print(f"❌ Error handling stop: {e}")

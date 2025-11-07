@@ -29,4 +29,3 @@ google-auth-oauthlib
 google-cloud-speech
 google-cloud-texttospeech
 sendgrid
-numpy
