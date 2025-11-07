@@ -308,7 +308,7 @@ class BidirectionalStreamHandler:
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._crossfader = AudioCrossfadeService(sample_rate=8000, default_overlap_ms=200)
+        self._crossfader = AudioCrossfadeService(sample_rate=8000, default_overlap_ms=25)
         self._is_first_chunk = True
         
         # Session data
@@ -573,13 +573,19 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                     print(f"⚠️ Streaming with gemini-1.5-pro failed: {e2}")
                     sys.stdout.flush()
                     # Last fallback: non-streaming fast response via VoiceLoggingService
-                    final_text = await VoiceLoggingService.generate_agent_response(
-                        speech_text=user_text,
-                        confidence=confidence,
-                        agent=self.agent,
-                        db=self.db,
-                        call_session_id=self.call_session.id if self.call_session else None
-                    )
+                    try:
+                        final_text = await VoiceLoggingService.generate_agent_response(
+                            speech_text=user_text,
+                            confidence=confidence,
+                            agent=self.agent,
+                            db=self.db,
+                            call_session_id=self.call_session.id if self.call_session else None
+                        )
+                    except Exception as e3:
+                        print(f"⚠️ All fallbacks failed: {e3}")
+                        sys.stdout.flush()
+                        # Ultimate fallback response
+                        final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
 
             if final_text:
                 await self.stream_tts_response(final_text)
