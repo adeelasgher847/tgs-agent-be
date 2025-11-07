@@ -512,9 +512,10 @@ class BidirectionalStreamHandler:
                     phrase_buf += chunk
 
                     # flush on punctuation, size, or small timeout to avoid tiny TTS units
+                    # Optimized for low latency (Vapi-level performance)
                     now = asyncio.get_event_loop().time()
                     has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
-                    if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
+                    if has_punct or len(phrase_buf) >= 35 or (now - last_flush) >= 0.12:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
                             await self.stream_tts_response(to_speak)
@@ -530,14 +531,16 @@ class BidirectionalStreamHandler:
 
             final_text = None
             try:
-                final_text = await try_stream("gemini-1.5-flash")
+                # Use latest Gemini model - single attempt for low latency
+                final_text = await try_stream("gemini-2.0-flash-exp")
             except Exception as e1:
-                print(f"⚠️ Streaming with gemini-1.5-flash failed: {e1}")
+                print(f"⚠️ Streaming with gemini-2.0-flash-exp failed: {e1}")
                 sys.stdout.flush()
+                # Fallback to stable version if experimental fails
                 try:
-                    final_text = await try_stream("gemini-1.5-pro")
+                    final_text = await try_stream("gemini-1.5-flash-latest")
                 except Exception as e2:
-                    print(f"⚠️ Streaming with gemini-1.5-pro failed: {e2}")
+                    print(f"⚠️ Streaming with gemini-1.5-flash-latest failed: {e2}")
                     sys.stdout.flush()
                     # Last fallback: non-streaming fast response via VoiceLoggingService
                     final_text = await VoiceLoggingService.generate_agent_response(
