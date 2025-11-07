@@ -308,7 +308,7 @@ class BidirectionalStreamHandler:
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._crossfader = AudioCrossfadeService(sample_rate=8000, default_overlap_ms=150)
+        self._crossfader = AudioCrossfadeService(sample_rate=8000, default_overlap_ms=200)
         self._is_first_chunk = True
         
         # Session data
@@ -481,16 +481,46 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def generate_and_stream_response(self, user_text: str, confidence: float):
-        """Generate AI response and stream TTS in real-time"""
+        """Generate AI response and stream TTS in real-time WITH conversation history"""
         try:
             from datetime import datetime, timezone
+            import json
             
             print(f"🤖 Generating streaming response for: '{user_text}'")
             sys.stdout.flush()
             
+            # Build conversation context from transcript
+            conversation_history = []
+            if self.call_session and self.call_session.call_transcript:
+                try:
+                    conversation_history = json.loads(self.call_session.call_transcript) if isinstance(self.call_session.call_transcript, str) else self.call_session.call_transcript
+                except:
+                    conversation_history = []
+            
+            # Build history text (last 6 messages for context)
+            history_text = "\n".join([
+                f"{msg['role'].capitalize()}: {msg['content']}" 
+                for msg in conversation_history[-6:]
+            ]) if conversation_history else ""
+            
+            # Build system prompt with agent personality + history
+            agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
+            system_prompt = f"""You are {agent_name}, a real person having a phone conversation.
+
+Guidelines:
+- Speak naturally and conversationally
+- Keep responses brief (1-2 sentences)
+- Remember previous conversation - don't repeat questions
+- Be friendly and engaging
+- Talk like a real human, not a robot
+
+Previous conversation:
+{history_text}
+
+IMPORTANT: Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally."""
+            
             # Stream LLM output as it is generated - Phrase-batched for stability
             from app.services.gemini_service import gemini_service
-            # Build system prompt similarly to VoiceLoggingService for consistency
             async def try_stream(model_name: str) -> str:
                 response_accum = ""
                 phrase_buf = ""
@@ -498,7 +528,7 @@ class BidirectionalStreamHandler:
 
                 async for chunk in gemini_service.stream_text(
                     prompt=user_text,
-                    system_prompt=None,
+                    system_prompt=system_prompt,  # NOW WITH HISTORY!
                     model_name=model_name,
                     temperature=0.5,
                     max_tokens=80,
@@ -579,8 +609,8 @@ class BidirectionalStreamHandler:
                     print(f"🎵 Streaming TTS chunk: '{clean[:30]}...'")
                     sys.stdout.flush()
 
-                    # Smart chunking at sentence boundaries (5 words max for ultra-low latency)
-                    prefix, suffix = smart_chunk_text(clean, max_words=5)
+                    # Smart chunking at sentence boundaries (10 words for natural flow)
+                    prefix, suffix = smart_chunk_text(clean, max_words=10)
 
                     # Begin generating suffix in parallel (if any)
                     suffix_task = asyncio.create_task(
