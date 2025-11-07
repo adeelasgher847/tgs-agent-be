@@ -25,6 +25,7 @@ from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
+from app.services.audio_crossfade_service import AudioCrossfadeService
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.routers.general_websocket import broadcast_call_status_update
@@ -307,6 +308,8 @@ class BidirectionalStreamHandler:
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
+        self._crossfader = AudioCrossfadeService(overlap_ms=75, sample_rate=8000)
+        self._is_first_chunk = True
         
         # Session data
         self.call_session = None
@@ -591,6 +594,10 @@ class BidirectionalStreamHandler:
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
 
+                    # Apply crossfade to eliminate clicks
+                    prefix_audio = self._crossfader.process_chunk(prefix_audio, is_first=self._is_first_chunk)
+                    self._is_first_chunk = False
+
                     await stream_mulaw_bytes_over_twilio(
                         websocket=self.websocket,
                         stream_sid=self.stream_sid,
@@ -609,13 +616,16 @@ class BidirectionalStreamHandler:
                             sys.stdout.flush()
                             suffix_audio = b""
                         if suffix_audio and not self._tts_cancel.is_set():
+                            # Apply crossfade for seamless continuation
+                            suffix_audio = self._crossfader.process_chunk(suffix_audio, is_first=False)
+                            
                             await stream_mulaw_bytes_over_twilio(
                                 websocket=self.websocket,
                                 stream_sid=self.stream_sid,
                                 audio_bytes=suffix_audio,
                                 pace_20ms=True,
                                 cancel=self._tts_cancel,
-                                prime_frames=0,  # No gap for seamless continuation - eliminates clicking!
+                                prime_frames=0,  # No gap - crossfade handles transition
                             )
                             print(f"⚡ Streamed remainder ({len(suffix_audio)} bytes)")
                             sys.stdout.flush()
@@ -755,6 +765,10 @@ class BidirectionalStreamHandler:
                     await asyncio.sleep(0)  # yield
             except Exception:
                 pass
+            
+            # Reset crossfader for next call
+            self._crossfader.reset()
+            self._is_first_chunk = True
         
         except Exception as e:
             print(f"❌ Error handling stop: {e}")
