@@ -8,17 +8,17 @@ import numpy as np
 from typing import Optional
 
 class AudioCrossfadeService:
-    def __init__(self, sample_rate: int = 8000, default_overlap_ms: int = 25):
+    def __init__(self, sample_rate: int = 8000, default_overlap_ms: int = 50):
         """
         Args:
             sample_rate: Audio sample rate in Hz (8000 for MULAW)
-            default_overlap_ms: Overlap in milliseconds (25ms = fast + smooth)
+            default_overlap_ms: Overlap in milliseconds (50ms = balanced quality + speed)
         """
         self.sample_rate = sample_rate
         self.default_overlap_samples = int((default_overlap_ms / 1000.0) * sample_rate)
         self._previous_tail: Optional[np.ndarray] = None
         self._chunk_count = 0
-        self._silence_padding = int(0.005 * sample_rate)  # 5ms silence fallback
+        self._silence_padding = int(0.01 * sample_rate)  # 10ms silence fallback
 
     def _mulaw_to_linear(self, mulaw_bytes: bytes) -> np.ndarray:
         """Convert mu-law bytes to linear PCM."""
@@ -55,32 +55,32 @@ class AudioCrossfadeService:
         return curve
 
     def process_chunk(self, mulaw_bytes: bytes, is_first: bool = False) -> bytes:
-        """Fast crossfade with 25ms overlap - minimal latency."""
+        """Balanced crossfade with 50ms overlap - clear audio + low latency."""
         if not mulaw_bytes:
             return b''
 
         current = self._mulaw_to_linear(mulaw_bytes)
         self._chunk_count += 1
 
-        # First chunk: quick fade-in
+        # First chunk: smooth fade-in for clean start
         if is_first or self._previous_tail is None:
-            # Quick 20ms fade-in 
-            fade_len = min(int(0.02 * self.sample_rate), len(current))
+            # Smooth 30ms fade-in (balanced)
+            fade_len = min(int(0.03 * self.sample_rate), len(current))
             fade_curve = self._create_fade_curve(fade_len, fade_type="in")
             current[:fade_len] *= fade_curve
             
-            # Quick 10ms fade-out at end
-            fade_out_len = min(int(0.01 * self.sample_rate), len(current))
+            # Smooth 20ms fade-out at end
+            fade_out_len = min(int(0.02 * self.sample_rate), len(current))
             fade_out_curve = self._create_fade_curve(fade_out_len, fade_type="out")
             current[-fade_out_len:] *= fade_out_curve
             
             self._previous_tail = current[-self.default_overlap_samples:] if len(current) > self.default_overlap_samples else current
             return self._linear_to_mulaw(current)
 
-        # Fast 25ms overlap
+        # 50ms overlap for smooth transition
         overlap_len = min(len(self._previous_tail), len(current), self.default_overlap_samples)
         
-        if overlap_len < 10:  # Too short - add tiny silence
+        if overlap_len < 20:  # Too short - add silence padding
             silence = np.zeros(self._silence_padding, dtype=np.float32)
             self._previous_tail = current[-self.default_overlap_samples:] if len(current) > self.default_overlap_samples else current
             return self._linear_to_mulaw(np.concatenate([silence, current]))
@@ -88,22 +88,26 @@ class AudioCrossfadeService:
         prev_tail = self._previous_tail[-overlap_len:]
         curr_head = current[:overlap_len]
 
-        # Simple cosine crossfade (fast)
+        # Smooth cosine crossfade with gentle curves
         fade_in = self._create_fade_curve(overlap_len, fade_type="in")
         fade_out = self._create_fade_curve(overlap_len, fade_type="out")
         
+        # Apply gentle smoothing for natural transition
+        fade_in = np.power(fade_in, 0.8)  # Gentle curve
+        fade_out = np.power(fade_out, 0.8)
+        
         crossfaded = (prev_tail * fade_out) + (curr_head * fade_in)
         
-        # Quick fade at end for next chunk
+        # Smooth fade at end for next chunk
         remaining = current[overlap_len:]
-        if len(remaining) > 20:
-            tail_fade_len = min(int(0.01 * self.sample_rate), len(remaining))
+        if len(remaining) > 30:
+            tail_fade_len = min(int(0.02 * self.sample_rate), len(remaining))
             tail_fade = self._create_fade_curve(tail_fade_len, fade_type="out")
             remaining[-tail_fade_len:] *= tail_fade
 
         output = np.concatenate([crossfaded, remaining])
 
-        # Save tail
+        # Save tail for next transition
         self._previous_tail = current[-self.default_overlap_samples:] if len(current) > self.default_overlap_samples else current
 
         return self._linear_to_mulaw(output)

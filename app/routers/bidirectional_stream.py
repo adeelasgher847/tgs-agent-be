@@ -308,7 +308,7 @@ class BidirectionalStreamHandler:
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._crossfader = AudioCrossfadeService(sample_rate=8000, default_overlap_ms=25)
+        self._crossfader = AudioCrossfadeService(sample_rate=8000, default_overlap_ms=50)
         self._is_first_chunk = True
         
         # Session data
