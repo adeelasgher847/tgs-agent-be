@@ -642,9 +642,9 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
 
-                    # Apply crossfade to eliminate clicks
-                    prefix_audio = self._crossfader.process_chunk(prefix_audio, is_first=self._is_first_chunk)
-                    self._is_first_chunk = False
+                    # Stream directly without crossfade (better quality)
+                    # prefix_audio = self._crossfader.process_chunk(prefix_audio, is_first=self._is_first_chunk)
+                    # self._is_first_chunk = False
 
                     await stream_mulaw_bytes_over_twilio(
                         websocket=self.websocket,
@@ -664,8 +664,8 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                             sys.stdout.flush()
                             suffix_audio = b""
                         if suffix_audio and not self._tts_cancel.is_set():
-                            # Apply crossfade for seamless continuation
-                            suffix_audio = self._crossfader.process_chunk(suffix_audio, is_first=False)
+                            # Stream directly without crossfade
+                            # suffix_audio = self._crossfader.process_chunk(suffix_audio, is_first=False)
                             
                             await stream_mulaw_bytes_over_twilio(
                                 websocket=self.websocket,
