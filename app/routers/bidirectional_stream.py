@@ -652,7 +652,7 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                         audio_bytes=prefix_audio,
                         pace_20ms=True,
                         cancel=self._tts_cancel,
-                        prime_frames=1,  # Smooth start with 20ms buffer
+                        prime_frames=0,  # No silence padding - direct stream
                     )
 
                     # Stream remainder when ready and not cancelled
