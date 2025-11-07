@@ -579,8 +579,8 @@ class BidirectionalStreamHandler:
                     print(f"🎵 Streaming TTS chunk: '{clean[:30]}...'")
                     sys.stdout.flush()
 
-                    # Smart chunking at sentence boundaries (8 words max for low latency)
-                    prefix, suffix = smart_chunk_text(clean, max_words=8)
+                    # Smart chunking at sentence boundaries (5 words max for ultra-low latency)
+                    prefix, suffix = smart_chunk_text(clean, max_words=5)
 
                     # Begin generating suffix in parallel (if any)
                     suffix_task = asyncio.create_task(
