@@ -515,7 +515,7 @@ class BidirectionalStreamHandler:
                     # Optimized for low latency (Vapi-level performance)
                     now = asyncio.get_event_loop().time()
                     has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
-                    if has_punct or len(phrase_buf) >= 35 or (now - last_flush) >= 0.12:
+                    if has_punct or len(phrase_buf) >= 40 or (now - last_flush) >= 0.16:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
                             await self.stream_tts_response(to_speak)
