@@ -122,6 +122,8 @@ async def process_voice_input(
                 # Use model-based routing if agent has a model_id
                 if agent.model_id:
                     from app.services.gemini_service import gemini_service
+                    from app.services.openai_service import openai_service
+                    from app.services.groq_service import groq_service
                     from app.services.model_service import model_service
                     from app.core.security import decrypt_api_key
                     from sqlalchemy.orm import joinedload
@@ -251,6 +253,21 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                             ai_response_text = openai_response["response"]
                             response_time = openai_response["response_time"]
                             print(f"✅ Used OpenAI model: {model_name} (provider: {provider_name})")
+                        
+                        elif 'groq' in provider_name:
+                            # Use Groq service with model configuration
+                            groq_response = groq_service.process_agent_conversation(
+                                user_input=speech_result,
+                                agent_system_prompt=system_prompt,
+                                conversation_history=conversation_history,
+                                model_name=model_name,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                api_key=api_key
+                            )
+                            ai_response_text = groq_response["response"]
+                            response_time = groq_response["response_time"]
+                            print(f"✅ Used Groq model: {model_name} (provider: {provider_name})")
                         
                         else:
                             # Unsupported provider - fall back to default OpenAI

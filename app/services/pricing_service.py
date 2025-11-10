@@ -55,6 +55,21 @@ class PricingService:
         }
 
         # -----------------------------
+        # Groq pricing (input $/1M, output $/1M)
+        # Groq offers very competitive pricing
+        # -----------------------------
+        self.groq = {
+            "llama-3.3-70b-versatile": (0.59, 0.79),
+            "llama-3.1-70b-versatile": (0.59, 0.79),
+            "llama-3.1-8b-instant": (0.05, 0.08),
+            "llama3-70b-8192": (0.59, 0.79),
+            "llama3-8b-8192": (0.05, 0.08),
+            "mixtral-8x7b-32768": (0.24, 0.24),
+            "gemma-7b-it": (0.07, 0.07),
+            "gemma2-9b-it": (0.20, 0.20),
+        }
+
+        # -----------------------------
         # ElevenLabs plans: cost per 1K chars (USD)
         # from the table you provided
         # -----------------------------
@@ -76,6 +91,8 @@ class PricingService:
             return self.openai[key]
         if key in self.gemini:
             return self.gemini[key]
+        if key in self.groq:
+            return self.groq[key]
         return None
 
     def llm_cost_per_min(self, model_name: str) -> Optional[float]:
@@ -156,11 +173,11 @@ class PricingService:
 
     def get_all_known_models_pricing(self) -> Dict[str, Dict[str, Any]]:
         """
-        Return a mapping of all known LLM models (openai+gemini) and their computed llm_cost_per_minute
+        Return a mapping of all known LLM models (openai+gemini+groq) and their computed llm_cost_per_minute
         plus combined total (LLM + Twilio). Useful for building a /pricing endpoint.
         """
         out = {}
-        for nm, (inp, outp) in {**self.openai, **self.gemini}.items():
+        for nm, (inp, outp) in {**self.openai, **self.gemini, **self.groq}.items():
             llm_cost = round((inp + outp) * TOKENS_FRACTION, 6)
             total = round(llm_cost + TWILIO_COST_PER_MIN, 6)
             out[nm] = {

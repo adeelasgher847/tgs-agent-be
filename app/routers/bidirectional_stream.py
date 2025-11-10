@@ -140,7 +140,7 @@ def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: 
         return (prev_tail or b"") + (next_head or b"")
     
     try:
-        import audioop
+        import audioop  # pyright: ignore[reportMissingImports]
         import struct
         
         # Extract overlap regions
@@ -596,8 +596,62 @@ Previous conversation:
 
 IMPORTANT: Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally."""
             
+            # Detect agent's model configuration for intelligent routing
+            # Only Groq and Gemini support streaming
+            selected_service = None
+            selected_model = None
+            api_key = None
+            use_streaming = False
+            
+            if self.agent and self.agent.model_id:
+                try:
+                    from sqlalchemy.orm import joinedload
+                    from app.models.model import Model
+                    from app.core.security import decrypt_api_key
+                    
+                    # Load model with provider
+                    model = self.db.query(Model).options(joinedload(Model.provider)).filter(
+                        Model.id == self.agent.model_id
+                    ).first()
+                    
+                    if model and not model.archive and model.provider:
+                        provider_name = model.provider.name.lower()
+                        selected_model = model.model_name
+                        
+                        # Decrypt API key if available
+                        if model.api_key:
+                            try:
+                                api_key = decrypt_api_key(model.api_key)
+                            except Exception as e:
+                                print(f"⚠️ Failed to decrypt model API key: {e}")
+                                sys.stdout.flush()
+                        
+                        # Detect provider and select service (ONLY streaming-capable services)
+                        if 'groq' in provider_name:
+                            from app.services.groq_service import groq_service
+                            selected_service = groq_service
+                            use_streaming = True
+                            print(f"🎯 Using Groq streaming: {selected_model}")
+                            sys.stdout.flush()
+                        elif 'gemini' in provider_name or 'google' in provider_name:
+                            from app.services.gemini_service import gemini_service
+                            selected_service = gemini_service
+                            use_streaming = True
+                            print(f"🎯 Using Gemini streaming: {selected_model}")
+                            sys.stdout.flush()
+                        else:
+                            # OpenAI or other providers - use fallback (no streaming)
+                            print(f"⚠️ Provider {provider_name} will use fallback (non-streaming)")
+                            sys.stdout.flush()
+                except Exception as e:
+                    print(f"⚠️ Error loading model config: {e}")
+                    sys.stdout.flush()
+            
             # Stream LLM output as it is generated - Phrase-batched for stability
+            # Import only streaming-capable services
             from app.services.gemini_service import gemini_service
+            from app.services.groq_service import groq_service
+            
             async def try_stream(model_name: str) -> str:
                 response_accum = ""
                 phrase_buf = ""
@@ -637,32 +691,89 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                     await self.stream_tts_response(tail)
 
                 return response_accum.strip()
+            
+            # Groq-specific streaming function
+            async def try_stream_groq(model_name: str, service_api_key: str = None) -> str:
+                response_accum = ""
+                phrase_buf = ""
+                last_flush = asyncio.get_event_loop().time()
+
+                async for chunk in groq_service.stream_text(
+                    prompt=user_text,
+                    system_prompt=system_prompt,
+                    model_name=model_name,
+                    temperature=0.5,
+                    max_tokens=80,
+                    api_key=service_api_key
+                ):
+                    if not chunk:
+                        continue
+                    if self._tts_cancel.is_set():
+                        print("🛑 Barge-in: aborting current LLM stream")
+                        sys.stdout.flush()
+                        break
+
+                    response_accum += chunk
+                    phrase_buf += chunk
+
+                    now = asyncio.get_event_loop().time()
+                    has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
+                    if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
+                        to_speak = phrase_buf.strip()
+                        if to_speak and not self._tts_cancel.is_set():
+                            await self.stream_tts_response(to_speak)
+                        phrase_buf = ""
+                        last_flush = now
+
+                tail = phrase_buf.strip()
+                if tail and not self._tts_cancel.is_set():
+                    await self.stream_tts_response(tail)
+
+                return response_accum.strip()
 
             final_text = None
-            try:
-                final_text = await try_stream("gemini-1.5-flash")
-            except Exception as e1:
-                print(f"⚠️ Streaming with gemini-1.5-flash failed: {e1}")
-                sys.stdout.flush()
+            
+            # Try agent's configured model first (ONLY if streaming is supported)
+            if use_streaming and selected_service and selected_model:
                 try:
-                    final_text = await try_stream("gemini-1.5-pro")
-                except Exception as e2:
-                    print(f"⚠️ Streaming with gemini-1.5-pro failed: {e2}")
+                    print(f"⚡ Streaming with configured model: {selected_model}")
                     sys.stdout.flush()
-                    # Last fallback: non-streaming fast response via VoiceLoggingService
+                    # Use Groq streaming for Groq models
+                    if selected_service == groq_service:
+                        final_text = await try_stream_groq(selected_model, api_key)
+                    else:
+                        # Gemini - use original streaming
+                        final_text = await try_stream(selected_model)
+                except Exception as e:
+                    print(f"⚠️ Streaming with {selected_model} failed: {e}")
+                    sys.stdout.flush()
+            
+            # Fallback chain: Gemini models (backward compatibility - ORIGINAL FLOW)
+            if not final_text:
+                try:
+                    final_text = await try_stream("gemini-1.5-flash")
+                except Exception as e1:
+                    print(f"⚠️ Streaming with gemini-1.5-flash failed: {e1}")
+                    sys.stdout.flush()
                     try:
-                        final_text = await VoiceLoggingService.generate_agent_response(
-                            speech_text=user_text,
-                            confidence=confidence,
-                            agent=self.agent,
-                            db=self.db,
-                            call_session_id=self.call_session.id if self.call_session else None
-                        )
-                    except Exception as e3:
-                        print(f"⚠️ All fallbacks failed: {e3}")
+                        final_text = await try_stream("gemini-1.5-pro")
+                    except Exception as e2:
+                        print(f"⚠️ Streaming with gemini-1.5-pro failed: {e2}")
                         sys.stdout.flush()
-                        # Ultimate fallback response
-                        final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
+                        # Last fallback: non-streaming fast response via VoiceLoggingService
+                        try:
+                            final_text = await VoiceLoggingService.generate_agent_response(
+                                speech_text=user_text,
+                                confidence=confidence,
+                                agent=self.agent,
+                                db=self.db,
+                                call_session_id=self.call_session.id if self.call_session else None
+                            )
+                        except Exception as e3:
+                            print(f"⚠️ All fallbacks failed: {e3}")
+                            sys.stdout.flush()
+                            # Ultimate fallback response
+                            final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
 
             if final_text:
                 await self.stream_tts_response(final_text)

@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
     
+    # Groq Configuration
+    GROQ_API_KEY: str = ""
+    
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
     

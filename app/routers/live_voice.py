@@ -509,6 +509,8 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                 from sqlalchemy.orm import joinedload
                 from app.models.model import Model
                 from app.services.gemini_service import gemini_service
+                from app.services.openai_service import openai_service
+                from app.services.groq_service import groq_service
                 from app.core.security import decrypt_api_key
                 
                 try:
@@ -572,6 +574,21 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             ai_response_text = openai_response["response"]
                             response_time = openai_response["response_time"]
                             print(f"✅ Live voice: Used OpenAI model {model_name} (provider: {provider_name})")
+                        
+                        elif 'groq' in provider_name:
+                            # Use Groq service
+                            groq_response = groq_service.process_agent_conversation(
+                                user_input=user_input,
+                                agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
+                                conversation_history=conversation_history[:-1],
+                                model_name=model_name,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                api_key=api_key
+                            )
+                            ai_response_text = groq_response["response"]
+                            response_time = groq_response["response_time"]
+                            print(f"✅ Live voice: Used Groq model {model_name} (provider: {provider_name})")
                         
                         else:
                             # Unsupported provider - fall back to default OpenAI
