@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -24,6 +24,9 @@ class Agent(Base):
     # Agent-specific model configuration (overrides model defaults)
     agent_temperature = Column(Integer, nullable=True)  # Agent-specific temperature (0-100)
     agent_max_tokens = Column(Integer, nullable=True)   # Agent-specific max tokens
+    
+    # Soft delete
+    is_deleted = Column(Boolean, default=False, nullable=False, server_default='false')
     
     # Relationships
     tenant = relationship("Tenant", back_populates="agents")

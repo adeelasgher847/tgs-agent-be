@@ -31,7 +31,8 @@ class AgentService:
 
         # 🚨 CHECK AGENT LIMIT (MAX 5 AGENTS PER TENANT)
         agent_count = db.query(func.count(Agent.id)).filter(
-            Agent.tenant_id == tenant_id
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
         ).scalar()
         
         if agent_count >= 5:
@@ -43,7 +44,8 @@ class AgentService:
         # Check for duplicate name within tenant
         existing = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
-            func.lower(Agent.name) == agent_in.name.strip().lower()
+            func.lower(Agent.name) == agent_in.name.strip().lower(),
+            Agent.is_deleted == False
         ).first()
         if existing:
             raise HTTPException(
@@ -93,7 +95,10 @@ class AgentService:
         Returns 404 if agent doesn't exist at all.
         """
         # First, check if agent exists (regardless of tenant)
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        agent = db.query(Agent).filter(
+            Agent.id == agent_id,
+            Agent.is_deleted == False
+        ).first()
         
         if not agent:
             raise HTTPException(
@@ -125,7 +130,10 @@ class AgentService:
         offset = (page - 1) * limit
         print(tenant_id,'tenant_id')
         # Base query with tenant isolation
-        query = db.query(Agent).filter(Agent.tenant_id == tenant_id)
+        query = db.query(Agent).filter(
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
+        )
         print(query,'query')
 
         # Apply search filter - handle empty strings and whitespace
@@ -187,7 +195,8 @@ class AgentService:
             existing = db.query(Agent).filter(
                 Agent.tenant_id == tenant_id,
                 func.lower(Agent.name) == new_name.lower(),
-                Agent.id != agent_id
+                Agent.id != agent_id,
+                Agent.is_deleted == False
             ).first()
             if existing:
                 raise HTTPException(
@@ -230,11 +239,13 @@ class AgentService:
     
     def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
         """
-        Delete agent with tenant isolation
+        Soft delete agent with tenant isolation
         """
         agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
         
-        db.delete(agent)
+        # Soft delete
+        agent.is_deleted = True
+        
         db.commit()
         return True
     
@@ -242,7 +253,10 @@ class AgentService:
         """
         Get all agents for a specific tenant
         """
-        return db.query(Agent).filter(Agent.tenant_id == tenant_id).all()
+        return db.query(Agent).filter(
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
+        ).all()
     
     def search_agents(
         self, 
@@ -259,6 +273,7 @@ class AgentService:
         clean_search_term = search_term.strip().lower()
         return db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False,
             func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
     
@@ -269,7 +284,8 @@ class AgentService:
         """
         agent = db.query(Agent).options(joinedload(Agent.model)).filter(
             Agent.id == agent_id,
-            Agent.tenant_id == tenant_id
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
         ).first()
         
         if not agent:
