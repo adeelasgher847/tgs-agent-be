@@ -101,7 +101,6 @@ from datetime import datetime, timezone
 import uuid
 import sys
 import math
-import struct
 
 # Google built-in endpointing (VAD) will be used via streaming_recognize
 
@@ -124,7 +123,47 @@ BYTES_PER_SECOND = MULAW_SAMPLE_RATE_HZ  # 8-bit mu-law => 1 byte per sample
 CHUNK_DURATION_SEC = 0.02  # 20ms
 MULAW_FRAME_BYTES = int(BYTES_PER_SECOND * CHUNK_DURATION_SEC)  # 160 bytes
 
+ULAW_BIAS = 0x84
+ULAW_CLIP = 32635
+
 router = APIRouter()
+
+
+def ulaw_to_linear_sample(ulaw_byte: int) -> int:
+    """
+    Convert a single mu-law encoded byte to 16-bit linear PCM.
+    """
+    ulaw_byte = (~ulaw_byte) & 0xFF
+    sign = ulaw_byte & 0x80
+    exponent = (ulaw_byte >> 4) & 0x07
+    mantissa = ulaw_byte & 0x0F
+    sample = ((mantissa << 3) + ULAW_BIAS) << exponent
+    return -sample if sign else sample
+
+
+def linear_to_ulaw_sample(sample: int) -> int:
+    """
+    Convert a 16-bit linear PCM sample to mu-law encoded byte.
+    """
+    if sample > ULAW_CLIP:
+        sample = ULAW_CLIP
+    elif sample < -ULAW_CLIP:
+        sample = -ULAW_CLIP
+
+    sign = 0x80 if sample < 0 else 0
+    if sign:
+        sample = -sample
+
+    sample += ULAW_BIAS
+    exponent = 7
+    mask = 0x4000
+    while exponent > 0 and not (sample & mask):
+        mask >>= 1
+        exponent -= 1
+
+    mantissa = (sample >> (exponent + 3)) & 0x0F
+    ulaw_byte = ~(sign | (exponent << 4) | mantissa) & 0xFF
+    return ulaw_byte
 
 
 def iter_mulaw_20ms_frames(audio_bytes: bytes) -> Iterable[bytes]:
@@ -219,73 +258,78 @@ def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: 
     """
     if not prev_tail and not next_head:
         return b""
+
     if overlap_bytes is None:
-        overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes = 20ms
-    
-    # If either segment too short, concatenate safely
-    if not prev_tail or len(prev_tail) < overlap_bytes:
+        overlap_bytes = MULAW_FRAME_BYTES  # default 20ms
+
+    if not prev_tail or not next_head:
         return (prev_tail or b"") + (next_head or b"")
-    if not next_head or len(next_head) < overlap_bytes:
+
+    overlap = min(len(prev_tail), len(next_head), overlap_bytes)
+    if overlap <= 0:
         return (prev_tail or b"") + (next_head or b"")
-    
+
     try:
-        import struct
-        
-        # Extract overlap regions
-        prev_overlap = prev_tail[-overlap_bytes:]
-        next_overlap = next_head[:overlap_bytes]
-        
-        # Simple mu-law to linear conversion (Python 3.13+ compatible)
-        def ulaw_to_linear(ulaw_byte):
-            """Convert single mu-law byte to 16-bit linear"""
-            ulaw_byte = ~ulaw_byte
-            sign = (ulaw_byte & 0x80)
-            exponent = (ulaw_byte >> 4) & 0x07
-            mantissa = ulaw_byte & 0x0F
-            sample = (mantissa << 3) + 0x84
-            sample <<= exponent
-            if sign != 0:
-                sample = -sample
-            return sample
-        
-        def linear_to_ulaw(sample):
-            """Convert 16-bit linear to mu-law byte"""
-            sign = (sample >> 8) & 0x80
-            if sign != 0:
-                sample = -sample
-            if sample > 32635:
-                sample = 32635
-            sample += 0x84
-            exponent = 7
-            for i in range(7, -1, -1):
-                if sample <= (0x1F << i):
-                    exponent = i
-                    break
-            mantissa = (sample >> (exponent + 3)) & 0x0F
-            ulaw_byte = ~(sign | (exponent << 4) | mantissa)
-            return ulaw_byte & 0xFF
-        
-        # Convert overlaps to linear
-        prev_lin = [ulaw_to_linear(b) for b in prev_overlap]
-        next_lin = [ulaw_to_linear(b) for b in next_overlap]
-        
-        # Crossfade
+        prev_overlap = prev_tail[-overlap:]
+        next_overlap = next_head[:overlap]
+
+        prev_lin = [ulaw_to_linear_sample(b) for b in prev_overlap]
+        next_lin = [ulaw_to_linear_sample(b) for b in next_overlap]
+
         n = min(len(prev_lin), len(next_lin))
+        if n == 0:
+            return (prev_tail or b"") + (next_head or b"")
         mixed = []
-        
+
         for i in range(n):
             fade_out = 1.0 - (i / n)
-            fade_in = i / n
+            fade_in = (i + 1) / n
             mixed_sample = int(prev_lin[i] * fade_out + next_lin[i] * fade_in)
             mixed_sample = max(-32768, min(32767, mixed_sample))
-            mixed.append(linear_to_ulaw(mixed_sample))
-        
-        # Return blended result
-        return prev_tail[:-overlap_bytes] + bytes(mixed) + next_head[overlap_bytes:]
-        
+            mixed.append(linear_to_ulaw_sample(mixed_sample))
+
+        return prev_tail[:-overlap] + bytes(mixed) + next_head[overlap:]
+
     except Exception as e:
         print(f"⚠️ Crossfade failed, using direct join: {e}")
-        return prev_tail + next_head
+        return (prev_tail or b"") + (next_head or b"")
+
+
+def build_crossfade_bridge(prev_tail: bytes, next_head: bytes, overlap_bytes: int = None) -> bytes:
+    """
+    Build a dedicated overlap bridge between two mu-law segments.
+    The bridge contains the blended overlap region only, intended to be sent
+    between consecutive chunks to avoid audible clicks ("tak-tak").
+    """
+    if not prev_tail or not next_head:
+        return b""
+
+    if overlap_bytes is None:
+        overlap_bytes = MULAW_FRAME_BYTES // 2  # default to 10ms
+
+    overlap = min(len(prev_tail), len(next_head), max(1, overlap_bytes))
+    if overlap <= 0:
+        return b""
+
+    prev_overlap = prev_tail[-overlap:]
+    next_overlap = next_head[:overlap]
+
+    prev_lin = [ulaw_to_linear_sample(b) for b in prev_overlap]
+    next_lin = [ulaw_to_linear_sample(b) for b in next_overlap]
+
+    n = min(len(prev_lin), len(next_lin))
+    if n == 0:
+        return b""
+
+    bridge_samples = []
+    for i in range(n):
+        fade_out = 1.0 - (i / n)
+        fade_in = (i + 1) / n
+        mixed_sample = int(prev_lin[i] * fade_out + next_lin[i] * fade_in)
+        mixed_sample = max(-32768, min(32767, mixed_sample))
+        bridge_samples.append(linear_to_ulaw_sample(mixed_sample))
+
+    return bytes(bridge_samples)
 
 
 def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
@@ -405,44 +449,12 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
         MULAW audio with subtle background noise mixed in
     """
     import random
-    import struct
-    
     if not audio_bytes or len(audio_bytes) == 0:
         return audio_bytes
     
     try:
-        # Mu-law to linear conversion (Python 3.13+ compatible)
-        def ulaw_to_linear(ulaw_byte):
-            """Convert single mu-law byte to 16-bit linear"""
-            ulaw_byte = ~ulaw_byte
-            sign = (ulaw_byte & 0x80)
-            exponent = (ulaw_byte >> 4) & 0x07
-            mantissa = ulaw_byte & 0x0F
-            sample = (mantissa << 3) + 0x84
-            sample <<= exponent
-            if sign != 0:
-                sample = -sample
-            return sample
-        
-        def linear_to_ulaw(sample):
-            """Convert 16-bit linear to mu-law byte"""
-            sign = (sample >> 8) & 0x80
-            if sign != 0:
-                sample = -sample
-            if sample > 32635:
-                sample = 32635
-            sample += 0x84
-            exponent = 7
-            for i in range(7, -1, -1):
-                if sample <= (0x1F << i):
-                    exponent = i
-                    break
-            mantissa = (sample >> (exponent + 3)) & 0x0F
-            ulaw_byte = ~(sign | (exponent << 4) | mantissa)
-            return ulaw_byte & 0xFF
-        
         # Convert MULAW to linear
-        linear_audio = [ulaw_to_linear(b) for b in audio_bytes]
+        linear_audio = [ulaw_to_linear_sample(b) for b in audio_bytes]
         num_samples = len(linear_audio)
         
         # Generate subtle pink noise (1/f noise - more natural)
@@ -473,7 +485,7 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
             mixed_linear.append(mixed)
         
         # Convert back to MULAW
-        mixed_mulaw = bytes([linear_to_ulaw(sample) for sample in mixed_linear])
+        mixed_mulaw = bytes([linear_to_ulaw_sample(sample) for sample in mixed_linear])
         
         return mixed_mulaw
         
@@ -719,8 +731,9 @@ class BidirectionalStreamHandler:
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
         self._tts_worker_task = None         # Background TTS worker
         self._tts_generation_tasks = []      # Track parallel TTS generation
-        self._pending_tts_tail = b""         # Hold last 20ms of audio for crossfade
-        self._tts_overlap_bytes = MULAW_FRAME_BYTES  # Consistent overlap size
+        self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
+        self._tts_overlap_bytes = max(40, MULAW_FRAME_BYTES // 2)  # ~10ms overlap by default
+        self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         
         # Natural conversation state (backchannels & persona)
         self._user_speech_duration = 0.0    # Track user monologue duration
@@ -1111,7 +1124,7 @@ class BidirectionalStreamHandler:
                             break
                     
                     print(f"🛑 Barge-in complete: TTS stopped, {cleared_count} chunks cleared, waiting for user to finish...")
-                    self._pending_tts_tail = b""
+                    self._prev_tts_tail = b""
                     sys.stdout.flush()
                 # Don't process interim during barge-in - wait for user to finish
                 return
@@ -1194,8 +1207,8 @@ class BidirectionalStreamHandler:
             
             # Reset cancel flag for new response generation
             self._tts_cancel.clear()
-            # Reset audio tail so new response starts clean
-            self._pending_tts_tail = b""
+            # Reset crossfade state so new response starts clean
+            self._prev_tts_tail = b""
             
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
@@ -1308,7 +1321,7 @@ IMPORTANT: Follow the model instructions above."""
             model_name = "gemini-1.5-flash"  # Default fallback
             api_key = None
             temperature = 0.5
-            max_tokens = 40
+            max_tokens = 100
             
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
@@ -1637,76 +1650,73 @@ IMPORTANT: Follow the model instructions above."""
                         sys.stdout.flush()
                     
                     if self._tts_cancel.is_set():
-                        self._pending_tts_tail = b""
+                        self._prev_tts_tail = b""
                         return
                     
                     if audio_bytes:
-                        overlap = self._tts_overlap_bytes or MULAW_FRAME_BYTES
-                        prepared_audio = audio_bytes
+                        overlap = max(0, min(self._tts_overlap_bytes, len(audio_bytes)))
+                        bridge_audio = b""
+                        remainder_audio = audio_bytes
                         
-                        # Blend with pending tail from previous chunk to remove "tak-tak"
-                        if self._pending_tts_tail:
+                        if self._prev_tts_tail and overlap > 0 and len(audio_bytes) > overlap:
                             try:
-                                prepared_audio = crossfade_mulaw_segments(
-                                    self._pending_tts_tail,
-                                    prepared_audio,
-                                    overlap
-                                )
-                                print(f"🎚️ Crossfaded {len(self._pending_tts_tail)}→{len(prepared_audio)} bytes at boundary")
+                                bridge_audio = build_crossfade_bridge(self._prev_tts_tail, audio_bytes, overlap)
+                                remainder_audio = audio_bytes[overlap:]
+                                print(f"🎚️ Bridge built ({len(bridge_audio)} bytes) with overlap {overlap} bytes")
                             except Exception as e:
-                                print(f"⚠️ Crossfade failed, concatenating instead: {e}")
-                                prepared_audio = self._pending_tts_tail + prepared_audio
+                                print(f"⚠️ Bridge build failed, using direct audio: {e}")
+                                bridge_audio = b""
+                                remainder_audio = audio_bytes
                             finally:
-                                self._pending_tts_tail = b""
+                                sys.stdout.flush()
+                        elif self._prev_tts_tail and overlap > 0:
+                            # Audio shorter than overlap; skip bridge but still smooth next transition
+                            remainder_audio = audio_bytes
+                        
+                        if self._tts_cancel.is_set():
+                            self._prev_tts_tail = b""
+                            return
+                        
+                        prime_frames = 0 if self._twilio_buffer_primed else 1
+                        
+                        if bridge_audio and not self._tts_cancel.is_set():
+                            await stream_mulaw_bytes_over_twilio(
+                                websocket=self.websocket,
+                                stream_sid=self.stream_sid,
+                                audio_bytes=bridge_audio,
+                                pace_20ms=True,
+                                cancel=self._tts_cancel,
+                                prime_frames=prime_frames,
+                            )
+                            self._twilio_buffer_primed = True
+                            prime_frames = 0
+                            print(f"✅ Streamed bridge {len(bridge_audio)} bytes")
+                            sys.stdout.flush()
+                        
+                        if remainder_audio and not self._tts_cancel.is_set():
+                            await stream_mulaw_bytes_over_twilio(
+                                websocket=self.websocket,
+                                stream_sid=self.stream_sid,
+                                audio_bytes=remainder_audio,
+                                pace_20ms=True,
+                                cancel=self._tts_cancel,
+                                prime_frames=prime_frames,
+                            )
+                            self._twilio_buffer_primed = True
+                            print(f"✅ Streamed {len(remainder_audio)} bytes")
                             sys.stdout.flush()
                         
                         if self._tts_cancel.is_set():
-                            self._pending_tts_tail = b""
-                            return
-                        
-                        audio_to_stream = b""
-                        
-                        if is_final:
-                            audio_to_stream = prepared_audio
-                            self._pending_tts_tail = b""
+                            self._prev_tts_tail = b""
                         else:
-                            if overlap and len(prepared_audio) > overlap:
-                                audio_to_stream = prepared_audio[:-overlap]
-                                self._pending_tts_tail = prepared_audio[-overlap:]
+                            tail_len = min(self._tts_overlap_bytes, len(audio_bytes))
+                            if is_final:
+                                self._prev_tts_tail = b""
                             else:
-                                # Hold short audio to blend with next chunk
-                                self._pending_tts_tail += prepared_audio
-                                print(f"⏳ Holding {len(self._pending_tts_tail)} bytes for next chunk overlap")
-                                sys.stdout.flush()
-                        
-                        if audio_to_stream and not self._tts_cancel.is_set():
-                            await stream_mulaw_bytes_over_twilio(
-                                websocket=self.websocket,
-                                stream_sid=self.stream_sid,
-                                audio_bytes=audio_to_stream,
-                                pace_20ms=True,
-                                cancel=self._tts_cancel,
-                                prime_frames=1,
-                            )
-                            print(f"✅ Streamed {len(audio_to_stream)} bytes")
-                            sys.stdout.flush()
-                        
-                        # Flush any remaining tail when final chunk
-                        if is_final and self._pending_tts_tail and not self._tts_cancel.is_set():
-                            await stream_mulaw_bytes_over_twilio(
-                                websocket=self.websocket,
-                                stream_sid=self.stream_sid,
-                                audio_bytes=self._pending_tts_tail,
-                                pace_20ms=True,
-                                cancel=self._tts_cancel,
-                                prime_frames=0,
-                            )
-                            print(f"✅ Streamed final tail {len(self._pending_tts_tail)} bytes")
-                            sys.stdout.flush()
-                            self._pending_tts_tail = b""
+                                self._prev_tts_tail = audio_bytes[-tail_len:] if tail_len else b""
                 finally:
                     if self._tts_cancel.is_set():
-                        self._pending_tts_tail = b""
+                        self._prev_tts_tail = b""
                     self.is_speaking = False
         
         except Exception as e:
