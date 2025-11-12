@@ -26,10 +26,10 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
 2. Micro-Pauses & Hesitation Fillers:
    - Hesitation patterns: "Hmm <break time='120ms'/> I think..."
    - "Uh", "Well", "Let me see" WITH breaks (15% chance)
-   - SPOKEN boundary fillers at EVERY mid-chunk break (100%):
+   - SPOKEN boundary fillers at EVERY 10-word mid-chunk break (100%):
      * "<break time='80-100ms'/><prosody>uhh/umm/uh/hmm</prosody>" pattern
-     * ALWAYS added between chunks to eliminate tak-tak
-     * No silent gaps - natural spoken connectors
+     * ALWAYS added between chunks to eliminate tak-tak distortion
+     * No silent gaps - natural spoken connectors keep audio flowing
    - Example: <speak>Hmm <break time="120ms"/> I think I can help with that.</speak>
 
 3. Backchannels:
@@ -51,13 +51,13 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
    - Consistent voice persona from agent configuration
 
 SMART CHUNKING WITH OVERLAP:
-- 5 words per chunk for fast response (balanced speed + quality)
+- 10 words per chunk for balanced quality + performance
 - Major punctuation (. ! ? ;) triggers immediate chunk
-- Minor punctuation (, : —) with 3+ words triggers chunk
+- Minor punctuation (, : —) with 5+ words triggers chunk
 - OVERLAP TECHNIQUE: Last 2 words of chunk 1 + filler + first words of chunk 2
-  Example: Chunk 1: "Hello how are" + SAVE("you today")
-           Chunk 2: "you today" + "uhh" + "I'm doing great"
-  Result: Seamless transition, no tak-tak distortion!
+  Example: Chunk 1: "Hello how are you doing today I'm doing" + SAVE("great thank")
+           Chunk 2: "great thank" + "uhh" + "you for asking how"
+  Result: Seamless transition with spoken fillers, no tak-tak distortion!
 
 6. Ambient Background Noise:
    - DISABLED by default (caused distortion on some systems)
@@ -719,6 +719,8 @@ class BidirectionalStreamHandler:
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
         self._tts_worker_task = None         # Background TTS worker
         self._tts_generation_tasks = []      # Track parallel TTS generation
+        self._pending_tts_tail = b""         # Hold last 20ms of audio for crossfade
+        self._tts_overlap_bytes = MULAW_FRAME_BYTES  # Consistent overlap size
         
         # Natural conversation state (backchannels & persona)
         self._user_speech_duration = 0.0    # Track user monologue duration
@@ -889,6 +891,7 @@ class BidirectionalStreamHandler:
                     chunk_id = task.get("chunk_id", "unknown")
                     use_ssml = task.get("use_ssml", False)
                     is_backchannel = task.get("is_backchannel", False)
+                    is_final = task.get("is_final", False)
                     
                     if not text or not text.strip():
                         self.tts_queue.task_done()
@@ -901,7 +904,7 @@ class BidirectionalStreamHandler:
                     sys.stdout.flush()
                     
                     # Generate and stream TTS (this is the blocking part)
-                    await self._stream_tts_chunk(text, use_ssml=use_ssml)
+                    await self._stream_tts_chunk(text, use_ssml=use_ssml, is_final=is_final)
                     
                     print(f"✅ TTS Pipeline: Completed chunk {chunk_id}")
                     sys.stdout.flush()
@@ -1059,7 +1062,9 @@ class BidirectionalStreamHandler:
             await self.tts_queue.put({
                 "text": backchannel,
                 "chunk_id": "backchannel",
-                "is_backchannel": True
+                "is_backchannel": True,
+                "is_final": True,
+                "use_ssml": False
             })
             
             self._last_backchannel_time = now
@@ -1106,6 +1111,7 @@ class BidirectionalStreamHandler:
                             break
                     
                     print(f"🛑 Barge-in complete: TTS stopped, {cleared_count} chunks cleared, waiting for user to finish...")
+                    self._pending_tts_tail = b""
                     sys.stdout.flush()
                 # Don't process interim during barge-in - wait for user to finish
                 return
@@ -1167,7 +1173,8 @@ class BidirectionalStreamHandler:
                 "text": ack,
                 "chunk_id": "quick_ack",
                 "use_ssml": False,
-                "is_acknowledgement": True
+                "is_acknowledgement": True,
+                "is_final": False
             })
     
     async def generate_and_stream_response(self, user_text: str, confidence: float):
@@ -1187,6 +1194,8 @@ class BidirectionalStreamHandler:
             
             # Reset cancel flag for new response generation
             self._tts_cancel.clear()
+            # Reset audio tail so new response starts clean
+            self._pending_tts_tail = b""
             
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
@@ -1405,20 +1414,20 @@ IMPORTANT: Follow the model instructions above."""
                     phrase_buf += chunk
                     word_count = len(phrase_buf.split())
 
-                    # OPTIMIZED: 5-word chunks with natural fillers/pauses at boundaries
+                    # BALANCED: 10-word chunks with natural fillers at boundaries
                     now = asyncio.get_event_loop().time()
                     # Only trigger on MAJOR punctuation for natural pauses
                     has_major_punct = any(p in phrase_buf for p in [".", "?", "!", ";"])
-                    # Minor punctuation needs fewer words now
-                    has_minor_punct = any(p in phrase_buf for p in [",", "—", ":"]) and word_count >= 3
+                    # Minor punctuation needs fewer words
+                    has_minor_punct = any(p in phrase_buf for p in [",", "—", ":"]) and word_count >= 5
 
-                    # ⚡ OPTIMIZED: 5+ words OR major punctuation OR 3 words + comma
-                    # Add natural pause/filler at boundary for smooth transitions
-                    if word_count >= 5 or has_major_punct or has_minor_punct:
+                    # ⚡ BALANCED: 10+ words OR major punctuation OR 5 words + comma
+                    # Add natural filler at boundary for smooth transitions
+                    if word_count >= 10 or has_major_punct or has_minor_punct:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
                             # Determine if this is a mid-chunk break (needs overlap with next chunk)
-                            is_mid_chunk = word_count >= 5 and not has_major_punct
+                            is_mid_chunk = word_count >= 10 and not has_major_punct
                             
                             # If we have a previous chunk tail, prepend it with filler for smooth overlap
                             import random
@@ -1460,7 +1469,8 @@ IMPORTANT: Follow the model instructions above."""
                                 await self.tts_queue.put({
                                     "text": enhanced_text,
                                     "chunk_id": chunk_counter,
-                                    "use_ssml": self._use_ssml
+                                    "use_ssml": self._use_ssml,
+                                    "is_final": False
                                 })
                                 print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
                                 sys.stdout.flush()
@@ -1501,7 +1511,8 @@ IMPORTANT: Follow the model instructions above."""
                         await self.tts_queue.put({
                             "text": enhanced_tail,
                             "chunk_id": chunk_counter,
-                            "use_ssml": self._use_ssml
+                            "use_ssml": self._use_ssml,
+                            "is_final": True
                         })
                         print(f"🔄 Queued TTS chunk {chunk_counter} (final): '{tail[:30]}...'")
                         sys.stdout.flush()
@@ -1544,7 +1555,9 @@ IMPORTANT: Follow the model instructions above."""
                             chunk_counter += 1
                             await self.tts_queue.put({
                                 "text": final_text,
-                                "chunk_id": chunk_counter
+                                "chunk_id": chunk_counter,
+                                "use_ssml": self._use_ssml,
+                                "is_final": True
                             })
                             print(f"🔄 Queued fallback TTS chunk {chunk_counter}")
                             sys.stdout.flush()
@@ -1556,7 +1569,9 @@ IMPORTANT: Follow the model instructions above."""
                         chunk_counter += 1
                         await self.tts_queue.put({
                             "text": final_text,
-                            "chunk_id": chunk_counter
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._use_ssml,
+                            "is_final": True
                         })
 
             if final_text:
@@ -1566,7 +1581,7 @@ IMPORTANT: Follow the model instructions above."""
             print(f"❌ Error generating response: {e}")
             sys.stdout.flush()
     
-    async def _stream_tts_chunk(self, text: str, use_ssml: bool = False):
+    async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
         Simplified version without the complex prefix/suffix splitting.
@@ -1621,19 +1636,77 @@ IMPORTANT: Follow the model instructions above."""
                         print(f"🔊 Added ambient noise (level: {self._ambient_noise_level})")
                         sys.stdout.flush()
                     
-                    # Stream to Twilio immediately
-                    if audio_bytes and not self._tts_cancel.is_set():
-                        await stream_mulaw_bytes_over_twilio(
-                            websocket=self.websocket,
-                            stream_sid=self.stream_sid,
-                            audio_bytes=audio_bytes,
-                            pace_20ms=True,
-                            cancel=self._tts_cancel,
-                            prime_frames=1,
-                        )
-                        print(f"✅ Streamed {len(audio_bytes)} bytes")
-                        sys.stdout.flush()
+                    if self._tts_cancel.is_set():
+                        self._pending_tts_tail = b""
+                        return
+                    
+                    if audio_bytes:
+                        overlap = self._tts_overlap_bytes or MULAW_FRAME_BYTES
+                        prepared_audio = audio_bytes
+                        
+                        # Blend with pending tail from previous chunk to remove "tak-tak"
+                        if self._pending_tts_tail:
+                            try:
+                                prepared_audio = crossfade_mulaw_segments(
+                                    self._pending_tts_tail,
+                                    prepared_audio,
+                                    overlap
+                                )
+                                print(f"🎚️ Crossfaded {len(self._pending_tts_tail)}→{len(prepared_audio)} bytes at boundary")
+                            except Exception as e:
+                                print(f"⚠️ Crossfade failed, concatenating instead: {e}")
+                                prepared_audio = self._pending_tts_tail + prepared_audio
+                            finally:
+                                self._pending_tts_tail = b""
+                            sys.stdout.flush()
+                        
+                        if self._tts_cancel.is_set():
+                            self._pending_tts_tail = b""
+                            return
+                        
+                        audio_to_stream = b""
+                        
+                        if is_final:
+                            audio_to_stream = prepared_audio
+                            self._pending_tts_tail = b""
+                        else:
+                            if overlap and len(prepared_audio) > overlap:
+                                audio_to_stream = prepared_audio[:-overlap]
+                                self._pending_tts_tail = prepared_audio[-overlap:]
+                            else:
+                                # Hold short audio to blend with next chunk
+                                self._pending_tts_tail += prepared_audio
+                                print(f"⏳ Holding {len(self._pending_tts_tail)} bytes for next chunk overlap")
+                                sys.stdout.flush()
+                        
+                        if audio_to_stream and not self._tts_cancel.is_set():
+                            await stream_mulaw_bytes_over_twilio(
+                                websocket=self.websocket,
+                                stream_sid=self.stream_sid,
+                                audio_bytes=audio_to_stream,
+                                pace_20ms=True,
+                                cancel=self._tts_cancel,
+                                prime_frames=1,
+                            )
+                            print(f"✅ Streamed {len(audio_to_stream)} bytes")
+                            sys.stdout.flush()
+                        
+                        # Flush any remaining tail when final chunk
+                        if is_final and self._pending_tts_tail and not self._tts_cancel.is_set():
+                            await stream_mulaw_bytes_over_twilio(
+                                websocket=self.websocket,
+                                stream_sid=self.stream_sid,
+                                audio_bytes=self._pending_tts_tail,
+                                pace_20ms=True,
+                                cancel=self._tts_cancel,
+                                prime_frames=0,
+                            )
+                            print(f"✅ Streamed final tail {len(self._pending_tts_tail)} bytes")
+                            sys.stdout.flush()
+                            self._pending_tts_tail = b""
                 finally:
+                    if self._tts_cancel.is_set():
+                        self._pending_tts_tail = b""
                     self.is_speaking = False
         
         except Exception as e:
