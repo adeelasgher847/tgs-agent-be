@@ -116,6 +116,7 @@ from app.services.groq_service import groq_service
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.routers.general_websocket import broadcast_call_status_update
+from app.middleware.tts_preprocessing_middleware import preprocess_for_tts, quick_clean
 
 # Real-time TTS MULAW streaming constants
 MULAW_SAMPLE_RATE_HZ = 8000  # Twilio-friendly
@@ -732,7 +733,7 @@ class BidirectionalStreamHandler:
         self._tts_worker_task = None         # Background TTS worker
         self._tts_generation_tasks = []      # Track parallel TTS generation
         self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
-        self._tts_overlap_bytes = max(40, MULAW_FRAME_BYTES // 2)  # ~10ms overlap by default
+        self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         
         # Natural conversation state (backchannels & persona)
@@ -1349,22 +1350,22 @@ IMPORTANT: Follow the model instructions above."""
                 elif self.agent.model.max_tokens:
                     max_tokens = self.agent.model.max_tokens
                 
-                # ADAPTIVE MAX TOKENS: Adjust based on query complexity for faster responses
+                # ADAPTIVE MAX TOKENS: Adjust based on query complexity (with higher limits)
                 user_word_count = len(user_text.split())
                 user_lower = user_text.lower().strip()
                 
-                # Quick yes/no/confirmations - ultra short
+                # Quick yes/no/confirmations - short but reasonable
                 if user_lower in ["yes", "no", "yeah", "nope", "yep", "ok", "okay", "sure", "nah"]:
-                    max_tokens = min(max_tokens, 15)
-                    print(f"⚡ Quick confirmation detected - max_tokens: {max_tokens}")
-                # Very short queries (1-3 words) - short response
+                    max_tokens = min(max_tokens, 30)  # Increased from 15 to 30
+                    print(f"⚡ Quick confirmation - max_tokens: {max_tokens}")
+                # Very short queries (1-3 words) - medium response
                 elif user_word_count <= 3:
-                    max_tokens = min(max_tokens, 25)
-                    print(f"⚡ Short query detected - max_tokens: {max_tokens}")
-                # Medium queries (4-7 words) - medium response
+                    max_tokens = min(max_tokens, 50)  # Increased from 25 to 50
+                    print(f"⚡ Short query - max_tokens: {max_tokens}")
+                # Medium queries (4-7 words) - use configured tokens
                 elif user_word_count <= 7:
-                    max_tokens = min(max_tokens, 35)
-                    print(f"⚡ Medium query detected - max_tokens: {max_tokens}")
+                    # Use full configured tokens (no limiting)
+                    print(f"📝 Medium query - max_tokens: {max_tokens}")
                 # Long queries - use configured max_tokens
                 else:
                     print(f"📝 Complex query - max_tokens: {max_tokens}")
@@ -1399,10 +1400,9 @@ IMPORTANT: Follow the model instructions above."""
             
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
-            previous_chunk_tail = ""  # Store last 2-3 words for overlap
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
-                nonlocal chunk_counter, previous_chunk_tail
+                nonlocal chunk_counter
                 response_accum = ""
                 phrase_buf = ""
                 last_flush = asyncio.get_event_loop().time()
@@ -1439,42 +1439,20 @@ IMPORTANT: Follow the model instructions above."""
                     if word_count >= 10 or has_major_punct or has_minor_punct:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
-                            # Determine if this is a mid-chunk break (needs overlap with next chunk)
-                            is_mid_chunk = word_count >= 10 and not has_major_punct
+                            # NO text-level overlap - rely ONLY on audio crossfading (Vapi's approach)
+                            # This prevents double-overlap distortion
+                            # Audio crossfading happens in _stream_tts_chunk() automatically
                             
-                            # If we have a previous chunk tail, prepend it with filler for smooth overlap
-                            import random
-                            import re
-                            if previous_chunk_tail:
-                                # Add natural filler between chunks
-                                filler = random.choice(["uhh", "umm", "uh", "hmm"])
-                                to_speak = f"{previous_chunk_tail} {filler} {to_speak}"
-                                print(f"🔗 Overlapping chunks: '{previous_chunk_tail}' + '{filler}' + '{to_speak[:20]}...'")
-                                sys.stdout.flush()
-                                previous_chunk_tail = ""  # Clear after use
-                            
-                            # Save tail for next chunk if mid-sentence break
-                            if is_mid_chunk:
-                                words = to_speak.split()
-                                if len(words) > 2:
-                                    # Save last 2 words for overlap with next chunk
-                                    previous_chunk_tail = " ".join(words[-2:])
-                                    # Remove those words from current chunk
-                                    to_speak = " ".join(words[:-2])
-                                    print(f"💾 Saved chunk tail for overlap: '{previous_chunk_tail}'")
-                                    sys.stdout.flush()
-                            
-                            # Clean and enhance text with SSML
+                            # Clean and enhance text with SSML (using middleware)
                             if self._use_ssml:
-                                enhanced_text = add_natural_ssml(
-                                    to_speak, 
-                                    use_ssml=True, 
-                                    add_breaths=True, 
-                                    add_fillers=(chunk_counter == 0),  # Only first chunk
-                                    add_boundary_pause=is_mid_chunk  # ALWAYS add filler at mid-chunk breaks!
+                                enhanced_text = preprocess_for_tts(
+                                    to_speak,
+                                    use_ssml=True,
+                                    add_prosody=True,
+                                    normalize=True
                                 )
                             else:
-                                enhanced_text = clean_text_for_tts(to_speak)
+                                enhanced_text = quick_clean(to_speak)
                             
                             if enhanced_text:  # Only queue if text remains after processing
                                 # PARALLEL PIPELINE: Queue chunk instead of blocking
@@ -1490,34 +1468,20 @@ IMPORTANT: Follow the model instructions above."""
                         phrase_buf = ""
                         last_flush = now
 
-                # flush any tail (including saved overlap)
+                # flush any remaining text
                 tail = phrase_buf.strip()
                 
-                # Add previous chunk tail to final chunk if exists
-                if previous_chunk_tail and tail:
-                    import random
-                    filler = random.choice(["uhh", "umm", "uh"])
-                    tail = f"{previous_chunk_tail} {filler} {tail}"
-                    print(f"🔗 Final chunk with overlap: '{previous_chunk_tail}' + '{filler}' + '{tail[:20]}...'")
-                    sys.stdout.flush()
-                    previous_chunk_tail = ""
-                elif previous_chunk_tail and not tail:
-                    # Only tail remaining
-                    tail = previous_chunk_tail
-                    previous_chunk_tail = ""
-                
                 if tail and not self._tts_cancel.is_set():
-                    # Clean and enhance tail text (no boundary pause for final chunk)
+                    # Clean and enhance tail text (using middleware)
                     if self._use_ssml:
-                        enhanced_tail = add_natural_ssml(
-                            tail, 
-                            use_ssml=True, 
-                            add_breaths=True, 
-                            add_fillers=False,
-                            add_boundary_pause=False  # Final chunk - no boundary pause
+                        enhanced_tail = preprocess_for_tts(
+                            tail,
+                            use_ssml=True,
+                            add_prosody=True,
+                            normalize=True
                         )
                     else:
-                        enhanced_tail = clean_text_for_tts(tail)
+                        enhanced_tail = quick_clean(tail)
                     
                     if enhanced_tail:  # Only queue if text remains
                         chunk_counter += 1
