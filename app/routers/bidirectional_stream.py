@@ -306,7 +306,7 @@ def build_crossfade_bridge(prev_tail: bytes, next_head: bytes, overlap_bytes: in
         return b""
 
     if overlap_bytes is None:
-        overlap_bytes = MULAW_FRAME_BYTES // 2  # default to 10ms
+        overlap_bytes = 400  # 50ms at 8kHz for smooth transitions
 
     overlap = min(len(prev_tail), len(next_head), max(1, overlap_bytes))
     if overlap <= 0:
@@ -1724,8 +1724,8 @@ IMPORTANT: Follow the model instructions above."""
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
 
-                    # Hold back last 20ms for crossfade with next chunk.
-                    overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes = 20ms
+                    # Hold back 50ms for crossfade with next chunk (smooth transitions)
+                    overlap_bytes = 400  # 50ms at 8kHz
                     if len(prefix_audio) > overlap_bytes:
                         prefix_main = prefix_audio[:-overlap_bytes]
                         prefix_tail = prefix_audio[-overlap_bytes:]

@@ -64,12 +64,65 @@ def normalize_numbers(text: str) -> str:
     return result
 
 
+def add_natural_contractions(text: str) -> str:
+    """
+    Add natural contractions for more human-like speech.
+    "I am" → "I'm", "you are" → "you're", etc.
+    """
+    contractions = {
+        r'\bI am\b': "I'm",
+        r'\byou are\b': "you're",
+        r'\bhe is\b': "he's",
+        r'\bshe is\b': "she's",
+        r'\bit is\b': "it's",
+        r'\bwe are\b': "we're",
+        r'\bthey are\b': "they're",
+        r'\bthat is\b': "that's",
+        r'\bwho is\b': "who's",
+        r'\bwhat is\b': "what's",
+        r'\bwhere is\b': "where's",
+        r'\bI will\b': "I'll",
+        r'\byou will\b': "you'll",
+        r'\bwe will\b': "we'll",
+        r'\bthey will\b': "they'll",
+        r'\bI would\b': "I'd",
+        r'\byou would\b': "you'd",
+        r'\bI have\b': "I've",
+        r'\byou have\b': "you've",
+        r'\bwe have\b': "we've",
+        r'\bthey have\b': "they've",
+        r'\bcannot\b': "can't",
+        r'\bdo not\b': "don't",
+        r'\bdoes not\b': "doesn't",
+        r'\bdid not\b': "didn't",
+        r'\bwill not\b': "won't",
+        r'\bwould not\b': "wouldn't",
+        r'\bshould not\b': "shouldn't",
+        r'\bcould not\b': "couldn't",
+        r'\bhas not\b': "hasn't",
+        r'\bhave not\b': "haven't",
+        r'\bhad not\b': "hadn't",
+        r'\bis not\b': "isn't",
+        r'\bare not\b': "aren't",
+        r'\bwas not\b': "wasn't",
+        r'\bwere not\b': "weren't",
+    }
+    
+    result = text
+    for pattern, replacement in contractions.items():
+        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+    
+    return result
+
+
 def add_natural_pauses(text: str) -> str:
-    """Add natural pauses using punctuation."""
+    """Add natural pauses and thinking words using punctuation."""
     result = text
     
-    # Add pause after introductory words
-    intro_words = ['Well', 'Actually', 'However', 'Therefore', 'Meanwhile']
+    # Add pause after introductory/thinking words (more human-like)
+    intro_words = ['Well', 'Actually', 'However', 'Therefore', 'Meanwhile', 
+                   'Honestly', 'Basically', 'Obviously', 'Frankly', 'Naturally',
+                   'Let me see', 'Let me think', 'You know']
     for word in intro_words:
         result = re.sub(rf'\b{word}\b(?!,)', f'{word},', result, flags=re.IGNORECASE)
     
@@ -90,57 +143,77 @@ def add_natural_pauses(text: str) -> str:
 def detect_emotion_prosody(sentence: str, punct: str = "") -> tuple[str, str, str]:
     """
     Detect emotion from text and return appropriate prosody settings.
+    IMPROVED: Smoother transitions, more human-like variations.
     
     Returns:
         (rate, pitch, volume) tuple
         
     Examples:
-        "How are you?" → ("102%", "+2st", "medium")  # Question
-        "Amazing!" → ("108%", "+3st", "loud")        # Excitement
-        "I'm sorry" → ("88%", "-2st", "soft")        # Sadness
+        "How are you?" → ("102%", "+1st", "medium")  # Question
+        "Amazing!" → ("106%", "+2st", "medium-loud") # Excitement (smoother)
+        "I'm sorry" → ("92%", "-1st", "soft")        # Sadness (smoother)
     """
     import random
     
     text = sentence.lower()
     
-    # EXCITEMENT: ! or words like "amazing", "great", "awesome"
-    excitement_words = ["amazing", "awesome", "great", "wonderful", "fantastic", "excellent", "love", "excited"]
+    # EXCITEMENT: ! or words (SMOOTHER - reduced ranges)
+    excitement_words = ["amazing", "awesome", "great", "wonderful", "fantastic", "excellent", "love", "excited", 
+                        "happy", "glad", "delighted", "thrilled", "brilliant", "perfect"]
     if punct == "!" or any(word in text for word in excitement_words):
         return (
-            random.choice(["105%", "108%", "110%"]),  # Faster
-            random.choice(["+2st", "+3st"]),           # Higher pitch
-            "loud"
+            random.choice(["103%", "105%", "107%"]),  # Smoother: was 105-110%, now 103-107%
+            random.choice(["+1st", "+2st"]),           # Smoother: was +2st to +3st
+            "medium-loud"  # Softer than "loud" for smoother transitions
         )
     
-    # QUESTION: ? or question words
-    question_words = ["how", "what", "when", "where", "why", "who", "can", "could", "would", "should"]
+    # QUESTION: ? or question words (SMOOTHER)
+    question_words = ["how", "what", "when", "where", "why", "who", "can", "could", "would", "should", "do", "does", "is", "are"]
     if punct == "?" or any(text.startswith(word) for word in question_words):
         return (
-            random.choice(["100%", "102%", "105%"]),  # Slightly faster
+            random.choice(["100%", "102%", "104%"]),  # Smoother: was 100-105%, now 100-104%
             random.choice(["+1st", "+2st"]),           # Higher pitch at end
             "medium"
         )
     
-    # SADNESS/APOLOGY: words like "sorry", "sad", "unfortunately"
-    sad_words = ["sorry", "sad", "unfortunately", "apologize", "regret", "disappointed"]
+    # SADNESS/APOLOGY: (SMOOTHER - less dramatic)
+    sad_words = ["sorry", "sad", "unfortunately", "apologize", "regret", "disappointed", "concern", "worry"]
     if any(word in text for word in sad_words):
         return (
-            random.choice(["85%", "88%", "90%"]),     # Slower
-            random.choice(["-2st", "-1st"]),           # Lower pitch
+            random.choice(["90%", "92%", "94%"]),     # Smoother: was 85-90%, now 90-94%
+            random.choice(["-1st", "0st"]),            # Smoother: was -2st to -1st
             "soft"
         )
     
-    # EMPHASIS: ALL CAPS words or important words
-    if any(word.isupper() and len(word) > 1 for word in sentence.split()):
+    # CONFIDENCE/CERTAINTY: (NEW - adds variety)
+    confident_words = ["definitely", "absolutely", "certainly", "surely", "indeed", "clearly"]
+    if any(word in text for word in confident_words):
         return (
-            random.choice(["98%", "100%", "102%"]),   # Normal to slightly fast
-            random.choice(["0st", "+1st"]),            # Normal to slightly higher
-            "loud"
+            random.choice(["100%", "102%", "104%"]),  # Confident pace
+            random.choice(["0st", "+1st"]),            # Slight emphasis
+            "medium-loud"
         )
     
-    # NEUTRAL: default natural variation
+    # UNCERTAINTY: (NEW - adds variety)
+    uncertain_words = ["maybe", "perhaps", "possibly", "might", "probably", "guess"]
+    if any(word in text for word in uncertain_words):
+        return (
+            random.choice(["96%", "98%", "100%"]),    # Thoughtful, slower
+            random.choice(["-1st", "0st"]),            # Slightly lower
+            "soft"
+        )
+    
+    # EMPHASIS: ALL CAPS words (SMOOTHER)
+    if any(word.isupper() and len(word) > 1 for word in sentence.split()):
+        return (
+            random.choice(["100%", "102%", "104%"]),  # Smoother: was 98-102%
+            random.choice(["0st", "+1st"]),            # Subtle emphasis
+            "medium-loud"
+        )
+    
+    # NEUTRAL: default natural variation (TIGHTER RANGE)
     return (
-        random.choice(["95%", "98%", "100%", "102%"]),  # Natural variation
+        random.choice(["97%", "99%", "101%", "103%"]),  # Tighter: was 95-102%, now 97-103%
         random.choice(["-1st", "0st", "+1st"]),          # Subtle pitch variation
         "medium"
     )
@@ -300,10 +373,13 @@ def preprocess_for_tts(
         result = normalize_abbreviations(result)
         result = normalize_numbers(result)
     
-    # Step 2: Add natural pauses
+    # Step 2: Add natural contractions (more human-like)
+    result = add_natural_contractions(result)
+    
+    # Step 3: Add natural pauses and thinking words
     result = add_natural_pauses(result)
     
-    # Step 3: Wrap in SSML with emotion detection
+    # Step 4: Wrap in SSML with emotion detection
     if use_ssml:
         result = wrap_in_ssml(result, add_prosody=add_prosody, add_emotion=add_emotion)
     
