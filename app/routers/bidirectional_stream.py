@@ -35,19 +35,31 @@ NATURAL CONVERSATION FEATURES:
    - 30% random chance for naturalness
 
 4. Turn-Taking & Barge-In:
-   - Immediate TTS stop on user speech detection (45% confidence)
+   - Immediate TTS stop on user speech detection (60% confidence + 2 words)
    - Queue clearing for responsive interruptions
+   - Interim processing paused during barge-in
+   - Waits for final transcript before responding (no partial interruptions)
+   - Higher confidence threshold prevents false positives
 
 5. Persona & Variability:
    - Subtle prosody variations (95%-105% rate, ±1 semitone pitch)
    - Randomized breath/pause durations
    - Consistent voice persona from agent configuration
 
-SMART CHUNKING:
+SMART CHUNKING WITH OVERLAP:
 - 5 words per chunk for fast response (balanced speed + quality)
 - Major punctuation (. ! ? ;) triggers immediate chunk
 - Minor punctuation (, : —) with 3+ words triggers chunk
-- Boundary fillers/pauses smooth transitions between chunks
+- OVERLAP TECHNIQUE: Last 2 words of chunk 1 + filler + first words of chunk 2
+  Example: Chunk 1: "Hello how are" + SAVE("you today")
+           Chunk 2: "you today" + "uhh" + "I'm doing great"
+  Result: Seamless transition, no tak-tak distortion!
+
+AMBIENT BACKGROUND NOISE:
+- Optional subtle background noise for realism (office ambience, cafe, etc.)
+- Very low volume (-30 to -40 dB) mixed with TTS audio
+- Makes agent sound like real person in real environment
+- Generated using white/pink noise or pre-recorded ambience
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -324,6 +336,67 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
     return ssml
 
 
+def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) -> bytes:
+    """
+    Add subtle ambient background noise to MULAW audio for realism.
+    Makes agent sound like they're in a real environment (office, cafe, etc.)
+    
+    Args:
+        audio_bytes: MULAW audio bytes (8kHz)
+        noise_level: Noise volume (0.01-0.05 recommended, default 0.02 = -34dB)
+        
+    Returns:
+        MULAW audio with subtle background noise mixed in
+    """
+    import audioop
+    import random
+    import struct
+    
+    if not audio_bytes or len(audio_bytes) == 0:
+        return audio_bytes
+    
+    try:
+        # Convert MULAW to 16-bit linear PCM
+        linear_audio = audioop.ulaw2lin(audio_bytes, 2)
+        
+        # Generate subtle pink noise (more natural than white noise)
+        noise_samples = bytearray()
+        num_samples = len(linear_audio) // 2
+        
+        # Pink noise generation (1/f noise - sounds more natural)
+        pink_state = [0.0] * 7
+        for _ in range(num_samples):
+            white = random.uniform(-1.0, 1.0)
+            
+            # Simple pink noise filter
+            pink_state[0] = 0.99886 * pink_state[0] + white * 0.0555179
+            pink_state[1] = 0.99332 * pink_state[1] + white * 0.0750759
+            pink_state[2] = 0.96900 * pink_state[2] + white * 0.1538520
+            pink_state[3] = 0.86650 * pink_state[3] + white * 0.3104856
+            pink_state[4] = 0.55000 * pink_state[4] + white * 0.5329522
+            pink_state[5] = -0.7616 * pink_state[5] - white * 0.0168980
+            
+            pink = sum(pink_state)
+            pink_scaled = int(pink * 32767 * noise_level)  # Very low volume
+            pink_scaled = max(-32768, min(32767, pink_scaled))
+            
+            noise_samples.extend(struct.pack('<h', pink_scaled))
+        
+        noise_audio = bytes(noise_samples)
+        
+        # Mix noise with original audio
+        mixed_linear = audioop.add(linear_audio, noise_audio, 2)
+        
+        # Convert back to MULAW
+        mixed_mulaw = audioop.lin2ulaw(mixed_linear, 2)
+        
+        return mixed_mulaw
+        
+    except Exception as e:
+        print(f"⚠️ Ambient noise mixing failed: {e}, using clean audio")
+        return audio_bytes
+
+
 def clean_text_for_tts(text: str) -> str:
     """
     Clean text for TTS to prevent reading punctuation marks aloud.
@@ -568,6 +641,9 @@ class BidirectionalStreamHandler:
         self._last_user_speech_start = 0.0  # Track when user started speaking
         self._backchannel_phrases = ["mm-hmm", "I see", "okay", "right", "yeah", "got it"]
         self._use_ssml = True                # Enable SSML by default
+        self._use_ambient_noise = True       # Enable subtle background noise for realism
+        self._ambient_noise_level = 0.015   # Very subtle (0.015 = -36dB)
+        self._barge_in_active = False        # Track if currently in barge-in state
         
         # Session data
         self.call_session = None
@@ -583,10 +659,11 @@ class BidirectionalStreamHandler:
 
         # Start parallel TTS pipeline worker
         self._tts_worker_task = asyncio.create_task(self._tts_pipeline_worker())
-        
+
         print(f"✅ Bidirectional stream handler initialized (Google streaming STT + Streaming TTS)")
         print(f"⚡ ULTRA-AGGRESSIVE MODE: 40% confidence, 100ms throttle")
         print(f"🔄 PARALLEL TTS PIPELINE: Started background worker")
+        print(f"🔊 AMBIENT NOISE: {'Enabled' if self._use_ambient_noise else 'Disabled'} (level: {self._ambient_noise_level})")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -757,6 +834,13 @@ class BidirectionalStreamHandler:
             # Reset user speech timer (user finished speaking)
             self._last_user_speech_start = 0.0
             
+            # Reset barge-in flag and interim state (user finished, ready for new response)
+            self._tts_cancel.clear()
+            self._last_interim_text = ""
+            self._barge_in_active = False
+            print(f"✅ User finished speaking - ready to respond")
+            sys.stdout.flush()
+            
             # Add to transcript
             await self._add_to_transcript("client", transcript, "speech", confidence)
             
@@ -810,7 +894,7 @@ class BidirectionalStreamHandler:
             })
             
             self._last_backchannel_time = now
-    
+
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
         ULTRA-AGGRESSIVE interim processing for minimal latency.
@@ -833,12 +917,13 @@ class BidirectionalStreamHandler:
                 return
             
             # Barge-in: if we are speaking and user starts talking, cancel TTS immediately
-            # Use lower threshold for barge-in since we're ultra-aggressive
-            if self.is_speaking and confidence >= 0.45:  # ULTRA-AGGRESSIVE: 45% barge-in
+            # Higher confidence for reliable barge-in (avoid false positives)
+            if self.is_speaking and confidence >= 0.60 and word_count >= 2:  # Need 60% + 2 words
                 if not self._tts_cancel.is_set():
-                    print(f"🛑 Barge-in: cancelling current TTS (confidence: {confidence:.2f})")
+                    print(f"🛑 BARGE-IN DETECTED: User interrupted (confidence: {confidence:.2f}, words: {word_count})")
                     sys.stdout.flush()
                     self._tts_cancel.set()
+                    self._barge_in_active = True
                     # Clear TTS queue to stop all pending chunks
                     while not self.tts_queue.empty():
                         try:
@@ -846,8 +931,15 @@ class BidirectionalStreamHandler:
                             self.tts_queue.task_done()
                         except:
                             break
-                    print("🛑 Barge-in: cleared TTS queue")
+                    print("🛑 Barge-in: TTS stopped, cleared queue, waiting for user to finish...")
                     sys.stdout.flush()
+                # Don't process interim during barge-in - wait for user to finish
+                return
+            
+            # During barge-in, DON'T process interim - let user finish completely
+            if self._tts_cancel.is_set():
+                print(f"🔇 Interim ignored during barge-in - waiting for final: '{transcript[:60]}...'")
+                sys.stdout.flush()
                 return
             
             # Ultra-aggressive throttling: only 100ms between triggers
@@ -1053,9 +1145,10 @@ IMPORTANT: Follow the model instructions above."""
             
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
+            previous_chunk_tail = ""  # Store last 2-3 words for overlap
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
-                nonlocal chunk_counter
+                nonlocal chunk_counter, previous_chunk_tail
                 response_accum = ""
                 phrase_buf = ""
                 last_flush = asyncio.get_event_loop().time()
@@ -1092,8 +1185,30 @@ IMPORTANT: Follow the model instructions above."""
                     if word_count >= 5 or has_major_punct or has_minor_punct:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
-                            # Determine if this is a mid-chunk break (needs boundary filler)
+                            # Determine if this is a mid-chunk break (needs overlap with next chunk)
                             is_mid_chunk = word_count >= 5 and not has_major_punct
+                            
+                            # If we have a previous chunk tail, prepend it with filler for smooth overlap
+                            import random
+                            import re
+                            if previous_chunk_tail:
+                                # Add natural filler between chunks
+                                filler = random.choice(["uhh", "umm", "uh", "hmm"])
+                                to_speak = f"{previous_chunk_tail} {filler} {to_speak}"
+                                print(f"🔗 Overlapping chunks: '{previous_chunk_tail}' + '{filler}' + '{to_speak[:20]}...'")
+                                sys.stdout.flush()
+                                previous_chunk_tail = ""  # Clear after use
+                            
+                            # Save tail for next chunk if mid-sentence break
+                            if is_mid_chunk:
+                                words = to_speak.split()
+                                if len(words) > 2:
+                                    # Save last 2 words for overlap with next chunk
+                                    previous_chunk_tail = " ".join(words[-2:])
+                                    # Remove those words from current chunk
+                                    to_speak = " ".join(words[:-2])
+                                    print(f"💾 Saved chunk tail for overlap: '{previous_chunk_tail}'")
+                                    sys.stdout.flush()
                             
                             # Clean and enhance text with SSML
                             if self._use_ssml:
@@ -1102,11 +1217,8 @@ IMPORTANT: Follow the model instructions above."""
                                     use_ssml=True, 
                                     add_breaths=True, 
                                     add_fillers=(chunk_counter == 0),  # Only first chunk
-                                    add_boundary_pause=is_mid_chunk  # Add "umm"/"uhh" at 5-word breaks
+                                    add_boundary_pause=False  # No boundary pause - using overlap instead
                                 )
-                                if is_mid_chunk:
-                                    print(f"🎙️ Mid-chunk break detected - adding boundary filler")
-                                    sys.stdout.flush()
                             else:
                                 enhanced_text = clean_text_for_tts(to_speak)
                             
@@ -1118,18 +1230,27 @@ IMPORTANT: Follow the model instructions above."""
                                     "chunk_id": chunk_counter,
                                     "use_ssml": self._use_ssml
                                 })
-                                
-                                # Show if boundary filler was added
-                                if is_mid_chunk and 'uhh' in enhanced_text.lower() or 'umm' in enhanced_text.lower() or 'hmm' in enhanced_text.lower():
-                                    print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words + FILLER): '{to_speak[:30]}...'")
-                                else:
-                                    print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
+                                print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
                                 sys.stdout.flush()
                         phrase_buf = ""
                         last_flush = now
 
-                # flush any tail
+                # flush any tail (including saved overlap)
                 tail = phrase_buf.strip()
+                
+                # Add previous chunk tail to final chunk if exists
+                if previous_chunk_tail and tail:
+                    import random
+                    filler = random.choice(["uhh", "umm", "uh"])
+                    tail = f"{previous_chunk_tail} {filler} {tail}"
+                    print(f"🔗 Final chunk with overlap: '{previous_chunk_tail}' + '{filler}' + '{tail[:20]}...'")
+                    sys.stdout.flush()
+                    previous_chunk_tail = ""
+                elif previous_chunk_tail and not tail:
+                    # Only tail remaining
+                    tail = previous_chunk_tail
+                    previous_chunk_tail = ""
+                
                 if tail and not self._tts_cancel.is_set():
                     # Clean and enhance tail text (no boundary pause for final chunk)
                     if self._use_ssml:
@@ -1261,6 +1382,12 @@ IMPORTANT: Follow the model instructions above."""
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS generation: {tts_gen_time:.3f}s for '{clean[:20]}...'")
                     sys.stdout.flush()
+                    
+                    # Add subtle ambient noise for realism (office/call center environment)
+                    if audio_bytes and self._use_ambient_noise:
+                        audio_bytes = add_ambient_noise_to_mulaw(audio_bytes, self._ambient_noise_level)
+                        print(f"🔊 Added ambient noise (level: {self._ambient_noise_level})")
+                        sys.stdout.flush()
                     
                     # Stream to Twilio immediately
                     if audio_bytes and not self._tts_cancel.is_set():
@@ -1516,7 +1643,7 @@ IMPORTANT: Follow the model instructions above."""
                 sys.stdout.flush()
             except Exception as e:
                 print(f"⚠️ Error stopping TTS worker: {e}")
-                sys.stdout.flush()
+            sys.stdout.flush()
             
             # Close STT session
             try:

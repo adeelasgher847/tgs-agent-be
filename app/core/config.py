@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
-    TWILIO_EDGE: Optional[str] = "ashburn"  # e.g., "ashburn", "singapore", "dublin"
+    TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
