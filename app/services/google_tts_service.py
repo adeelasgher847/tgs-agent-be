@@ -208,7 +208,11 @@ class GoogleTTSService:
             client = self.get_client()
             
             # Set the text input to be synthesized
-            synthesis_input = texttospeech.SynthesisInput(text=text)
+            # Auto-detect SSML if text starts with <speak>
+            if text.strip().startswith('<speak>'):
+                synthesis_input = texttospeech.SynthesisInput(ssml=text)
+            else:
+                synthesis_input = texttospeech.SynthesisInput(text=text)
             
             # Get voice name and language code
             voice_name = self.get_voice_name(language, voice_type, use_chirp3_hd)
