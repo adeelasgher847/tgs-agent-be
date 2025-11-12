@@ -180,6 +180,7 @@ class VoiceLoggingService:
             # Import here to avoid circular imports
             from app.services.gemini_service import gemini_service
             from app.services.openai_service import openai_service
+            from app.services.groq_service import groq_service
             from app.services.model_service import model_service
             from app.core.security import decrypt_api_key
             
@@ -358,14 +359,22 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             provider_name = model.provider.name.lower()
             is_gemini = 'gemini' in provider_name or 'google' in provider_name
             is_openai = 'openai' in provider_name
+            is_groq = 'groq' in provider_name
             
-            if not is_gemini and not is_openai:
-                print(f"⚠️ Provider {provider_name} is not supported (not Gemini or OpenAI), using fallback response")
+            if not is_gemini and not is_openai and not is_groq:
+                print(f"⚠️ Provider {provider_name} is not supported (not Gemini, OpenAI, or Groq), using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
             # Determine which service to use
-            ai_service_name = "Gemini" if is_gemini else "OpenAI"
-            ai_service = gemini_service if is_gemini else openai_service
+            if is_gemini:
+                ai_service_name = "Gemini"
+                ai_service = gemini_service
+            elif is_groq:
+                ai_service_name = "Groq"
+                ai_service = groq_service
+            else:
+                ai_service_name = "OpenAI"
+                ai_service = openai_service
             
             print(f"🎯 Using {ai_service_name} service based on provider: {provider_name}")
             

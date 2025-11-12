@@ -26,9 +26,10 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
 2. Micro-Pauses & Hesitation Fillers:
    - Hesitation patterns: "Hmm <break time='120ms'/> I think..."
    - "Uh", "Well", "Let me see" WITH breaks (15% chance)
-   - SPOKEN boundary fillers at chunk breaks (80% chance):
-     * "<break time='100ms'/><prosody>uhh</prosody>" pattern
-     * Eliminates tak-tak distortion between chunks
+   - SPOKEN boundary fillers at EVERY mid-chunk break (100%):
+     * "<break time='80-100ms'/><prosody>uhh/umm/uh/hmm</prosody>" pattern
+     * ALWAYS added between chunks to eliminate tak-tak
+     * No silent gaps - natural spoken connectors
    - Example: <speak>Hmm <break time="120ms"/> I think I can help with that.</speak>
 
 3. Backchannels:
@@ -36,12 +37,13 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
    - Triggered during long user monologues (5-7+ seconds)
    - 30% random chance for naturalness
 
-4. Turn-Taking & Barge-In:
-   - Immediate TTS stop on user speech detection (60% confidence + 2 words)
-   - Queue clearing for responsive interruptions
-   - Interim processing paused during barge-in
+4. Turn-Taking & Barge-In (Aggressive):
+   - Immediate stop on user speech detection (55% confidence + 1 word)
+   - Stops BOTH LLM generation AND TTS playback instantly
+   - Clears entire TTS queue (all pending chunks dropped)
+   - Interim processing completely paused during barge-in
    - Waits for final transcript before responding (no partial interruptions)
-   - Higher confidence threshold prevents false positives
+   - Prevents agent from continuing or repeating after interruption
 
 5. Persona & Variability:
    - Subtle prosody variations (95%-105% rate, ±1 semitone pitch)
@@ -111,6 +113,7 @@ from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
+from app.services.groq_service import groq_service
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.routers.general_websocket import broadcast_call_status_update
@@ -357,28 +360,31 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
             break_time = random.choice(["150ms", "180ms", "200ms"])
             ssml += f'<break time="{break_time}"/>'
             
-            # Add breath audio file - DISABLED by default to prevent distortion
-            # Uncomment if your TTS model supports it without issues
-            # if random.random() < 0.2:  # Reduced to 20% for safety
-            #     BREATH_AUDIO = "https://actions.google.com/sounds/v1/human_voices/breath.ogg"
-            #     ssml += f'<audio src="{BREATH_AUDIO}"/>'
+            # Add breath audio file for natural pauses (low volume, subtle)
+            # Only after major sentence endings, not too frequently
+            if random.random() < 0.15:  # 15% chance - very subtle
+                BREATH_AUDIO = "https://actions.google.com/sounds/v1/human_voices/breath.ogg"
+                ssml += f'<audio src="{BREATH_AUDIO}" soundLevel="-10dB"/>'  # Quieter breath
     
     # Add remaining text (if any)
     if len(sentences) % 2 == 1 and sentences[-1].strip():
         ssml += sentences[-1]
     
-    # Add boundary filler for smooth chunk transitions (Vapi-style with breaks)
+    # Add boundary filler for smooth chunk transitions - ALWAYS (100%)
+    # Critical: This eliminates tak-tak distortion between chunks
     if add_boundary_pause:
-        # 80% chance to add boundary connector
-        if random.random() < 0.8:
-            # Boundary fillers with breaks for natural thinking pauses
-            boundary_fillers = [
-                ' <break time="100ms"/><prosody rate="90%" pitch="-1st">uhh</prosody>',
-                ' <break time="120ms"/><prosody rate="88%" pitch="-2st">umm</prosody>',
-                ' <break time="90ms"/><prosody rate="92%" pitch="0st">uh</prosody>',
-                ' <break time="130ms"/><prosody rate="85%" pitch="-1st">hmm</prosody>',
-            ]
-            ssml += random.choice(boundary_fillers)
+        # ALWAYS add boundary connector (100% - not random!) for seamless audio
+        # Boundary fillers with breaks for natural thinking pauses
+        boundary_fillers = [
+            ' <break time="80ms"/><prosody rate="90%" pitch="-1st">uhh</prosody>',
+            ' <break time="90ms"/><prosody rate="88%" pitch="-2st">umm</prosody>',
+            ' <break time="70ms"/><prosody rate="92%" pitch="0st">uh</prosody>',
+            ' <break time="100ms"/><prosody rate="85%" pitch="-1st">hmm</prosody>',
+        ]
+        chosen_filler = random.choice(boundary_fillers)
+        ssml += chosen_filler
+        print(f"🔗 Added boundary filler: {chosen_filler[:50]}")
+        sys.stdout.flush()
     
     ssml += '</speak>'
     
@@ -1079,22 +1085,27 @@ class BidirectionalStreamHandler:
                 sys.stdout.flush()
                 return
             
-            # Barge-in: if we are speaking and user starts talking, cancel TTS immediately
-            # Higher confidence for reliable barge-in (avoid false positives)
-            if self.is_speaking and confidence >= 0.60 and word_count >= 2:  # Need 60% + 2 words
+            # Barge-in: if we are speaking and user starts talking, cancel EVERYTHING immediately
+            # Aggressive detection to stop agent mid-sentence
+            if self.is_speaking and confidence >= 0.55 and word_count >= 1:  # Lowered to 55% + 1 word for faster detection
                 if not self._tts_cancel.is_set():
                     print(f"🛑 BARGE-IN DETECTED: User interrupted (confidence: {confidence:.2f}, words: {word_count})")
+                    print(f"🛑 Stopping LLM generation and TTS playback immediately...")
                     sys.stdout.flush()
-                    self._tts_cancel.set()
+                    self._tts_cancel.set()  # This stops LLM loop AND TTS playback
                     self._barge_in_active = True
-                    # Clear TTS queue to stop all pending chunks
+                    
+                    # Clear TTS queue aggressively to stop all pending chunks
+                    cleared_count = 0
                     while not self.tts_queue.empty():
                         try:
                             self.tts_queue.get_nowait()
                             self.tts_queue.task_done()
+                            cleared_count += 1
                         except:
                             break
-                    print("🛑 Barge-in: TTS stopped, cleared queue, waiting for user to finish...")
+                    
+                    print(f"🛑 Barge-in complete: TTS stopped, {cleared_count} chunks cleared, waiting for user to finish...")
                     sys.stdout.flush()
                 # Don't process interim during barge-in - wait for user to finish
                 return
@@ -1167,6 +1178,12 @@ class BidirectionalStreamHandler:
         try:
             from datetime import datetime, timezone
             import json
+            
+            # Don't start new response if user is still speaking (barge-in active)
+            if self._barge_in_active:
+                print(f"🔇 Skipping response generation - user still speaking (barge-in active)")
+                sys.stdout.flush()
+                return
             
             # Reset cancel flag for new response generation
             self._tts_cancel.clear()
@@ -1341,6 +1358,9 @@ IMPORTANT: Follow the model instructions above."""
                     elif "gemini" in provider_name or "google" in provider_name:
                         llm_service = gemini_service
                         print(f"🤖 Using Gemini: {model_name}")
+                    elif "groq" in provider_name:
+                        llm_service = groq_service
+                        print(f"🚀 Using Groq: {model_name}")
                     else:
                         # Default to Gemini
                         llm_service = gemini_service
@@ -1429,7 +1449,7 @@ IMPORTANT: Follow the model instructions above."""
                                     use_ssml=True, 
                                     add_breaths=True, 
                                     add_fillers=(chunk_counter == 0),  # Only first chunk
-                                    add_boundary_pause=False  # No boundary pause - using overlap instead
+                                    add_boundary_pause=is_mid_chunk  # ALWAYS add filler at mid-chunk breaks!
                                 )
                             else:
                                 enhanced_text = clean_text_for_tts(to_speak)
