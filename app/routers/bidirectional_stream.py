@@ -715,7 +715,18 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
             
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
-                api_key = self.agent.model.api_key
+                
+                # Decrypt API key if available
+                if self.agent.model.api_key:
+                    try:
+                        from app.core.security import decrypt_api_key
+                        api_key = decrypt_api_key(self.agent.model.api_key)
+                        print(f"🔑 Using decrypted model-specific API key")
+                    except Exception as e:
+                        print(f"⚠️ Failed to decrypt API key: {e}")
+                        api_key = None  # Will fallback to settings.OPENAI_API_KEY or settings.GOOGLE_API_KEY
+                else:
+                    api_key = None  # Will use global key from .env
                 
                 # Use agent-specific config if available
                 if self.agent.agent_temperature is not None:
