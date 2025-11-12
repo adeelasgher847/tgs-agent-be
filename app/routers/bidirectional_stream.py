@@ -15,19 +15,21 @@ PARALLEL TTS PIPELINE (Vapi-style):
 - TTS generation and playback happen in parallel
 - Significantly reduces total response time
 
-NATURAL CONVERSATION FEATURES:
+NATURAL CONVERSATION FEATURES (Vapi-Style):
 1. SSML Support:
-   - <prosody> tags for varied rate and pitch
-   - <break> tags for natural pauses between sentences (200-300ms)
-   - Automatic randomization for human-like variation
+   - <prosody> tags with varied rate (95%, 98%, 100%, 102%, 105%)
+   - <prosody> tags with varied pitch (-1st, 0st, +1st, +2st)
+   - <break> tags for natural pauses (150-200ms)
+   - <audio> tags for breath sounds (DISABLED by default - can cause distortion)
+   - Example: <prosody rate="95%" pitch="+1st">Alright.</prosody><break time="180ms"/>
 
-2. Micro-Pauses & Fillers:
-   - Occasional "uh", "hmm", "you know", "like", "well" (10% chance)
-   - Added at natural conversation points
-   - SPOKEN boundary fillers at 5-word chunk breaks (80% chance):
-     * "uhh", "umm", "uh", "hmm" - ACTUALLY SPOKEN to bridge chunks
-     * Slower prosody (85-95% rate) for natural thinking pause
+2. Micro-Pauses & Hesitation Fillers:
+   - Hesitation patterns: "Hmm <break time='120ms'/> I think..."
+   - "Uh", "Well", "Let me see" WITH breaks (15% chance)
+   - SPOKEN boundary fillers at chunk breaks (80% chance):
+     * "<break time='100ms'/><prosody>uhh</prosody>" pattern
      * Eliminates tak-tak distortion between chunks
+   - Example: <speak>Hmm <break time="120ms"/> I think I can help with that.</speak>
 
 3. Backchannels:
    - "mm-hmm", "I see", "okay", "right", "yeah", "got it"
@@ -56,9 +58,10 @@ SMART CHUNKING WITH OVERLAP:
   Result: Seamless transition, no tak-tak distortion!
 
 6. Ambient Background Noise:
-   - Subtle pink noise mixed with TTS audio (-36dB default)
-   - Simulates real environment (office, call center)
-   - Makes agent sound like real person in actual location
+   - DISABLED by default (caused distortion on some systems)
+   - Can be enabled via self._use_ambient_noise = True
+   - Subtle pink noise mixed with TTS audio (-46dB if enabled)
+   - Note: Use with caution, may cause audio artifacts on certain setups
 
 CACHING & LOW-LATENCY STRATEGIES:
 1. Pre-cached Common Phrases:
@@ -284,14 +287,14 @@ def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: 
 
 def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
     """
-    Add SSML tags and natural speech elements for human-like delivery.
+    Add SSML tags and natural speech elements for human-like delivery (Vapi-style).
     
     Features:
-    1. SSML breaks and prosody for natural pauses
-    2. Breath sounds between sentences
-    3. Micro-pauses and fillers (uh, hmm, you know)
-    4. Varied prosody for natural rhythm
-    5. Boundary pauses/fillers for smooth chunk transitions
+    1. SSML <prosody> tags with varied rate (95-105%) and pitch (±2st)
+    2. <break> tags for natural pauses (100-200ms)
+    3. <audio> tags for breath sounds between sentences (Google hosted)
+    4. Hesitation fillers WITH breaks: "Hmm <break time='120ms'/> text"
+    5. Boundary fillers with breaks for smooth chunk transitions
     
     Args:
         text: Input text
@@ -315,15 +318,17 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
     if not use_ssml:
         return clean_text_for_tts(cleaned)
     
-    # Add fillers occasionally (10% chance per sentence)
-    if add_fillers and random.random() < 0.1:
-        fillers = ["uh", "hmm", "you know", "like", "well"]
-        filler = random.choice(fillers)
-        # Add filler at start or after comma
-        if "," in cleaned:
-            cleaned = cleaned.replace(",", f", {filler},", 1)
-        else:
-            cleaned = f"{filler}, {cleaned}"
+    # Add hesitation fillers WITH breaks (Vapi-style - exact implementation)
+    if add_fillers and random.random() < 0.15:
+        # Hesitation patterns with breaks for natural pauses
+        hesitations = [
+            'Hmm <break time="120ms"/> ',
+            'Uh <break time="100ms"/> ',
+            'Well <break time="150ms"/> ',
+            'Let me see <break time="180ms"/> ',
+            'Umm <break time="130ms"/> ',
+        ]
+        cleaned = random.choice(hesitations) + cleaned
     
     # Wrap in SSML speak tag
     ssml = '<speak>'
@@ -338,35 +343,40 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
         if not sentence:
             continue
         
-        # Add prosody variation (subtle speed and pitch changes)
-        rate_variation = random.choice(["95%", "100%", "105%"])  # Subtle variation
-        pitch_variation = random.choice(["-1st", "0st", "+1st"])  # Very subtle
+        # Add prosody variation (Vapi-style - subtle speed and pitch changes)
+        rate_variation = random.choice(["95%", "98%", "100%", "102%", "105%"])  # Vapi-style range
+        pitch_variation = random.choice(["-1st", "0st", "+1st", "+2st"])  # Include +2st like Vapi
         
         ssml += f'<prosody rate="{rate_variation}" pitch="{pitch_variation}">'
         ssml += sentence + punct
         ssml += '</prosody>'
         
-        # Add natural breath/pause after sentences
+        # Add natural breath/pause after sentences (Vapi-style with audio!)
         if add_breaths and punct in ['.', '!', '?', ';']:
             # Vary break duration for naturalness
-            break_time = random.choice(["200ms", "250ms", "300ms"])
+            break_time = random.choice(["150ms", "180ms", "200ms"])
             ssml += f'<break time="{break_time}"/>'
+            
+            # Add breath audio file - DISABLED by default to prevent distortion
+            # Uncomment if your TTS model supports it without issues
+            # if random.random() < 0.2:  # Reduced to 20% for safety
+            #     BREATH_AUDIO = "https://actions.google.com/sounds/v1/human_voices/breath.ogg"
+            #     ssml += f'<audio src="{BREATH_AUDIO}"/>'
     
     # Add remaining text (if any)
     if len(sentences) % 2 == 1 and sentences[-1].strip():
         ssml += sentences[-1]
     
-    # Add boundary filler for smooth chunk transitions (80% chance for better coverage)
-    # These are SPOKEN words, not silent pauses, to bridge chunks naturally
+    # Add boundary filler for smooth chunk transitions (Vapi-style with breaks)
     if add_boundary_pause:
-        # Higher probability (80%) to ensure most chunks get natural connectors
+        # 80% chance to add boundary connector
         if random.random() < 0.8:
-            # Spoken fillers with prosody for natural delivery
+            # Boundary fillers with breaks for natural thinking pauses
             boundary_fillers = [
-                '<prosody rate="90%" pitch="-1st"> uhh</prosody>',     # Thinking
-                '<prosody rate="90%" pitch="-1st"> umm</prosody>',     # Thinking
-                '<prosody rate="95%" pitch="0st"> uh</prosody>',       # Quick filler
-                '<prosody rate="85%" pitch="-2st"> hmm</prosody>',     # Contemplating
+                ' <break time="100ms"/><prosody rate="90%" pitch="-1st">uhh</prosody>',
+                ' <break time="120ms"/><prosody rate="88%" pitch="-2st">umm</prosody>',
+                ' <break time="90ms"/><prosody rate="92%" pitch="0st">uh</prosody>',
+                ' <break time="130ms"/><prosody rate="85%" pitch="-1st">hmm</prosody>',
             ]
             ssml += random.choice(boundary_fillers)
     
@@ -710,8 +720,8 @@ class BidirectionalStreamHandler:
         self._last_user_speech_start = 0.0  # Track when user started speaking
         self._backchannel_phrases = ["mm-hmm", "I see", "okay", "right", "yeah", "got it"]
         self._use_ssml = True                # Enable SSML by default
-        self._use_ambient_noise = True       # Enable subtle background noise for realism
-        self._ambient_noise_level = 0.015   # Very subtle (0.015 = -36dB)
+        self._use_ambient_noise = False      # DISABLED: Caused distortion on some systems
+        self._ambient_noise_level = 0.005   # Very minimal if enabled (0.005 = -46dB)
         self._barge_in_active = False        # Track if currently in barge-in state
         
         # Session data
