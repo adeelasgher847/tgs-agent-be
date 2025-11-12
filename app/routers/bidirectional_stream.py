@@ -24,8 +24,10 @@ NATURAL CONVERSATION FEATURES:
 2. Micro-Pauses & Fillers:
    - Occasional "uh", "hmm", "you know", "like", "well" (10% chance)
    - Added at natural conversation points
-   - Boundary pauses at 5-word chunk breaks: "uhh", "umm", or 120-150ms breath (30% chance)
-   - Eliminates tak-tak distortion between chunks
+   - SPOKEN boundary fillers at 5-word chunk breaks (80% chance):
+     * "uhh", "umm", "uh", "hmm" - ACTUALLY SPOKEN to bridge chunks
+     * Slower prosody (85-95% rate) for natural thinking pause
+     * Eliminates tak-tak distortion between chunks
 
 3. Backchannels:
    - "mm-hmm", "I see", "okay", "right", "yeah", "got it"
@@ -303,15 +305,19 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
     if len(sentences) % 2 == 1 and sentences[-1].strip():
         ssml += sentences[-1]
     
-    # Add boundary pause/filler for smooth chunk transitions (30% chance)
-    if add_boundary_pause and random.random() < 0.3:
-        boundary_options = [
-            '<break time="120ms"/>',  # Short breath
-            '<break time="150ms"/>',  # Medium breath
-            ' uhh',                    # Thinking sound
-            ' umm',                    # Thinking sound
-        ]
-        ssml += random.choice(boundary_options)
+    # Add boundary filler for smooth chunk transitions (80% chance for better coverage)
+    # These are SPOKEN words, not silent pauses, to bridge chunks naturally
+    if add_boundary_pause:
+        # Higher probability (80%) to ensure most chunks get natural connectors
+        if random.random() < 0.8:
+            # Spoken fillers with prosody for natural delivery
+            boundary_fillers = [
+                '<prosody rate="90%" pitch="-1st"> uhh</prosody>',     # Thinking
+                '<prosody rate="90%" pitch="-1st"> umm</prosody>',     # Thinking
+                '<prosody rate="95%" pitch="0st"> uh</prosody>',       # Quick filler
+                '<prosody rate="85%" pitch="-2st"> hmm</prosody>',     # Contemplating
+            ]
+            ssml += random.choice(boundary_fillers)
     
     ssml += '</speak>'
     
@@ -1086,7 +1092,7 @@ IMPORTANT: Follow the model instructions above."""
                     if word_count >= 5 or has_major_punct or has_minor_punct:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
-                            # Determine if this is a mid-chunk break (needs boundary pause)
+                            # Determine if this is a mid-chunk break (needs boundary filler)
                             is_mid_chunk = word_count >= 5 and not has_major_punct
                             
                             # Clean and enhance text with SSML
@@ -1096,8 +1102,11 @@ IMPORTANT: Follow the model instructions above."""
                                     use_ssml=True, 
                                     add_breaths=True, 
                                     add_fillers=(chunk_counter == 0),  # Only first chunk
-                                    add_boundary_pause=is_mid_chunk  # Add "umm"/"uhh"/breath at 5-word breaks
+                                    add_boundary_pause=is_mid_chunk  # Add "umm"/"uhh" at 5-word breaks
                                 )
+                                if is_mid_chunk:
+                                    print(f"🎙️ Mid-chunk break detected - adding boundary filler")
+                                    sys.stdout.flush()
                             else:
                                 enhanced_text = clean_text_for_tts(to_speak)
                             
@@ -1109,7 +1118,12 @@ IMPORTANT: Follow the model instructions above."""
                                     "chunk_id": chunk_counter,
                                     "use_ssml": self._use_ssml
                                 })
-                                print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
+                                
+                                # Show if boundary filler was added
+                                if is_mid_chunk and 'uhh' in enhanced_text.lower() or 'umm' in enhanced_text.lower() or 'hmm' in enhanced_text.lower():
+                                    print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words + FILLER): '{to_speak[:30]}...'")
+                                else:
+                                    print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
                                 sys.stdout.flush()
                         phrase_buf = ""
                         last_flush = now
