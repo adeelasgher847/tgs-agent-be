@@ -211,6 +211,52 @@ class OpenAIService:
         except Exception as e:
             raise Exception(f"Error in OpenAI agent conversation: {str(e)}")
     
+    async def stream_text(self, prompt: str, system_prompt: str = None,
+                          model_name: str = "gpt-3.5-turbo",
+                          temperature: float = 0.7,
+                          max_tokens: int = 1000,
+                          api_key: str = None):
+        """
+        Stream text from OpenAI as it's generated (async generator).
+        Yields text chunks as they arrive.
+        
+        Args:
+            prompt: The input prompt
+            system_prompt: System prompt to set the context
+            model_name: OpenAI model to use
+            temperature: Temperature setting (0.0 to 1.0)
+            max_tokens: Maximum tokens for response
+            api_key: Model-specific API key (optional)
+            
+        Yields:
+            Text chunks as strings
+        """
+        try:
+            # Get client instance with specific API key
+            client = self.get_client(api_key)
+            
+            # Prepare messages
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            
+            # Stream response
+            stream = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True
+            )
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content is not None:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            raise Exception(f"Error in OpenAI streaming: {str(e)}")
+    
     def text_to_speech(self, text: str, voice: str = "alloy", 
                       model: str = "tts-1", output_format: str = "mp3",
                       api_key: str = None) -> bytes:

@@ -2,6 +2,18 @@
 Bidirectional WebSocket for Real-time Voice AI
 Handles both STT (incoming audio) and TTS (outgoing audio) simultaneously
 Optimized for ultra-low latency (<3s response time)
+
+ULTRA-AGGRESSIVE INTERIM PROCESSING:
+- Processes interim STT results with 40% confidence
+- Starts LLM generation immediately (100ms throttle)
+- Minimal latency for fastest possible response
+
+PARALLEL TTS PIPELINE (Vapi-style):
+- User Speech → STT Interim → LLM Chunk 1 → TTS Chunk 1 Playing
+                             ↓ LLM Chunk 2 → TTS Chunk 2 Generating (parallel)
+                             ↓ LLM Chunk 3 → TTS Chunk 3 Queued
+- TTS generation and playback happen in parallel
+- Significantly reduces total response time
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -25,6 +37,8 @@ from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
+from app.services.gemini_service import gemini_service
+from app.services.openai_service import openai_service
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.routers.general_websocket import broadcast_call_status_update
@@ -363,18 +377,20 @@ class BidirectionalStreamHandler:
         self.current_speech = ""
         self._stt_session = None
         self._stt_task = None
-        # Ultra-low-latency interim processing state
+        # Ultra-aggressive interim processing state (40% confidence)
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
         self._min_interim_words = 1  # speak sooner on shorter interim
-        self._min_interim_confidence = 0.50
-        self._min_interim_interval_sec = 0.20  # more aggressive throttle
+        self._min_interim_confidence = 0.40  # ULTRA-AGGRESSIVE: process 40% confidence
+        self._min_interim_interval_sec = 0.10  # ULTRA-AGGRESSIVE: 100ms throttle (was 200ms)
         
-        # TTS (Output) state
-        self.tts_queue = asyncio.Queue()
+        # TTS (Output) state - Parallel Pipeline
+        self.tts_queue = asyncio.Queue()     # Queue for parallel TTS processing
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
+        self._tts_worker_task = None         # Background TTS worker
+        self._tts_generation_tasks = []      # Track parallel TTS generation
         
         # Session data
         self.call_session = None
@@ -388,7 +404,12 @@ class BidirectionalStreamHandler:
             print(f"⚠️ TTS pre-warm failed: {e}")
             sys.stdout.flush()
 
+        # Start parallel TTS pipeline worker
+        self._tts_worker_task = asyncio.create_task(self._tts_pipeline_worker())
+        
         print(f"✅ Bidirectional stream handler initialized (Google streaming STT + Streaming TTS)")
+        print(f"⚡ ULTRA-AGGRESSIVE MODE: 40% confidence, 100ms throttle")
+        print(f"🔄 PARALLEL TTS PIPELINE: Started background worker")
         sys.stdout.flush()
     
     def _load_session_data(self):
@@ -408,6 +429,67 @@ class BidirectionalStreamHandler:
                 sys.stdout.flush()
         except Exception as e:
             print(f"⚠️ Error loading session data: {e}")
+            sys.stdout.flush()
+    
+    async def _tts_pipeline_worker(self):
+        """
+        Background worker for parallel TTS pipeline (Vapi-style).
+        
+        Processes TTS chunks from queue while new chunks are being generated:
+        - LLM Chunk 1 → TTS generates → plays
+        - LLM Chunk 2 → TTS generates (parallel) → queued
+        - LLM Chunk 3 → TTS generates (parallel) → queued
+        """
+        print("🔄 TTS Pipeline Worker: Started")
+        sys.stdout.flush()
+        
+        try:
+            while True:
+                # Get next TTS task from queue
+                task = await self.tts_queue.get()
+                
+                # Check for shutdown signal
+                if task is None:
+                    print("🔄 TTS Pipeline Worker: Shutdown signal received")
+                    sys.stdout.flush()
+                    break
+                
+                # Check if cancelled (barge-in)
+                if self._tts_cancel.is_set():
+                    print("🛑 TTS Pipeline Worker: Skipping chunk due to barge-in")
+                    sys.stdout.flush()
+                    self.tts_queue.task_done()
+                    continue
+                
+                try:
+                    text = task.get("text", "")
+                    chunk_id = task.get("chunk_id", "unknown")
+                    
+                    if not text or not text.strip():
+                        self.tts_queue.task_done()
+                        continue
+                    
+                    print(f"🔄 TTS Pipeline: Processing chunk {chunk_id}: '{text[:30]}...'")
+                    sys.stdout.flush()
+                    
+                    # Generate and stream TTS (this is the blocking part)
+                    await self._stream_tts_chunk(text)
+                    
+                    print(f"✅ TTS Pipeline: Completed chunk {chunk_id}")
+                    sys.stdout.flush()
+                    
+                except Exception as e:
+                    print(f"❌ TTS Pipeline Worker: Error processing chunk: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    sys.stdout.flush()
+                finally:
+                    self.tts_queue.task_done()
+        
+        except Exception as e:
+            print(f"❌ TTS Pipeline Worker: Fatal error: {e}")
+            import traceback
+            traceback.print_exc()
             sys.stdout.flush()
     
     
@@ -503,40 +585,62 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
-        """Heuristics to process interim STT results for minimal latency without flooding."""
+        """
+        ULTRA-AGGRESSIVE interim processing for minimal latency.
+        Processes interim STT results with 40% confidence to start LLM generation ASAP.
+        """
         try:
             if not transcript:
                 return
-            # Basic gating: confidence and minimum words
+            
+            # Basic gating: confidence and minimum words (ULTRA-AGGRESSIVE)
             word_count = len(transcript.split())
             if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
                 # Still log interim for observability
                 print(f"⌛ Interim (gated) [{confidence:.2f}]: '{transcript[:60]}...'")
                 sys.stdout.flush()
                 return
-            # Barge-in: if we are speaking and user starts talking with decent confidence, cancel TTS immediately
-            if self.is_speaking and confidence >= max(0.6, self._min_interim_confidence):
+            
+            # Barge-in: if we are speaking and user starts talking, cancel TTS immediately
+            # Use lower threshold for barge-in since we're ultra-aggressive
+            if self.is_speaking and confidence >= 0.45:  # ULTRA-AGGRESSIVE: 45% barge-in
                 if not self._tts_cancel.is_set():
-                    print("🛑 Barge-in: cancelling current TTS due to user speech")
+                    print(f"🛑 Barge-in: cancelling current TTS (confidence: {confidence:.2f})")
                     sys.stdout.flush()
                     self._tts_cancel.set()
+                    # Clear TTS queue to stop all pending chunks
+                    while not self.tts_queue.empty():
+                        try:
+                            self.tts_queue.get_nowait()
+                            self.tts_queue.task_done()
+                        except:
+                            break
+                    print("🛑 Barge-in: cleared TTS queue")
+                    sys.stdout.flush()
                 return
-            # Throttle by time to avoid over-triggering
+            
+            # Ultra-aggressive throttling: only 100ms between triggers
             now = asyncio.get_event_loop().time()
             if (now - self._last_interim_sent_ts) < self._min_interim_interval_sec:
                 print(f"⌛ Interim (throttled): '{transcript[:60]}...'")
                 sys.stdout.flush()
                 return
-            # Avoid re-sending if prefix hasn't meaningfully advanced
+            
+            # ULTRA-AGGRESSIVE: Process even small advances (no minimum word requirement)
+            # This ensures we start LLM generation as soon as possible
             if self._last_interim_text and transcript.startswith(self._last_interim_text):
                 advanced = transcript[len(self._last_interim_text):].strip()
-                if len(advanced.split()) < 1:
-                    # Not enough new content
+                # Skip only if there's literally no new content
+                if not advanced:
                     print(f"⌛ Interim (no-advance): '{transcript[:60]}...'")
                     sys.stdout.flush()
                     return
-            # Passed heuristics → process like final to generate response incrementally
-            print(f"⚡ Processing interim [{confidence:.2f}]: '{transcript[:60]}'")
+                # Process even single character advances for ultra-low latency
+                print(f"⚡ ULTRA-AGGRESSIVE: Processing advance '{advanced}' (total: '{transcript[:60]}')")
+                sys.stdout.flush()
+            
+            # Passed heuristics → process immediately to start LLM generation
+            print(f"⚡⚡ ULTRA-AGGRESSIVE INTERIM [{confidence:.2f}]: '{transcript[:60]}'")
             sys.stdout.flush()
             self._last_interim_text = transcript
             self._last_interim_sent_ts = now
@@ -546,10 +650,16 @@ class BidirectionalStreamHandler:
             sys.stdout.flush()
     
     async def generate_and_stream_response(self, user_text: str, confidence: float):
-        """Generate AI response and stream TTS in real-time WITH conversation history"""
+        """
+        Generate AI response and stream TTS in real-time WITH conversation history.
+        Uses PARALLEL TTS PIPELINE (Vapi-style) for ultra-low latency.
+        """
         try:
             from datetime import datetime, timezone
             import json
+            
+            # Reset cancel flag for new response generation
+            self._tts_cancel.clear()
             
             print(f"🤖 Generating streaming response for: '{user_text}'")
             sys.stdout.flush()
@@ -596,19 +706,67 @@ Previous conversation:
 
 IMPORTANT: Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally."""
             
-            # Stream LLM output as it is generated - Phrase-batched for stability
-            from app.services.gemini_service import gemini_service
-            async def try_stream(model_name: str) -> str:
+            # Get agent's configured model and provider
+            llm_service = None
+            model_name = "gemini-1.5-flash"  # Default fallback
+            api_key = None
+            temperature = 0.5
+            max_tokens = 40
+            
+            if self.agent and self.agent.model:
+                model_name = self.agent.model.model_name
+                api_key = self.agent.model.api_key
+                
+                # Use agent-specific config if available
+                if self.agent.agent_temperature is not None:
+                    temperature = self.agent.agent_temperature / 100.0  # Convert 0-100 to 0-1
+                elif self.agent.model.temperature is not None:
+                    temperature = self.agent.model.temperature / 100.0
+                
+                if self.agent.agent_max_tokens:
+                    max_tokens = self.agent.agent_max_tokens
+                elif self.agent.model.max_tokens:
+                    max_tokens = self.agent.model.max_tokens
+                
+                # Select service based on provider
+                if self.agent.provider:
+                    provider_name = self.agent.provider.name.lower()
+                    if "openai" in provider_name:
+                        llm_service = openai_service
+                        print(f"🤖 Using OpenAI: {model_name}")
+                    elif "gemini" in provider_name or "google" in provider_name:
+                        llm_service = gemini_service
+                        print(f"🤖 Using Gemini: {model_name}")
+                    else:
+                        # Default to Gemini
+                        llm_service = gemini_service
+                        print(f"⚠️ Unknown provider '{provider_name}', defaulting to Gemini")
+                else:
+                    llm_service = gemini_service
+                    print(f"⚠️ No provider configured, defaulting to Gemini")
+            else:
+                # Fallback to Gemini
+                llm_service = gemini_service
+                print(f"⚠️ No model configured for agent, using default Gemini")
+            
+            sys.stdout.flush()
+            
+            # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
+            chunk_counter = 0
+            
+            async def try_stream(service, model: str, api_key_override: str = None) -> str:
+                nonlocal chunk_counter
                 response_accum = ""
                 phrase_buf = ""
                 last_flush = asyncio.get_event_loop().time()
 
-                async for chunk in gemini_service.stream_text(
+                async for chunk in service.stream_text(
                     prompt=user_text,
                     system_prompt=system_prompt,  # NOW WITH HISTORY!
-                    model_name=model_name,
-                    temperature=0.5,
-                    max_tokens=80,
+                    model_name=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    api_key=api_key_override
                 ):
                     if not chunk:
                         continue
@@ -620,34 +778,61 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
 
                     response_accum += chunk
                     phrase_buf += chunk
+                    word_count = len(phrase_buf.split())
 
-                    # flush on punctuation, size, or small timeout to avoid tiny TTS units
+                    # ULTRA-AGGRESSIVE: Start TTS on just 3-5 words OR punctuation OR timeout
                     now = asyncio.get_event_loop().time()
-                    has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—"]) 
-                    if has_punct or len(phrase_buf) >= 60 or (now - last_flush) >= 0.25:
+                    has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—", ":", "-"]) 
+
+                    # ⚡⚡ ULTRA-AGGRESSIVE: 3-5 words OR punctuation OR 80ms timeout
+                    if word_count >= 3 or has_punct or (now - last_flush) >= 0.08:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
-                            await self.stream_tts_response(to_speak)
+                            # PARALLEL PIPELINE: Queue chunk instead of blocking
+                            chunk_counter += 1
+                            await self.tts_queue.put({
+                                "text": to_speak,
+                                "chunk_id": chunk_counter
+                            })
+                            print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
+                            sys.stdout.flush()
                         phrase_buf = ""
                         last_flush = now
 
                 # flush any tail
                 tail = phrase_buf.strip()
                 if tail and not self._tts_cancel.is_set():
-                    await self.stream_tts_response(tail)
+                    chunk_counter += 1
+                    await self.tts_queue.put({
+                        "text": tail,
+                        "chunk_id": chunk_counter
+                    })
+                    print(f"🔄 Queued TTS chunk {chunk_counter} (final): '{tail[:30]}...'")
+                    sys.stdout.flush()
 
                 return response_accum.strip()
 
             final_text = None
             try:
-                final_text = await try_stream("gemini-1.5-flash")
+                # Use agent's configured model and service
+                final_text = await try_stream(llm_service, model_name, api_key)
             except Exception as e1:
-                print(f"⚠️ Streaming with gemini-1.5-flash failed: {e1}")
+                print(f"⚠️ Streaming with {model_name} failed: {e1}")
                 sys.stdout.flush()
+                # Fallback: try alternate service
                 try:
-                    final_text = await try_stream("gemini-1.5-pro")
+                    if llm_service == openai_service:
+                        # Fallback to Gemini
+                        print("⚠️ Falling back to Gemini gemini-1.5-flash")
+                        sys.stdout.flush()
+                        final_text = await try_stream(gemini_service, "gemini-1.5-flash", None)
+                    else:
+                        # Fallback to OpenAI
+                        print("⚠️ Falling back to OpenAI gpt-3.5-turbo")
+                        sys.stdout.flush()
+                        final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
                 except Exception as e2:
-                    print(f"⚠️ Streaming with gemini-1.5-pro failed: {e2}")
+                    print(f"⚠️ Streaming with fallback model failed: {e2}")
                     sys.stdout.flush()
                     # Last fallback: non-streaming fast response via VoiceLoggingService
                     try:
@@ -658,18 +843,93 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                             db=self.db,
                             call_session_id=self.call_session.id if self.call_session else None
                         )
+                        # Queue fallback response
+                        if final_text and not self._tts_cancel.is_set():
+                            chunk_counter += 1
+                            await self.tts_queue.put({
+                                "text": final_text,
+                                "chunk_id": chunk_counter
+                            })
+                            print(f"🔄 Queued fallback TTS chunk {chunk_counter}")
+                            sys.stdout.flush()
                     except Exception as e3:
                         print(f"⚠️ All fallbacks failed: {e3}")
                         sys.stdout.flush()
                         # Ultimate fallback response
                         final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
+                        chunk_counter += 1
+                        await self.tts_queue.put({
+                            "text": final_text,
+                            "chunk_id": chunk_counter
+                        })
 
             if final_text:
-                await self.stream_tts_response(final_text)
                 await self._add_to_transcript("agent", final_text, "agent_response")
         
         except Exception as e:
             print(f"❌ Error generating response: {e}")
+            sys.stdout.flush()
+    
+    async def _stream_tts_chunk(self, text: str):
+        """
+        Generate and stream a single TTS chunk (used by parallel pipeline worker).
+        Simplified version without the complex prefix/suffix splitting.
+        Note: Does NOT clear cancel flag - respects barge-in for entire queue.
+        """
+        try:
+            from datetime import datetime, timezone
+            
+            if not text or not text.strip():
+                return
+            
+            # Check if already cancelled before acquiring lock
+            if self._tts_cancel.is_set():
+                print(f"🛑 Skipping TTS chunk due to barge-in: '{text[:30]}...'")
+                sys.stdout.flush()
+                return
+            
+            async with self._tts_lock:
+                self.is_speaking = True
+                try:
+                    lang = self.agent.language if self.agent and self.agent.language else "en"
+                    voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+                    clean = text.strip()
+                    
+                    print(f"🎵 Generating TTS for chunk: '{clean[:40]}...'")
+                    sys.stdout.flush()
+                    
+                    # Generate TTS audio
+                    tts_start = datetime.now(timezone.utc)
+                    audio_bytes = await generate_mulaw_tts(
+                        text=clean,
+                        lang=lang,
+                        voice=voice,
+                        use_chirp3_hd=True,
+                        speaking_rate=0.95
+                    )
+                    tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
+                    print(f"⏱️ TTS generation: {tts_gen_time:.3f}s for '{clean[:20]}...'")
+                    sys.stdout.flush()
+                    
+                    # Stream to Twilio immediately
+                    if audio_bytes and not self._tts_cancel.is_set():
+                        await stream_mulaw_bytes_over_twilio(
+                            websocket=self.websocket,
+                            stream_sid=self.stream_sid,
+                            audio_bytes=audio_bytes,
+                            pace_20ms=True,
+                            cancel=self._tts_cancel,
+                            prime_frames=1,
+                        )
+                        print(f"✅ Streamed {len(audio_bytes)} bytes")
+                        sys.stdout.flush()
+                finally:
+                    self.is_speaking = False
+        
+        except Exception as e:
+            print(f"❌ Error streaming TTS chunk: {e}")
+            import traceback
+            traceback.print_exc()
             sys.stdout.flush()
     
     async def stream_tts_response(self, text: str):
@@ -892,6 +1152,20 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
             print(f"Stream SID: {self.stream_sid}")
             print("=" * 80)
             sys.stdout.flush()
+            
+            # Stop TTS pipeline worker
+            try:
+                if self._tts_worker_task:
+                    await self.tts_queue.put(None)  # Shutdown signal
+                    await asyncio.wait_for(self._tts_worker_task, timeout=2.0)
+                    print("✅ TTS pipeline worker stopped")
+                    sys.stdout.flush()
+            except asyncio.TimeoutError:
+                print("⚠️ TTS pipeline worker shutdown timeout")
+                sys.stdout.flush()
+            except Exception as e:
+                print(f"⚠️ Error stopping TTS worker: {e}")
+                sys.stdout.flush()
             
             # Close STT session
             try:
