@@ -115,6 +115,40 @@ def add_natural_contractions(text: str) -> str:
     return result
 
 
+def add_realistic_fillers(text: str, add_chance: float = 0.12) -> str:
+    """
+    Add realistic human speech fillers like "uhh", "umm", breathing pauses.
+    Makes speech sound more natural and human-like.
+    
+    Args:
+        text: Input text
+        add_chance: Probability of adding filler (0.0-1.0, default 0.12 = 12%)
+        
+    Returns:
+        Text with realistic human fillers
+    """
+    import random
+    
+    # Only add fillers occasionally (not every time - too robotic)
+    if random.random() > add_chance:
+        return text
+    
+    # Realistic thinking/hesitation patterns with breaks
+    realistic_fillers = [
+        'uhh <break time="80ms"/> ',     # Common filler
+        'umm <break time="100ms"/> ',    # Thinking
+        'uh <break time="70ms"/> ',      # Brief hesitation
+        'hmm <break time="120ms"/> ',    # Contemplating
+        'well <break time="90ms"/> ',    # Transitioning
+        'so <break time="60ms"/> ',      # Continuing thought
+        'you know <break time="100ms"/> ',  # Conversational
+        'I mean <break time="80ms"/> ',  # Clarifying
+    ]
+    
+    filler = random.choice(realistic_fillers)
+    return filler + text
+
+
 def add_natural_pauses(text: str) -> str:
     """Add natural pauses and thinking words using punctuation."""
     result = text
@@ -234,7 +268,7 @@ def add_emphasis_tags(text: str) -> str:
     return re.sub(r'\b([A-Z]{2,})\b', replace_caps, text)
 
 
-def wrap_in_ssml(text: str, add_prosody: bool = True, add_emotion: bool = True) -> str:
+def wrap_in_ssml(text: str, add_prosody: bool = True, add_emotion: bool = True, add_breathing: bool = False, add_fillers: bool = True) -> str:
     """
     Wrap text in SSML with prosody, emotion, and breaks.
     
@@ -287,8 +321,18 @@ def wrap_in_ssml(text: str, add_prosody: bool = True, add_emotion: bool = True) 
         # Add break after sentences (longer for questions/excitement)
         if punct in ['!', '?']:
             ssml += '  <break time="250ms"/>\n'  # Longer pause for emotion
+            # Add subtle breathing sound (VERY conservative - rare, quiet, safe)
+            if add_breathing and i < len(sentences) - 3 and len(sentence.split()) > 8:  # Only long sentences, not near end
+                import random
+                if random.random() < 0.06:  # 6% chance - very rare
+                    ssml += '  <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-32dB"/>\n'
         elif punct == '.':
             ssml += '  <break time="200ms"/>\n'
+            # Add breathing after VERY long statements only (safer)
+            if add_breathing and len(sentence.split()) > 15 and i < len(sentences) - 2:  # Very long, not near end
+                import random
+                if random.random() < 0.05:  # 5% chance - extremely rare
+                    ssml += '  <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-33dB"/>\n'
         elif punct == ',':
             ssml += '  <break time="100ms"/>\n'
     
@@ -379,9 +423,19 @@ def preprocess_for_tts(
     # Step 3: Add natural pauses and thinking words
     result = add_natural_pauses(result)
     
-    # Step 4: Wrap in SSML with emotion detection
+    # Step 4: Add realistic human fillers (12% chance: uhh, umm, etc.)
+    if use_ssml and add_emotion:
+        result = add_realistic_fillers(result, add_chance=0.12)
+    
+    # Step 5: Wrap in SSML with emotion detection
     if use_ssml:
-        result = wrap_in_ssml(result, add_prosody=add_prosody, add_emotion=add_emotion)
+        result = wrap_in_ssml(
+            result,
+            add_prosody=add_prosody,
+            add_emotion=add_emotion,
+            add_breathing=True,  # ENABLED with safe settings (6% chance, very quiet)
+            add_fillers=True
+        )
     
     return result
 
@@ -389,6 +443,56 @@ def preprocess_for_tts(
 # ============================================
 # Quick helpers for common use cases
 # ============================================
+
+def preprocess_with_breathing(
+    text: str,
+    use_ssml: bool = True,
+    add_prosody: bool = True,
+    add_emotion: bool = True,
+    normalize: bool = True
+) -> str:
+    """
+    Preprocess with breathing sounds enabled (more realistic but can cause distortion).
+    
+    Use this ONLY if you want maximum realism and don't mind potential audio artifacts.
+    
+    Args:
+        text: Raw text from LLM
+        use_ssml: Wrap result in SSML tags
+        add_prosody: Add prosody variations
+        add_emotion: Enable emotion detection
+        normalize: Enable normalization
+        
+    Returns:
+        Preprocessed text with breathing sounds
+    """
+    if not text or not text.strip():
+        return ""
+    
+    result = text.strip()
+    
+    # Same pipeline but with breathing enabled
+    if normalize:
+        result = normalize_abbreviations(result)
+        result = normalize_numbers(result)
+    
+    result = add_natural_contractions(result)
+    result = add_natural_pauses(result)
+    
+    if use_ssml and add_emotion:
+        result = add_realistic_fillers(result, add_chance=0.15)  # Slightly higher chance
+    
+    if use_ssml:
+        result = wrap_in_ssml(
+            result,
+            add_prosody=add_prosody,
+            add_emotion=add_emotion,
+            add_breathing=True,  # ENABLED!
+            add_fillers=True
+        )
+    
+    return result
+
 
 def quick_clean(text: str) -> str:
     """

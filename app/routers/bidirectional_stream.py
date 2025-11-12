@@ -282,9 +282,11 @@ def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: 
             return (prev_tail or b"") + (next_head or b"")
         mixed = []
 
+        # S-curve crossfade for equal-loudness (no volume dip)
         for i in range(n):
-            fade_out = 1.0 - (i / n)
-            fade_in = (i + 1) / n
+            progress = i / n
+            fade_out = math.cos(progress * math.pi / 2)  # 1.0 → 0.0 (smooth curve)
+            fade_in = math.sin(progress * math.pi / 2)   # 0.0 → 1.0 (smooth curve)
             mixed_sample = int(prev_lin[i] * fade_out + next_lin[i] * fade_in)
             mixed_sample = max(-32768, min(32767, mixed_sample))
             mixed.append(linear_to_ulaw_sample(mixed_sample))
@@ -322,10 +324,12 @@ def build_crossfade_bridge(prev_tail: bytes, next_head: bytes, overlap_bytes: in
     if n == 0:
         return b""
 
+    # S-curve crossfade for equal-loudness (no volume dip)
     bridge_samples = []
     for i in range(n):
-        fade_out = 1.0 - (i / n)
-        fade_in = (i + 1) / n
+        progress = i / n
+        fade_out = math.cos(progress * math.pi / 2)  # Smooth S-curve
+        fade_in = math.sin(progress * math.pi / 2)   # Smooth S-curve
         mixed_sample = int(prev_lin[i] * fade_out + next_lin[i] * fade_in)
         mixed_sample = max(-32768, min(32767, mixed_sample))
         bridge_samples.append(linear_to_ulaw_sample(mixed_sample))
