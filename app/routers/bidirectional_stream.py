@@ -1750,7 +1750,7 @@ IMPORTANT: Follow the model instructions above."""
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
 
-                    # Hold back last 20ms for crossfade with next chunk
+                    # Hold back last 20ms for crossfade with next chunk.
                     overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes = 20ms
                     if len(prefix_audio) > overlap_bytes:
                         prefix_main = prefix_audio[:-overlap_bytes]
