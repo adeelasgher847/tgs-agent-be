@@ -14,6 +14,38 @@ PARALLEL TTS PIPELINE (Vapi-style):
                              ↓ LLM Chunk 3 → TTS Chunk 3 Queued
 - TTS generation and playback happen in parallel
 - Significantly reduces total response time
+
+NATURAL CONVERSATION FEATURES:
+1. SSML Support:
+   - <prosody> tags for varied rate and pitch
+   - <break> tags for natural pauses between sentences (200-300ms)
+   - Automatic randomization for human-like variation
+
+2. Micro-Pauses & Fillers:
+   - Occasional "uh", "hmm", "you know", "like", "well" (10% chance)
+   - Added at natural conversation points
+   - Boundary pauses at 5-word chunk breaks: "uhh", "umm", or 120-150ms breath (30% chance)
+   - Eliminates tak-tak distortion between chunks
+
+3. Backchannels:
+   - "mm-hmm", "I see", "okay", "right", "yeah", "got it"
+   - Triggered during long user monologues (5-7+ seconds)
+   - 30% random chance for naturalness
+
+4. Turn-Taking & Barge-In:
+   - Immediate TTS stop on user speech detection (45% confidence)
+   - Queue clearing for responsive interruptions
+
+5. Persona & Variability:
+   - Subtle prosody variations (95%-105% rate, ±1 semitone pitch)
+   - Randomized breath/pause durations
+   - Consistent voice persona from agent configuration
+
+SMART CHUNKING:
+- 5 words per chunk for fast response (balanced speed + quality)
+- Major punctuation (. ! ? ;) triggers immediate chunk
+- Minor punctuation (, : —) with 3+ words triggers chunk
+- Boundary fillers/pauses smooth transitions between chunks
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -197,6 +229,127 @@ def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: 
         return prev_tail + next_head
 
 
+def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
+    """
+    Add SSML tags and natural speech elements for human-like delivery.
+    
+    Features:
+    1. SSML breaks and prosody for natural pauses
+    2. Breath sounds between sentences
+    3. Micro-pauses and fillers (uh, hmm, you know)
+    4. Varied prosody for natural rhythm
+    5. Boundary pauses/fillers for smooth chunk transitions
+    
+    Args:
+        text: Input text
+        use_ssml: Enable SSML tags
+        add_breaths: Add breath pauses between sentences
+        add_fillers: Add occasional fillers (uh, hmm)
+        add_boundary_pause: Add natural pause/filler at chunk boundary
+        
+    Returns:
+        Enhanced text with SSML and natural elements
+    """
+    import re
+    import random
+    
+    if not text or not text.strip():
+        return ""
+    
+    cleaned = text.strip()
+    
+    # If SSML not requested, just clean and return
+    if not use_ssml:
+        return clean_text_for_tts(cleaned)
+    
+    # Add fillers occasionally (10% chance per sentence)
+    if add_fillers and random.random() < 0.1:
+        fillers = ["uh", "hmm", "you know", "like", "well"]
+        filler = random.choice(fillers)
+        # Add filler at start or after comma
+        if "," in cleaned:
+            cleaned = cleaned.replace(",", f", {filler},", 1)
+        else:
+            cleaned = f"{filler}, {cleaned}"
+    
+    # Wrap in SSML speak tag
+    ssml = '<speak>'
+    
+    # Split into sentences for breath insertion
+    sentences = re.split(r'([.!?;])', cleaned)
+    
+    for i in range(0, len(sentences)-1, 2):
+        sentence = sentences[i].strip()
+        punct = sentences[i+1] if i+1 < len(sentences) else ""
+        
+        if not sentence:
+            continue
+        
+        # Add prosody variation (subtle speed and pitch changes)
+        rate_variation = random.choice(["95%", "100%", "105%"])  # Subtle variation
+        pitch_variation = random.choice(["-1st", "0st", "+1st"])  # Very subtle
+        
+        ssml += f'<prosody rate="{rate_variation}" pitch="{pitch_variation}">'
+        ssml += sentence + punct
+        ssml += '</prosody>'
+        
+        # Add natural breath/pause after sentences
+        if add_breaths and punct in ['.', '!', '?', ';']:
+            # Vary break duration for naturalness
+            break_time = random.choice(["200ms", "250ms", "300ms"])
+            ssml += f'<break time="{break_time}"/>'
+    
+    # Add remaining text (if any)
+    if len(sentences) % 2 == 1 and sentences[-1].strip():
+        ssml += sentences[-1]
+    
+    # Add boundary pause/filler for smooth chunk transitions (30% chance)
+    if add_boundary_pause and random.random() < 0.3:
+        boundary_options = [
+            '<break time="120ms"/>',  # Short breath
+            '<break time="150ms"/>',  # Medium breath
+            ' uhh',                    # Thinking sound
+            ' umm',                    # Thinking sound
+        ]
+        ssml += random.choice(boundary_options)
+    
+    ssml += '</speak>'
+    
+    return ssml
+
+
+def clean_text_for_tts(text: str) -> str:
+    """
+    Clean text for TTS to prevent reading punctuation marks aloud.
+    Removes duplicate punctuation and normalizes spacing.
+    
+    Args:
+        text: Text to clean
+        
+    Returns:
+        Cleaned text safe for TTS
+    """
+    import re
+    if not text or not text.strip():
+        return ""
+    
+    cleaned = text.strip()
+    
+    # Remove multiple punctuation (e.g., "!!!" -> "!", "..." -> ".")
+    cleaned = re.sub(r'([.!?;,—:])\1+', r'\1', cleaned)
+    
+    # Remove standalone punctuation marks that get read as words
+    cleaned = re.sub(r'\s+([.!?;,—:])\s+', r'\1 ', cleaned)
+    
+    # Ensure proper spacing after punctuation
+    cleaned = re.sub(r'([.!?;,—:])([A-Za-z])', r'\1 \2', cleaned)
+    
+    # Remove multiple spaces
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    return cleaned.strip()
+
+
 def smart_chunk_text(text: str, max_words: int = 15) -> tuple[str, str]:
     """
     Smart text chunking that splits at natural pauses for smoother speech.
@@ -252,22 +405,33 @@ def smart_chunk_text(text: str, max_words: int = 15) -> tuple[str, str]:
     return best_split
 
 
-async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True, speaking_rate: float = 0.95) -> bytes:
+async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True, speaking_rate: float = 0.95, use_ssml: bool = False) -> bytes:
     """
     Generate mu-law (8kHz) TTS audio using Chirp 3: HD model.
     Optimized for word-by-word streaming with caching.
+    
+    Args:
+        text: Text or SSML to convert to speech
+        lang: Language code
+        voice: Voice type (male/female)
+        use_chirp3_hd: Use Chirp 3 HD model
+        speaking_rate: Speech rate
+        use_ssml: Whether text contains SSML markup
+    
+    Note: Google TTS natively supports SSML. Text starting with <speak> is auto-detected.
     """
     # Skip empty text
     if not text or not text.strip():
         return b''
     
-    # Cache key aligned with existing cache strategy
-    cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw")
+    # Cache key aligned with existing cache strategy (include ssml flag)
+    cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw") + ("_ssml" if use_ssml else "")
 
     if cache_key in audio_cache:
         return audio_cache[cache_key]
 
     # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
+    # Google TTS auto-detects SSML if text starts with <speak>
     audio_content = google_tts_service.text_to_speech(
         text=text.strip(),
         language=lang,
@@ -392,6 +556,13 @@ class BidirectionalStreamHandler:
         self._tts_worker_task = None         # Background TTS worker
         self._tts_generation_tasks = []      # Track parallel TTS generation
         
+        # Natural conversation state (backchannels & persona)
+        self._user_speech_duration = 0.0    # Track user monologue duration
+        self._last_backchannel_time = 0.0   # Prevent frequent backchannels
+        self._last_user_speech_start = 0.0  # Track when user started speaking
+        self._backchannel_phrases = ["mm-hmm", "I see", "okay", "right", "yeah", "got it"]
+        self._use_ssml = True                # Enable SSML by default
+        
         # Session data
         self.call_session = None
         self.agent = None
@@ -464,16 +635,21 @@ class BidirectionalStreamHandler:
                 try:
                     text = task.get("text", "")
                     chunk_id = task.get("chunk_id", "unknown")
+                    use_ssml = task.get("use_ssml", False)
+                    is_backchannel = task.get("is_backchannel", False)
                     
                     if not text or not text.strip():
                         self.tts_queue.task_done()
                         continue
                     
-                    print(f"🔄 TTS Pipeline: Processing chunk {chunk_id}: '{text[:30]}...'")
+                    if is_backchannel:
+                        print(f"🗣️ TTS Pipeline: Processing backchannel: '{text}'")
+                    else:
+                        print(f"🔄 TTS Pipeline: Processing chunk {chunk_id}: '{text[:30]}...'")
                     sys.stdout.flush()
                     
                     # Generate and stream TTS (this is the blocking part)
-                    await self._stream_tts_chunk(text)
+                    await self._stream_tts_chunk(text, use_ssml=use_ssml)
                     
                     print(f"✅ TTS Pipeline: Completed chunk {chunk_id}")
                     sys.stdout.flush()
@@ -572,6 +748,9 @@ class BidirectionalStreamHandler:
                 sys.stdout.flush()
                 return
             
+            # Reset user speech timer (user finished speaking)
+            self._last_user_speech_start = 0.0
+            
             # Add to transcript
             await self._add_to_transcript("client", transcript, "speech", confidence)
             
@@ -584,14 +763,60 @@ class BidirectionalStreamHandler:
             traceback.print_exc()
             sys.stdout.flush()
 
+    async def _maybe_inject_backchannel(self, transcript: str):
+        """
+        Inject backchannel responses during long user monologues.
+        Triggered after 5-7 seconds of continuous user speech.
+        """
+        import random
+        
+        now = time.time()
+        
+        # Track user speech duration
+        if not self._last_user_speech_start:
+            self._last_user_speech_start = now
+        
+        speech_duration = now - self._last_user_speech_start
+        time_since_last_backchannel = now - self._last_backchannel_time
+        
+        # Inject backchannel if:
+        # 1. User has been speaking for 5-7+ seconds
+        # 2. At least 3 seconds since last backchannel
+        # 3. We're not currently speaking
+        # 4. Random chance (30%) for naturalness
+        should_backchannel = (
+            speech_duration >= random.uniform(5.0, 7.0) and
+            time_since_last_backchannel >= 3.0 and
+            not self.is_speaking and
+            random.random() < 0.3
+        )
+        
+        if should_backchannel:
+            backchannel = random.choice(self._backchannel_phrases)
+            print(f"🗣️ Injecting backchannel: '{backchannel}' (user spoke for {speech_duration:.1f}s)")
+            sys.stdout.flush()
+            
+            # Queue backchannel with minimal processing
+            await self.tts_queue.put({
+                "text": backchannel,
+                "chunk_id": "backchannel",
+                "is_backchannel": True
+            })
+            
+            self._last_backchannel_time = now
+    
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
         ULTRA-AGGRESSIVE interim processing for minimal latency.
         Processes interim STT results with 40% confidence to start LLM generation ASAP.
+        Also tracks user speech for backchannel injection.
         """
         try:
             if not transcript:
                 return
+            
+            # Check for backchannel opportunity during long user speech
+            await self._maybe_inject_backchannel(transcript)
             
             # Basic gating: confidence and minimum words (ULTRA-AGGRESSIVE)
             word_count = len(transcript.split())
@@ -692,7 +917,10 @@ class BidirectionalStreamHandler:
             
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
-            system_prompt = f"""You are {agent_name}, a real person having a phone conversation.
+            agent_language = self.agent.language if self.agent and self.agent.language else "en"
+            
+            # Base prompt for phone conversations
+            base_prompt = f"""You are {agent_name}, a real person having a phone conversation.
 
 Guidelines:
 - Speak naturally and conversationally
@@ -705,6 +933,61 @@ Previous conversation:
 {history_text}
 
 IMPORTANT: Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally."""
+            
+            # Use agent's custom system prompt if available, otherwise use base prompt
+            if self.agent and self.agent.system_prompt:
+                # Agent has custom system prompt - use it with context
+                system_prompt = f"""You are {agent_name}, a real person taking phone calls.
+
+Your identity:
+- You are {agent_name}, a real human being
+- You speak {agent_language} naturally
+- You are having a phone conversation
+
+Custom instructions:
+{self.agent.system_prompt}
+
+Previous conversation:
+{history_text}
+
+Guidelines:
+- Keep responses brief (1-2 sentences) for phone conversations
+- Use the conversation history to provide relevant responses
+- Don't repeat information you've already shared
+- Talk naturally like a real person
+
+IMPORTANT: Follow your custom instructions above while maintaining natural conversation flow."""
+            elif self.agent and self.agent.model and self.agent.model.system_prompt:
+                # Model has system prompt - use it
+                system_prompt = f"""You are {agent_name}, a real person taking phone calls.
+
+Your identity:
+- You are {agent_name}, a real human being
+- You speak {agent_language} naturally
+
+Model instructions:
+{self.agent.model.system_prompt}
+
+Previous conversation:
+{history_text}
+
+Guidelines:
+- Keep responses brief (1-2 sentences) for phone conversations
+- Use the conversation history to provide relevant responses
+
+IMPORTANT: Follow the model instructions above."""
+            else:
+                # Use base prompt
+                system_prompt = base_prompt
+            
+            # Log which system prompt is being used
+            if self.agent and self.agent.system_prompt:
+                print(f"📝 Using agent's custom system prompt")
+            elif self.agent and self.agent.model and self.agent.model.system_prompt:
+                print(f"📝 Using model's system prompt")
+            else:
+                print(f"📝 Using default base prompt")
+            sys.stdout.flush()
             
             # Get agent's configured model and provider
             llm_service = None
@@ -791,35 +1074,70 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                     phrase_buf += chunk
                     word_count = len(phrase_buf.split())
 
-                    # ULTRA-AGGRESSIVE: Start TTS on just 3-5 words OR punctuation OR timeout
+                    # OPTIMIZED: 5-word chunks with natural fillers/pauses at boundaries
                     now = asyncio.get_event_loop().time()
-                    has_punct = any(p in phrase_buf for p in [".", "?", "!", ",", ";", "—", ":", "-"]) 
+                    # Only trigger on MAJOR punctuation for natural pauses
+                    has_major_punct = any(p in phrase_buf for p in [".", "?", "!", ";"])
+                    # Minor punctuation needs fewer words now
+                    has_minor_punct = any(p in phrase_buf for p in [",", "—", ":"]) and word_count >= 3
 
-                    # ⚡⚡ ULTRA-AGGRESSIVE: 3-5 words OR punctuation OR 80ms timeout
-                    if word_count >= 3 or has_punct or (now - last_flush) >= 0.08:
+                    # ⚡ OPTIMIZED: 5+ words OR major punctuation OR 3 words + comma
+                    # Add natural pause/filler at boundary for smooth transitions
+                    if word_count >= 5 or has_major_punct or has_minor_punct:
                         to_speak = phrase_buf.strip()
                         if to_speak and not self._tts_cancel.is_set():
-                            # PARALLEL PIPELINE: Queue chunk instead of blocking
-                            chunk_counter += 1
-                            await self.tts_queue.put({
-                                "text": to_speak,
-                                "chunk_id": chunk_counter
-                            })
-                            print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
-                            sys.stdout.flush()
+                            # Determine if this is a mid-chunk break (needs boundary pause)
+                            is_mid_chunk = word_count >= 5 and not has_major_punct
+                            
+                            # Clean and enhance text with SSML
+                            if self._use_ssml:
+                                enhanced_text = add_natural_ssml(
+                                    to_speak, 
+                                    use_ssml=True, 
+                                    add_breaths=True, 
+                                    add_fillers=(chunk_counter == 0),  # Only first chunk
+                                    add_boundary_pause=is_mid_chunk  # Add "umm"/"uhh"/breath at 5-word breaks
+                                )
+                            else:
+                                enhanced_text = clean_text_for_tts(to_speak)
+                            
+                            if enhanced_text:  # Only queue if text remains after processing
+                                # PARALLEL PIPELINE: Queue chunk instead of blocking
+                                chunk_counter += 1
+                                await self.tts_queue.put({
+                                    "text": enhanced_text,
+                                    "chunk_id": chunk_counter,
+                                    "use_ssml": self._use_ssml
+                                })
+                                print(f"🔄 Queued TTS chunk {chunk_counter} ({word_count} words): '{to_speak[:30]}...'")
+                                sys.stdout.flush()
                         phrase_buf = ""
                         last_flush = now
 
                 # flush any tail
                 tail = phrase_buf.strip()
                 if tail and not self._tts_cancel.is_set():
-                    chunk_counter += 1
-                    await self.tts_queue.put({
-                        "text": tail,
-                        "chunk_id": chunk_counter
-                    })
-                    print(f"🔄 Queued TTS chunk {chunk_counter} (final): '{tail[:30]}...'")
-                    sys.stdout.flush()
+                    # Clean and enhance tail text (no boundary pause for final chunk)
+                    if self._use_ssml:
+                        enhanced_tail = add_natural_ssml(
+                            tail, 
+                            use_ssml=True, 
+                            add_breaths=True, 
+                            add_fillers=False,
+                            add_boundary_pause=False  # Final chunk - no boundary pause
+                        )
+                    else:
+                        enhanced_tail = clean_text_for_tts(tail)
+                    
+                    if enhanced_tail:  # Only queue if text remains
+                        chunk_counter += 1
+                        await self.tts_queue.put({
+                            "text": enhanced_tail,
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._use_ssml
+                        })
+                        print(f"🔄 Queued TTS chunk {chunk_counter} (final): '{tail[:30]}...'")
+                        sys.stdout.flush()
 
                 return response_accum.strip()
 
@@ -881,11 +1199,15 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
             print(f"❌ Error generating response: {e}")
             sys.stdout.flush()
     
-    async def _stream_tts_chunk(self, text: str):
+    async def _stream_tts_chunk(self, text: str, use_ssml: bool = False):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
         Simplified version without the complex prefix/suffix splitting.
         Note: Does NOT clear cancel flag - respects barge-in for entire queue.
+        
+        Args:
+            text: Text or SSML to convert to speech
+            use_ssml: Whether text contains SSML markup
         """
         try:
             from datetime import datetime, timezone
@@ -906,17 +1228,21 @@ IMPORTANT: Use the conversation history above. Don't ask questions you already a
                     voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
                     clean = text.strip()
                     
-                    print(f"🎵 Generating TTS for chunk: '{clean[:40]}...'")
+                    if use_ssml:
+                        print(f"🎵 Generating TTS with SSML for chunk: '{clean[:40]}...'")
+                    else:
+                        print(f"🎵 Generating TTS for chunk: '{clean[:40]}...'")
                     sys.stdout.flush()
                     
-                    # Generate TTS audio
+                    # Generate TTS audio (Google TTS auto-detects SSML)
                     tts_start = datetime.now(timezone.utc)
                     audio_bytes = await generate_mulaw_tts(
                         text=clean,
                         lang=lang,
                         voice=voice,
                         use_chirp3_hd=True,
-                        speaking_rate=0.95
+                        speaking_rate=0.95,
+                        use_ssml=use_ssml
                     )
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS generation: {tts_gen_time:.3f}s for '{clean[:20]}...'")
