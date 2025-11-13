@@ -40,6 +40,7 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
 4. Turn-Taking & Barge-In:
    - ENABLED - Agent stops immediately when user starts speaking
    - Detection: 2+ words (Google interim confidence is unreliable, often 0.00)
+   - TTS queue cleared (prevents old audio from resuming)
    - Twilio buffer cleared via "clear" event (flushes queued audio)
    - Waits for final transcript before responding (no partial interruptions)
 
@@ -1109,11 +1110,26 @@ class BidirectionalStreamHandler:
                 if not self._tts_cancel.is_set():
                     print(f"🛑 BARGE-IN DETECTED!")
                     print(f"   User: '{transcript[:60]}...' (words: {word_count}, confidence: {confidence:.2f})")
-                    print(f"   Stopping TTS and clearing Twilio buffer...")
+                    print(f"   Stopping TTS and clearing all buffers...")
                     sys.stdout.flush()
                     
                     # Set cancel flag to stop streaming
                     self._tts_cancel.set()
+                    
+                    # 🆕 CLEAR TTS QUEUE - Remove ALL pending audio chunks!
+                    # This prevents old audio from resuming after user finishes speaking
+                    cleared_count = 0
+                    while not self.tts_queue.empty():
+                        try:
+                            self.tts_queue.get_nowait()
+                            self.tts_queue.task_done()
+                            cleared_count += 1
+                        except asyncio.QueueEmpty:
+                            break
+                    
+                    if cleared_count > 0:
+                        print(f"🗑️ Cleared {cleared_count} pending TTS chunk(s) from queue")
+                        sys.stdout.flush()
                     
                     # Send Twilio clear command to flush audio buffer
                     try:
