@@ -146,16 +146,18 @@ def insert_fillers(sentence: str, emotion: str) -> str:
     start_words = ['Well', 'So', 'Actually', 'Maybe', 'Perhaps']
 
     # Start filler (thinking style)
+    # NOTE: Fillers now inherit prosody from parent sentence (no nested prosody tags)
+    # This prevents abrupt transitions and click/tak sounds
     if any(sentence.strip().startswith(w) for w in start_words):
         if random.random() < 0.4:
             filler = random.choice(fillers)
-            return f'<prosody rate="0.95" pitch="-1st">{filler}</prosody> <break time="70ms"/> {sentence}'
+            return f'{filler}, <break time="120ms"/> {sentence}'
 
     # Mid-sentence filler (light)
     if random.random() < 0.1 and len(sentence.split()) > 6:
         words = sentence.split()
         insert_at = random.randint(3, len(words) - 2)
-        words.insert(insert_at, f'<prosody rate="0.95" pitch="-1st">{random.choice(fillers)}</prosody> <break time="60ms"/>')
+        words.insert(insert_at, f'{random.choice(fillers)}, <break time="100ms"/>')
         return ' '.join(words)
 
     return sentence
