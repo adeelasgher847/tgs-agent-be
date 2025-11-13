@@ -747,8 +747,6 @@ class BidirectionalStreamHandler:
         self._last_user_speech_start = 0.0  # Track when user started speaking
         self._backchannel_phrases = ["mm-hmm", "I see", "okay", "right", "yeah", "got it"]
         self._use_ssml = True                # Enable SSML by default
-        self._use_ambient_noise = False      # DISABLED: Caused distortion on some systems
-        self._ambient_noise_level = 0.005   # Very minimal if enabled (0.005 = -46dB)
         self._barge_in_active = False        # Track if currently in barge-in state
         
         # Session data
@@ -772,7 +770,6 @@ class BidirectionalStreamHandler:
         print(f"✅ Bidirectional stream handler initialized (Google streaming STT + Streaming TTS)")
         print(f"⚡ ULTRA-AGGRESSIVE MODE: 40% confidence, 100ms throttle")
         print(f"🔄 PARALLEL TTS PIPELINE: Started background worker")
-        print(f"🔊 AMBIENT NOISE: {'Enabled' if self._use_ambient_noise else 'Disabled'} (level: {self._ambient_noise_level})")
         print(f"🔥 PRE-CACHING: Common phrases loading in background...")
         sys.stdout.flush()
     
@@ -1211,6 +1208,28 @@ class BidirectionalStreamHandler:
                 sys.stdout.flush()
                 return
             
+            # GATE THE LLM INPUT - Filter Twilio system messages (Vapi-style!)
+            twilio_system_messages = [
+                "please hold while i try to connect you",
+                "please hold while we connect you",
+                "connecting you now",
+                "please wait while we connect",
+                "try to connect you",
+                "tried to connect you",
+                "connecting",
+                "please hold",
+                "one moment please",
+                "transferring your call",
+                "please stay on the line",
+            ]
+            
+            user_text_lower = user_text.lower().strip()
+            if any(sys_msg in user_text_lower for sys_msg in twilio_system_messages):
+                print(f"🚫 FILTERED Twilio system message from LLM: '{user_text[:50]}...'")
+                print(f"🚫 Skipping LLM generation - user likely repeated Twilio announcement")
+                sys.stdout.flush()
+                return  # Don't generate response for system messages!
+            
             # Reset cancel flag for new response generation
             self._tts_cancel.clear()
             # Reset crossfade state so new response starts clean
@@ -1569,11 +1588,7 @@ IMPORTANT: Follow the model instructions above."""
                     print(f"⏱️ TTS generation: {tts_gen_time:.3f}s for '{clean[:20]}...'")
                     sys.stdout.flush()
                     
-                    # Add subtle ambient noise for realism (office/call center environment)
-                    if audio_bytes and self._use_ambient_noise:
-                        audio_bytes = add_ambient_noise_to_mulaw(audio_bytes, self._ambient_noise_level)
-                        print(f"🔊 Added ambient noise (level: {self._ambient_noise_level})")
-                        sys.stdout.flush()
+                    # Ambient noise now handled in SSML middleware (cleaner approach)
                     
                     if self._tts_cancel.is_set():
                         self._prev_tts_tail = b""

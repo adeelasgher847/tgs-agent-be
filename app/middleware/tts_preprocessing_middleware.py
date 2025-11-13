@@ -178,12 +178,32 @@ def add_breath(sentence: str, emotion: str) -> str:
 # 5. SSML Generator (Google-Compatible)
 # ---------------------------------------------------------
 
-def wrap_in_ssml(text: str) -> str:
+def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
+    """
+    Wraps text in SSML with optional office background ambience.
+    
+    Args:
+        text: Text to wrap
+        add_office_bg: Add subtle office background sounds (30% chance)
+    """
     # Add thinking delays BEFORE wrapping
     text = add_thinking_delays(text)
     
     sentences = re.split(r'([.!?])', text)
     ssml = "<speak>\n"
+    
+    # Add subtle office background ambience (30% chance - not every call)
+    if add_office_bg and random.random() < 0.30:
+        # Very subtle office ambience throughout the response
+        ssml += '  <par>\n'
+        ssml += '    <media soundLevel="-38dB">\n'
+        ssml += '      <audio src="https://actions.google.com/sounds/v1/ambiences/office_ambience.ogg"/>\n'
+        ssml += '    </media>\n'
+        ssml += '    <media>\n'
+        # Main speech will be inside this media tag
+        use_par_tags = True
+    else:
+        use_par_tags = False
 
     for i in range(0, len(sentences) - 1, 2):
         sentence = sentences[i].strip()
@@ -202,6 +222,11 @@ def wrap_in_ssml(text: str) -> str:
         ssml += f'  <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{sentence}{punct}</prosody>\n'
         ssml += '  <break time="200ms"/>\n'
 
+    # Close par/media tags if office background was added
+    if use_par_tags:
+        ssml += '    </media>\n'
+        ssml += '  </par>\n'
+    
     ssml += "</speak>"
     return ssml
 
@@ -210,9 +235,9 @@ def wrap_in_ssml(text: str) -> str:
 # 6. Main Preprocessing Entry
 # ---------------------------------------------------------
 
-def preprocess_for_tts(text: str) -> str:
+def preprocess_for_tts(text: str, add_office_bg: bool = True) -> str:
     """
-    Complete humanization pipeline.
+    Complete humanization pipeline with optional office background.
     
     Pipeline:
     1. Normalize abbreviations (Dr. → Doctor)
@@ -222,7 +247,12 @@ def preprocess_for_tts(text: str) -> str:
     5. Detect emotions (happy, sad, uncertain, confident)
     6. Add fillers (uhh, umm - context-aware)
     7. Add breathing (subtle, 7% on long sentences)
-    8. Generate SSML with prosody
+    8. Add office background (30% chance, -38dB, very subtle)
+    9. Generate SSML with prosody
+    
+    Args:
+        text: Raw text from LLM
+        add_office_bg: Enable office background ambience (default: True, 30% chance)
     
     Returns:
         SSML-formatted text ready for Google TTS
@@ -233,7 +263,7 @@ def preprocess_for_tts(text: str) -> str:
     text = normalize_abbreviations(text)
     text = normalize_numbers(text)
     text = add_contractions(text)
-    return wrap_in_ssml(text)
+    return wrap_in_ssml(text, add_office_bg=add_office_bg)
 
 
 # ---------------------------------------------------------

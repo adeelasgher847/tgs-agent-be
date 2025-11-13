@@ -31,8 +31,9 @@ class TwilioService:
         """Make an outbound call with improved reliability and optional recording"""
         client = self.get_client()
         
-        # Set up recording status callback URL
-        recording_status_callback_url = f"{webhook_url.split('/webhook/')[0]}/webhook/recording-status"
+        # Set up recording status callback URL (use settings for correct base URL)
+        from app.core.config import settings
+        recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
         
         call = client.calls.create(
             to=to_number,
