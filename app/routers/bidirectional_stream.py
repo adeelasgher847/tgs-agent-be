@@ -37,13 +37,11 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
    - Triggered during long user monologues (5-7+ seconds)
    - 30% random chance for naturalness
 
-4. Turn-Taking & Barge-In (Aggressive):
-   - Immediate stop on user speech detection (55% confidence + 1 word)
-   - Stops BOTH LLM generation AND TTS playback instantly
-   - Clears entire TTS queue (all pending chunks dropped)
-   - Interim processing completely paused during barge-in
+4. Turn-Taking & Barge-In:
+   - ENABLED - Agent stops immediately when user starts speaking
+   - Detection: 60% confidence + 1 word minimum
+   - Twilio buffer cleared via "clear" event (flushes queued audio)
    - Waits for final transcript before responding (no partial interruptions)
-   - Prevents agent from continuing or repeating after interruption
 
 5. Persona & Variability:
    - Subtle prosody variations (95%-105% rate, ±1 semitone pitch)
@@ -747,7 +745,6 @@ class BidirectionalStreamHandler:
         self._last_user_speech_start = 0.0  # Track when user started speaking
         self._backchannel_phrases = ["mm-hmm", "I see", "okay", "right", "yeah", "got it"]
         self._use_ssml = True                # Enable SSML by default
-        self._barge_in_active = False        # Track if currently in barge-in state
         
         # Session data
         self.call_session = None
@@ -1022,10 +1019,9 @@ class BidirectionalStreamHandler:
             # Reset user speech timer (user finished speaking)
             self._last_user_speech_start = 0.0
             
-            # Reset barge-in flag and interim state (user finished, ready for new response)
+            # Reset interim state (user finished, ready for new response)
             self._tts_cancel.clear()
             self._last_interim_text = ""
-            self._barge_in_active = False
             print(f"✅ User finished speaking - ready to respond")
             sys.stdout.flush()
             
@@ -1106,36 +1102,37 @@ class BidirectionalStreamHandler:
                 sys.stdout.flush()
                 return
             
-            # Barge-in: if we are speaking and user starts talking, cancel EVERYTHING immediately
-            # Aggressive detection to stop agent mid-sentence
-            if self.is_speaking and confidence >= 0.55 and word_count >= 1:  # Lowered to 55% + 1 word for faster detection
+            # ✅ BARGE-IN ENABLED - Stop agent when user starts speaking
+            # Detection: confidence >= 60%, 1+ words, agent currently speaking
+            if self.is_speaking and confidence >= 0.60 and word_count >= 1:
                 if not self._tts_cancel.is_set():
-                    print(f"🛑 BARGE-IN DETECTED: User interrupted (confidence: {confidence:.2f}, words: {word_count})")
-                    print(f"🛑 Stopping LLM generation and TTS playback immediately...")
+                    print(f"🛑 BARGE-IN DETECTED!")
+                    print(f"   User: '{transcript[:60]}...' (confidence: {confidence:.2f})")
+                    print(f"   Stopping TTS and clearing Twilio buffer...")
                     sys.stdout.flush()
-                    self._tts_cancel.set()  # This stops LLM loop AND TTS playback
-                    self._barge_in_active = True
                     
-                    # Clear TTS queue aggressively to stop all pending chunks
-                    cleared_count = 0
-                    while not self.tts_queue.empty():
-                        try:
-                            self.tts_queue.get_nowait()
-                            self.tts_queue.task_done()
-                            cleared_count += 1
-                        except:
-                            break
+                    # Set cancel flag to stop streaming
+                    self._tts_cancel.set()
                     
-                    print(f"🛑 Barge-in complete: TTS stopped, {cleared_count} chunks cleared, waiting for user to finish...")
-                    self._prev_tts_tail = b""
+                    # Send Twilio clear command to flush audio buffer
+                    try:
+                        await self.websocket.send_json({
+                            "event": "clear",
+                            "streamSid": self.stream_sid
+                        })
+                        print(f"✅ Twilio buffer cleared!")
+                        sys.stdout.flush()
+                    except Exception as e:
+                        print(f"⚠️ Failed to send clear command: {e}")
+                        sys.stdout.flush()
+                    
+                    # Mark agent as no longer speaking
+                    self.is_speaking = False
+                    
+                    print(f"🎧 Agent stopped - now listening to user...")
                     sys.stdout.flush()
-                # Don't process interim during barge-in - wait for user to finish
-                return
-            
-            # During barge-in, DON'T process interim - let user finish completely
-            if self._tts_cancel.is_set():
-                print(f"🔇 Interim ignored during barge-in - waiting for final: '{transcript[:60]}...'")
-                sys.stdout.flush()
+                
+                # Don't process interim during barge-in - wait for final transcript
                 return
             
             # Ultra-aggressive throttling: only 100ms between triggers
@@ -1202,11 +1199,7 @@ class BidirectionalStreamHandler:
             from datetime import datetime, timezone
             import json
             
-            # Don't start new response if user is still speaking (barge-in active)
-            if self._barge_in_active:
-                print(f"🔇 Skipping response generation - user still speaking (barge-in active)")
-                sys.stdout.flush()
-                return
+            # BARGE-IN DISABLED - Always generate responses
             
             # GATE THE LLM INPUT - Filter Twilio system messages (Vapi-style!)
             twilio_system_messages = [
