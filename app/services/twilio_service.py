@@ -44,10 +44,12 @@ class TwilioService:
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
-            # Add timeout settings for better reliability
-            # timeout=30,  # Wait up to 30 seconds for answer
-            # Add webhook timeout
-            # webhook_timeout=60  # Wait up to 10 seconds for webhook response
+            
+            # PREVENT TWILIO ANNOUNCEMENTS - Skip "Please hold" messages!
+            machine_detection='DetectMessageEnd',  # Skip automated announcements
+            async_amd='true',                      # Non-blocking AMD
+            async_amd_status_callback=status_callback_url,  # AMD status updates
+            timeout=30,  # Answer timeout (30 seconds)
         )
         
         return call

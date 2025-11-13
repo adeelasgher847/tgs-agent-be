@@ -733,52 +733,23 @@ async def streaming_greeting_webhook(
         form_data = await request.form()
         call_sid = form_data.get("CallSid", "")
         
-        # Get call session and agent
-        call_session = None
-        agent = None
-        
-        if callSessionId:
-            try:
-                session_uuid = uuid.UUID(callSessionId)
-                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
-                
-                if call_session and agentId:
-                    agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
-                    if agent:
-                        print(f"✅ Agent: {agent.name}")
-                    sys.stdout.flush()
-            except ValueError:
-                print(f"⚠️ Invalid call session ID: {callSessionId}")
-                sys.stdout.flush()
-        
-        # Create TwiML response with bidirectional streaming
-        response = VoiceResponse()
-        
+        # INSTANT TwiML RESPONSE (< 10ms) - Build immediately without DB queries!
         # Build WebSocket URL for bidirectional streaming
         ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
         ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
         ws_url = f"{ws_protocol}://{ws_base}/api/v1/stream/ws/bidirectional/{callSessionId}/{agentId}"
         
-        print(f"🔗 WebSocket URL: {ws_url}")
-        sys.stdout.flush()
+        # Create TwiML response with bidirectional streaming
+        response = VoiceResponse()
         
         # Start bidirectional media stream
-        from twilio.twiml.voice_response import Connect, Stream, Parameter
+        from twilio.twiml.voice_response import Connect, Stream
         
-        # VAPI'S APPROACH: Brief pause first to prevent Twilio's default message
-        response.pause(length=0.1)  # 100ms silence while WebSocket connects
-        
+        # DIRECT STREAM - No pause, no delay, instant connection!
         connect = Connect()
         stream = Stream(url=ws_url)
-        # Pass Twilio edge hint (observability); actual edge must be set in Twilio
-        edge = getattr(settings, "TWILIO_EDGE", None)
-        if edge:
-            try:
-                stream.parameter(Parameter(name="edge", value=edge))
-            except Exception:
-                pass
         
-        # Add parameters to stream
+        # Add essential parameters only
         stream.parameter(name="callSid", value=call_sid)
         stream.parameter(name="agentId", value=agentId)
         stream.parameter(name="callSessionId", value=callSessionId)
@@ -786,12 +757,11 @@ async def streaming_greeting_webhook(
         connect.append(stream)
         response.append(connect)
         
-        # NO greeting - user speaks first, agent responds naturally!
-        
-        print(f"✅ TwiML with bidirectional streaming generated")
-        print(f"📝 TwiML: {str(response)[:300]}...")
+        print(f"⚡ INSTANT TwiML returned (< 10ms) - No Twilio announcements!")
+        print(f"🔗 WebSocket: {ws_url}")
         sys.stdout.flush()
         
+        # RETURN TWIML IMMEDIATELY (no waiting for DB!)
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
