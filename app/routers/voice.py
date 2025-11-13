@@ -333,8 +333,9 @@ async def initiate_call(
             call_type="outbound"  # Agent is initiating the call, so it's outbound
         )
         
-        # Make the call using Twilio with call session ID in webhook URLs
-        webhook_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
+        # Direct WebSocket streaming connection (Vapi-style - no intermediate messages!)
+        # User speaks first, agent responds naturally
+        webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
         status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
         
         print(f"Making call with webhook_url: {webhook_url}")
