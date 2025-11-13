@@ -40,6 +40,7 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
 4. Turn-Taking & Barge-In:
    - ENABLED - Agent stops immediately when user starts speaking
    - Detection: 2+ words (Google interim confidence is unreliable, often 0.00)
+   - Checked FIRST before interim gating (highest priority!)
    - TTS queue cleared (prevents old audio from resuming)
    - Twilio buffer cleared via "clear" event (flushes queued audio)
    - Waits for final transcript before responding (no partial interruptions)
@@ -67,7 +68,7 @@ SMART CHUNKING WITH OVERLAP:
 CACHING & LOW-LATENCY STRATEGIES:
 1. Auto-Greeting on Connect:
    - Agent speaks FIRST when call connects (no waiting for user!)
-   - Uses agent's first_message or default: "hello"
+   - Uses agent's first_message or default: "hello how are you"
    - Bypasses LLM entirely for instant greeting (<200ms)
    - Eliminates awkward silence at call start
 
@@ -1101,17 +1102,13 @@ class BidirectionalStreamHandler:
             # Check for backchannel opportunity during long user speech
             await self._maybe_inject_backchannel(transcript)
             
-            # Basic gating: confidence and minimum words (ULTRA-AGGRESSIVE)
+            # Calculate word count for checks
             word_count = len(transcript.split())
-            if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
-                # Still log interim for observability
-                print(f"⌛ Interim (gated) [{confidence:.2f}]: '{transcript[:60]}...'")
-                sys.stdout.flush()
-                return
             
-            # ✅ BARGE-IN ENABLED - Stop agent when user starts speaking
+            # ✅ BARGE-IN CHECK FIRST - Highest priority! Stop agent immediately!
             # Detection: 2+ words, agent currently speaking
-            # NOTE: Google interim results often have 0.00 confidence, so we rely on word_count
+            # NOTE: We check this BEFORE interim gate because barge-in should work
+            # even with low confidence (Google interim often returns 0.00 confidence)
             if self.is_speaking and word_count >= 2:
                 if not self._tts_cancel.is_set():
                     print(f"🛑 BARGE-IN DETECTED!")
@@ -1156,6 +1153,14 @@ class BidirectionalStreamHandler:
                     sys.stdout.flush()
                 
                 # Don't process interim during barge-in - wait for final transcript
+                return
+            
+            # Basic gating: confidence and minimum words (for LLM generation only)
+            # NOTE: This comes AFTER barge-in check so that interruption works even with low confidence
+            if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
+                # Still log interim for observability
+                print(f"⌛ Interim (gated) [{confidence:.2f}]: '{transcript[:60]}...'")
+                sys.stdout.flush()
                 return
             
             # Ultra-aggressive throttling: only 100ms between triggers
@@ -1233,7 +1238,7 @@ class BidirectionalStreamHandler:
                 if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                     greeting_text = self.agent.first_message
                 else:
-                    greeting_text = "hello"
+                    greeting_text = "hello how are you"
                 
                 print(f"👋 Using auto-greeting (no LLM): '{greeting_text}'")
                 sys.stdout.flush()
@@ -1879,7 +1884,7 @@ IMPORTANT: Follow the model instructions above."""
             if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                 greeting = self.agent.first_message
             else:
-                greeting = "hello"
+                greeting = "hello how are you"
             
             print(f"👋 Sending auto-greeting: '{greeting}'")
             sys.stdout.flush()
