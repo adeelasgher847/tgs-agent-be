@@ -235,7 +235,7 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
 # 6. Main Preprocessing Entry
 # ---------------------------------------------------------
 
-def preprocess_for_tts(text: str, add_office_bg: bool = True) -> str:
+def preprocess_for_tts(text: str, add_office_bg: bool = False) -> str:
     """
     Complete humanization pipeline with optional office background.
     
@@ -247,12 +247,12 @@ def preprocess_for_tts(text: str, add_office_bg: bool = True) -> str:
     5. Detect emotions (happy, sad, uncertain, confident)
     6. Add fillers (uhh, umm - context-aware)
     7. Add breathing (subtle, 7% on long sentences)
-    8. Add office background (30% chance, -38dB, very subtle)
+    8. Add office background (DISABLED by default, can enable if needed)
     9. Generate SSML with prosody
     
     Args:
         text: Raw text from LLM
-        add_office_bg: Enable office background ambience (default: True, 30% chance)
+        add_office_bg: Enable office background ambience (default: False, disabled)
     
     Returns:
         SSML-formatted text ready for Google TTS
