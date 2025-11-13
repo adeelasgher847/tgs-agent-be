@@ -112,10 +112,27 @@ class TranscriptService:
         duration: Optional[float] = None,
         response_time: Optional[float] = None,
         metadata: Optional[dict] = None
-    ) -> TranscriptMessage:
+    ) -> Optional[TranscriptMessage]:
         """Add a message and broadcast the updated conversation to WebSocket"""
         
-        # Add the message
+        # Filter: Ignore Twilio system messages (Vapi-style - clean transcripts!)
+        twilio_system_messages = [
+            "please hold while i try to connect you",
+            "please hold while we connect you",
+            "connecting you now",
+            "please wait while we connect",
+            "try to connect you",
+            "connecting",
+        ]
+        
+        message_lower = message.lower().strip()
+        if any(sys_msg in message_lower for sys_msg in twilio_system_messages):
+            print(f"🚫 Filtered Twilio system message: '{message[:50]}...' (ignored, not saved)")
+            # Return None or create a minimal object - don't save to DB
+            # This prevents LLM from seeing Twilio's messages!
+            return None
+        
+        # Add the message (only if not filtered)
         transcript_message = TranscriptService.add_message(
             db=db,
             call_session_id=call_session_id,
