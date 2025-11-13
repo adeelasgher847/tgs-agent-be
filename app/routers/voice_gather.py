@@ -765,6 +765,9 @@ async def streaming_greeting_webhook(
         # Start bidirectional media stream
         from twilio.twiml.voice_response import Connect, Stream, Parameter
         
+        # VAPI'S APPROACH: Brief pause first to prevent Twilio's default message
+        response.pause(length=0.1)  # 100ms silence while WebSocket connects
+        
         connect = Connect()
         stream = Stream(url=ws_url)
         # Pass Twilio edge hint (observability); actual edge must be set in Twilio
@@ -783,9 +786,7 @@ async def streaming_greeting_webhook(
         connect.append(stream)
         response.append(connect)
         
-        # Add a Say for initial greeting (optional)
-        # User will hear this while WebSocket connects
-        # response.say("Connecting you now...", voice=get_agent_voice(agent))
+        # NO greeting - user speaks first, agent responds naturally!
         
         print(f"✅ TwiML with bidirectional streaming generated")
         print(f"📝 TwiML: {str(response)[:300]}...")

@@ -1240,7 +1240,10 @@ class BidirectionalStreamHandler:
                             # Handle both 'content' and 'message' keys
                             role = msg.get('role', 'unknown')
                             content = msg.get('content') or msg.get('message', '')
-                            if content:
+                            message_type = msg.get('message_type', '')
+                            
+                            # Filter: Only include client and agent messages (skip system/greeting/status messages)
+                            if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
                                 history_lines.append(f"{role.capitalize()}: {content}")
                     history_text = "\n".join(history_lines)
                 except Exception as e:
