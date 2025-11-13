@@ -73,6 +73,7 @@ def add_thinking_delays(text: str) -> str:
         "Hmm, I see" → "<break time='400ms'/> Hmm, I see"
     """
     # Thinking phrases that deserve a pause BEFORE them
+    # Removed "you know" and "I mean" - too annoying in TTS output
     thinking_phrases = [
         'let me think',
         'let me see',
@@ -80,8 +81,8 @@ def add_thinking_delays(text: str) -> str:
         'hmm',
         'well',
         'actually',
-        'you know',
-        'I mean',
+        'maybe',
+        'perhaps',
         'how should I say',
         'to be honest',
         'frankly',
@@ -137,42 +138,49 @@ def emotion_to_prosody(emotion: str):
 
 def insert_fillers(sentence: str, emotion: str) -> str:
     """
-    Adds natural fillers ("uhh", "umm", etc.) based on emotion and context.
+    Adds MINIMAL fillers ONLY before thinking phrases (where natural pauses exist).
+    Very subtle - not annoying! Removed "you know" and "I mean" completely.
     """
+    # Skip fillers for confident emotions
     if emotion in ["happy", "confident"]:
-        return sentence  # confident speech = fewer fillers
-
-    fillers = ['uhh', 'umm', 'hmm', 'you know', 'I mean']
-    start_words = ['Well', 'So', 'Actually', 'Maybe', 'Perhaps']
-
-    # Start filler (thinking style)
-    # NOTE: Fillers now inherit prosody from parent sentence (no nested prosody tags)
-    # This prevents abrupt transitions and click/tak sounds
-    if any(sentence.strip().startswith(w) for w in start_words):
-        if random.random() < 0.4:
-            filler = random.choice(fillers)
-            return f'{filler}, <break time="120ms"/> {sentence}'
-
-    # Mid-sentence filler (light)
-    if random.random() < 0.1 and len(sentence.split()) > 6:
-        words = sentence.split()
-        insert_at = random.randint(3, len(words) - 2)
-        words.insert(insert_at, f'{random.choice(fillers)}, <break time="100ms"/>')
-        return ' '.join(words)
-
+        return sentence
+    
+    # MINIMAL fillers - only subtle ones (removed "you know", "I mean" - too annoying!)
+    subtle_fillers = ['uhh', 'umm', 'hmm']
+    
+    # Thinking phrases that already have pauses (from add_thinking_delays)
+    # These are natural places for fillers - where people actually pause to think
+    thinking_phrases = [
+        'let me think', 'let me see', 'let me check',
+        'hmm', 'well', 'actually', 'maybe', 'perhaps'
+    ]
+    
+    # ONLY add filler before thinking phrases (where pause already exists)
+    # Reduced frequency: 10% chance (was 40%) - very minimal!
+    for phrase in thinking_phrases:
+        if phrase.lower() in sentence.lower():
+            if random.random() < 0.10:  # Minimal - only 10% chance
+                filler = random.choice(subtle_fillers)
+                # Fillers inherit parent prosody (no nested tags = no clicks)
+                # Slightly quieter with comma pause
+                return f'{filler}, <break time="80ms"/> {sentence}'
+    
+    # NO mid-sentence fillers (removed - too annoying and unnatural)
+    # Return sentence unchanged
     return sentence
 
 
 def add_breath(sentence: str, emotion: str) -> str:
     """
-    Adds subtle breath between long thoughts.
+    Adds subtle breath between very long thoughts.
+    Reduced frequency - very minimal! Only for very long sentences.
     """
-    if len(sentence.split()) < 12:
+    if len(sentence.split()) < 15:  # Only for very long sentences (was 12)
         return sentence
 
     if emotion in ["sad", "neutral", "uncertain"]:
-        if random.random() < 0.07:  # small chance
-            sentence += ' <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-34dB"/>'
+        if random.random() < 0.03:  # Reduced to 3% (was 7%) - very minimal!
+            sentence += ' <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-36dB"/>'  # Quieter (-36dB, was -34dB)
     return sentence
 
 
@@ -191,6 +199,12 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
     # Add thinking delays BEFORE wrapping
     text = add_thinking_delays(text)
     
+    # 🎯 DETECT EMOTION ONCE for entire response (prevents prosody clicks!)
+    # This ensures consistent prosody across all sentences - no abrupt transitions
+    # Emotion still preserved (based on overall response tone), but applied consistently
+    overall_emotion = detect_emotion(text)
+    rate, pitch, volume = emotion_to_prosody(overall_emotion)
+    
     sentences = re.split(r'([.!?])', text)
     ssml = "<speak>\n"
     
@@ -207,6 +221,10 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
     else:
         use_par_tags = False
 
+    # Apply SAME prosody to all sentences (prevents clicks/tak sounds)
+    # Emotion still applied (based on overall response), but consistently!
+    ssml += f'  <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">\n'
+    
     for i in range(0, len(sentences) - 1, 2):
         sentence = sentences[i].strip()
         punct = sentences[i + 1] if i + 1 < len(sentences) else ""
@@ -214,15 +232,15 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
         if not sentence:
             continue
 
-        emotion = detect_emotion(sentence)
-        rate, pitch, volume = emotion_to_prosody(emotion)
+        # Add realism (fillers and breathing inherit parent prosody - no clicks!)
+        sentence = insert_fillers(sentence, overall_emotion)
+        sentence = add_breath(sentence, overall_emotion)
 
-        # Add realism
-        sentence = insert_fillers(sentence, emotion)
-        sentence = add_breath(sentence, emotion)
-
-        ssml += f'  <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{sentence}{punct}</prosody>\n'
-        ssml += '  <break time="200ms"/>\n'
+        ssml += f'    {sentence}{punct}\n'
+        ssml += '    <break time="150ms"/>\n'  # Shorter breaks (consistent prosody = smoother)
+    
+    # Close prosody tag
+    ssml += '  </prosody>\n'
 
     # Close par/media tags if office background was added
     if use_par_tags:
