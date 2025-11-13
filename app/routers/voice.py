@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Depends, status, BackgroundTasks
+from fastapi import APIRouter, Request, HTTPException, Query, Depends, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -262,114 +262,9 @@ def add_media_stream_to_response(
     return response
 
 
-def finalize_call_session_async(
-    call_session_id: uuid.UUID,
-    call_sid: str,
-    agent_id: uuid.UUID,
-    user_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-    to_number: str,
-    from_number: str,
-    agent_name: str
-):
-    """
-    Background task to finalize call session after Twilio call is initiated.
-    This runs WHILE user's phone is ringing, so all data is ready when user picks up!
-    
-    This includes:
-    - Creating call session in database
-    - Checking credits
-    - Broadcasting WebSocket events
-    - Starting credit monitoring
-    
-    By the time user picks up (2-3 seconds), all this is done!
-    """
-    from app.api.deps import SessionLocal
-    
-    print(f"📋 Background: Finalizing call session {call_session_id}")
-    
-    # Create new DB session for background task
-    db = SessionLocal()
-    
-    try:
-        # 1. Get full agent data (with relationships)
-        agent = agent_service.get_agent_by_id(db, agent_id, tenant_id)
-        
-        if not agent:
-            print(f"❌ Background: Agent {agent_id} not found!")
-            return
-        
-        # 2. Check credits
-        if agent.model:
-            model_name = agent.model.model_name
-            has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
-                db=db,
-                tenant_id=tenant_id,
-                model_name=model_name,
-                estimated_minutes=1
-            )
-            
-            if not has_sufficient:
-                print(f"⚠️ Background: Insufficient credits ({current_credits} < {required_credits})")
-                print(f"   Call will proceed but may be terminated when credits run out")
-            else:
-                print(f"✅ Background: Credit check passed ({current_credits} available)")
-        
-        # 3. Create call session in database
-        call_session = call_session_service.create_call_session(
-            db=db,
-            user_id=user_id,
-            agent_id=agent_id,
-            tenant_id=tenant_id,
-            twilio_call_sid=call_sid,
-            from_number=from_number,
-            to_number=to_number,
-            call_type="outbound",
-            call_session_id=call_session_id  # Use pre-generated ID
-        )
-        print(f"✅ Background: Call session {call_session_id} created in DB")
-        
-        # 4. Broadcast WebSocket events (async)
-        # Note: We can't use 'await' in sync function, so we use asyncio.run
-        try:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Broadcast initiated status
-            loop.run_until_complete(broadcast_call_status_update(
-                call_session_id=str(call_session_id),
-                status="initiated",
-                metadata={
-                    "call_sid": call_sid,
-                    "agent_id": str(agent_id),
-                    "agent_name": agent_name,
-                    "to_number": to_number,
-                    "from_number": from_number,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            ))
-            print(f"✅ Background: WebSocket events broadcasted")
-            
-            loop.close()
-        except Exception as e:
-            print(f"⚠️ Background: WebSocket broadcast failed (non-critical): {e}")
-        
-        print(f"✅ Background: Call session finalization complete!")
-        print(f"   By now, user's phone should be ringing!")
-        
-    except Exception as e:
-        print(f"❌ Background: Error finalizing call session: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        db.close()
-
-
 @router.post("/call/initiate", response_model=SuccessResponse[CallInitiateResponse])
 async def initiate_call(
     request: CallInitiateRequest,
-    background_tasks: BackgroundTasks,
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
@@ -390,66 +285,110 @@ async def initiate_call(
     }
     """
     try:
-        # ⚡ INSTANT VALIDATION - Only check agent existence (< 50ms)
+        # Validate agent exists in database
         try:
             agent_id = uuid.UUID(request.agentId)
-            # Quick lookup - only get essential fields, no joins!
-            from app.models.agent import Agent
-            agent_basic = db.query(Agent.id, Agent.name, Agent.tenant_id).filter(
-                Agent.id == agent_id,
-                Agent.tenant_id == user.current_tenant_id
-            ).first()
-            
-            if not agent_basic:
-                raise HTTPException(status_code=404, detail=f"Agent {request.agentId} not found")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid agent ID format")
+            agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
+        except (ValueError, HTTPException):
+            raise HTTPException(status_code=404, detail=f"Agent {request.agentId} not found")
         
-        # Validate phone number format (quick regex check)
+        # Validate phone number format
         if not twilio_service.validate_phone_number(request.userPhoneNumber):
             raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
         
-        print(f"⚡ Quick validation passed - proceeding with call initiation")
+        # Check credits before initiating call
+        if not agent.model:
+            raise HTTPException(status_code=400, detail="Agent does not have a model configured")
+        
+        model_name = agent.model.model_name
+        has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
+            db=db,
+            tenant_id=user.current_tenant_id,
+            model_name=model_name,
+            estimated_minutes=1  # Check for at least 1 minute
+        )
+        
+        if not has_sufficient:
+            print(f"❌ Insufficient credits: {current_credits} < {required_credits}")
+            error_message = f"Insufficient credits to initiate call. Current balance: {current_credits} credits, Required: {required_credits} credits. Model: {model_name}"
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=error_message
+            )
+        
+        print(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
         
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL
         
-        # ⚡ PRE-GENERATE SESSION ID (no DB insert yet!)
-        call_session_id = uuid.uuid4()
+        # Create call session first so we can include the ID in webhook URLs
+        call_session = call_session_service.create_call_session(
+            db=db,
+            user_id=user.id,
+            agent_id=agent.id,
+            tenant_id=user.current_tenant_id,
+            twilio_call_sid="",  # Will be updated after call is made
+            from_number=twilio_service.get_phone_number(),
+            to_number=request.userPhoneNumber,
+            call_type="outbound"  # Agent is initiating the call, so it's outbound
+        )
         
-        # Build webhook URLs with pre-generated session ID
-        webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent_id}&userId={user.id}&callSessionId={call_session_id}"
-        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent_id}&userId={user.id}&callSessionId={call_session_id}"
+        # Direct WebSocket streaming connection (Vapi-style - no intermediate messages!)
+        # User speaks first, agent responds naturally
+        webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
+        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
         
-        print(f"⚡ Making Twilio call immediately (no waiting for DB!)")
-        print(f"   Webhook: {webhook_url}")
-        print(f"   Status callback: {status_callback_url}")
+        print(f"Making call with webhook_url: {webhook_url}")
+        print(f"Making call with status_callback_url: {status_callback_url}")
         
-        # ⚡ MAKE TWILIO CALL IMMEDIATELY - This is the critical path!
+        # Optional WebSocket broadcast
+        try:
+            await broadcast_call_status_update(
+                call_session_id=str(call_session.id),
+                status="initiating",
+                metadata={
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "to_number": request.userPhoneNumber,
+                    "from_number": twilio_service.get_phone_number(),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            print(f"✅ WebSocket: Call initiating event sent")
+        except Exception as e:
+            print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+        
+        # Make the call using Twilio
         call = twilio_service.make_call(
             to_number=request.userPhoneNumber,
             from_number=twilio_service.get_phone_number(),
             webhook_url=webhook_url,
             status_callback_url=status_callback_url
         )
-        print(f"⚡✅ Call initiated INSTANTLY! Twilio SID: {call.sid}")
-        print(f"⏰ Total time to call: < 100ms (no DB queries!)")
+        print(f"✅ Call initiated successfully")
         
-        # ⚡ DEFER HEAVY OPERATIONS TO BACKGROUND
-        # This runs WHILE user's phone is ringing (2-3 seconds)
-        # All data will be ready by the time user picks up!
-        background_tasks.add_task(
-            finalize_call_session_async,
-            call_session_id=call_session_id,
-            call_sid=call.sid,
-            agent_id=agent_id,
-            user_id=user.id,
-            tenant_id=user.current_tenant_id,
-            to_number=request.userPhoneNumber,
-            from_number=twilio_service.get_phone_number(),
-            agent_name=agent_basic[1]  # Agent name from quick lookup
-        )
-        print(f"⚡ Background tasks queued - will complete while phone rings")
+        # Update call session with Twilio SID
+        call_session.twilio_call_sid = call.sid
+        db.commit()
+        print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
+        
+        # Broadcast call initiated event AFTER Twilio confirms
+        try:
+            await broadcast_call_status_update(
+                call_session_id=str(call_session.id),
+                status="initiated",
+                metadata={
+                    "call_sid": call.sid,
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "to_number": request.userPhoneNumber,
+                    "from_number": twilio_service.get_phone_number(),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            print(f"✅ Call initiated event sent for session {call_session.id}")
+        except Exception as e:
+            print(f"⚠️ Failed to send call initiated event (non-critical): {e}")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"

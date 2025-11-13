@@ -20,7 +20,7 @@ class CallSessionService:
                            tenant_id: uuid.UUID, twilio_call_sid: str = None,
                            from_number: str = None, to_number: str = None,
                            call_type: str = "inbound", assistant_phone_number: str = None,
-                           customer_phone_number: str = None, call_session_id: uuid.UUID = None) -> CallSession:
+                           customer_phone_number: str = None) -> CallSession:
         """
         Create a new call session and associated call log
         
@@ -35,14 +35,12 @@ class CallSessionService:
             call_type: Type of call (inbound, outbound, web)
             assistant_phone_number: Assistant's phone number
             customer_phone_number: Customer's phone number
-            call_session_id: Optional pre-generated session ID (for async initialization)
             
         Returns:
             CallSession object
         """
         
         call_session = CallSession(
-            id=call_session_id if call_session_id else uuid.uuid4(),  # Use pre-generated ID if provided
             user_id=user_id,
             agent_id=agent_id,
             tenant_id=tenant_id,
