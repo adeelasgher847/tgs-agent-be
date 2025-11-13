@@ -65,19 +65,25 @@ SMART CHUNKING WITH OVERLAP:
    - Note: Use with caution, may cause audio artifacts on certain setups
 
 CACHING & LOW-LATENCY STRATEGIES:
-1. Pre-cached Common Phrases:
+1. Auto-Greeting on Connect:
+   - Agent speaks FIRST when call connects (no waiting for user!)
+   - Uses agent's first_message or default: "hello"
+   - Bypasses LLM entirely for instant greeting (<200ms)
+   - Eliminates awkward silence at call start
+
+2. Pre-cached Common Phrases:
    - 36+ common phrases pre-generated at startup
    - Greetings, acknowledgements, confirmations cached
    - <50ms response time for cached phrases (vs 500-2900ms generation)
    - Instant "Hello", "Got it", "Thank you" responses
 
-2. Quick Acknowledgement Pattern:
+3. Quick Acknowledgement Pattern:
    - Instant "Got it" from cache for 5+ word queries
    - Then full response streams in parallel
    - User gets immediate feedback while response generates
    - Example: "Got it" (50ms) → "checking that now..." (1500ms)
 
-3. Adaptive Max Tokens:
+4. Adaptive Max Tokens:
    - Yes/No queries: 15 tokens (ultra-fast)
    - Short queries (1-3 words): 25 tokens (fast)
    - Medium queries (4-7 words): 35 tokens (balanced)
@@ -1207,16 +1213,45 @@ class BidirectionalStreamHandler:
                 "is_final": False
             })
     
-    async def generate_and_stream_response(self, user_text: str, confidence: float):
+    async def generate_and_stream_response(self, user_text: str, confidence: float, is_greeting: bool = False):
         """
         Generate AI response and stream TTS in real-time WITH conversation history.
         Uses PARALLEL TTS PIPELINE (Vapi-style) for ultra-low latency.
+        
+        Args:
+            user_text: User's input text (empty for greeting)
+            confidence: STT confidence score
+            is_greeting: If True, uses agent's first_message instead of calling LLM
         """
         try:
             from datetime import datetime, timezone
             import json
             
-            # BARGE-IN DISABLED - Always generate responses
+            # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
+            if is_greeting:
+                # Get greeting from agent or use default
+                if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
+                    greeting_text = self.agent.first_message
+                else:
+                    greeting_text = "hello"
+                
+                print(f"👋 Using auto-greeting (no LLM): '{greeting_text}'")
+                sys.stdout.flush()
+                
+                # Add greeting to transcript
+                await self._add_to_transcript("agent", greeting_text, "greeting")
+                
+                # Queue greeting TTS directly (skip LLM!)
+                await self.tts_queue.put({
+                    "text": greeting_text,
+                    "chunk_id": "greeting",
+                    "use_ssml": self._use_ssml,
+                    "is_final": True
+                })
+                
+                print(f"✅ Auto-greeting queued for TTS")
+                sys.stdout.flush()
+                return  # Done! No LLM needed for greeting
             
             # GATE THE LLM INPUT - Filter Twilio system messages (Vapi-style!)
             twilio_system_messages = [
@@ -1838,6 +1873,25 @@ IMPORTANT: Follow the model instructions above."""
                     print(f"❌ Failed to broadcast in-progress status: {e}")
                     import traceback
                     traceback.print_exc()
+            
+            # 👋 AUTO-GREETING - Agent speaks first when call connects!
+            # Get greeting from agent's first_message or use default
+            if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
+                greeting = self.agent.first_message
+            else:
+                greeting = "hello"
+            
+            print(f"👋 Sending auto-greeting: '{greeting}'")
+            sys.stdout.flush()
+            
+            # Stream greeting immediately (don't wait for user)
+            asyncio.create_task(
+                self.generate_and_stream_response(
+                    user_text="",  # No user input - this is initial greeting
+                    confidence=1.0,
+                    is_greeting=True
+                )
+            )
         
         except Exception as e:
             print(f"❌ Error handling start: {e}")
