@@ -45,10 +45,10 @@ class TwilioService:
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
-            
-            # PREVENT TWILIO ANNOUNCEMENTS - Complete solution!
-            answer_on_bridge=True,  # Only connect when call is bridged (prevents announcements!)
             timeout=30,  # Answer timeout (30 seconds)
+            
+            # NO AMD - Fast webhook response prevents Twilio announcements naturally!
+            # Instant TwiML (< 10ms) + Auto-greeting = No "Please hold" messages
         )
         
         return call
