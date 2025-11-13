@@ -46,10 +46,8 @@ class TwilioService:
             recording_channels='dual',  # Record both channels
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
             
-            # PREVENT TWILIO ANNOUNCEMENTS - Skip "Please hold" messages!
-            machine_detection='DetectMessageEnd',  # Skip automated announcements
-            async_amd='true',                      # Non-blocking AMD
-            async_amd_status_callback=status_callback_url,  # AMD status updates
+            # PREVENT TWILIO ANNOUNCEMENTS - Complete solution!
+            answer_on_bridge=True,  # Only connect when call is bridged (prevents announcements!)
             timeout=30,  # Answer timeout (30 seconds)
         )
         
