@@ -39,7 +39,7 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
 
 4. Turn-Taking & Barge-In:
    - ENABLED - Agent stops immediately when user starts speaking
-   - Detection: 60% confidence + 1 word minimum
+   - Detection: 2+ words (Google interim confidence is unreliable, often 0.00)
    - Twilio buffer cleared via "clear" event (flushes queued audio)
    - Waits for final transcript before responding (no partial interruptions)
 
@@ -1103,11 +1103,12 @@ class BidirectionalStreamHandler:
                 return
             
             # ✅ BARGE-IN ENABLED - Stop agent when user starts speaking
-            # Detection: confidence >= 60%, 1+ words, agent currently speaking
-            if self.is_speaking and confidence >= 0.60 and word_count >= 1:
+            # Detection: 2+ words, agent currently speaking
+            # NOTE: Google interim results often have 0.00 confidence, so we rely on word_count
+            if self.is_speaking and word_count >= 2:
                 if not self._tts_cancel.is_set():
                     print(f"🛑 BARGE-IN DETECTED!")
-                    print(f"   User: '{transcript[:60]}...' (confidence: {confidence:.2f})")
+                    print(f"   User: '{transcript[:60]}...' (words: {word_count}, confidence: {confidence:.2f})")
                     print(f"   Stopping TTS and clearing Twilio buffer...")
                     sys.stdout.flush()
                     
