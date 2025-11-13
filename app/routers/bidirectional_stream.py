@@ -613,12 +613,13 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
 
     # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
     # Google TTS auto-detects SSML if text starts with <speak>
+    # Let SSML control prosody (use defaults when SSML present, don't override)
     audio_content = google_tts_service.text_to_speech(
         text=text.strip(),
         language=lang,
         voice_type=voice,
-        speaking_rate=0.95,   # Fixed rate for consistent low latency
-        pitch=0.0,
+        speaking_rate=1.0 if use_ssml else speaking_rate,  # Use 1.0 (default) for SSML to respect prosody tags
+        pitch=0.0,  # Always 0, let SSML <prosody pitch> handle variations
         output_format="mulaw",
         use_chirp3_hd=use_chirp3_hd
     )
@@ -842,6 +843,12 @@ class BidirectionalStreamHandler:
                 "Have a great day",
                 "Thank you for calling",
                 "Talk to you later",
+                
+                # Boundary fillers (Vapi-style - for seamless chunk transitions)
+                "uh",
+                "uhh",
+                "umm",
+                "hmm",
             ]
             
             lang = self.agent.language if self.agent and self.agent.language else "en"
@@ -1646,6 +1653,37 @@ IMPORTANT: Follow the model instructions above."""
                             return
                         
                         prime_frames = 0 if self._twilio_buffer_primed else 1
+                        
+                        # VAPI'S SECRET: Add spoken boundary filler between chunks (masks transitions!)
+                        if self._prev_tts_tail and not is_final and not self._tts_cancel.is_set():
+                            import random
+                            # Generate tiny spoken filler to mask transition
+                            boundary_fillers = ["uh", "uhh", "umm"]
+                            filler = random.choice(boundary_fillers)
+                            
+                            # Generate very short filler audio (no SSML, plain text)
+                            filler_audio = await generate_mulaw_tts(
+                                text=filler,
+                                lang=lang,
+                                voice=voice,
+                                use_chirp3_hd=True,
+                                speaking_rate=0.85,  # Slower for natural filler
+                                use_ssml=False  # Plain filler
+                            )
+                            
+                            if filler_audio and len(filler_audio) > 0:
+                                print(f"🔗 Adding boundary filler: '{filler}' ({len(filler_audio)} bytes)")
+                                sys.stdout.flush()
+                                
+                                # Stream filler BETWEEN chunks (Vapi's approach)
+                                await stream_mulaw_bytes_over_twilio(
+                                    websocket=self.websocket,
+                                    stream_sid=self.stream_sid,
+                                    audio_bytes=filler_audio,
+                                    pace_20ms=True,
+                                    cancel=self._tts_cancel,
+                                    prime_frames=0,
+                                )
                         
                         if bridge_audio and not self._tts_cancel.is_set():
                             await stream_mulaw_bytes_over_twilio(
