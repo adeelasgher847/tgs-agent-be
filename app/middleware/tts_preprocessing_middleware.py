@@ -1,25 +1,26 @@
 """
-TTS Text Preprocessing Middleware
+Google TTS-Compatible Humanized Preprocessing Middleware
 
-Simple text preprocessing for natural TTS output:
-- Normalize abbreviations (Dr. → Doctor)
-- Normalize numbers and dates
-- Add natural pauses
-- Wrap in SSML with prosody and emphasis
+--------------------------------------------------------
+✅ Natural fillers: uhh, umm, hmm, etc.
+✅ Subtle breathing (realistic timing)
+✅ Emotion-aware prosody (happy, sad, confident, uncertain)
+✅ Natural rhythm: pauses, pacing, tone variation
+✅ Thinking delays: 400ms pause before contemplative phrases
+✅ 100% valid SSML for Google Cloud TTS
 
-Usage:
-    from app.middleware.tts_preprocessing_middleware import preprocess_for_tts
-    
-    ssml_text = preprocess_for_tts("Dr. Smith called at 3:00 p.m.")
-    # Returns: <speak>Doctor Smith called at 3, 00, P M.</speak>
+Use with: text input → preprocess_for_tts(text) → pass to Google TTS API
 """
 
 import re
-from typing import Optional
+import random
 
+
+# ---------------------------------------------------------
+# 1. Basic Normalization
+# ---------------------------------------------------------
 
 def normalize_abbreviations(text: str) -> str:
-    """Normalize common abbreviations for better pronunciation."""
     abbreviations = {
         r'\bDr\.': 'Doctor',
         r'\bMr\.': 'Mister',
@@ -30,508 +31,215 @@ def normalize_abbreviations(text: str) -> str:
         r'\be\.g\.': 'for example',
         r'\bi\.e\.': 'that is',
         r'\ba\.m\.': 'A M',
-        r'\bA\.M\.': 'A M',
         r'\bp\.m\.': 'P M',
-        r'\bP\.M\.': 'P M',
     }
-    
-    result = text
     for abbr, full in abbreviations.items():
-        result = re.sub(abbr, full, result, flags=re.IGNORECASE)
-    
-    return result
+        text = re.sub(abbr, full, text, flags=re.IGNORECASE)
+    return text
 
 
 def normalize_numbers(text: str) -> str:
-    """Normalize numbers and currency for better pronunciation."""
-    result = text
-    
-    # Currency: $100 → "100 dollars"
-    result = re.sub(r'\$(\d+)', r'\1 dollars', result)
-    
-    # Percentages: 25% → "25 percent"
-    result = re.sub(r'(\d+)%', r'\1 percent', result)
-    
-    # Phone numbers: add commas for pauses
-    result = re.sub(r'(\d{3})[-.]?(\d{3})[-.]?(\d{4})', r'\1, \2, \3', result)
-    
-    # Dates: 12/25/2024 → "12, 25, 2024"
-    result = re.sub(r'(\d{1,2})/(\d{1,2})/(\d{4})', r'\1, \2, \3', result)
-    
-    # Times: 3:30 → "3, 30"
-    result = re.sub(r'(\d{1,2}):(\d{2})', r'\1, \2', result)
-    
-    return result
+    text = re.sub(r'\$(\d+)', r'\1 dollars', text)
+    text = re.sub(r'(\d+)%', r'\1 percent', text)
+    text = re.sub(r'(\d{3})[-.]?(\d{3})[-.]?(\d{4})', r'\1, \2, \3', text)
+    text = re.sub(r'(\d{1,2}):(\d{2})', r'\1, \2', text)
+    return text
 
 
-def add_natural_contractions(text: str) -> str:
-    """
-    Add natural contractions for more human-like speech.
-    "I am" → "I'm", "you are" → "you're", etc.
-    """
+def add_contractions(text: str) -> str:
     contractions = {
-        r'\bI am\b': "I'm",
-        r'\byou are\b': "you're",
-        r'\bhe is\b': "he's",
-        r'\bshe is\b': "she's",
-        r'\bit is\b': "it's",
-        r'\bwe are\b': "we're",
-        r'\bthey are\b': "they're",
-        r'\bthat is\b': "that's",
-        r'\bwho is\b': "who's",
-        r'\bwhat is\b': "what's",
-        r'\bwhere is\b': "where's",
-        r'\bI will\b': "I'll",
-        r'\byou will\b': "you'll",
-        r'\bwe will\b': "we'll",
-        r'\bthey will\b': "they'll",
-        r'\bI would\b': "I'd",
-        r'\byou would\b': "you'd",
-        r'\bI have\b': "I've",
-        r'\byou have\b': "you've",
-        r'\bwe have\b': "we've",
-        r'\bthey have\b': "they've",
-        r'\bcannot\b': "can't",
-        r'\bdo not\b': "don't",
-        r'\bdoes not\b': "doesn't",
-        r'\bdid not\b': "didn't",
-        r'\bwill not\b': "won't",
-        r'\bwould not\b': "wouldn't",
-        r'\bshould not\b': "shouldn't",
-        r'\bcould not\b': "couldn't",
-        r'\bhas not\b': "hasn't",
-        r'\bhave not\b': "haven't",
-        r'\bhad not\b': "hadn't",
-        r'\bis not\b': "isn't",
-        r'\bare not\b': "aren't",
-        r'\bwas not\b': "wasn't",
-        r'\bwere not\b': "weren't",
+        r'\bI am\b': "I'm", r'\byou are\b': "you're", r'\bhe is\b': "he's",
+        r'\bshe is\b': "she's", r'\bit is\b': "it's", r'\bwe are\b': "we're",
+        r'\bthey are\b': "they're", r'\bthat is\b': "that's",
+        r'\bdo not\b': "don't", r'\bcan not\b': "can't",
+        r'\bwill not\b': "won't", r'\bshould not\b': "shouldn't",
     }
-    
-    result = text
-    for pattern, replacement in contractions.items():
-        result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
-    
-    return result
+    for pat, rep in contractions.items():
+        text = re.sub(pat, rep, text, flags=re.IGNORECASE)
+    return text
 
 
-def add_realistic_fillers(text: str, add_chance: float = 0.12) -> str:
+# ---------------------------------------------------------
+# 2. Thinking Delay Mode (NEW!)
+# ---------------------------------------------------------
+
+def add_thinking_delays(text: str) -> str:
     """
-    Add realistic human speech fillers like "uhh", "umm", breathing pauses.
-    Makes speech sound more natural and human-like.
+    Adds realistic thinking pauses (400ms) before contemplative phrases.
+    Makes agent sound more human - like they're actually thinking!
     
-    Args:
-        text: Input text
-        add_chance: Probability of adding filler (0.0-1.0, default 0.12 = 12%)
-        
-    Returns:
-        Text with realistic human fillers
+    Examples:
+        "Let me think" → "<break time='400ms'/> Let me think"
+        "Hmm, I see" → "<break time='400ms'/> Hmm, I see"
     """
-    import random
-    
-    # Only add fillers occasionally (not every time - too robotic)
-    if random.random() > add_chance:
-        return text
-    
-    # Realistic thinking/hesitation patterns with breaks
-    realistic_fillers = [
-        'uhh <break time="80ms"/> ',     # Common filler
-        'umm <break time="100ms"/> ',    # Thinking
-        'uh <break time="70ms"/> ',      # Brief hesitation
-        'hmm <break time="120ms"/> ',    # Contemplating
-        'well <break time="90ms"/> ',    # Transitioning
-        'so <break time="60ms"/> ',      # Continuing thought
-        'you know <break time="100ms"/> ',  # Conversational
-        'I mean <break time="80ms"/> ',  # Clarifying
+    # Thinking phrases that deserve a pause BEFORE them
+    thinking_phrases = [
+        'let me think',
+        'let me see',
+        'let me check',
+        'hmm',
+        'well',
+        'actually',
+        'you know',
+        'I mean',
+        'how should I say',
+        'to be honest',
+        'frankly',
+        'honestly',
     ]
     
-    filler = random.choice(realistic_fillers)
-    return filler + text
+    for phrase in thinking_phrases:
+        # Add 400ms pause BEFORE the phrase
+        pattern = rf'\b{re.escape(phrase)}\b'
+        replacement = f'<break time="400ms"/> {phrase}'
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE, count=1)  # Only first occurrence
+    
+    return text
 
 
-def add_natural_pauses(text: str) -> str:
-    """Add natural pauses and thinking words using punctuation."""
-    result = text
-    
-    # Add pause after introductory/thinking words (more human-like)
-    intro_words = ['Well', 'Actually', 'However', 'Therefore', 'Meanwhile', 
-                   'Honestly', 'Basically', 'Obviously', 'Frankly', 'Naturally',
-                   'Let me see', 'Let me think', 'You know']
-    for word in intro_words:
-        result = re.sub(rf'\b{word}\b(?!,)', f'{word},', result, flags=re.IGNORECASE)
-    
-    # Convert ellipsis to comma (for pause)
-    result = re.sub(r'\.{3,}', ',', result)
-    
-    # Clean up duplicate punctuation
-    result = re.sub(r'([.!?;,]){2,}', r'\1', result)
-    
-    # Fix spacing
-    result = re.sub(r'\s+([.!?;,])', r'\1', result)
-    result = re.sub(r'([.!?;,])([A-Za-z])', r'\1 \2', result)
-    result = re.sub(r'\s+', ' ', result)
-    
-    return result.strip()
+# ---------------------------------------------------------
+# 3. Emotion & Prosody Detection
+# ---------------------------------------------------------
+
+def detect_emotion(sentence: str) -> str:
+    s = sentence.lower()
+    if any(w in s for w in ["sorry", "sad", "unfortunately", "regret"]):
+        return "sad"
+    if any(w in s for w in ["amazing", "great", "excited", "love", "!"]):
+        return "happy"
+    if any(w in s for w in ["maybe", "perhaps", "might", "guess", "hmm"]):
+        return "uncertain"
+    if any(w in s for w in ["definitely", "surely", "certainly", "clearly"]):
+        return "confident"
+    return "neutral"
 
 
-def detect_emotion_prosody(sentence: str, punct: str = "") -> tuple[str, str, str]:
+def emotion_to_prosody(emotion: str):
+    if emotion == "happy":
+        return ("1.05", "+2st", "medium")
+    if emotion == "sad":
+        return ("0.93", "-1st", "soft")
+    if emotion == "uncertain":
+        return ("0.96", "-1st", "soft")
+    if emotion == "confident":
+        return ("1.02", "+1st", "medium")
+    return (str(round(random.uniform(0.97, 1.01), 2)), random.choice(["-1st", "0st", "+1st"]), "medium")
+
+
+# ---------------------------------------------------------
+# 4. Humanization: Fillers + Breathing
+# ---------------------------------------------------------
+
+def insert_fillers(sentence: str, emotion: str) -> str:
     """
-    Detect emotion from text and return appropriate prosody settings.
-    IMPROVED: Smoother transitions, more human-like variations.
-    
-    Returns:
-        (rate, pitch, volume) tuple
-        
-    Examples:
-        "How are you?" → ("102%", "+1st", "medium")  # Question
-        "Amazing!" → ("106%", "+2st", "medium-loud") # Excitement (smoother)
-        "I'm sorry" → ("92%", "-1st", "soft")        # Sadness (smoother)
+    Adds natural fillers ("uhh", "umm", etc.) based on emotion and context.
     """
-    import random
-    
-    text = sentence.lower()
-    
-    # EXCITEMENT: ! or words (SMOOTHER - reduced ranges)
-    excitement_words = ["amazing", "awesome", "great", "wonderful", "fantastic", "excellent", "love", "excited", 
-                        "happy", "glad", "delighted", "thrilled", "brilliant", "perfect"]
-    if punct == "!" or any(word in text for word in excitement_words):
-        return (
-            random.choice(["103%", "105%", "107%"]),  # Smoother: was 105-110%, now 103-107%
-            random.choice(["+1st", "+2st"]),           # Smoother: was +2st to +3st
-            "medium-loud"  # Softer than "loud" for smoother transitions
-        )
-    
-    # QUESTION: ? or question words (SMOOTHER)
-    question_words = ["how", "what", "when", "where", "why", "who", "can", "could", "would", "should", "do", "does", "is", "are"]
-    if punct == "?" or any(text.startswith(word) for word in question_words):
-        return (
-            random.choice(["100%", "102%", "104%"]),  # Smoother: was 100-105%, now 100-104%
-            random.choice(["+1st", "+2st"]),           # Higher pitch at end
-            "medium"
-        )
-    
-    # SADNESS/APOLOGY: (SMOOTHER - less dramatic)
-    sad_words = ["sorry", "sad", "unfortunately", "apologize", "regret", "disappointed", "concern", "worry"]
-    if any(word in text for word in sad_words):
-        return (
-            random.choice(["90%", "92%", "94%"]),     # Smoother: was 85-90%, now 90-94%
-            random.choice(["-1st", "0st"]),            # Smoother: was -2st to -1st
-            "soft"
-        )
-    
-    # CONFIDENCE/CERTAINTY: (NEW - adds variety)
-    confident_words = ["definitely", "absolutely", "certainly", "surely", "indeed", "clearly"]
-    if any(word in text for word in confident_words):
-        return (
-            random.choice(["100%", "102%", "104%"]),  # Confident pace
-            random.choice(["0st", "+1st"]),            # Slight emphasis
-            "medium-loud"
-        )
-    
-    # UNCERTAINTY: (NEW - adds variety)
-    uncertain_words = ["maybe", "perhaps", "possibly", "might", "probably", "guess"]
-    if any(word in text for word in uncertain_words):
-        return (
-            random.choice(["96%", "98%", "100%"]),    # Thoughtful, slower
-            random.choice(["-1st", "0st"]),            # Slightly lower
-            "soft"
-        )
-    
-    # EMPHASIS: ALL CAPS words (SMOOTHER)
-    if any(word.isupper() and len(word) > 1 for word in sentence.split()):
-        return (
-            random.choice(["100%", "102%", "104%"]),  # Smoother: was 98-102%
-            random.choice(["0st", "+1st"]),            # Subtle emphasis
-            "medium-loud"
-        )
-    
-    # NEUTRAL: default natural variation (TIGHTER RANGE)
-    return (
-        random.choice(["97%", "99%", "101%", "103%"]),  # Tighter: was 95-102%, now 97-103%
-        random.choice(["-1st", "0st", "+1st"]),          # Subtle pitch variation
-        "medium"
-    )
+    if emotion in ["happy", "confident"]:
+        return sentence  # confident speech = fewer fillers
+
+    fillers = ['uhh', 'umm', 'hmm', 'you know', 'I mean']
+    start_words = ['Well', 'So', 'Actually', 'Maybe', 'Perhaps']
+
+    # Start filler (thinking style)
+    if any(sentence.strip().startswith(w) for w in start_words):
+        if random.random() < 0.4:
+            filler = random.choice(fillers)
+            return f'<prosody rate="0.95" pitch="-1st">{filler}</prosody> <break time="70ms"/> {sentence}'
+
+    # Mid-sentence filler (light)
+    if random.random() < 0.1 and len(sentence.split()) > 6:
+        words = sentence.split()
+        insert_at = random.randint(3, len(words) - 2)
+        words.insert(insert_at, f'<prosody rate="0.95" pitch="-1st">{random.choice(fillers)}</prosody> <break time="60ms"/>')
+        return ' '.join(words)
+
+    return sentence
 
 
-def add_emphasis_tags(text: str) -> str:
+def add_breath(sentence: str, emotion: str) -> str:
     """
-    Add emphasis tags to ALL CAPS words.
-    
-    Example:
-        "This is VERY important" → "This is <emphasis level='strong'>VERY</emphasis> important"
+    Adds subtle breath between long thoughts.
     """
-    # Find ALL CAPS words (2+ letters)
-    def replace_caps(match):
-        word = match.group(1)
-        return f'<emphasis level="strong">{word.title()}</emphasis>'
-    
-    return re.sub(r'\b([A-Z]{2,})\b', replace_caps, text)
+    if len(sentence.split()) < 12:
+        return sentence
+
+    if emotion in ["sad", "neutral", "uncertain"]:
+        if random.random() < 0.07:  # small chance
+            sentence += ' <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-34dB"/>'
+    return sentence
 
 
-def wrap_in_ssml(text: str, add_prosody: bool = True, add_emotion: bool = True, add_breathing: bool = False, add_fillers: bool = True) -> str:
-    """
-    Wrap text in SSML with prosody, emotion, and breaks.
+# ---------------------------------------------------------
+# 5. SSML Generator (Google-Compatible)
+# ---------------------------------------------------------
+
+def wrap_in_ssml(text: str) -> str:
+    # Add thinking delays BEFORE wrapping
+    text = add_thinking_delays(text)
     
-    NEW: Emotion detection for natural speech!
-    - Questions → higher pitch
-    - Excitement → faster + louder
-    - Sadness → slower + softer
-    - Emphasis → loud + emphasis tags
-    
-    Example:
-        Input: "Amazing! How can I help you?"
-        Output: <speak>
-                  <prosody rate="108%" pitch="+3st" volume="loud">Amazing!</prosody>
-                  <break time="200ms"/>
-                  <prosody rate="102%" pitch="+2st" volume="medium">How can I help you?</prosody>
-                </speak>
-    """
-    if not text or not text.strip():
-        return ""
-    
-    ssml = '<speak>\n'
-    
-    # Split by sentences
     sentences = re.split(r'([.!?])', text)
-    
+    ssml = "<speak>\n"
+
     for i in range(0, len(sentences) - 1, 2):
         sentence = sentences[i].strip()
         punct = sentences[i + 1] if i + 1 < len(sentences) else ""
-        
+
         if not sentence:
             continue
-        
-        # Add emphasis tags to CAPS words
-        if add_emotion:
-            sentence = add_emphasis_tags(sentence)
-        
-        # Add prosody with emotion detection
-        if add_prosody and add_emotion:
-            # Detect emotion and get prosody settings
-            rate, pitch, volume = detect_emotion_prosody(sentence, punct)
-            ssml += f'  <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{sentence}{punct}</prosody>\n'
-        elif add_prosody:
-            # Basic prosody without emotion
-            import random
-            rate = random.choice(["95%", "98%", "100%", "102%"])
-            ssml += f'  <prosody rate="{rate}">{sentence}{punct}</prosody>\n'
-        else:
-            ssml += f'  {sentence}{punct}\n'
-        
-        # Add break after sentences (longer for questions/excitement)
-        if punct in ['!', '?']:
-            ssml += '  <break time="250ms"/>\n'  # Longer pause for emotion
-            # Add subtle breathing sound (VERY conservative - rare, quiet, safe)
-            if add_breathing and i < len(sentences) - 3 and len(sentence.split()) > 8:  # Only long sentences, not near end
-                import random
-                if random.random() < 0.06:  # 6% chance - very rare
-                    ssml += '  <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-32dB"/>\n'
-        elif punct == '.':
-            ssml += '  <break time="200ms"/>\n'
-            # Add breathing after VERY long statements only (safer)
-            if add_breathing and len(sentence.split()) > 15 and i < len(sentences) - 2:  # Very long, not near end
-                import random
-                if random.random() < 0.05:  # 5% chance - extremely rare
-                    ssml += '  <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-33dB"/>\n'
-        elif punct == ',':
-            ssml += '  <break time="100ms"/>\n'
-    
-    # Add remaining text
-    if len(sentences) % 2 == 1 and sentences[-1].strip():
-        last = sentences[-1].strip()
-        if add_emotion:
-            last = add_emphasis_tags(last)
-        if add_prosody and add_emotion:
-            rate, pitch, volume = detect_emotion_prosody(last, "")
-            ssml += f'  <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{last}</prosody>\n'
-        elif add_prosody:
-            import random
-            rate = random.choice(["95%", "98%", "100%", "102%"])
-            ssml += f'  <prosody rate="{rate}">{last}</prosody>\n'
-        else:
-            ssml += f'  {last}\n'
-    
-    ssml += '</speak>'
-    
+
+        emotion = detect_emotion(sentence)
+        rate, pitch, volume = emotion_to_prosody(emotion)
+
+        # Add realism
+        sentence = insert_fillers(sentence, emotion)
+        sentence = add_breath(sentence, emotion)
+
+        ssml += f'  <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">{sentence}{punct}</prosody>\n'
+        ssml += '  <break time="200ms"/>\n'
+
+    ssml += "</speak>"
     return ssml
 
 
-def preprocess_for_tts(
-    text: str,
-    use_ssml: bool = True,
-    add_prosody: bool = True,
-    add_emotion: bool = True,
-    normalize: bool = True
-) -> str:
+# ---------------------------------------------------------
+# 6. Main Preprocessing Entry
+# ---------------------------------------------------------
+
+def preprocess_for_tts(text: str) -> str:
     """
-    Main preprocessing function - use this!
+    Complete humanization pipeline.
     
-    Complete pipeline:
+    Pipeline:
     1. Normalize abbreviations (Dr. → Doctor)
-    2. Normalize numbers and currency
-    3. Add natural pauses
-    4. Detect emotions and apply prosody
-    5. Wrap in SSML (optional)
-    
-    NEW: Emotion Detection!
-    - Questions → higher pitch (+2st)
-    - Excitement → faster + louder (110% rate)
-    - Sadness → slower + softer (85% rate)
-    - Emphasis (CAPS) → loud + emphasis tags
-    
-    Args:
-        text: Raw text from LLM
-        use_ssml: Wrap result in SSML tags
-        add_prosody: Add prosody variations
-        add_emotion: Enable emotion detection (NEW!)
-        normalize: Enable normalization (abbreviations, numbers)
+    2. Normalize numbers ($100 → 100 dollars)
+    3. Add contractions (I am → I'm)
+    4. Add thinking delays (400ms before "let me think")
+    5. Detect emotions (happy, sad, uncertain, confident)
+    6. Add fillers (uhh, umm - context-aware)
+    7. Add breathing (subtle, 7% on long sentences)
+    8. Generate SSML with prosody
     
     Returns:
-        Preprocessed text (with SSML + emotion if enabled)
-    
-    Examples:
-        >>> preprocess_for_tts("Amazing! How are you?")
-        '<speak>
-          <prosody rate="108%" pitch="+3st" volume="loud">Amazing!</prosody>
-          <break time="250ms"/>
-          <prosody rate="102%" pitch="+2st" volume="medium">How are you?</prosody>
-        </speak>'
-        
-        >>> preprocess_for_tts("I'm sorry about that")
-        '<speak>
-          <prosody rate="88%" pitch="-2st" volume="soft">I\'m sorry about that</prosody>
-        </speak>'
-        
-        >>> preprocess_for_tts("This is VERY important")
-        '<speak>
-          <prosody rate="100%" pitch="+1st" volume="loud">This is <emphasis level="strong">Very</emphasis> important</prosody>
-        </speak>'
+        SSML-formatted text ready for Google TTS
     """
     if not text or not text.strip():
         return ""
-    
-    result = text.strip()
-    
-    # Step 1: Normalize abbreviations and numbers
-    if normalize:
-        result = normalize_abbreviations(result)
-        result = normalize_numbers(result)
-    
-    # Step 2: Add natural contractions (more human-like)
-    result = add_natural_contractions(result)
-    
-    # Step 3: Add natural pauses and thinking words
-    result = add_natural_pauses(result)
-    
-    # Step 4: Add realistic human fillers (12% chance: uhh, umm, etc.)
-    if use_ssml and add_emotion:
-        result = add_realistic_fillers(result, add_chance=0.12)
-    
-    # Step 5: Wrap in SSML with emotion detection
-    if use_ssml:
-        result = wrap_in_ssml(
-            result,
-            add_prosody=add_prosody,
-            add_emotion=add_emotion,
-            add_breathing=True,  # ENABLED with safe settings (6% chance, very quiet)
-            add_fillers=True
-        )
-    
-    return result
+    text = text.strip()
+    text = normalize_abbreviations(text)
+    text = normalize_numbers(text)
+    text = add_contractions(text)
+    return wrap_in_ssml(text)
 
 
-# ============================================
-# Quick helpers for common use cases
-# ============================================
-
-def preprocess_with_breathing(
-    text: str,
-    use_ssml: bool = True,
-    add_prosody: bool = True,
-    add_emotion: bool = True,
-    normalize: bool = True
-) -> str:
-    """
-    Preprocess with breathing sounds enabled (more realistic but can cause distortion).
-    
-    Use this ONLY if you want maximum realism and don't mind potential audio artifacts.
-    
-    Args:
-        text: Raw text from LLM
-        use_ssml: Wrap result in SSML tags
-        add_prosody: Add prosody variations
-        add_emotion: Enable emotion detection
-        normalize: Enable normalization
-        
-    Returns:
-        Preprocessed text with breathing sounds
-    """
-    if not text or not text.strip():
-        return ""
-    
-    result = text.strip()
-    
-    # Same pipeline but with breathing enabled
-    if normalize:
-        result = normalize_abbreviations(result)
-        result = normalize_numbers(result)
-    
-    result = add_natural_contractions(result)
-    result = add_natural_pauses(result)
-    
-    if use_ssml and add_emotion:
-        result = add_realistic_fillers(result, add_chance=0.15)  # Slightly higher chance
-    
-    if use_ssml:
-        result = wrap_in_ssml(
-            result,
-            add_prosody=add_prosody,
-            add_emotion=add_emotion,
-            add_breathing=True,  # ENABLED!
-            add_fillers=True
-        )
-    
-    return result
-
+# ---------------------------------------------------------
+# 7. Quick Utility
+# ---------------------------------------------------------
 
 def quick_clean(text: str) -> str:
-    """
-    Quick text cleaning without SSML (fast path).
-    Use for simple phrases or cached content.
-    """
+    """Fast cleaning without SSML (for cached phrases)"""
     if not text:
         return ""
-    
-    result = text.strip()
-    
-    # Quick fixes only
-    result = normalize_abbreviations(result)
-    result = re.sub(r'\.{3,}', ',', result)  # ... → ,
-    result = re.sub(r'([.!?;,]){2,}', r'\1', result)  # !!! → !
-    result = re.sub(r'\s+', ' ', result)
-    
-    return result.strip()
-
-
-def add_emphasis(text: str, word: str) -> str:
-    """
-    Add emphasis to a specific word in SSML.
-    
-    Example:
-        >>> add_emphasis("This is important", "important")
-        'This is <emphasis level="strong">important</emphasis>'
-    """
-    pattern = rf'\b{re.escape(word)}\b'
-    return re.sub(pattern, f'<emphasis level="strong">{word}</emphasis>', text)
-
-
-def add_break(text: str, duration_ms: int = 200) -> str:
-    """
-    Add a break tag at the end of text.
-    
-    Example:
-        >>> add_break("Hello there", 300)
-        'Hello there <break time="300ms"/>'
-    """
-    return f'{text} <break time="{duration_ms}ms"/>'
-
+    text = re.sub(r'\.{3,}', ',', text)
+    text = re.sub(r'([.!?;,]){2,}', r'\1', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()

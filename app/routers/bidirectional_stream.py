@@ -1436,15 +1436,9 @@ IMPORTANT: Follow the model instructions above."""
                     print(f"📝 Full LLM response ready ({len(full_response.split())} words): '{full_response[:60]}...'")
                     sys.stdout.flush()
                     
-                    # Preprocess with SSML (using middleware)
+                    # Preprocess with SSML (using middleware - automatic humanization!)
                     if self._use_ssml:
-                        enhanced_text = preprocess_for_tts(
-                            full_response,
-                            use_ssml=True,
-                            add_prosody=True,
-                            add_emotion=True,
-                            normalize=True
-                        )
+                        enhanced_text = preprocess_for_tts(full_response)
                     else:
                         enhanced_text = quick_clean(full_response)
                     
