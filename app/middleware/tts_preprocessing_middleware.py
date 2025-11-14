@@ -138,36 +138,13 @@ def emotion_to_prosody(emotion: str):
 
 def insert_fillers(sentence: str, emotion: str) -> str:
     """
-    Adds MINIMAL fillers ONLY before thinking phrases (where natural pauses exist).
-    Very subtle - not annoying! Removed "you know" and "I mean" completely.
+    VAPI-STYLE: Removed ALL mid-sentence fillers to prevent clicking/tak sounds.
+    Prosody interruptions within sentences cause audio distortion.
+    Only thinking delays (natural pauses) are preserved for humanization.
     """
-    # Skip fillers for confident emotions
-    if emotion in ["happy", "confident"]:
-        return sentence
-    
-    # MINIMAL fillers - only subtle ones (removed "you know", "I mean" - too annoying!)
-    subtle_fillers = ['uhh', 'umm', 'hmm']
-    
-    # Thinking phrases that already have pauses (from add_thinking_delays)
-    # These are natural places for fillers - where people actually pause to think
-    thinking_phrases = [
-        'let me think', 'let me see', 'let me check',
-        'hmm', 'well', 'actually', 'maybe', 'perhaps'
-    ]
-    
-    # ONLY add filler before thinking phrases (where pause already exists)
-    # Reduced frequency: 10% chance (was 40%) - very minimal!
-    for phrase in thinking_phrases:
-        if phrase.lower() in sentence.lower():
-            if random.random() < 0.10:  # Minimal - only 10% chance
-                filler = random.choice(subtle_fillers)
-                # Fillers inherit parent prosody (no nested tags = no clicks)
-                # Slightly quieter with comma pause
-                return f'{filler}, <break time="80ms"/> {sentence}'
-    
-    # NO mid-sentence fillers (removed - too annoying and unnatural)
-    # Return sentence unchanged
-    return sentence
+    # VAPI APPROACH: No fillers within sentences - eliminates clicking sounds
+    # Humanization happens at natural pause points only (thinking delays)
+    return sentence  # Return unchanged - no fillers!
 
 
 def add_breath(sentence: str, emotion: str) -> str:
@@ -232,9 +209,8 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
         if not sentence:
             continue
 
-        # Add realism (fillers and breathing inherit parent prosody - no clicks!)
-        sentence = insert_fillers(sentence, overall_emotion)
-        sentence = add_breath(sentence, overall_emotion)
+        # VAPI-STYLE: No fillers or breathing within sentences (eliminates ALL clicking!)
+        # Humanization only through thinking delays (natural pauses) - perfect audio quality
 
         ssml += f'    {sentence}{punct}\n'
         ssml += '    <break time="150ms"/>\n'  # Shorter breaks (consistent prosody = smoother)
@@ -265,8 +241,8 @@ def preprocess_for_tts(text: str, add_office_bg: bool = False) -> str:
     3. Add contractions (I am → I'm)
     4. Add thinking delays (400ms before "let me think")
     5. Detect emotions (happy, sad, uncertain, confident)
-    6. Add fillers (uhh, umm - context-aware)
-    7. Add breathing (subtle, 7% on long sentences)
+    6. VAPI-STYLE: No mid-sentence fillers (eliminates clicking sounds)
+    7. Add breathing (subtle, 3% on very long sentences only)
     8. Add office background (DISABLED by default, can enable if needed)
     9. Generate SSML with prosody
     
