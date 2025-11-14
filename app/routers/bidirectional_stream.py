@@ -762,6 +762,7 @@ class BidirectionalStreamHandler:
         # User pickup detection (VAPI-style: first media packet = user picked up)
         self._user_picked_up = False
         self._first_media_received = False
+        self._skip_audio_until = None  # Timestamp until which to skip audio (system messages)
         
         # Pre-warm Google TTS client to avoid first-call penalty
         try:
@@ -953,10 +954,23 @@ class BidirectionalStreamHandler:
     async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio and feed to Google streaming STT"""
         try:
+            import time
+            
             # ✅ DETECT FIRST MEDIA PACKET = USER PICKED UP! (VAPI-style)
             if not self._first_media_received:
                 self._first_media_received = True
                 await self._handle_user_pickup()  # User actually picked up!
+                
+                # 🎯 VAPI-STYLE: Skip first 2.5 seconds of audio (system messages/ringing)
+                # System messages/ringing usually happen in first 2-3 seconds
+                # This prevents unnecessary STT processing and reduces latency
+                self._skip_audio_until = time.time() + 2.5
+                print(f"⏳ Skipping first 2.5s of audio (system messages/ringing) - VAPI-style")
+                sys.stdout.flush()
+            
+            # Skip audio if still in grace period (system messages)
+            if self._skip_audio_until and time.time() < self._skip_audio_until:
+                return  # Don't send to STT - this is likely system message/ringing
             
             media = message.get("media", {})
             payload = media.get("payload")
@@ -1902,7 +1916,7 @@ IMPORTANT: Follow the model instructions above."""
                             "call_sid": self.call_sid,
                             "stream_sid": self.stream_sid,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "in-progress",
+                            "message": "connected",
                             "event": "first_media_packet"
                         }
                     )
