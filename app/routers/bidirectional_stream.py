@@ -1874,6 +1874,30 @@ IMPORTANT: Follow the model instructions above."""
                         }
                     )
                     print(f"✅ Broadcasted 'in-progress' status via WebSocket (media stream started)")
+                    
+                    # 🎯 FINAL SAFETY NET: Start credit monitoring when stream actually starts
+                    # This ensures credits deduct even if all other handlers missed it
+                    try:
+                        from app.services.credit_service import CreditService
+                        credit_service = CreditService()
+                        
+                        # Check if monitoring already started (avoid duplicates)
+                        if str(self.call_session.id) not in credit_service._active_monitors:
+                            asyncio.create_task(credit_service.start_credit_monitoring(
+                                db=self.db,
+                                call_session_id=self.call_session.id,
+                                tenant_id=self.call_session.tenant_id,
+                                agent_id=self.call_session.agent_id
+                            ))
+                            print(f"✅ Started credit monitoring (stream start safety net) for session {self.call_session.id}")
+                            print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
+                        else:
+                            print(f"ℹ️ Credit monitoring already active for session {self.call_session.id}")
+                    except Exception as e:
+                        print(f"❌ Failed to start credit monitoring (stream start): {e}")
+                        import traceback
+                        traceback.print_exc()
+                        
                 except Exception as e:
                     print(f"❌ Failed to broadcast in-progress status: {e}")
                     import traceback

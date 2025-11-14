@@ -732,8 +732,28 @@ async def streaming_greeting_webhook(
         # Parse form data
         form_data = await request.form()
         call_sid = form_data.get("CallSid", "")
+        call_status = form_data.get("CallStatus", "")
         
-        # INSTANT TwiML RESPONSE (< 10ms) - Build immediately without DB queries!
+        # 🎯 WAIT FOR USER TO ANSWER - Only connect when call is answered!
+        print(f"🔍 Streaming webhook - Call Status: '{call_status}'")
+        
+        if call_status and call_status not in ["answered", "in-progress"]:
+            # Call not answered yet - return pause TwiML (wait for user to pick up)
+            print(f"⏳ Call status is '{call_status}' - Waiting for user to answer...")
+            print(f"⏳ Returning pause TwiML - will connect when user picks up")
+            
+            response = VoiceResponse()
+            # Short pause and redirect back to check status again
+            response.pause(length=1)
+            # Redirect to same endpoint to check status again (use full URL)
+            redirect_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
+            response.redirect(redirect_url)
+            
+            return HTMLResponse(str(response), media_type="application/xml")
+        
+        # ✅ User answered! Return streaming TwiML
+        print(f"✅ Call answered (status: '{call_status}') - Starting streaming!")
+        
         # Build WebSocket URL for bidirectional streaming
         ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
         ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
@@ -745,7 +765,7 @@ async def streaming_greeting_webhook(
         # Start bidirectional media stream
         from twilio.twiml.voice_response import Connect, Stream
         
-        # DIRECT STREAM - No pause, no delay, instant connection!
+        # DIRECT STREAM - User answered, connect now!
         connect = Connect()
         stream = Stream(url=ws_url)
         
@@ -757,11 +777,11 @@ async def streaming_greeting_webhook(
         connect.append(stream)
         response.append(connect)
         
-        print(f"⚡ INSTANT TwiML returned (< 10ms) - No Twilio announcements!")
+        print(f"⚡ Streaming TwiML returned - User answered, connecting WebSocket!")
         print(f"🔗 WebSocket: {ws_url}")
         sys.stdout.flush()
         
-        # RETURN TWIML IMMEDIATELY (no waiting for DB!)
+        # RETURN STREAMING TWIML - User has answered!
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:

@@ -807,6 +807,22 @@ async def handle_call_events_webhook(
                         call_session.start_time = datetime.now(timezone.utc)
                     db.commit()
                     print(f"✅ Updated DB status to 'in-progress' (fallback)")
+                    
+                    # 🎯 FALLBACK: Start credit monitoring if "answered" handler didn't run
+                    # This ensures credits deduct even if "answered" status was missed
+                    try:
+                        from app.services.credit_service import CreditService
+                        credit_service = CreditService()
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=db,
+                            call_session_id=call_session.id,
+                            tenant_id=call_session.tenant_id,
+                            agent_id=call_session.agent_id
+                        ))
+                        print(f"✅ Started credit monitoring (fallback) for call session {call_session.id}")
+                        print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
+                    except Exception as e:
+                        print(f"❌ Failed to start credit monitoring (fallback): {e}")
             else:
                 print(f"⚠️ Call session not found for in-progress status")
 
