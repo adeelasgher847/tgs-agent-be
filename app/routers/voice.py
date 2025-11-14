@@ -689,28 +689,40 @@ async def handle_call_events_webhook(
             
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
-        
-        elif call_status == "in-progress":
-            # Call is in progress - person answered, check if we already greeted
-            print("=" * 50)
-            print(f"📞 CALL IN PROGRESS WEBHOOK - SID: {call_sid}")
-            print("=" * 50)
-            
-            # IGNORE: Don't broadcast in-progress status from Twilio webhook
-            # The actual in-progress status will be sent when media stream starts in stt_websocket.py
-            print("ℹ️ Ignoring Twilio in-progress webhook - waiting for media stream to start")
-            
-            # Just start credit monitoring and update DB silently (don't broadcast)
+
+        elif call_status == "answered" and direction == "outbound-api":
+            # 🎯 USER ACTUALLY ANSWERED - START STREAMING NOW!
+            print("=" * 60)
+            print(f"🎉 USER ANSWERED CALL - STARTING STREAMING - SID: {call_sid}")
+            print("=" * 60)
+
+            # Update call session status to answered (important for tracking!)
             if call_session:
-                # Update DB status silently (for tracking)
-                if call_session.status != "in-progress":
-                    call_session.status = "in-progress"
+                if call_session.status != "answered":
+                    call_session.status = "answered"
                     if not call_session.start_time:
                         call_session.start_time = datetime.now(timezone.utc)
                     db.commit()
-                    print(f"✅ Updated DB status to 'in-progress' (silent)")
-                
-                # Start credit monitoring for the call (only when status is "in-progress")
+                    print(f"✅ Updated DB status to 'answered' - call officially started")
+
+                # Broadcast answered event (user picked up!)
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="answered",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "User answered the call - streaming starting"
+                        }
+                    ))
+                    print(f"✅ Broadcasted 'answered' event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast answered event: {e}")
+
+            # Start credit monitoring immediately when user answers
+            if call_session:
                 try:
                     asyncio.create_task(credit_service.start_credit_monitoring(
                         db=db,
@@ -718,159 +730,52 @@ async def handle_call_events_webhook(
                         tenant_id=call_session.tenant_id,
                         agent_id=call_session.agent_id
                     ))
-                    print(f"✅ Started credit monitoring for call session {call_session.id} (30s intervals)")
+                    print(f"✅ Started credit monitoring for answered call session {call_session.id}")
                 except Exception as e:
                     print(f"❌ Failed to start credit monitoring: {e}")
-            
-            # Get call session to check conversation state
+
+            # Get call session for conversation state
             call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
             if not call_session:
-                print(f"⚠️ Call session not found for SID: {call_sid}")
+                print(f"⚠️ Call session not found for answered call SID: {call_sid}")
                 return HTMLResponse("", media_type="application/xml")
-            
-            # Initialize conversation state for new calls (fixes infinite timeout loop)
+
+            # Initialize conversation state for new answered calls
             if not call_session.call_metadata:
                 call_session.call_metadata = {}
-            
+
             if "conversation_state" not in call_session.call_metadata:
                 call_session.call_metadata["conversation_state"] = {
                     "has_greeted": False
                 }
                 db.commit()
-                print("✅ Initialized conversation state for new call - STT will start properly")
-            
-            # Check if we already greeted this call
-            conversation_state = _get_conversation_state(call_session)
-            has_greeted = conversation_state.get("has_greeted", False)
-            
-            # Get agent info
-            agent = None
-            agent_name = "AI"
-            if agentId:
-                try:
-                    agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
-                    if agent:
-                        agent_name = agent.name
-                        print(f"🏢 Multi-tenant call for tenant: {agent.tenant_id}")
-                        print(f"🤖 Agent: {agent_name}")
-                    else:
-                        print(f"⚠️ Agent {agentId} not found in tenant {call_session.tenant_id}")
-                except Exception as e:
-                    print(f"⚠️ Error fetching agent: {e}")
-                    agent = None
-            
-            # Only start conversation if we haven't started yet
-            if not has_greeted:
-                # Check if we should use bidirectional streaming (TTS focus)
-                use_streaming = getattr(settings, 'USE_BIDIRECTIONAL_STREAMING', True)
-                
-                if use_streaming:
-                    # NEW: Bidirectional WebSocket streaming (USER SPEAKS FIRST!)
-                    print("⚡ Using bidirectional streaming - USER SPEAKS FIRST (no agent greeting)")
-                    
-                    response = VoiceResponse()
-                    response.redirect(
-                        f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                        method='POST'
-                    )
-                    
-                    # Mark as greeted (conversation started)
-                    _update_conversation_state(call_session, "has_greeted", True)
-                    _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
-                    db.commit()
-                    
-                    print("✅ Redirecting to bidirectional streaming - TTS will stream in real-time")
-                    return HTMLResponse(str(response), media_type="application/xml")
-                
-                else:
-                    # Fallback: Use recording-based approach
-                    print("🎤 Using recording-based approach - USER SPEAKS FIRST")
-                    
-                    # Mark as greeted
-                    _update_conversation_state(call_session, "has_greeted", True)
-                    _update_conversation_state(call_session, "greeting_time", datetime.now(timezone.utc).isoformat())
-                    db.commit()
-                    
-                    # Start recording immediately - user speaks first
-                    response = VoiceResponse()
-                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
-                    
-                    response.record(
-                        action=recording_callback_url,
-                        method='POST',
-                        timeout=3,  # Wait 3 seconds of silence (faster detection)
-                        max_length=120,  # Max 2 minutes
-                        play_beep=False,  # No beep for natural conversation
-                        trim='do-not-trim',
-                        recording_status_callback=recording_callback_url,
-                        recording_status_callback_method='POST',
-                        transcribe=False  # We use Google STT
-                    )
-                    
-                    print("✅ Recording started - waiting for user to speak first")
-                    return HTMLResponse(str(response), media_type="application/xml")
-            else:
-                print("🔄 ALREADY STARTED - Continuing with bidirectional streaming")
-                
-                # Check for pending response (shouldn't happen with streaming, but keep for safety)
-                pending_response = None
-                if call_session.call_metadata and "pending_response" in call_session.call_metadata:
-                    pending_response = call_session.call_metadata.pop("pending_response")
-                    db.commit()
-                
-                # Check if timeout redirect
-                if timeout == "true":
-                    print(f"⏱️ Timeout - ending call gracefully")
-                    response = VoiceResponse()
-                    text = pending_response if pending_response else "Thank you for calling. Goodbye!"
-                    lang = agent.language if agent and agent.language else "en"
-                    voice = agent.voice_type if agent and agent.voice_type else "female"
-                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
-                    response.play(tts_url)
-                    response.hangup()
-                    return HTMLResponse(str(response), media_type="application/xml")
-                
-                # If there's a pending response (edge case), play it
-                if pending_response:
-                    print(f"🎤 Playing pending response: {pending_response}")
-                    response = VoiceResponse()
-                    lang = agent.language if agent and agent.language else "en"
-                    voice = agent.voice_type if agent and agent.voice_type else "female"
-                    tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(pending_response)}&lang={lang}&voice={voice}"
-                    response.play(tts_url)
-                    
-                    # Check if goodbye
-                    is_goodbye = VoiceLoggingService._is_completion_goodbye(pending_response)
-                    if is_goodbye:
-                        response.hangup()
-                        print(f"🛑 Goodbye detected - ending call")
-                        return HTMLResponse(str(response), media_type="application/xml")
-                    
-                    # Continue with recording
-                    recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={call_session.id}'
-                    response.record(
-                        action=recording_callback_url,
-                        method='POST',
-                        timeout=3,  # Faster speech detection
-                        max_length=120,
-                        play_beep=False,
-                        trim='do-not-trim',
-                        recording_status_callback=recording_callback_url,
-                        recording_status_callback_method='POST',
-                        transcribe=False
-                    )
-                    print(f"📝 Played pending response, continuing with recording")
-                    return HTMLResponse(str(response), media_type="application/xml")
-                
-                # No pending response - redirect back to streaming
-                response = VoiceResponse()
-                response.redirect(
-                    f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agentId}&userId={userId}&callSessionId={call_session.id}',
-                    method='POST'
-                )
-                print(f"📝 Redirecting back to bidirectional streaming")
-                return HTMLResponse(str(response), media_type="application/xml")
-        
+                print("✅ Initialized conversation state for answered call - ready for streaming")
+
+            # Return bidirectional streaming TwiML - THIS STARTS THE ACTUAL CONVERSATION!
+            print("🎯 Returning streaming TwiML - conversation begins now!")
+            return Response(
+                content=get_streaming_twiml(webhook_url),
+                media_type="application/xml"
+            )
+
+        elif call_status == "in-progress":
+            # Call transitioned to in-progress - streaming already started on 'answered'
+            print("=" * 50)
+            print(f"📞 CALL NOW IN PROGRESS - SID: {call_sid}")
+            print("=" * 50)
+
+            print("ℹ️ Media streaming active - conversation already started on 'answered' status")
+
+            # Update DB status to in-progress (streaming confirmed active)
+            if call_session and call_session.status != "in-progress":
+                call_session.status = "in-progress"
+                db.commit()
+                print(f"✅ Updated DB status to 'in-progress' - media streaming confirmed")
+
+            # Don't broadcast in-progress events (too frequent, not useful for UI)
+            # The 'answered' event already notified that the call started
+
+            return HTMLResponse("", media_type="application/xml")
         elif call_status == "completed":
             # Call completed
             print(f"📞 CALL COMPLETED - SID: {call_sid}")

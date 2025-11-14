@@ -35,10 +35,22 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         event_type = event['type']
         
         if event_type == 'checkout.session.completed':
+            # 🎉 Payment Webhook Received - Process Credits
+            print("=" * 60)
+            print(f"📞 STRIPE WEBHOOK RECEIVED: checkout.session.completed")
+            print("=" * 60)
+            
             # Process credits directly on webhook with idempotency
             session = event.get('data', {}).get('object', {}) or {}
             session_id = session.get('id')
+            amount_total_cents = session.get('amount_total') or 0
+            amount_dollars = float(amount_total_cents) / 100.0
+            
+            print(f"   Session ID: {session_id}")
+            print(f"   Payment Amount: ${amount_dollars:.2f}")
+            
             if session_id and is_session_already_credited(session_id):
+                print(f"⚠️ Session {session_id} already processed - skipping")
                 return {"status": "already_processed"}
 
             metadata = session.get('metadata') or {}
@@ -67,26 +79,66 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 except Exception:
                     credits_to_add = 0
             elif purchase_type == 'plan_purchase':
-                plan_id_str = metadata.get('plan_id')
-                try:
-                    plan_uuid = uuid.UUID(plan_id_str) if plan_id_str else None
-                except Exception:
-                    plan_uuid = None
-                if plan_uuid:
-                    plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
-                    if plan and getattr(plan, 'credits', None) is not None:
-                        credits_to_add = int(plan.credits)
+                # Get payment amount from session
+                amount_total_cents = session.get('amount_total') or 0
+                amount_dollars = float(amount_total_cents) / 100.0
+                
+                # 🎯 $2 Plan Payment → Add 20 Credits
+                if amount_dollars == 2.0:
+                    credits_to_add = 20
+                    print(f"✅ $2 Plan Payment Detected - Adding 20 credits to tenant {tenant_uuid}")
+                else:
+                    # Fallback: Check plan.credits if it exists (for other plans)
+                    plan_id_str = metadata.get('plan_id')
+                    try:
+                        plan_uuid = uuid.UUID(plan_id_str) if plan_id_str else None
+                    except Exception:
+                        plan_uuid = None
+                    if plan_uuid:
+                        plan = db.query(Plan).filter(Plan.id == plan_uuid).first()
+                        if plan and getattr(plan, 'credits', None) is not None:
+                            credits_to_add = int(plan.credits)
+                        else:
+                            print(f"⚠️ Plan {plan_uuid} has no credits field - no credits added")
+                    else:
+                        print(f"⚠️ No plan_id in metadata for plan purchase - no credits added")
 
             if credits_to_add and credits_to_add > 0:
-                tenant.credits = (tenant.credits or 0) + credits_to_add
+                old_credits = tenant.credits or 0
+                tenant.credits = old_credits + credits_to_add
+                new_credits = tenant.credits
+                
                 # Mark tenant active on successful purchase
                 if getattr(tenant, 'status', None) in (None, 'pending_payment', 'inactive'):
                     tenant.status = 'active'
+                
                 db.commit()
+                db.refresh(tenant)
+                
+                # 🎉 Payment Success Notification
+                print("=" * 60)
+                print(f"✅ PAYMENT SUCCESS - Credits Added!")
+                print(f"   Tenant ID: {tenant_uuid}")
+                print(f"   Purchase Type: {purchase_type}")
+                print(f"   Credits Added: {credits_to_add}")
+                print(f"   Previous Credits: {old_credits}")
+                print(f"   New Credits Balance: {new_credits}")
+                print(f"   Tenant Status: {tenant.status}")
+                print("=" * 60)
+                
                 if session_id:
                     mark_session_credited(session_id)
-                return {"status": "success", "credits_added": credits_to_add}
+                
+                return {
+                    "status": "success", 
+                    "credits_added": credits_to_add,
+                    "previous_credits": old_credits,
+                    "new_credits_balance": new_credits,
+                    "tenant_status": tenant.status,
+                    "message": f"Payment successful! Added {credits_to_add} credits to account."
+                }
             else:
+                print(f"⚠️ No credits to add - purchase_type: {purchase_type}, amount: {session.get('amount_total', 0)}")
                 return {"status": "ignored", "reason": "no_credits_computed"}
         else:
             print(f"Unhandled event type: {event_type}")
