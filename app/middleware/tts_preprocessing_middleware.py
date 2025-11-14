@@ -118,19 +118,19 @@ def detect_emotion(sentence: str) -> str:
 def emotion_to_prosody(emotion: str):
     """
     Maps emotion to prosody settings.
-    Base speed: 0.95 (5% slower than normal for human-like speech)
-    All emotions slowed down for more natural conversation
+    Base speed: 0.90 (10% slower than normal for realistic human-like speech)
+    All emotions slowed down further for more natural, realistic conversation
     """
     if emotion == "happy":
-        return ("0.90", "+2st", "medium")  # 10% slower, higher pitch (was 1.00)
+        return ("0.85", "+2st", "medium")  # 15% slower, higher pitch (was 0.90)
     if emotion == "sad":
-        return ("0.85", "-1st", "soft")    # 15% slower, gentle (was 0.88)
+        return ("0.80", "-1st", "soft")    # 20% slower, gentle (was 0.85)
     if emotion == "uncertain":
-        return ("0.88", "-1st", "soft")    # 12% slower, hesitant (was 0.91)
+        return ("0.82", "-1st", "soft")    # 18% slower, hesitant (was 0.88)
     if emotion == "confident":
-        return ("0.92", "+1st", "medium")  # 8% slower, clear (was 0.97)
-    # Neutral: 0.95 (fixed - normal voice speed)
-    return ("0.95", random.choice(["-1st", "0st", "+1st"]), "medium")
+        return ("0.87", "+1st", "medium")  # 13% slower, clear (was 0.92)
+    # Neutral: 0.90 (fixed - realistic normal voice speed, was 0.95)
+    return ("0.90", random.choice(["-1st", "0st", "+1st"]), "medium")
 
 
 # ---------------------------------------------------------
@@ -168,11 +168,11 @@ def add_breath(sentence: str, emotion: str) -> str:
 
 def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
     """
-    Wraps text in SSML with optional office background ambience.
+    Wraps text in SSML with prosody and emotion.
     
     Args:
         text: Text to wrap
-        add_office_bg: Add subtle office background sounds (30% chance)
+        add_office_bg: (Deprecated - office background now handled at audio level in bidirectional_stream.py)
     """
     # Add thinking delays BEFORE wrapping
     text = add_thinking_delays(text)
@@ -186,18 +186,9 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
     sentences = re.split(r'([.!?])', text)
     ssml = "<speak>\n"
     
-    # Add subtle office background ambience (30% chance - not every call)
-    if add_office_bg and random.random() < 0.30:
-        # Very subtle office ambience throughout the response
-        ssml += '  <par>\n'
-        ssml += '    <media soundLevel="-38dB">\n'
-        ssml += '      <audio src="https://actions.google.com/sounds/v1/ambiences/office_ambience.ogg"/>\n'
-        ssml += '    </media>\n'
-        ssml += '    <media>\n'
-        # Main speech will be inside this media tag
-        use_par_tags = True
-    else:
-        use_par_tags = False
+    # Office background now handled at audio level (not SSML - Google TTS doesn't support <par> tags)
+    # Audio-level mixing in bidirectional_stream.py provides better control
+    use_par_tags = False
 
     # Apply SAME prosody to all sentences (prevents clicks/tak sounds)
     # Emotion still applied (based on overall response), but consistently!
@@ -210,19 +201,14 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
         if not sentence:
             continue
 
-        # VAPI-STYLE: No fillers or breathing within sentences (eliminates ALL clicking!)
-        # Humanization only through thinking delays (natural pauses) - perfect audio quality
-
-        ssml += f'    {sentence}{punct}\n'
+        # Add breathing at sentence boundaries (not mid-sentence - prevents clicks)
+        sentence_with_breath = add_breath(sentence, overall_emotion)
+        
+        ssml += f'    {sentence_with_breath}{punct}\n'
         ssml += '    <break time="150ms"/>\n'  # Shorter breaks (consistent prosody = smoother)
     
     # Close prosody tag
     ssml += '  </prosody>\n'
-
-    # Close par/media tags if office background was added
-    if use_par_tags:
-        ssml += '    </media>\n'
-        ssml += '  </par>\n'
     
     ssml += "</speak>"
     return ssml

@@ -592,7 +592,7 @@ def smart_chunk_text(text: str, max_words: int = 15) -> tuple[str, str]:
     return best_split
 
 
-async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True, speaking_rate: float = 0.95, use_ssml: bool = False) -> bytes:
+async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True, speaking_rate: float = 0.95, use_ssml: bool = False, add_office_bg: bool = False) -> bytes:
     """
     Generate mu-law (8kHz) TTS audio using Chirp 3: HD model.
     Optimized for word-by-word streaming with caching.
@@ -604,6 +604,7 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
         use_chirp3_hd: Use Chirp 3 HD model
         speaking_rate: Speech rate
         use_ssml: Whether text contains SSML markup
+        add_office_bg: Add office background noise to audio (mixed at audio level)
     
     Note: Google TTS natively supports SSML. Text starting with <speak> is auto-detected.
     """
@@ -611,8 +612,8 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
     if not text or not text.strip():
         return b''
     
-    # Cache key aligned with existing cache strategy (include ssml flag)
-    cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw") + ("_ssml" if use_ssml else "")
+    # Cache key aligned with existing cache strategy (include ssml and office_bg flags)
+    cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw") + ("_ssml" if use_ssml else "") + ("_officebg" if add_office_bg else "")
 
     if cache_key in audio_cache:
         return audio_cache[cache_key]
@@ -629,6 +630,14 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
         output_format="mulaw",
         use_chirp3_hd=use_chirp3_hd
     )
+
+    # Mix office background noise if enabled (NO DOWNLOAD - generates programmatically!)
+    if add_office_bg:
+        audio_content = add_ambient_noise_to_mulaw(
+            audio_content, 
+            noise_level=0.02  # Subtle office background (-34dB)
+        )
+        print(f"🔊 Added office background noise to TTS audio (generated, not downloaded)")
 
     # Cache for instant reuse (especially useful for repeated words/phrases)
     audio_cache[cache_key] = audio_content
@@ -1658,13 +1667,12 @@ IMPORTANT: Follow the model instructions above."""
                         voice=voice,
                         use_chirp3_hd=True,
                         speaking_rate=0.95,
-                        use_ssml=use_ssml
+                        use_ssml=use_ssml,
+                        add_office_bg=True  # Add office background noise (mixed at audio level)
                     )
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS generation: {tts_gen_time:.3f}s for '{clean[:20]}...'")
                     sys.stdout.flush()
-                    
-                    # Ambient noise now handled in SSML middleware (cleaner approach)
                     
                     if self._tts_cancel.is_set():
                         self._prev_tts_tail = b""
@@ -1722,12 +1730,12 @@ IMPORTANT: Follow the model instructions above."""
 
                     # Begin generating suffix in parallel (if any)
                     suffix_task = asyncio.create_task(
-                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95)
+                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95, add_office_bg=True)
                     ) if suffix else None
 
                     # Generate prefix audio immediately
                     tts_start = datetime.now(timezone.utc)
-                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95)
+                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95, add_office_bg=True)
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
@@ -2186,7 +2194,8 @@ async def tts_only_websocket(
                                 text=text,
                                 lang=lang,
                                 voice=voice,
-                                use_chirp3_hd=True
+                                use_chirp3_hd=True,
+                                add_office_bg=True  # Add office background noise
                             )
                             
                             # Stream in 20ms chunks
@@ -2219,7 +2228,8 @@ async def tts_only_websocket(
                         text=text,
                         lang=lang,
                         voice=voice,
-                        use_chirp3_hd=True
+                        use_chirp3_hd=True,
+                        add_office_bg=True  # Add office background noise
                     )
                     
                     # Stream in 20ms chunks
