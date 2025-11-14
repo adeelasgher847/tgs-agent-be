@@ -493,7 +493,7 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
             hvac_phase += hvac_phase_step
             if hvac_phase > 2 * math.pi:
                 hvac_phase -= 2 * math.pi
-            hvac = math.sin(hvac_phase) * 0.4  # 40% of noise
+            hvac = math.sin(hvac_phase) * 0.6  # 60% of noise (increased from 0.4 for better audibility)
             total_noise += hvac
             
             # Layer 2: Keyboard typing (intermittent, every 2-3 seconds) - FAST: counter-based
@@ -506,7 +506,7 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
             else:
                 if keyboard_counter < 800:  # 0.1 second burst
                     keyboard_phase += 0.5  # Fast typing
-                    typing = math.sin(keyboard_phase) * 0.3 * (1.0 - keyboard_counter / 800.0)  # Fade out
+                    typing = math.sin(keyboard_phase) * 0.5 * (1.0 - keyboard_counter / 800.0)  # Increased from 0.3 to 0.5
                     total_noise += typing
                 else:
                     keyboard_active = False
@@ -521,7 +521,7 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
             pink_state[4] = 0.55000 * pink_state[4] + white * 0.5329522
             pink_state[5] = -0.7616 * pink_state[5] - white * 0.0168980
             pink = sum(pink_state) * 0.1  # Muffled conversations
-            total_noise += pink * 0.3  # 30% of noise
+            total_noise += pink * 0.5  # Increased from 0.3 to 0.5 for better audibility
             
             # Scale and clamp
             noise_scaled = int(total_noise * 32767 * noise_level)
@@ -675,9 +675,9 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
     if add_office_bg:
         audio_content = add_ambient_noise_to_mulaw(
             audio_content, 
-            noise_level=0.02  # Subtle office background (-34dB)
+            noise_level=0.06  # Office background noise (~-24dB) - audible but not distracting
         )
-        print(f"🔊 Added office background noise to TTS audio (generated, not downloaded)")
+        print(f"🔊 Added office background noise to TTS audio (noise_level: 0.06)")
 
     # Cache for instant reuse (especially useful for repeated words/phrases)
     audio_cache[cache_key] = audio_content
