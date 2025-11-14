@@ -513,6 +513,19 @@ async def handle_call_events_webhook(
         print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
         print(f"AgentId from query: {agentId}")
         
+        # 🔍 DEBUG: Track all incoming statuses for troubleshooting
+        print("=" * 60)
+        print(f"🔍 DEBUG WEBHOOK RECEIVED:")
+        print(f"   Status: '{call_status}'")
+        print(f"   Direction: '{direction}'")
+        print(f"   Call SID: {call_sid}")
+        if call_session:
+            print(f"   Current DB Status: '{call_session.status}'")
+            print(f"   Call Session ID: {call_session.id}")
+        else:
+            print(f"   Call Session: Not found")
+        print("=" * 60)
+        
         # Test WebSocket connection if we have a call session (non-blocking - fire and forget)
         # if call_session:
         #     try:
@@ -532,22 +545,25 @@ async def handle_call_events_webhook(
         # Status broadcasts will be handled in the main status update section below
         
         # Update call session status if we have a call session and status
-        if call_session and call_status:
+        # ⚠️ SKIP automatic update for "answered" and "in-progress" - handled in specific handlers below
+        if call_session and call_status and call_status not in ["answered", "in-progress"]:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             call_session.status = call_status
             
-            # Set start time when call becomes in-progress
+            # Set start time when call becomes in-progress (handled in "answered" handler now)
             if call_status == "in-progress" and not call_session.start_time:
                 call_session.start_time = datetime.now(timezone.utc)
                 print(f"⏰ Set start time for session {call_session.id}")
-            
-            # Set end time and calculate duration when call completes
-            if call_status == "completed":
-                call_session.end_time = datetime.now(timezone.utc)
-                if call_session.start_time:
-                    duration = (call_session.end_time - call_session.start_time).total_seconds()
-                    call_session.duration = int(duration)
-                    print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+        elif call_session and call_status in ["answered", "in-progress"]:
+            print(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - handled in specific handler")
+        
+        # Set end time and calculate duration when call completes
+        if call_session and call_status == "completed":
+            call_session.end_time = datetime.now(timezone.utc)
+            if call_session.start_time:
+                duration = (call_session.end_time - call_session.start_time).total_seconds()
+                call_session.duration = int(duration)
+                print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
                 
                 # Broadcast call ended event (non-blocking - fire and forget)
                 try:
@@ -693,33 +709,40 @@ async def handle_call_events_webhook(
         elif call_status == "answered" and direction == "outbound-api":
             # 🎯 USER ACTUALLY ANSWERED - START STREAMING NOW!
             print("=" * 60)
-            print(f"🎉 USER ANSWERED CALL - STARTING STREAMING - SID: {call_sid}")
+            print(f"🎉 ANSWERED STATUS RECEIVED - User accepted call!")
+            print(f"🔍 DEBUG: Twilio sent 'answered' status (user picked up)")
+            print(f"🔍 DEBUG: Setting DB status to 'in-progress' (user accepted call)")
             print("=" * 60)
 
-            # Update call session status to answered (important for tracking!)
+            # Update call session status to "in-progress" (user accepted call, not media active)
             if call_session:
-                if call_session.status != "answered":
-                    call_session.status = "answered"
+                if call_session.status != "in-progress":
+                    old_status = call_session.status
+                    call_session.status = "in-progress"
                     if not call_session.start_time:
                         call_session.start_time = datetime.now(timezone.utc)
                     db.commit()
-                    print(f"✅ Updated DB status to 'answered' - call officially started")
+                    print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (user accepted)")
+                    print(f"🔍 DEBUG: Start time set to: {call_session.start_time}")
+                else:
+                    print(f"ℹ️ DB status already 'in-progress' - skipping update")
 
-                # Broadcast answered event (user picked up!)
+                # Broadcast "in-progress" event (user accepted call - this is our "in-progress")
                 try:
                     asyncio.create_task(broadcast_call_status_update(
                         call_session_id=str(call_session.id),
-                        status="answered",
+                        status="in-progress",
                         metadata={
                             "call_sid": call_sid,
                             "direction": direction,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "User answered the call - streaming starting"
+                            "message": "User accepted the call - streaming starting",
+                            "twilio_status": "answered"  # Track original Twilio status
                         }
                     ))
-                    print(f"✅ Broadcasted 'answered' event for session {call_session.id}")
+                    print(f"✅ Broadcasted 'in-progress' event for session {call_session.id} (user accepted)")
                 except Exception as e:
-                    print(f"❌ Failed to broadcast answered event: {e}")
+                    print(f"❌ Failed to broadcast in-progress event: {e}")
 
             # Start credit monitoring immediately when user answers
             if call_session:
@@ -730,7 +753,8 @@ async def handle_call_events_webhook(
                         tenant_id=call_session.tenant_id,
                         agent_id=call_session.agent_id
                     ))
-                    print(f"✅ Started credit monitoring for answered call session {call_session.id}")
+                    print(f"✅ Started credit monitoring for call session {call_session.id}")
+                    print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
                 except Exception as e:
                     print(f"❌ Failed to start credit monitoring: {e}")
 
@@ -759,21 +783,35 @@ async def handle_call_events_webhook(
             )
 
         elif call_status == "in-progress":
-            # Call transitioned to in-progress - streaming already started on 'answered'
-            print("=" * 50)
-            print(f"📞 CALL NOW IN PROGRESS - SID: {call_sid}")
-            print("=" * 50)
+            # Twilio's "in-progress" = Media streaming active (not user accepted)
+            print("=" * 60)
+            print(f"📞 IN-PROGRESS STATUS RECEIVED - Media streaming active")
+            print(f"🔍 DEBUG: Twilio sent 'in-progress' status (media connection established)")
+            print(f"🔍 DEBUG: This is NOT user acceptance - that was 'answered' status")
+            print("=" * 60)
 
-            print("ℹ️ Media streaming active - conversation already started on 'answered' status")
+            if call_session:
+                current_status = call_session.status
+                print(f"🔍 DEBUG: Current DB status: '{current_status}'")
+                
+                # Status should already be "in-progress" from "answered" handler
+                if current_status == "in-progress":
+                    print(f"✅ DB status already 'in-progress' (set on 'answered') - no update needed")
+                    print(f"ℹ️ Media streaming confirmed active - conversation already started")
+                else:
+                    # Fallback: If somehow status wasn't set, set it now
+                    print(f"⚠️ WARNING: DB status is '{current_status}' (expected 'in-progress')")
+                    print(f"🔧 FIXING: Setting status to 'in-progress' as fallback")
+                    call_session.status = "in-progress"
+                    if not call_session.start_time:
+                        call_session.start_time = datetime.now(timezone.utc)
+                    db.commit()
+                    print(f"✅ Updated DB status to 'in-progress' (fallback)")
+            else:
+                print(f"⚠️ Call session not found for in-progress status")
 
-            # Update DB status to in-progress (streaming confirmed active)
-            if call_session and call_session.status != "in-progress":
-                call_session.status = "in-progress"
-                db.commit()
-                print(f"✅ Updated DB status to 'in-progress' - media streaming confirmed")
-
-            # Don't broadcast in-progress events (too frequent, not useful for UI)
-            # The 'answered' event already notified that the call started
+            # Don't broadcast in-progress events (already broadcasted on "answered")
+            # This is just Twilio confirming media is active
 
             return HTMLResponse("", media_type="application/xml")
         elif call_status == "completed":

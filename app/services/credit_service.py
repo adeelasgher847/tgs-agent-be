@@ -26,6 +26,7 @@ class CreditService:
         "gpt-4o-mini": 5,  # 10 credits per minute, 5 every 30 seconds
         "gpt-4o": 7,  # 15 credits per minute, 7 every 30 seconds (rounded down)
         "gpt-4": 10,  # 20 credits per minute, 10 every 30 seconds
+        "llama-3.3-70b-versatile": 6,  # 12 credits per minute, 6 every 30 seconds
         "default": 5  # 10 credits per minute, 5 every 30 seconds
     }
     
@@ -228,7 +229,8 @@ class CreditService:
                     logger.info(f"Call session {call_session_id} not found, stopping monitor")
                     break
                 
-                if call_session.status not in ["active", "in-progress"]:
+                # ✅ Allow credits to deduct for "answered", "active", and "in-progress" statuses
+                if call_session.status not in ["active", "in-progress", "answered"]:
                     logger.info(f"Call {call_session_id} status is {call_session.status}, stopping monitor")
                     break
                 
