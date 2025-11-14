@@ -448,8 +448,8 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
 
 def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) -> bytes:
     """
-    Add subtle ambient background noise to MULAW audio for realism.
-    Makes agent sound like they're in a real environment (office, cafe, etc.)
+    Add realistic office environment noise with minimal latency.
+    Uses optimized layered approach: HVAC rumble + keyboard typing + conversations.
     Python 3.13+ compatible (no audioop dependency).
     
     Args:
@@ -457,9 +457,11 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
         noise_level: Noise volume (0.01-0.05 recommended, default 0.02 = -34dB)
         
     Returns:
-        MULAW audio with subtle background noise mixed in
+        MULAW audio with realistic office background noise mixed in
     """
     import random
+    import math
+    
     if not audio_bytes or len(audio_bytes) == 0:
         return audio_bytes
     
@@ -468,25 +470,63 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
         linear_audio = [ulaw_to_linear_sample(b) for b in audio_bytes]
         num_samples = len(linear_audio)
         
-        # Generate subtle pink noise (1/f noise - more natural)
+        # Pre-calculate constants for speed
+        sample_rate = 8000.0
+        hvac_freq = 120.0  # Fixed HVAC frequency (faster than random)
+        hvac_phase_step = 2 * math.pi * hvac_freq / sample_rate
+        
+        # Initialize states (reused across samples)
+        hvac_phase = random.uniform(0, 2 * math.pi)
         pink_state = [0.0] * 7
+        
+        # Keyboard typing state (intermittent)
+        keyboard_counter = 0
+        keyboard_active = False
+        keyboard_phase = 0
+        
         noise_samples = []
         
-        for _ in range(num_samples):
-            white = random.uniform(-1.0, 1.0)
+        for i in range(num_samples):
+            total_noise = 0
             
-            # Simple pink noise filter
+            # Layer 1: HVAC rumble (low-frequency, constant) - FAST: just phase increment
+            hvac_phase += hvac_phase_step
+            if hvac_phase > 2 * math.pi:
+                hvac_phase -= 2 * math.pi
+            hvac = math.sin(hvac_phase) * 0.4  # 40% of noise
+            total_noise += hvac
+            
+            # Layer 2: Keyboard typing (intermittent, every 2-3 seconds) - FAST: counter-based
+            keyboard_counter += 1
+            if not keyboard_active:
+                if keyboard_counter > 16000:  # ~2 seconds at 8kHz
+                    keyboard_active = True
+                    keyboard_counter = 0
+                    keyboard_phase = 0
+            else:
+                if keyboard_counter < 800:  # 0.1 second burst
+                    keyboard_phase += 0.5  # Fast typing
+                    typing = math.sin(keyboard_phase) * 0.3 * (1.0 - keyboard_counter / 800.0)  # Fade out
+                    total_noise += typing
+                else:
+                    keyboard_active = False
+                    keyboard_counter = 0
+            
+            # Layer 3: Distant conversations (pink noise - already optimized)
+            white = random.uniform(-1.0, 1.0)
             pink_state[0] = 0.99886 * pink_state[0] + white * 0.0555179
             pink_state[1] = 0.99332 * pink_state[1] + white * 0.0750759
             pink_state[2] = 0.96900 * pink_state[2] + white * 0.1538520
             pink_state[3] = 0.86650 * pink_state[3] + white * 0.3104856
             pink_state[4] = 0.55000 * pink_state[4] + white * 0.5329522
             pink_state[5] = -0.7616 * pink_state[5] - white * 0.0168980
+            pink = sum(pink_state) * 0.1  # Muffled conversations
+            total_noise += pink * 0.3  # 30% of noise
             
-            pink = sum(pink_state)
-            pink_scaled = int(pink * 32767 * noise_level)
-            pink_scaled = max(-32768, min(32767, pink_scaled))
-            noise_samples.append(pink_scaled)
+            # Scale and clamp
+            noise_scaled = int(total_noise * 32767 * noise_level)
+            noise_scaled = max(-32768, min(32767, noise_scaled))
+            noise_samples.append(noise_scaled)
         
         # Mix noise with original audio
         mixed_linear = []
@@ -501,7 +541,7 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
         return mixed_mulaw
         
     except Exception as e:
-        print(f"⚠️ Ambient noise mixing failed: {e}, using clean audio")
+        print(f"⚠️ Office noise mixing failed: {e}, using clean audio")
         return audio_bytes
 
 
