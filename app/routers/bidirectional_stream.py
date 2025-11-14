@@ -1902,7 +1902,7 @@ IMPORTANT: Follow the model instructions above."""
                             "call_sid": self.call_sid,
                             "stream_sid": self.stream_sid,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "User picked up - media stream active",
+                            "message": "in-progress",
                             "event": "first_media_packet"
                         }
                     )
@@ -1935,23 +1935,10 @@ IMPORTANT: Follow the model instructions above."""
                     import traceback
                     traceback.print_exc()
             
-            # 👋 AUTO-GREETING - Agent speaks first when user picks up!
-            if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
-                greeting = self.agent.first_message
-            else:
-                greeting = "hello how are you"
-            
-            print(f"👋 Sending auto-greeting: '{greeting}'")
+            # ⚠️ AUTO-GREETING DISABLED - Agent waits for user to speak first
+            # Twilio system messages are already filtered, so no greeting needed
+            print(f"ℹ️ Greeting disabled - waiting for user to speak first")
             sys.stdout.flush()
-            
-            # Stream greeting immediately (user picked up, start conversation)
-            asyncio.create_task(
-                self.generate_and_stream_response(
-                    user_text="",  # No user input - this is initial greeting
-                    confidence=1.0,
-                    is_greeting=True
-                )
-            )
         
         except Exception as e:
             print(f"❌ Error handling user pickup: {e}")
