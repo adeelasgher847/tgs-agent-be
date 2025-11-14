@@ -1276,9 +1276,9 @@ class BidirectionalStreamHandler:
             user_text_lower = user_text.lower().strip()
             if any(sys_msg in user_text_lower for sys_msg in twilio_system_messages):
                 print(f"🚫 FILTERED Twilio system message from LLM: '{user_text[:50]}...'")
-                print(f"🚫 Skipping LLM generation - user likely repeated Twilio announcement")
+                print(f"🚫 Skipping BOTH LLM and TTS - Vapi-style complete skip (no audio generation)")
                 sys.stdout.flush()
-                return  # Don't generate response for system messages!
+                return  # Skip everything - no LLM, no TTS, no response!
             
             # Reset cancel flag for new response generation
             self._tts_cancel.clear()
