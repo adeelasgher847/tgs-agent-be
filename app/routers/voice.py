@@ -1804,9 +1804,6 @@ async def analyze_call_transcript(
         Analysis results including summary and sentiment
     """
     try:
-        # Static model name for analysis
-        model_name = "gemini-2.0-flash"
-        
         # Validate call session ID
         try:
             session_uuid = uuid.UUID(call_session_id)
@@ -1822,22 +1819,52 @@ async def analyze_call_transcript(
         if call_session.user_id != user.id and call_session.tenant_id != user.current_tenant_id:
             raise HTTPException(status_code=403, detail="Access denied to this call session")
         
-        # Get model information by static name
-        model = model_service.get_model_by_name(db, model_name)
+        # 🎯 FLEXIBLE MODEL SELECTION WITH FALLBACK
+        # Priority: 1. Call's model, 2. Gemini 2.0 Flash, 3. Llama, 4. GPT-4o Mini
+        
+        # Try to use call's model first
+        preferred_model = None
+        if call_session.agent_id:
+            try:
+                agent = agent_service.get_agent_by_id(db, call_session.agent_id, call_session.tenant_id)
+                if agent and agent.model:
+                    preferred_model = agent.model.model_name
+                    print(f"🔍 Found call's model: {preferred_model}")
+            except Exception as e:
+                print(f"⚠️ Could not get call's model: {e}")
+        
+        # Fallback models in priority order
+        fallback_models = [
+            preferred_model,  # Call's model (if available)
+            "gemini-2.0-flash",  # Preferred for analysis
+            "llama-3.3-70b-versatile",  # Llama fallback
+            "gpt-4o-mini"  # GPT fallback
+        ]
+        
+        # Remove None values
+        fallback_models = [m for m in fallback_models if m]
+        
+        model = None
+        last_error = None
+        
+        # Try each model until one works
+        for model_name in fallback_models:
+            try:
+                print(f"🔄 Trying model: {model_name}")
+                model = model_service.get_model_by_name(db, model_name)
+                if model:
+                    print(f"✅ Model found: {model.model_name}, Provider: {model.provider.name}")
+                    break
+            except Exception as e:
+                print(f"⚠️ Model {model_name} not available: {e}")
+                last_error = e
+                continue
+        
         if not model:
-            raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found in database")
-        
-        print(f"🔍 Model found: {model.model_name}, Provider: {model.provider.name}")
-        
-        # Check if model is a Gemini model
-        provider_name = (model.provider.name or "").strip().lower()
-        print(f"🔍 Provider name (normalized): '{provider_name}'")
-        
-        if provider_name not in ("gemini", "google", "google-ai", "google ai", "gemini-1.5-flash", "gemini-2.0-flash"):
-            print(f"❌ Provider '{provider_name}' not recognized as Gemini model")
-            raise HTTPException(status_code=400, detail=f"Model must be a Gemini model for analysis. Provider: {model.provider.name}")
-        
-        print(f"✅ Model validated as Gemini model: {model.model_name}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"No available model found. Tried: {', '.join(fallback_models)}"
+            )
         
         # Get transcript messages
         transcript_messages = transcript_service.get_messages_by_session(db, session_uuid)
@@ -1881,54 +1908,123 @@ async def analyze_call_transcript(
         Keep it brief and concise.
         """
         
-        # Get model API key
-        model_api_key = None
-        if model.api_key:
-            from app.core.security import decrypt_api_key
-            model_api_key = decrypt_api_key(model.api_key)
+        # Helper function to call appropriate service based on provider
+        def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
+            """Generate text using the appropriate service based on provider"""
+            provider_name = (current_model.provider.name or "").strip().lower()
+            
+            if provider_name in ("gemini", "google", "google-ai", "google ai", "gemini-1.5-flash", "gemini-2.0-flash"):
+                # Use Gemini service
+                from app.services.gemini_service import GeminiService
+                service = GeminiService()
+                return service.generate_text(
+                    prompt=prompt,
+                    model_name=current_model.model_name,
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                    api_key=current_api_key
+                )
+            elif provider_name in ("openai", "gpt", "gpt-4o-mini", "gpt-4o", "gpt-4"):
+                # Use OpenAI service
+                from app.services.openai_service import OpenAIService
+                service = OpenAIService()
+                return service.generate_text(
+                    prompt=prompt,
+                    system_prompt="You are an AI assistant that analyzes call transcripts.",
+                    model_name=current_model.model_name,
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                    api_key=current_api_key
+                )
+            elif provider_name in ("groq", "llama", "llama-3.3-70b-versatile"):
+                # Use Groq service (for Llama)
+                from app.services.groq_service import GroqService
+                service = GroqService()
+                return service.generate_text(
+                    prompt=prompt,
+                    system_prompt="You are an AI assistant that analyzes call transcripts.",
+                    model_name=current_model.model_name,
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                    api_key=current_api_key
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported provider for analysis: {provider_name}"
+                )
         
-        # Perform analysis with Gemini
-        try:
-            # Generate summary
-            summary_result = gemini_service.generate_text(
-                prompt=summary_prompt,
-                model_name=model.model_name,
-                temperature=0.3,  # Lower temperature for more consistent analysis
-                max_tokens=200,  # Reduced for brief responses
-                api_key=model_api_key
-            )
-            
-            # Generate sentiment analysis
-            sentiment_result = gemini_service.generate_text(
-                prompt=sentiment_prompt,
-                model_name=model.model_name,
-                temperature=0.3,  # Lower temperature for more consistent analysis
-                max_tokens=150,  # Reduced for brief responses
-                api_key=model_api_key
-            )
-            
-            # Prepare response (hide model_id for security)
-            analysis_result = {
-                "call_session_id": call_session_id,
-                "transcript_message_count": len(transcript_messages),
-                "call_duration": call_session.duration,
-                "call_status": call_session.status,
-                "analysis": {
-                    "summary": summary_result["content"].strip(),
-                    "sentiment": sentiment_result["content"].strip()
-                },
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            
-            print(f"✅ Transcript analysis completed for session {call_session_id}")
-            return create_success_response(
-                data=analysis_result,
-                message="Transcript analysis completed successfully"
-            )
-            
-        except Exception as e:
-            print(f"❌ Error during Gemini analysis: {e}")
-            raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        # Perform analysis with automatic fallback on quota errors
+        summary_result = None
+        sentiment_result = None
+        used_model = None
+        last_error = None
+        
+        # Try each model until one succeeds
+        for model_name in fallback_models:
+            try:
+                # Get model
+                current_model = model_service.get_model_by_name(db, model_name)
+                if not current_model:
+                    continue
+                
+                # Get API key
+                current_api_key = None
+                if current_model.api_key:
+                    from app.core.security import decrypt_api_key
+                    current_api_key = decrypt_api_key(current_model.api_key)
+                
+                print(f"🔄 Attempting analysis with {current_model.model_name}...")
+                
+                # Generate summary
+                summary_result = generate_analysis_text(current_model, current_api_key, summary_prompt, max_tokens=200)
+                
+                # Generate sentiment analysis
+                sentiment_result = generate_analysis_text(current_model, current_api_key, sentiment_prompt, max_tokens=150)
+                
+                used_model = current_model.model_name
+                print(f"✅ Analysis successful with {used_model}")
+                break
+                
+            except Exception as e:
+                error_str = str(e)
+                print(f"⚠️ Error with {model_name}: {e}")
+                
+                # Check if it's a quota error - try next model
+                if "429" in error_str or "quota" in error_str.lower() or "exceeded" in error_str.lower():
+                    print(f"⚠️ Quota exceeded for {model_name}, trying next model...")
+                    last_error = e
+                    continue
+                else:
+                    # Other errors - try next model anyway
+                    last_error = e
+                    continue
+        
+        # Check if we got results
+        if not summary_result or not sentiment_result:
+            error_msg = f"Analysis failed with all models. Last error: {str(last_error)}"
+            print(f"❌ {error_msg}")
+            raise HTTPException(status_code=500, detail=error_msg)
+        
+        # Prepare response (hide model_id for security)
+        analysis_result = {
+            "call_session_id": call_session_id,
+            "transcript_message_count": len(transcript_messages),
+            "call_duration": call_session.duration,
+            "call_status": call_session.status,
+            "analysis": {
+                "summary": summary_result["content"].strip(),
+                "sentiment": sentiment_result["content"].strip()
+            },
+            "model_used": used_model,  # Show which model was actually used
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+        print(f"✅ Transcript analysis completed for session {call_session_id} using {used_model}")
+        return create_success_response(
+            data=analysis_result,
+            message=f"Transcript analysis completed successfully using {used_model}"
+        )
         
     except HTTPException:
         raise

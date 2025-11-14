@@ -118,18 +118,19 @@ def detect_emotion(sentence: str) -> str:
 def emotion_to_prosody(emotion: str):
     """
     Maps emotion to prosody settings.
-    Base speed: 0.95 (5% slower than normal for clarity)
+    Base speed: 0.95 (5% slower than normal for human-like speech)
+    All emotions slowed down for more natural conversation
     """
     if emotion == "happy":
-        return ("1.00", "+2st", "medium")  # Normal speed, higher pitch (was 1.05)
+        return ("0.90", "+2st", "medium")  # 10% slower, higher pitch (was 1.00)
     if emotion == "sad":
-        return ("0.88", "-1st", "soft")    # 12% slower, gentle (was 0.93)
+        return ("0.85", "-1st", "soft")    # 15% slower, gentle (was 0.88)
     if emotion == "uncertain":
-        return ("0.91", "-1st", "soft")    # 9% slower, hesitant (was 0.96)
+        return ("0.88", "-1st", "soft")    # 12% slower, hesitant (was 0.91)
     if emotion == "confident":
-        return ("0.97", "+1st", "medium")  # 3% slower, clear (was 1.02)
-    # Neutral: 92-96% range (was 97-101%)
-    return (str(round(random.uniform(0.92, 0.96), 2)), random.choice(["-1st", "0st", "+1st"]), "medium")
+        return ("0.92", "+1st", "medium")  # 8% slower, clear (was 0.97)
+    # Neutral: 0.95 (fixed - normal voice speed)
+    return ("0.95", random.choice(["-1st", "0st", "+1st"]), "medium")
 
 
 # ---------------------------------------------------------

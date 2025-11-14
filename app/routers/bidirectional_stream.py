@@ -1322,12 +1322,13 @@ class BidirectionalStreamHandler:
                 except:
                     conversation_history = []
             
-            # Build history text (last 6 messages for context) - handle different formats
+            # Build history text - FULL HISTORY (VAPI-style) - handle different formats
             history_text = ""
             if conversation_history:
                 try:
                     history_lines = []
-                    for msg in conversation_history[-6:]:
+                    # Use FULL history instead of last 6 messages (VAPI approach)
+                    for msg in conversation_history:  # Full history, not [-6:]
                         if isinstance(msg, dict):
                             # Handle both 'content' and 'message' keys
                             role = msg.get('role', 'unknown')
@@ -1338,6 +1339,8 @@ class BidirectionalStreamHandler:
                             if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
                                 history_lines.append(f"{role.capitalize()}: {content}")
                     history_text = "\n".join(history_lines)
+                    print(f"📝 Full conversation history: {len(history_lines)} messages ({len(history_text)} chars)")
+                    sys.stdout.flush()
                 except Exception as e:
                     print(f"⚠️ Error building history text: {e}")
                     sys.stdout.flush()
