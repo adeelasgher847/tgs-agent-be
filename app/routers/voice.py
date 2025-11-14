@@ -707,128 +707,29 @@ async def handle_call_events_webhook(
             return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "answered" and direction == "outbound-api":
-            # 🎯 USER ACTUALLY ANSWERED - START STREAMING NOW!
+            # ⚠️ IGNORE - We use first media packet detection instead (VAPI-style)
             print("=" * 60)
-            print(f"🎉 ANSWERED STATUS RECEIVED - User accepted call!")
-            print(f"🔍 DEBUG: Twilio sent 'answered' status (user picked up)")
-            print(f"🔍 DEBUG: Setting DB status to 'in-progress' (user accepted call)")
+            print(f"ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
+            print(f"🔍 DEBUG: Will wait for first media packet from WebSocket stream")
+            print(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
             print("=" * 60)
-
-            # Update call session status to "in-progress" (user accepted call, not media active)
-            if call_session:
-                if call_session.status != "in-progress":
-                    old_status = call_session.status
-                    call_session.status = "in-progress"
-                    if not call_session.start_time:
-                        call_session.start_time = datetime.now(timezone.utc)
-                    db.commit()
-                    print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (user accepted)")
-                    print(f"🔍 DEBUG: Start time set to: {call_session.start_time}")
-                else:
-                    print(f"ℹ️ DB status already 'in-progress' - skipping update")
-
-                # Broadcast "in-progress" event (user accepted call - this is our "in-progress")
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "User accepted the call - streaming starting",
-                            "twilio_status": "answered"  # Track original Twilio status
-                        }
-                    ))
-                    print(f"✅ Broadcasted 'in-progress' event for session {call_session.id} (user accepted)")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast in-progress event: {e}")
-
-            # Start credit monitoring immediately when user answers
-            if call_session:
-                try:
-                    asyncio.create_task(credit_service.start_credit_monitoring(
-                        db=db,
-                        call_session_id=call_session.id,
-                        tenant_id=call_session.tenant_id,
-                        agent_id=call_session.agent_id
-                    ))
-                    print(f"✅ Started credit monitoring for call session {call_session.id}")
-                    print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
-                except Exception as e:
-                    print(f"❌ Failed to start credit monitoring: {e}")
-
-            # Get call session for conversation state
-            call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
-            if not call_session:
-                print(f"⚠️ Call session not found for answered call SID: {call_sid}")
-                return HTMLResponse("", media_type="application/xml")
-
-            # Initialize conversation state for new answered calls
-            if not call_session.call_metadata:
-                call_session.call_metadata = {}
-
-            if "conversation_state" not in call_session.call_metadata:
-                call_session.call_metadata["conversation_state"] = {
-                    "has_greeted": False
-                }
-                db.commit()
-                print("✅ Initialized conversation state for answered call - ready for streaming")
-
-            # Return bidirectional streaming TwiML - THIS STARTS THE ACTUAL CONVERSATION!
-            print("🎯 Returning streaming TwiML - conversation begins now!")
-            return Response(
-                content=get_streaming_twiml(webhook_url),
-                media_type="application/xml"
-            )
+            
+            # Don't start credit monitoring or update status here
+            # Wait for first media packet event from WebSocket stream
+            
+            return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "in-progress":
-            # Twilio's "in-progress" = Media streaming active (not user accepted)
+            # ⚠️ IGNORE - This is Twilio's media-active notification
+            # We use first media packet detection instead (VAPI-style)
             print("=" * 60)
-            print(f"📞 IN-PROGRESS STATUS RECEIVED - Media streaming active")
-            print(f"🔍 DEBUG: Twilio sent 'in-progress' status (media connection established)")
-            print(f"🔍 DEBUG: This is NOT user acceptance - that was 'answered' status")
+            print(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
+            print(f"🔍 DEBUG: Media stream status from Twilio (not user pickup)")
+            print(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
             print("=" * 60)
-
-            if call_session:
-                current_status = call_session.status
-                print(f"🔍 DEBUG: Current DB status: '{current_status}'")
-                
-                # Status should already be "in-progress" from "answered" handler
-                if current_status == "in-progress":
-                    print(f"✅ DB status already 'in-progress' (set on 'answered') - no update needed")
-                    print(f"ℹ️ Media streaming confirmed active - conversation already started")
-                else:
-                    # Fallback: If somehow status wasn't set, set it now
-                    print(f"⚠️ WARNING: DB status is '{current_status}' (expected 'in-progress')")
-                    print(f"🔧 FIXING: Setting status to 'in-progress' as fallback")
-                    call_session.status = "in-progress"
-                    if not call_session.start_time:
-                        call_session.start_time = datetime.now(timezone.utc)
-                    db.commit()
-                    print(f"✅ Updated DB status to 'in-progress' (fallback)")
-                    
-                    # 🎯 FALLBACK: Start credit monitoring if "answered" handler didn't run
-                    # This ensures credits deduct even if "answered" status was missed
-                    try:
-                        from app.services.credit_service import CreditService
-                        credit_service = CreditService()
-                        asyncio.create_task(credit_service.start_credit_monitoring(
-                            db=db,
-                            call_session_id=call_session.id,
-                            tenant_id=call_session.tenant_id,
-                            agent_id=call_session.agent_id
-                        ))
-                        print(f"✅ Started credit monitoring (fallback) for call session {call_session.id}")
-                        print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
-                    except Exception as e:
-                        print(f"❌ Failed to start credit monitoring (fallback): {e}")
-            else:
-                print(f"⚠️ Call session not found for in-progress status")
-
-            # Don't broadcast in-progress events (already broadcasted on "answered")
-            # This is just Twilio confirming media is active
-
+            
+            # Don't do anything - first media packet will handle it
+            
             return HTMLResponse("", media_type="application/xml")
         elif call_status == "completed":
             # Call completed

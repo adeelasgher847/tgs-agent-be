@@ -759,6 +759,10 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
+        # User pickup detection (VAPI-style: first media packet = user picked up)
+        self._user_picked_up = False
+        self._first_media_received = False
+        
         # Pre-warm Google TTS client to avoid first-call penalty
         try:
             google_tts_service.get_client()
@@ -949,6 +953,11 @@ class BidirectionalStreamHandler:
     async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio and feed to Google streaming STT"""
         try:
+            # ✅ DETECT FIRST MEDIA PACKET = USER PICKED UP! (VAPI-style)
+            if not self._first_media_received:
+                self._first_media_received = True
+                await self._handle_user_pickup()  # User actually picked up!
+            
             media = message.get("media", {})
             payload = media.get("payload")
             
@@ -1833,36 +1842,59 @@ IMPORTANT: Follow the model instructions above."""
             sys.stdout.flush()
     
     async def handle_start_message(self, message: dict):
-        """Handle stream start"""
+        """Handle stream start - Just WebSocket connection (NOT user pickup!)"""
         try:
             self.stream_sid = message.get("streamSid")
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
             
             print("=" * 80)
-            print(f"🎙️ BIDIRECTIONAL STREAM STARTED")
+            print(f"🔌 WEBSOCKET CONNECTED")
             print(f"Stream SID: {self.stream_sid}")
             print(f"Call SID: {self.call_sid}")
             print(f"Agent: {self.agent.name if self.agent else 'Unknown'}")
-            print(f"📡 Real-time STT + TTS streaming enabled")
+            print(f"⏳ Waiting for user to pick up (first media packet)...")
             print("=" * 80)
             sys.stdout.flush()
             
-            # Broadcast "in-progress" status when media stream starts
+            # DO NOT start credit monitoring or greeting here!
+            # Wait for first media packet (user actually picks up - VAPI-style)
+        
+        except Exception as e:
+            print(f"❌ Error handling start: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+    
+    async def _handle_user_pickup(self):
+        """Handle user pickup - called on first media packet (VAPI-style)"""
+        try:
+            if self._user_picked_up:
+                return  # Already handled
+            
+            self._user_picked_up = True
+            
+            print("=" * 80)
+            print(f"🎉 FIRST MEDIA PACKET - USER PICKED UP!")
+            print(f"✅ Audio stream active - User actually answered")
+            print("=" * 80)
+            sys.stdout.flush()
+            
+            # Update call session status to "in-progress" (user accepted call)
             if self.call_session:
                 try:
-                    # Update call session status to "in-progress" if not already
                     if self.call_session.status != "in-progress":
+                        old_status = self.call_session.status
                         self.call_session.status = "in-progress"
                         
-                        # Set start time when call becomes in-progress
+                        # Set start time when user actually picks up
                         if not self.call_session.start_time:
                             self.call_session.start_time = datetime.now(timezone.utc)
                         
                         self.db.commit()
-                        print(f"✅ Updated call session status to 'in-progress'")
+                        print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (user picked up)")
                     
-                    # Broadcast the in-progress status via WebSocket
+                    # Broadcast "in-progress" event (user accepted call)
                     await broadcast_call_status_update(
                         call_session_id=str(self.call_session.id),
                         status="in-progress",
@@ -1870,13 +1902,13 @@ IMPORTANT: Follow the model instructions above."""
                             "call_sid": self.call_sid,
                             "stream_sid": self.stream_sid,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "Connected"
+                            "message": "User picked up - media stream active",
+                            "event": "first_media_packet"
                         }
                     )
-                    print(f"✅ Broadcasted 'in-progress' status via WebSocket (media stream started)")
+                    print(f"✅ Broadcasted 'in-progress' status (user picked up)")
                     
-                    # 🎯 FINAL SAFETY NET: Start credit monitoring when stream actually starts
-                    # This ensures credits deduct even if all other handlers missed it
+                    # 🎯 START CREDIT MONITORING - User actually picked up!
                     try:
                         from app.services.credit_service import CreditService
                         credit_service = CreditService()
@@ -1889,22 +1921,21 @@ IMPORTANT: Follow the model instructions above."""
                                 tenant_id=self.call_session.tenant_id,
                                 agent_id=self.call_session.agent_id
                             ))
-                            print(f"✅ Started credit monitoring (stream start safety net) for session {self.call_session.id}")
+                            print(f"✅ Started credit monitoring for session {self.call_session.id}")
                             print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
                         else:
                             print(f"ℹ️ Credit monitoring already active for session {self.call_session.id}")
                     except Exception as e:
-                        print(f"❌ Failed to start credit monitoring (stream start): {e}")
+                        print(f"❌ Failed to start credit monitoring: {e}")
                         import traceback
                         traceback.print_exc()
                         
                 except Exception as e:
-                    print(f"❌ Failed to broadcast in-progress status: {e}")
+                    print(f"❌ Failed to handle user pickup: {e}")
                     import traceback
                     traceback.print_exc()
             
-            # 👋 AUTO-GREETING - Agent speaks first when call connects!
-            # Get greeting from agent's first_message or use default
+            # 👋 AUTO-GREETING - Agent speaks first when user picks up!
             if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                 greeting = self.agent.first_message
             else:
@@ -1913,7 +1944,7 @@ IMPORTANT: Follow the model instructions above."""
             print(f"👋 Sending auto-greeting: '{greeting}'")
             sys.stdout.flush()
             
-            # Stream greeting immediately (don't wait for user)
+            # Stream greeting immediately (user picked up, start conversation)
             asyncio.create_task(
                 self.generate_and_stream_response(
                     user_text="",  # No user input - this is initial greeting
@@ -1923,7 +1954,9 @@ IMPORTANT: Follow the model instructions above."""
             )
         
         except Exception as e:
-            print(f"❌ Error handling start: {e}")
+            print(f"❌ Error handling user pickup: {e}")
+            import traceback
+            traceback.print_exc()
             sys.stdout.flush()
     
     async def handle_stop_message(self, message: dict):
