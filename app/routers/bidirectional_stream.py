@@ -488,6 +488,82 @@ def strip_ssml_tags(text: str) -> str:
     return text.strip()
 
 
+def validate_and_fix_ssml(ssml_text: str) -> str:
+    """
+    Validate and fix common SSML issues from LLM generation.
+    Keeps LLM-generated SSML and prosody, just fixes formatting errors.
+    Returns cleaned SSML or None if too malformed.
+    """
+    if not ssml_text or not ssml_text.strip():
+        return None
+    
+    import re
+    
+    # Remove any text before <speak> or after </speak>
+    ssml_match = re.search(r'<speak>.*?</speak>', ssml_text, re.DOTALL)
+    if not ssml_match:
+        return None
+    
+    ssml = ssml_match.group(0)
+    
+    # Fix common LLM mistakes while preserving SSML structure:
+    # 1. Fix prosody rate values (ensure they have %)
+    ssml = re.sub(r'rate="(\d+)"', r'rate="\1%"', ssml)  # "100" -> "100%"
+    ssml = re.sub(r"rate='(\d+)'", r"rate='\1%'", ssml)
+    
+    # 2. Fix prosody pitch values (ensure they have "st")
+    ssml = re.sub(r'pitch="([+-]?\d+)"', r'pitch="\1st"', ssml)  # "0" -> "0st", "+1" -> "+1st"
+    ssml = re.sub(r"pitch='([+-]?\d+)'", r"pitch='\1st'", ssml)
+    
+    # 3. Fix break time values (ensure they have "ms" or "s")
+    ssml = re.sub(r'time="(\d+)"', r'time="\1ms"', ssml)  # "150" -> "150ms"
+    ssml = re.sub(r"time='(\d+)'", r"time='\1ms'", ssml)
+    
+    # 4. Validate prosody rate range (95% to 105%) - clamp to valid range
+    def fix_rate(match):
+        rate = match.group(1)
+        try:
+            rate_num = float(rate.rstrip('%'))
+            if rate_num < 95:
+                return 'rate="95%"'
+            elif rate_num > 105:
+                return 'rate="105%"'
+        except:
+            return 'rate="100%"'
+        return match.group(0)
+    
+    ssml = re.sub(r'rate="([^"]+)"', fix_rate, ssml)
+    
+    # 5. Validate prosody pitch range (-2st to +2st) - clamp to valid range
+    def fix_pitch(match):
+        pitch = match.group(1)
+        try:
+            pitch_clean = pitch.rstrip('st').strip()
+            pitch_num = float(pitch_clean)
+            if pitch_num < -2:
+                return 'pitch="-2st"'
+            elif pitch_num > 2:
+                return 'pitch="+2st"'
+        except:
+            return 'pitch="0st"'
+        return match.group(0)
+    
+    ssml = re.sub(r'pitch="([^"]+)"', fix_pitch, ssml)
+    
+    # 6. Ensure all prosody tags are properly closed
+    prosody_open = len(re.findall(r'<prosody[^>]*>', ssml))
+    prosody_close = len(re.findall(r'</prosody>', ssml))
+    if prosody_open > prosody_close:
+        # Add missing closing tags before </speak>
+        missing_closes = prosody_open - prosody_close
+        ssml = ssml.replace('</speak>', '</prosody>' * missing_closes + '</speak>')
+    
+    # 7. Ensure all break tags are self-closing (fix <break> to <break/>)
+    ssml = re.sub(r'<break([^>]*?)(?<!/)>', r'<break\1/>', ssml)
+    
+    return ssml
+
+
 def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
     """
     Add SSML tags and natural speech elements for human-like delivery (Vapi-style).
@@ -1799,10 +1875,18 @@ PROSODY INSTRUCTIONS (for natural speech):
                             # Extract SSML content (handle cases where LLM adds extra text)
                             ssml_match = re.search(r'<speak>.*?</speak>', full_response_clean, re.DOTALL)
                             if ssml_match:
-                                # LLM generated SSML with context-aware prosody - use it directly!
-                                enhanced_text = ssml_match.group(0)
-                                print(f"✅ Using LLM-generated SSML with context-aware prosody")
-                                sys.stdout.flush()
+                                # Validate and fix LLM-generated SSML (keeps prosody, fixes formatting)
+                                validated_ssml = validate_and_fix_ssml(ssml_match.group(0))
+                                if validated_ssml:
+                                    # LLM generated SSML with context-aware prosody - validated and fixed!
+                                    enhanced_text = validated_ssml
+                                    print(f"✅ Using LLM-generated SSML with context-aware prosody (validated)")
+                                    sys.stdout.flush()
+                                else:
+                                    # SSML too malformed - fallback to middleware
+                                    enhanced_text = preprocess_for_tts(full_response)
+                                    print(f"⚠️ LLM SSML too malformed, using middleware fallback")
+                                    sys.stdout.flush()
                             else:
                                 # SSML tags found but malformed - fallback to middleware
                                 enhanced_text = preprocess_for_tts(full_response)
