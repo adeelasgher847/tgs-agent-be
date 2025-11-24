@@ -992,10 +992,13 @@ class BidirectionalStreamHandler:
         self.agent = None
         self._load_session_data()
         
-        # User pickup detection (VAPI-style: first media packet = user picked up)
+        # User pickup detection (VAPI-style: actual user audio = user picked up)
         self._user_picked_up = False
         self._first_media_received = False
         self._skip_audio_until = None  # Timestamp until which to skip audio (system messages)
+        self._audio_level_samples = []  # Track audio levels to detect actual user audio
+        self._min_audio_level_threshold = 100  # Minimum audio level to consider as user audio (not silence/system noise)
+        self._audio_samples_needed = 10  # Need 10 consecutive non-silent samples (200ms) to confirm user audio
         
         # Background audio state (embedded MP3)
         self._bg_audio_task = None
@@ -1206,22 +1209,6 @@ class BidirectionalStreamHandler:
         try:
             import time
             
-            # ✅ DETECT FIRST MEDIA PACKET = USER PICKED UP! (VAPI-style)
-            if not self._first_media_received:
-                self._first_media_received = True
-                await self._handle_user_pickup()  # User actually picked up!
-                
-                # 🎯 VAPI-STYLE: Skip first 3.0 seconds of audio (system messages/ringing)
-                # System messages/ringing usually happen in first 2-3 seconds
-                # This prevents unnecessary STT processing and reduces latency
-                self._skip_audio_until = time.time() + 3.0
-                print(f"⏳ Skipping first 3.0s of audio (system messages/ringing) - VAPI-style")
-                sys.stdout.flush()
-            
-            # Skip audio if still in grace period (system messages)
-            if self._skip_audio_until and time.time() < self._skip_audio_until:
-                return  # Don't send to STT - this is likely system message/ringing
-            
             media = message.get("media", {})
             payload = media.get("payload")
             
@@ -1230,6 +1217,52 @@ class BidirectionalStreamHandler:
             
             # Decode audio (MULAW from Twilio)
             audio_data = base64.b64decode(payload)
+            
+            # ✅ DETECT ACTUAL USER AUDIO (not Twilio system messages/music)
+            if not self._first_media_received:
+                self._first_media_received = True
+                print(f"📡 First media packet received - analyzing for actual user audio...")
+                sys.stdout.flush()
+            
+            # Calculate audio level (RMS) to detect actual user audio vs silence/system noise
+            if not self._user_picked_up:
+                # Convert MULAW to linear and calculate RMS (Root Mean Square) audio level
+                audio_level = 0
+                if len(audio_data) > 0:
+                    linear_samples = [ulaw_to_linear_sample(b) for b in audio_data]
+                    # Calculate RMS
+                    sum_squares = sum(s * s for s in linear_samples)
+                    audio_level = int((sum_squares / len(linear_samples)) ** 0.5)
+                
+                # Track audio levels
+                self._audio_level_samples.append(audio_level)
+                if len(self._audio_level_samples) > self._audio_samples_needed * 2:
+                    self._audio_level_samples.pop(0)  # Keep last 20 samples
+                
+                # Check if we have enough samples and enough non-silent audio (actual user audio)
+                if len(self._audio_level_samples) >= self._audio_samples_needed:
+                    non_silent_count = sum(1 for level in self._audio_level_samples[-self._audio_samples_needed:] if level > self._min_audio_level_threshold)
+                    
+                    if non_silent_count >= self._audio_samples_needed:
+                    # Actual user audio detected! Set in-progress status
+                    self._user_picked_up = True
+                    await self._handle_user_pickup()  # User actually picked up with real audio!
+                    
+                    # Skip first few seconds for STT (system messages might still be there)
+                    self._skip_audio_until = time.time() + 3.0
+                    print(f"✅ Actual user audio detected (avg level: {sum(self._audio_level_samples)/len(self._audio_level_samples):.0f}) - Setting in-progress status")
+                    sys.stdout.flush()
+                else:
+                    # Still waiting for actual user audio (might be Twilio system messages/music)
+                    avg_level = sum(self._audio_level_samples) / len(self._audio_level_samples) if self._audio_level_samples else 0
+                    if len(self._audio_level_samples) % 50 == 0:  # Log every 50 packets
+                        print(f"⏳ Waiting for user audio... (current level: {avg_level:.0f}, need {self._audio_samples_needed} non-silent samples)")
+                        sys.stdout.flush()
+                    return  # Don't process until we have actual user audio
+            
+            # Skip audio if still in grace period (system messages)
+            if self._skip_audio_until and time.time() < self._skip_audio_until:
+                return  # Don't send to STT - this is likely system message/ringing
 
             # (Removed first-media DB marker for outbound gating)
             # Lazily create a streaming session
