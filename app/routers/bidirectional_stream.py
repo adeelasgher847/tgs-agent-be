@@ -1122,10 +1122,7 @@ class BidirectionalStreamHandler:
         self._bg_audio_offset = 0
         self._bg_audio_mulaw = None
         self._bg_audio_length = 0
-        self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - full volume when TTS is silent
-        self._bg_audio_current_volume = 0.6  # Current volume (for smooth transitions)
-        self._bg_audio_target_volume = 0.6  # Target volume (for ducking)
-        self._bg_audio_duck_volume = 0.15  # 15% volume when TTS is speaking (ducking)
+        self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - increased for better audibility
         self._use_background_audio = False
         
         # Load and start background audio if available
@@ -2155,15 +2152,14 @@ PROSODY INSTRUCTIONS (for natural speech):
     
     async def _stream_background_audio_loop(self):
         """
-        Continuously stream background audio in a loop with Vapi-style volume ducking.
-        Uses smooth fade in/out instead of pause/resume.
-        When TTS is speaking: volume reduces to duck_volume (smooth fade out)
-        When TTS is silent: volume restores to full (smooth fade in)
+        Continuously stream background audio in a loop.
+        PAUSES when TTS is speaking to avoid conflicts.
+        Uses proper pacing with drift correction for smooth playback.
         """
         if not self._bg_audio_mulaw or self._bg_audio_length == 0:
             return
         
-        print(f"🔄 Background audio loop started (Vapi-style volume ducking with smooth fade)")
+        print(f"🔄 Background audio loop started (continuous streaming, pauses during TTS)")
         sys.stdout.flush()
         
         send_interval = 0.02  # 20ms per frame
@@ -2171,38 +2167,20 @@ PROSODY INSTRUCTIONS (for natural speech):
         first = True
         next_send = time.perf_counter()
         
-        # Fade parameters for smooth transitions (Vapi-style)
-        fade_step = 0.08  # 8% volume change per frame (smooth but responsive fade)
-        fade_duration_frames = 8  # 8 frames = 160ms for fade (quick but smooth transition)
-        
         try:
             while True:
                 if not self.stream_sid:
                     await asyncio.sleep(0.1)
                     continue
                 
-                # VAPI-STYLE: Volume ducking instead of pause
-                # Update target volume based on TTS state
+                # PAUSE background audio when TTS is speaking (no noise when AI speaks)
                 if self.is_speaking:
-                    # TTS is speaking - duck background volume
-                    self._bg_audio_target_volume = self._bg_audio_duck_volume
-                else:
-                    # TTS is silent - restore full background volume
-                    self._bg_audio_target_volume = self._bg_audio_volume
+                    # Reset timing when pausing so resume is smooth
+                    first = True
+                    next_send = time.perf_counter()
+                    await asyncio.sleep(0.1)  # Check every 100ms
+                    continue
                 
-                # Smooth fade: gradually transition current volume to target
-                if abs(self._bg_audio_current_volume - self._bg_audio_target_volume) > 0.01:
-                    # Calculate fade step (smooth transition)
-                    volume_diff = self._bg_audio_target_volume - self._bg_audio_current_volume
-                    step = volume_diff / fade_duration_frames
-                    # Clamp step to fade_step for smoothness
-                    if abs(step) > fade_step:
-                        step = fade_step if step > 0 else -fade_step
-                    self._bg_audio_current_volume += step
-                    # Clamp to valid range
-                    self._bg_audio_current_volume = max(0.0, min(1.0, self._bg_audio_current_volume))
-                
-                # Get background audio chunk
                 bg_chunk = get_background_audio_chunk(
                     self._bg_audio_offset,
                     frame_bytes,
@@ -2212,10 +2190,7 @@ PROSODY INSTRUCTIONS (for natural speech):
                 
                 self._bg_audio_offset = (self._bg_audio_offset + frame_bytes) % self._bg_audio_length
                 
-                # Apply volume fade (Vapi-style ducking)
-                faded_chunk = apply_volume_fade(bg_chunk, self._bg_audio_current_volume)
-                
-                payload = base64.b64encode(faded_chunk).decode("utf-8")
+                payload = base64.b64encode(bg_chunk).decode("utf-8")
                 await self.websocket.send_json({
                     "event": "media",
                     "streamSid": self.stream_sid,
