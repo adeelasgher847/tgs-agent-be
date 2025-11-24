@@ -160,7 +160,18 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
     try:
         from io import BytesIO
         from pydub import AudioSegment
-        
+    except ImportError as import_error:
+        error_msg = str(import_error)
+        if "pyaudioop" in error_msg or "audioop" in error_msg:
+            print(f"❌ Missing dependency: pyaudioop is required for Python 3.13+")
+            print(f"❌ Please install: pip install pyaudioop")
+            print(f"❌ Or add 'pyaudioop' to requirements.txt")
+        else:
+            print(f"❌ Failed to import pydub: {import_error}")
+        sys.stdout.flush()
+        return b'', 0
+    
+    try:
         mp3_bytes = base64.b64decode(BACKGROUND_AUDIO_BASE64)
         audio = AudioSegment.from_mp3(BytesIO(mp3_bytes))
         audio = audio.set_frame_rate(8000)

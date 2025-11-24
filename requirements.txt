@@ -30,3 +30,4 @@ google-cloud-speech
 google-cloud-texttospeech
 sendgrid
 pydub
+pyaudioop
