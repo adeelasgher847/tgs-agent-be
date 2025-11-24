@@ -1244,14 +1244,14 @@ class BidirectionalStreamHandler:
                     non_silent_count = sum(1 for level in self._audio_level_samples[-self._audio_samples_needed:] if level > self._min_audio_level_threshold)
                     
                     if non_silent_count >= self._audio_samples_needed:
-                    # Actual user audio detected! Set in-progress status
-                    self._user_picked_up = True
-                    await self._handle_user_pickup()  # User actually picked up with real audio!
-                    
-                    # Skip first few seconds for STT (system messages might still be there)
-                    self._skip_audio_until = time.time() + 3.0
-                    print(f"✅ Actual user audio detected (avg level: {sum(self._audio_level_samples)/len(self._audio_level_samples):.0f}) - Setting in-progress status")
-                    sys.stdout.flush()
+                        # Actual user audio detected! Set in-progress status
+                        self._user_picked_up = True
+                        await self._handle_user_pickup()  # User actually picked up with real audio!
+                        
+                        # Skip first few seconds for STT (system messages might still be there)
+                        self._skip_audio_until = time.time() + 3.0
+                        print(f"✅ Actual user audio detected (avg level: {sum(self._audio_level_samples)/len(self._audio_level_samples):.0f}) - Setting in-progress status")
+                        sys.stdout.flush()
                 else:
                     # Still waiting for actual user audio (might be Twilio system messages/music)
                     avg_level = sum(self._audio_level_samples) / len(self._audio_level_samples) if self._audio_level_samples else 0
