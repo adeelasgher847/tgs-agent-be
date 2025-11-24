@@ -1245,13 +1245,15 @@ class BidirectionalStreamHandler:
                     
                     if non_silent_count >= self._audio_samples_needed:
                         # Actual user audio detected! Set in-progress status
-                        self._user_picked_up = True
+                        # Don't set _user_picked_up here - let _handle_user_pickup() do it
+                        print(f"✅ Actual user audio detected (avg level: {sum(self._audio_level_samples)/len(self._audio_level_samples):.0f}) - Calling _handle_user_pickup()")
+                        sys.stdout.flush()
                         await self._handle_user_pickup()  # User actually picked up with real audio!
+                        print(f"✅ _handle_user_pickup() completed")
+                        sys.stdout.flush()
                         
                         # Skip first few seconds for STT (system messages might still be there)
                         self._skip_audio_until = time.time() + 3.0
-                        print(f"✅ Actual user audio detected (avg level: {sum(self._audio_level_samples)/len(self._audio_level_samples):.0f}) - Setting in-progress status")
-                        sys.stdout.flush()
                 else:
                     # Still waiting for actual user audio (might be Twilio system messages/music)
                     avg_level = sum(self._audio_level_samples) / len(self._audio_level_samples) if self._audio_level_samples else 0
@@ -2252,21 +2254,25 @@ IMPORTANT:
             sys.stdout.flush()
     
     async def _handle_user_pickup(self):
-        """Handle user pickup - called on first media packet (VAPI-style)"""
+        """Handle user pickup - called when actual user audio detected (not Twilio system messages)"""
         try:
             if self._user_picked_up:
+                print(f"⚠️ _handle_user_pickup called but already picked up - skipping")
+                sys.stdout.flush()
                 return  # Already handled
             
             self._user_picked_up = True
             
             print("=" * 80)
-            print(f"🎉 FIRST MEDIA PACKET - USER PICKED UP!")
-            print(f"✅ Audio stream active - User actually answered")
+            print(f"🎉 ACTUAL USER AUDIO DETECTED - USER PICKED UP!")
+            print(f"✅ Audio stream active - User actually answered with real audio")
             print("=" * 80)
             sys.stdout.flush()
             
             # Update call session status to "in-progress" (user accepted call)
             if self.call_session:
+                print(f"✅ Call session found: {self.call_session.id}, current status: {self.call_session.status}")
+                sys.stdout.flush()
                 try:
                     if self.call_session.status != "in-progress":
                         old_status = self.call_session.status
