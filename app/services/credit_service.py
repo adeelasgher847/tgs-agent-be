@@ -210,14 +210,25 @@ class CreditService:
             f"Model: {model_name}, Cost: {credit_cost_per_minute:.2f} credits/min "
             f"({credit_cost_per_minute/60.0:.4f} credits/sec)"
         )
+        print(f"✅ CREDIT SERVICE: Starting credit monitor for call {call_session_id}")
+        print(f"✅ CREDIT SERVICE: Model: {model_name}, Cost: {credit_cost_per_minute:.2f} credits/min")
         
         # Create monitoring task
-        task = asyncio.create_task(
-            self._monitor_and_deduct_credits(
-                db, call_session_id, tenant_id, model_name, credit_cost_per_minute
+        try:
+            task = asyncio.create_task(
+                self._monitor_and_deduct_credits(
+                    db, call_session_id, tenant_id, model_name, credit_cost_per_minute
+                )
             )
-        )
-        self._active_monitors[str(call_session_id)] = task
+            self._active_monitors[str(call_session_id)] = task
+            print(f"✅ CREDIT SERVICE: Monitoring task created and added to active monitors")
+            logger.info(f"Credit monitoring task created successfully for call {call_session_id}")
+        except Exception as e:
+            logger.error(f"Failed to create credit monitoring task: {e}")
+            print(f"❌ CREDIT SERVICE: Failed to create monitoring task: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     async def _monitor_and_deduct_credits(
         self,
@@ -264,6 +275,8 @@ class CreditService:
                 f"Model: {model_name}, Cost: {credit_cost_per_minute:.2f} credits/min "
                 f"({per_second_credits:.4f} credits/sec)"
             )
+            print(f"✅ CREDIT MONITOR: Started per-second deduction loop for call {call_session_id}")
+            print(f"✅ CREDIT MONITOR: Per-second cost: {per_second_credits:.4f} credits/sec")
             
             while True:
                 # Wait for 1 second
@@ -292,20 +305,30 @@ class CreditService:
                                 else:
                                     duration = 0
                                 
-                                # Deduct any remaining accumulated credits (round up to at least 1 credit)
+                                # Deduct any remaining accumulated credits (round up to at least 1 credit minimum)
                                 if accumulated_credits > 0:
                                     credits_to_deduct = max(1, math.ceil(accumulated_credits))  # At least 1 credit minimum
+                                    logger.info(
+                                        f"Call {call_session_id} ended: Deducting final {credits_to_deduct} credits "
+                                        f"(accumulated: {accumulated_credits:.4f}, duration: {duration:.1f}s, "
+                                        f"total_deducted: {total_deducted:.4f})"
+                                    )
                                     self.deduct_credits(
                                         db=db,
                                         tenant_id=tenant_id,
                                         amount=credits_to_deduct,
                                         call_session_id=call_session_id,
-                                        description=f"Final call deduction - Model: {model_name}"
+                                        description=f"Final call deduction - Model: {model_name}, Duration: {duration:.1f}s"
                                     )
                                     total_deducted += float(credits_to_deduct)
                                     logger.info(
-                                        f"Final deduction: {credits_to_deduct} credits "
+                                        f"✅ Final deduction completed: {credits_to_deduct} credits "
                                         f"(accumulated: {accumulated_credits:.4f}) for call {call_session_id}"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Call {call_session_id} ended: No accumulated credits to deduct "
+                                        f"(all credits already deducted during call, total: {total_deducted:.4f})"
                                     )
                                 
                                 await broadcast_call_summary(
@@ -337,6 +360,11 @@ class CreditService:
                         accumulated_credits -= float(credits_to_deduct)  # Keep remainder
                         
                         # Deduct from DB (using existing method - NO CHANGES to this method)
+                        logger.info(
+                            f"Call {call_session_id}: Deducting {credits_to_deduct} credits "
+                            f"(accumulated: {accumulated_credits + credits_to_deduct:.4f}, "
+                            f"remaining: {accumulated_credits:.4f})"
+                        )
                         success, remaining_db_credits = self.deduct_credits(
                             db=db,
                             tenant_id=tenant_id,
@@ -472,6 +500,10 @@ class CreditService:
                     
                     if call_session and accumulated_credits > 0:
                         credits_to_deduct = max(1, math.ceil(accumulated_credits))  # At least 1 credit minimum
+                        logger.info(
+                            f"Call {call_session_id} cleanup: Deducting final {credits_to_deduct} credits "
+                            f"(accumulated: {accumulated_credits:.4f}, total_deducted: {total_deducted:.4f})"
+                        )
                         self.deduct_credits(
                             db=db,
                             tenant_id=tenant_id,
@@ -481,7 +513,7 @@ class CreditService:
                         )
                         total_deducted += float(credits_to_deduct)
                         logger.info(
-                            f"Final cleanup deduction: {credits_to_deduct} credits "
+                            f"✅ Final cleanup deduction completed: {credits_to_deduct} credits "
                             f"(accumulated: {accumulated_credits:.4f}) for call {call_session_id}"
                         )
                 finally:
