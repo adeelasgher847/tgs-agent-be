@@ -42,7 +42,6 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
    - Detection: 2+ words (Google interim confidence is unreliable, often 0.00)
    - Checked FIRST before interim gating (highest priority!)
    - TTS queue cleared (prevents old audio from resuming)
-   - Twilio buffer cleared via "clear" event (flushes queued audio)
    - Waits for final transcript before responding (no partial interruptions)
 
 5. Persona & Variability:
@@ -1212,11 +1211,11 @@ class BidirectionalStreamHandler:
                 self._first_media_received = True
                 await self._handle_user_pickup()  # User actually picked up!
                 
-                # 🎯 VAPI-STYLE: Skip first 2.5 seconds of audio (system messages/ringing)
+                # 🎯 VAPI-STYLE: Skip first 3.0 seconds of audio (system messages/ringing)
                 # System messages/ringing usually happen in first 2-3 seconds
                 # This prevents unnecessary STT processing and reduces latency
-                self._skip_audio_until = time.time() + 2.5
-                print(f"⏳ Skipping first 2.5s of audio (system messages/ringing) - VAPI-style")
+                self._skip_audio_until = time.time() + 3.0
+                print(f"⏳ Skipping first 3.0s of audio (system messages/ringing) - VAPI-style")
                 sys.stdout.flush()
             
             # Skip audio if still in grace period (system messages)
@@ -1408,18 +1407,6 @@ class BidirectionalStreamHandler:
                         print(f"🗑️ Cleared {cleared_count} pending TTS chunk(s) from queue")
                         sys.stdout.flush()
                     
-                    # Send Twilio clear command to flush audio buffer
-                    try:
-                        await self.websocket.send_json({
-                            "event": "clear",
-                            "streamSid": self.stream_sid
-                        })
-                        print(f"✅ Twilio buffer cleared!")
-                        sys.stdout.flush()
-                    except Exception as e:
-                        print(f"⚠️ Failed to send clear command: {e}")
-                        sys.stdout.flush()
-                    
                     # Mark agent as no longer speaking
                     self.is_speaking = False
                     
@@ -1531,28 +1518,6 @@ class BidirectionalStreamHandler:
                 print(f"✅ Auto-greeting queued for TTS")
                 sys.stdout.flush()
                 return  # Done! No LLM needed for greeting
-            
-            # GATE THE LLM INPUT - Filter Twilio system messages (Vapi-style!)
-            twilio_system_messages = [
-                "please hold while i try to connect you",
-                "please hold while we connect you",
-                "connecting you now",
-                "please wait while we connect",
-                "try to connect you",
-                "tried to connect you",
-                "connecting",
-                "please hold",
-                "one moment please",
-                "transferring your call",
-                "please stay on the line",
-            ]
-            
-            user_text_lower = user_text.lower().strip()
-            if any(sys_msg in user_text_lower for sys_msg in twilio_system_messages):
-                print(f"🚫 FILTERED Twilio system message from LLM: '{user_text[:50]}...'")
-                print(f"🚫 Skipping BOTH LLM and TTS - Vapi-style complete skip (no audio generation)")
-                sys.stdout.flush()
-                return  # Skip everything - no LLM, no TTS, no response!
             
             # Reset cancel flag for new response generation
             self._tts_cancel.clear()
@@ -2329,7 +2294,7 @@ IMPORTANT:
                     traceback.print_exc()
             
             # ⚠️ AUTO-GREETING DISABLED - Agent waits for user to speak first
-            # Twilio system messages are already filtered, so no greeting needed
+            # Auto-greeting disabled - waiting for user to speak first
             print(f"ℹ️ Greeting disabled - waiting for user to speak first")
             sys.stdout.flush()
         

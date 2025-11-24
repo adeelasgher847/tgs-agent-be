@@ -546,16 +546,12 @@ async def handle_call_events_webhook(
         
         # Update call session status if we have a call session and status
         # ⚠️ SKIP automatic update for "answered" and "in-progress" - handled in specific handlers below
+        # "in-progress" will ONLY be set when media streaming actually starts (first media packet in bidirectional_stream.py)
         if call_session and call_status and call_status not in ["answered", "in-progress"]:
             print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             call_session.status = call_status
-            
-            # Set start time when call becomes in-progress (handled in "answered" handler now)
-            if call_status == "in-progress" and not call_session.start_time:
-                call_session.start_time = datetime.now(timezone.utc)
-                print(f"⏰ Set start time for session {call_session.id}")
         elif call_session and call_status in ["answered", "in-progress"]:
-            print(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - handled in specific handler")
+            print(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - will be set when media streaming starts")
         
         # Set end time and calculate duration when call completes
         if call_session and call_status == "completed":

@@ -42,6 +42,7 @@ class TwilioMediaStreamHandler:
         self.stream_sid = None
         self.call_sid = None
         self.is_connected = False
+        self._first_media_received = False  # Track first media packet for in-progress status
         self.current_speech = ""
         self.speech_active = False
         self.silence_counter = 0
@@ -81,6 +82,11 @@ class TwilioMediaStreamHandler:
     async def handle_media_message(self, message: dict):
         """Handle incoming media message from Twilio"""
         try:
+            # ✅ DETECT FIRST MEDIA PACKET = USER PICKED UP! (same as bidirectional_stream.py)
+            if not self._first_media_received:
+                self._first_media_received = True
+                await self._handle_user_pickup()  # User actually picked up!
+            
             # Extract audio payload (base64 encoded MULAW audio)
             media = message.get("media", {})
             payload = media.get("payload")
@@ -425,36 +431,8 @@ class TwilioMediaStreamHandler:
             
             self.is_connected = True
             
-            # Broadcast "in-progress" status ONLY when media stream actually starts (call is picked up)
-            if self.call_session:
-                try:
-                    # Update call session status to "in-progress" if not already
-                    if self.call_session.status != "in-progress":
-                        self.call_session.status = "in-progress"
-                        
-                        # Set start time when call becomes in-progress
-                        if not self.call_session.start_time:
-                            self.call_session.start_time = datetime.now(timezone.utc)
-                        
-                        self.db.commit()
-                        print(f"✅ Updated call session status to 'in-progress'")
-                    
-                    # Broadcast the in-progress status via WebSocket
-                    await broadcast_call_status_update(
-                        call_session_id=str(self.call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "call_sid": self.call_sid,
-                            "stream_sid": self.stream_sid,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "Connected"
-                        }
-                    )
-                    print(f"✅ Broadcasted 'in-progress' status via WebSocket (media stream started)")
-                except Exception as e:
-                    print(f"❌ Failed to broadcast in-progress status: {e}")
-                    import traceback
-                    traceback.print_exc()
+            # Don't set in-progress here - wait for first media packet (user actually picked up)
+            # in-progress will be set in handle_media_message when first media packet arrives
         
         except Exception as e:
             print(f"❌ Error handling start message: {e}")
@@ -478,6 +456,56 @@ class TwilioMediaStreamHandler:
         
         except Exception as e:
             print(f"❌ Error handling stop message: {e}")
+    
+    async def _handle_user_pickup(self):
+        """Handle user pickup - called on first media packet (same as bidirectional_stream.py)"""
+        try:
+            from datetime import datetime, timezone
+            from app.routers.voice import broadcast_call_status_update
+            
+            print("=" * 80)
+            print(f"🎉 FIRST MEDIA PACKET - USER PICKED UP!")
+            print(f"✅ Audio stream active - User actually answered")
+            print("=" * 80)
+            import sys
+            sys.stdout.flush()
+            
+            # Update call session status to "in-progress" (user accepted call)
+            if self.call_session:
+                try:
+                    if self.call_session.status != "in-progress":
+                        old_status = self.call_session.status
+                        self.call_session.status = "in-progress"
+                        
+                        # Set start time when user actually picks up
+                        if not self.call_session.start_time:
+                            self.call_session.start_time = datetime.now(timezone.utc)
+                        
+                        self.db.commit()
+                        print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (user picked up)")
+                    
+                    # Broadcast "in-progress" event (user accepted call)
+                    await broadcast_call_status_update(
+                        call_session_id=str(self.call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "call_sid": self.call_sid,
+                            "stream_sid": self.stream_sid,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "connected",
+                            "event": "first_media_packet"
+                        }
+                    )
+                    print(f"✅ Broadcasted 'in-progress' status (user picked up)")
+                except Exception as e:
+                    print(f"❌ Failed to handle user pickup: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        except Exception as e:
+            print(f"❌ Error in _handle_user_pickup: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 @router.websocket("/ws/media-stream/{callSessionId}/{agentId}")
