@@ -123,6 +123,7 @@ from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.routers.general_websocket import broadcast_call_status_update
 from app.middleware.tts_preprocessing_middleware import preprocess_for_tts, quick_clean
+from app.utils.audio_constants import BACKGROUND_AUDIO_BASE64
 
 # Real-time TTS MULAW streaming constants
 MULAW_SAMPLE_RATE_HZ = 8000  # Twilio-friendly
@@ -134,6 +135,122 @@ ULAW_BIAS = 0x84
 ULAW_CLIP = 32635
 
 router = APIRouter()
+
+
+# Cache for decoded background audio
+_background_audio_mulaw_cache = None
+_background_audio_length_cache = 0
+
+
+def decode_background_audio_from_base64() -> tuple[bytes, int]:
+    """
+    Decode base64 MP3 and convert to MULAW format.
+    Returns (mulaw_bytes, length_in_bytes).
+    Cached after first load.
+    """
+    global _background_audio_mulaw_cache, _background_audio_length_cache
+    
+    if _background_audio_mulaw_cache is not None:
+        return _background_audio_mulaw_cache, _background_audio_length_cache
+    
+    if not BACKGROUND_AUDIO_BASE64:
+        print("⚠️ No background audio configured (BACKGROUND_AUDIO_BASE64 is empty)")
+        return b'', 0
+    
+    try:
+        from io import BytesIO
+        from pydub import AudioSegment
+        
+        mp3_bytes = base64.b64decode(BACKGROUND_AUDIO_BASE64)
+        audio = AudioSegment.from_mp3(BytesIO(mp3_bytes))
+        audio = audio.set_frame_rate(8000)
+        audio = audio.set_channels(1)
+        raw_audio = audio.raw_data
+        linear_samples = []
+        for i in range(0, len(raw_audio), 2):
+            sample = int.from_bytes(raw_audio[i:i+2], byteorder='little', signed=True)
+            linear_samples.append(sample)
+        mulaw_bytes = bytes([linear_to_ulaw_sample(sample) for sample in linear_samples])
+        
+        _background_audio_mulaw_cache = mulaw_bytes
+        _background_audio_length_cache = len(mulaw_bytes)
+        
+        print(f"✅ Decoded background audio from base64: {len(mulaw_bytes)} bytes MULAW ({len(mulaw_bytes)/8000:.2f}s)")
+        sys.stdout.flush()
+        return mulaw_bytes, len(mulaw_bytes)
+        
+    except Exception as e:
+        print(f"❌ Failed to decode background audio: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        return b'', 0
+
+
+def get_background_audio_chunk(offset: int, length: int, bg_audio: bytes, bg_length: int) -> bytes:
+    """
+    Get a chunk of background audio from the looped buffer.
+    
+    Args:
+        offset: Starting byte offset in the loop
+        length: Number of bytes to get
+        bg_audio: Background audio MULAW bytes
+        bg_length: Length of background audio
+        
+    Returns:
+        MULAW audio chunk (looped if needed)
+    """
+    if not bg_audio or bg_length == 0:
+        return bytes([0xFF]) * length  # Silence if no background
+    
+    chunk = bytearray()
+    for i in range(length):
+        index = (offset + i) % bg_length
+        chunk.append(bg_audio[index])
+    
+    return bytes(chunk)
+
+
+def mix_audio_with_background(tts_audio: bytes, bg_audio: bytes, bg_length: int, bg_offset: int, volume_level: float = 0.3) -> bytes:
+    """
+    Mix TTS audio with background audio at current offset.
+    
+    Args:
+        tts_audio: TTS MULAW audio bytes
+        bg_audio: Background audio MULAW bytes
+        bg_length: Length of background audio
+        bg_offset: Current offset in background loop
+        volume_level: Background volume (0.0-1.0, default 0.3 = -10dB)
+        
+    Returns:
+        Mixed MULAW audio
+    """
+    if not bg_audio or bg_length == 0:
+        return tts_audio
+    
+    if not tts_audio or len(tts_audio) == 0:
+        return tts_audio
+    
+    try:
+        tts_linear = [ulaw_to_linear_sample(b) for b in tts_audio]
+        num_samples = len(tts_linear)
+        
+        bg_chunk = get_background_audio_chunk(bg_offset, num_samples, bg_audio, bg_length)
+        bg_linear = [ulaw_to_linear_sample(b) for b in bg_chunk]
+        
+        mixed_linear = []
+        for i in range(num_samples):
+            mixed = tts_linear[i] + int(bg_linear[i] * volume_level)
+            mixed = max(-32768, min(32767, mixed))
+            mixed_linear.append(mixed)
+        
+        mixed_mulaw = bytes([linear_to_ulaw_sample(sample) for sample in mixed_linear])
+        return mixed_mulaw
+        
+    except Exception as e:
+        print(f"⚠️ Audio mixing failed: {e}, using clean TTS")
+        sys.stdout.flush()
+        return tts_audio
 
 
 def ulaw_to_linear_sample(ulaw_byte: int) -> int:
@@ -813,6 +930,23 @@ class BidirectionalStreamHandler:
         self._first_media_received = False
         self._skip_audio_until = None  # Timestamp until which to skip audio (system messages)
         
+        # Background audio state (embedded MP3)
+        self._bg_audio_task = None
+        self._bg_audio_offset = 0
+        self._bg_audio_mulaw = None
+        self._bg_audio_length = 0
+        self._bg_audio_volume = 0.3  # 30% volume (-10dB)
+        self._use_background_audio = False
+        
+        # Load and start background audio if available
+        bg_audio_bytes, bg_audio_len = decode_background_audio_from_base64()
+        if bg_audio_bytes and bg_audio_len > 0:
+            self._bg_audio_mulaw = bg_audio_bytes
+            self._bg_audio_length = bg_audio_len
+            self._use_background_audio = True
+            print(f"✅ Background audio loaded: {bg_audio_len} bytes ({bg_audio_len/8000:.2f}s)")
+            sys.stdout.flush()
+        
         # Pre-warm Google TTS client to avoid first-call penalty
         try:
             google_tts_service.get_client()
@@ -1412,7 +1546,9 @@ Guidelines:
 Previous conversation:
 {history_text}
 
-IMPORTANT: Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally."""
+IMPORTANT: 
+- Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally.
+- If you have completed all your objectives/questions from the conversation, naturally end the conversation with a friendly closing (e.g., "Thank you for calling, have a great day!" or similar). DO NOT restart the conversation or ask questions again once everything is complete."""
             
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self.agent and self.agent.system_prompt:
@@ -1436,7 +1572,9 @@ Guidelines:
 - Don't repeat information you've already shared
 - Talk naturally like a real person
 
-IMPORTANT: Follow your custom instructions above while maintaining natural conversation flow."""
+IMPORTANT: 
+- Follow your custom instructions above while maintaining natural conversation flow.
+- If you have completed all objectives/questions from your custom instructions, naturally end the conversation with a friendly closing. DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
                 # Model has system prompt - use it
                 system_prompt = f"""You are {agent_name}, a real person taking phone calls.
@@ -1455,7 +1593,9 @@ Guidelines:
 - Keep responses brief (1-2 sentences) for phone conversations
 - Use the conversation history to provide relevant responses
 
-IMPORTANT: Follow the model instructions above."""
+IMPORTANT: 
+- Follow the model instructions above.
+- If you have completed all objectives/questions, naturally end the conversation with a friendly closing. DO NOT restart the conversation or repeat questions once everything is complete."""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
@@ -1700,6 +1840,7 @@ IMPORTANT: Follow the model instructions above."""
                     sys.stdout.flush()
                     
                     # Generate TTS audio (Google TTS auto-detects SSML)
+                    # Note: add_office_bg=False because mixing is handled during streaming
                     tts_start = datetime.now(timezone.utc)
                     audio_bytes = await generate_mulaw_tts(
                         text=clean,
@@ -1708,7 +1849,7 @@ IMPORTANT: Follow the model instructions above."""
                         use_chirp3_hd=True,
                         speaking_rate=0.95,
                         use_ssml=use_ssml,
-                        add_office_bg=True  # Add office background noise (mixed at audio level)
+                        add_office_bg=False  # Background mixing handled separately
                     )
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS generation: {tts_gen_time:.3f}s for '{clean[:20]}...'")
@@ -1718,19 +1859,26 @@ IMPORTANT: Follow the model instructions above."""
                         self._prev_tts_tail = b""
                         return
                     
-                    # SIMPLE: Direct streaming (no crossfading, no chunking, no distortion!)
+                    # Stream with background audio mixing if enabled
                     if audio_bytes and not self._tts_cancel.is_set():
                         prime_frames = 0 if self._twilio_buffer_primed else 1
                         
-                        # Stream complete audio directly
-                        await stream_mulaw_bytes_over_twilio(
-                            websocket=self.websocket,
-                            stream_sid=self.stream_sid,
-                            audio_bytes=audio_bytes,
-                            pace_20ms=True,
-                            cancel=self._tts_cancel,
-                            prime_frames=prime_frames,
-                        )
+                        if self._use_background_audio and self._bg_audio_mulaw:
+                            # Stream with background audio mixing
+                            await self._stream_mulaw_with_background(
+                                audio_bytes=audio_bytes,
+                                cancel=self._tts_cancel
+                            )
+                        else:
+                            # Stream without background (original method)
+                            await stream_mulaw_bytes_over_twilio(
+                                websocket=self.websocket,
+                                stream_sid=self.stream_sid,
+                                audio_bytes=audio_bytes,
+                                pace_20ms=True,
+                                cancel=self._tts_cancel,
+                                prime_frames=prime_frames,
+                            )
                         self._twilio_buffer_primed = True
                         print(f"✅ Streamed complete response: {len(audio_bytes)} bytes ({len(audio_bytes)/8000:.2f}s audio)")
                         sys.stdout.flush()
@@ -1744,6 +1892,87 @@ IMPORTANT: Follow the model instructions above."""
             import traceback
             traceback.print_exc()
             sys.stdout.flush()
+    
+    async def _stream_background_audio_loop(self):
+        """
+        Continuously stream background audio in a loop.
+        Runs independently, mixing with TTS when it arrives.
+        """
+        if not self._bg_audio_mulaw or self._bg_audio_length == 0:
+            return
+        
+        print(f"🔄 Background audio loop started (continuous streaming)")
+        sys.stdout.flush()
+        
+        send_interval = 0.02  # 20ms per frame
+        frame_bytes = MULAW_FRAME_BYTES  # 160 bytes at 8kHz
+        
+        try:
+            while True:
+                if not self.stream_sid:
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                bg_chunk = get_background_audio_chunk(
+                    self._bg_audio_offset,
+                    frame_bytes,
+                    self._bg_audio_mulaw,
+                    self._bg_audio_length
+                )
+                
+                self._bg_audio_offset = (self._bg_audio_offset + frame_bytes) % self._bg_audio_length
+                
+                payload = base64.b64encode(bg_chunk).decode("utf-8")
+                await self.websocket.send_json({
+                    "event": "media",
+                    "streamSid": self.stream_sid,
+                    "media": {"payload": payload}
+                })
+                
+                await asyncio.sleep(send_interval)
+                
+        except asyncio.CancelledError:
+            print(f"🛑 Background audio streaming cancelled")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"❌ Background audio streaming error: {e}")
+            sys.stdout.flush()
+    
+    async def _stream_mulaw_with_background(
+        self,
+        audio_bytes: bytes,
+        cancel: Optional[asyncio.Event] = None
+    ):
+        """
+        Stream TTS audio mixed with continuous background audio.
+        """
+        send_interval = 0.02  # 20ms
+        frame_bytes = MULAW_FRAME_BYTES
+        
+        for frame in iter_mulaw_20ms_frames(audio_bytes):
+            if cancel and cancel.is_set():
+                break
+            
+            if self._bg_audio_mulaw and self._bg_audio_length > 0:
+                mixed_frame = mix_audio_with_background(
+                    tts_audio=frame,
+                    bg_audio=self._bg_audio_mulaw,
+                    bg_length=self._bg_audio_length,
+                    bg_offset=self._bg_audio_offset,
+                    volume_level=self._bg_audio_volume
+                )
+                self._bg_audio_offset = (self._bg_audio_offset + len(frame)) % self._bg_audio_length
+            else:
+                mixed_frame = frame
+            
+            payload = base64.b64encode(mixed_frame).decode("utf-8")
+            await self.websocket.send_json({
+                "event": "media",
+                "streamSid": self.stream_sid,
+                "media": {"payload": payload}
+            })
+            
+            await asyncio.sleep(send_interval)
     
     async def stream_tts_response(self, text: str):
         """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy.
@@ -1973,6 +2202,12 @@ IMPORTANT: Follow the model instructions above."""
                     )
                     print(f"✅ Broadcasted 'in-progress' status (user picked up)")
                     
+                    # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start streaming
+                    if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
+                        self._bg_audio_task = asyncio.create_task(self._stream_background_audio_loop())
+                        print(f"🔄 Started background audio streaming loop")
+                        sys.stdout.flush()
+                    
                     # 🎯 START CREDIT MONITORING - User actually picked up!
                     try:
                         from app.services.credit_service import CreditService
@@ -2033,6 +2268,20 @@ IMPORTANT: Follow the model instructions above."""
             except Exception as e:
                 print(f"⚠️ Error stopping TTS worker: {e}")
             sys.stdout.flush()
+            
+            # Stop background audio streaming
+            try:
+                if self._bg_audio_task:
+                    self._bg_audio_task.cancel()
+                    try:
+                        await self._bg_audio_task
+                    except asyncio.CancelledError:
+                        pass
+                    print("✅ Background audio streaming stopped")
+                    sys.stdout.flush()
+            except Exception as e:
+                print(f"⚠️ Error stopping background audio: {e}")
+                sys.stdout.flush()
             
             # Close STT session
             try:
