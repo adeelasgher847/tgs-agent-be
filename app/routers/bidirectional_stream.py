@@ -472,6 +472,22 @@ def build_crossfade_bridge(prev_tail: bytes, next_head: bytes, overlap_bytes: in
     return bytes(bridge_samples)
 
 
+def strip_ssml_tags(text: str) -> str:
+    """
+    Remove all SSML tags from text, keeping only the actual text content.
+    Used for saving clean text to transcript.
+    """
+    if not text:
+        return ""
+    
+    import re
+    # Remove all SSML tags (<tag>content</tag> or <tag/>)
+    text = re.sub(r'<[^>]+>', '', text)
+    # Clean up extra whitespace
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
 def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
     """
     Add SSML tags and natural speech elements for human-like delivery (Vapi-style).
@@ -1930,12 +1946,13 @@ PROSODY INSTRUCTIONS (for natural speech):
                         self._prev_tts_tail = b""
                         return
                     
-                    # Stream TTS normally - background audio runs separately in parallel
-                    # Twilio will naturally mix both streams at the audio level
+                    # Stream TTS CLEAN (no background mixing when AI is speaking)
+                    # Background audio loop will automatically pause when is_speaking=True
                     if audio_bytes and not self._tts_cancel.is_set():
                         prime_frames = 0 if self._twilio_buffer_primed else 1
                         
-                        # Always use normal streaming - background audio loop handles background separately
+                        # Always stream clean TTS - background loop handles background separately
+                        # Background loop pauses automatically when is_speaking=True
                         await stream_mulaw_bytes_over_twilio(
                             websocket=self.websocket,
                             stream_sid=self.stream_sid,
@@ -1961,13 +1978,13 @@ PROSODY INSTRUCTIONS (for natural speech):
     async def _stream_background_audio_loop(self):
         """
         Continuously stream background audio in a loop.
-        Runs independently in parallel with TTS - Twilio mixes them naturally.
+        PAUSES when TTS is speaking to avoid conflicts.
         Uses proper pacing with drift correction for smooth playback.
         """
         if not self._bg_audio_mulaw or self._bg_audio_length == 0:
             return
         
-        print(f"🔄 Background audio loop started (continuous streaming)")
+        print(f"🔄 Background audio loop started (continuous streaming, pauses during TTS)")
         sys.stdout.flush()
         
         send_interval = 0.02  # 20ms per frame
@@ -1979,6 +1996,14 @@ PROSODY INSTRUCTIONS (for natural speech):
             while True:
                 if not self.stream_sid:
                     await asyncio.sleep(0.1)
+                    continue
+                
+                # PAUSE background audio when TTS is speaking (no noise when AI speaks)
+                if self.is_speaking:
+                    # Reset timing when pausing so resume is smooth
+                    first = True
+                    next_send = time.perf_counter()
+                    await asyncio.sleep(0.1)  # Check every 100ms
                     continue
                 
                 bg_chunk = get_background_audio_chunk(
@@ -2204,16 +2229,19 @@ PROSODY INSTRUCTIONS (for natural speech):
         message_type: str = "speech",
         confidence: Optional[float] = None
     ):
-        """Add message to transcript"""
+        """Add message to transcript (SSML tags are automatically stripped)"""
         try:
             if not self.call_session:
                 return
+            
+            # Strip SSML tags before saving to transcript (keep only clean text)
+            clean_message = strip_ssml_tags(message)
             
             await transcript_service.add_and_broadcast_message(
                 db=self.db,
                 call_session_id=self.call_session.id,
                 role=role,
-                message=message,
+                message=clean_message,  # Save clean text without SSML
                 message_type=message_type,
                 agent_id=self.agent.id if self.agent else None,
                 user_id=self.call_session.user_id,
