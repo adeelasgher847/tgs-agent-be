@@ -208,7 +208,7 @@ def get_background_audio_chunk(offset: int, length: int, bg_audio: bytes, bg_len
         length: Number of bytes to get
         bg_audio: Background audio MULAW bytes
         bg_length: Length of background audio
-        
+    
     Returns:
         MULAW audio chunk (looped if needed)
     """
@@ -221,6 +221,41 @@ def get_background_audio_chunk(offset: int, length: int, bg_audio: bytes, bg_len
         chunk.append(bg_audio[index])
     
     return bytes(chunk)
+
+
+def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:
+    """
+    Apply volume level to MULAW audio bytes.
+    
+    Args:
+        audio_bytes: MULAW audio bytes
+        volume: Volume level (0.0-1.0, where 1.0 = 100%)
+    
+    Returns:
+        Volume-adjusted MULAW audio bytes
+    """
+    if not audio_bytes or len(audio_bytes) == 0:
+        return audio_bytes
+    
+    if volume <= 0.0:
+        # Silence (return mu-law silence)
+        return bytes([0xFF]) * len(audio_bytes)
+    
+    if volume >= 1.0:
+        # No change
+        return audio_bytes
+    
+    try:
+        # Convert to linear, apply volume, convert back
+        linear_samples = [ulaw_to_linear_sample(b) for b in audio_bytes]
+        faded_linear = [int(sample * volume) for sample in linear_samples]
+        # Clamp to valid range
+        faded_linear = [max(-32768, min(32767, sample)) for sample in faded_linear]
+        faded_mulaw = bytes([linear_to_ulaw_sample(sample) for sample in faded_linear])
+        return faded_mulaw
+    except Exception as e:
+        print(f"⚠️ Volume fade failed: {e}, using original audio")
+        return audio_bytes
 
 
 def mix_audio_with_background(tts_audio: bytes, bg_audio: bytes, bg_length: int, bg_offset: int, volume_level: float = 0.3) -> bytes:
@@ -476,13 +511,16 @@ def strip_ssml_tags(text: str) -> str:
     """
     Remove all SSML tags from text, keeping only the actual text content.
     Used for saving clean text to transcript.
+    Handles both complete and incomplete SSML tags.
     """
     if not text:
         return ""
     
     import re
-    # Remove all SSML tags (<tag>content</tag> or <tag/>)
+    # Remove complete SSML tags (<tag>content</tag> or <tag/>)
     text = re.sub(r'<[^>]+>', '', text)
+    # Remove incomplete SSML tags (tags without closing >, like <break time="150ms)
+    text = re.sub(r'<[^>]*', '', text)
     # Clean up extra whitespace
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
@@ -492,6 +530,7 @@ def validate_and_fix_ssml(ssml_text: str) -> str:
     """
     Validate and fix common SSML issues from LLM generation.
     Keeps LLM-generated SSML and prosody, just fixes formatting errors.
+    Handles incomplete tags (missing quotes, missing closing brackets).
     Returns cleaned SSML or None if too malformed.
     """
     if not ssml_text or not ssml_text.strip():
@@ -505,6 +544,35 @@ def validate_and_fix_ssml(ssml_text: str) -> str:
         return None
     
     ssml = ssml_match.group(0)
+    
+    # CRITICAL: Fix incomplete tags FIRST (missing closing quotes/brackets)
+    # Fix incomplete break tags: <break time="150ms -> <break time="150ms"/>
+    # Handle cases where closing quote or bracket is missing
+    def fix_incomplete_break(match):
+        time_val = match.group(1)
+        unit = match.group(2) if match.group(2) else "ms"
+        return f'<break time="{time_val}{unit}"/>'
+    
+    ssml = re.sub(r'<break\s+time="(\d+)(ms|s)?', fix_incomplete_break, ssml)
+    ssml = re.sub(r"<break\s+time='(\d+)(ms|s)?", r"<break time='\1\2'/>", ssml)
+    
+    # Fix incomplete prosody tags: <prosody rate="98%" pitch="-1 -> <prosody rate="98%" pitch="-1st">
+    def fix_incomplete_prosody(match):
+        attrs = match.group(1)
+        # Check if pitch attribute is incomplete
+        if 'pitch="' in attrs and not re.search(r'pitch="[^"]*"', attrs):
+            # Fix incomplete pitch: pitch="-1 -> pitch="-1st"
+            attrs = re.sub(r'pitch="([^"]*)$', r'pitch="\1st"', attrs)
+        # Add missing closing quote if needed
+        if not attrs.rstrip().endswith('"') and not attrs.rstrip().endswith("'"):
+            attrs = attrs.rstrip() + '"'
+        # Add missing closing bracket
+        if not attrs.endswith('>'):
+            attrs += '>'
+        return f'<prosody {attrs}'
+    
+    # Fix incomplete prosody tags (tags without closing >)
+    ssml = re.sub(r'<prosody\s+([^>]*?)(?<!>)(?<!")$', fix_incomplete_prosody, ssml, flags=re.MULTILINE)
     
     # Fix common LLM mistakes while preserving SSML structure:
     # 1. Fix prosody rate values (ensure they have %)
@@ -560,6 +628,21 @@ def validate_and_fix_ssml(ssml_text: str) -> str:
     
     # 7. Ensure all break tags are self-closing (fix <break> to <break/>)
     ssml = re.sub(r'<break([^>]*?)(?<!/)>', r'<break\1/>', ssml)
+    
+    # 8. Final validation: Check if SSML is well-formed (has proper closing tags)
+    # If still malformed, return None to trigger fallback
+    try:
+        # Quick check: count opening vs closing tags
+        open_count = len(re.findall(r'<(?!/)[^>]+>', ssml))
+        close_count = len(re.findall(r'</[^>]+>', ssml))
+        self_close_count = len(re.findall(r'<[^>]+/>', ssml))
+        
+        # Rough validation: should have balanced tags or self-closing tags
+        if open_count > (close_count + self_close_count) * 2:
+            # Too many unclosed tags - likely malformed
+            return None
+    except:
+        pass
     
     return ssml
 
@@ -1039,7 +1122,10 @@ class BidirectionalStreamHandler:
         self._bg_audio_offset = 0
         self._bg_audio_mulaw = None
         self._bg_audio_length = 0
-        self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - increased for better audibility
+        self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - full volume when TTS is silent
+        self._bg_audio_current_volume = 0.6  # Current volume (for smooth transitions)
+        self._bg_audio_target_volume = 0.6  # Target volume (for ducking)
+        self._bg_audio_duck_volume = 0.15  # 15% volume when TTS is speaking (ducking)
         self._use_background_audio = False
         
         # Load and start background audio if available
@@ -1883,15 +1969,23 @@ PROSODY INSTRUCTIONS (for natural speech):
                                     print(f"✅ Using LLM-generated SSML with context-aware prosody (validated)")
                                     sys.stdout.flush()
                                 else:
-                                    # SSML too malformed - fallback to middleware
-                                    enhanced_text = preprocess_for_tts(full_response)
-                                    print(f"⚠️ LLM SSML too malformed, using middleware fallback")
+                                    # SSML too malformed - strip SSML and use clean text with middleware
+                                    clean_text = strip_ssml_tags(full_response)
+                                    enhanced_text = preprocess_for_tts(clean_text)
+                                    print(f"⚠️ LLM SSML too malformed, using clean text with middleware fallback")
                                     sys.stdout.flush()
                             else:
-                                # SSML tags found but malformed - fallback to middleware
-                                enhanced_text = preprocess_for_tts(full_response)
-                                print(f"⚠️ LLM generated malformed SSML, using middleware fallback")
+                                # SSML tags found but malformed - strip and use middleware
+                                clean_text = strip_ssml_tags(full_response)
+                                enhanced_text = preprocess_for_tts(clean_text)
+                                print(f"⚠️ LLM generated malformed SSML, using clean text with middleware fallback")
                                 sys.stdout.flush()
+                        elif '<' in full_response_clean and '>' in full_response_clean:
+                            # Has some tags but not proper SSML - strip all tags and use middleware
+                            clean_text = strip_ssml_tags(full_response)
+                            enhanced_text = preprocess_for_tts(clean_text)
+                            print(f"⚠️ Found incomplete SSML tags, stripping and using middleware fallback")
+                            sys.stdout.flush()
                         else:
                             # Fallback to middleware for SSML generation (rule-based)
                             enhanced_text = preprocess_for_tts(full_response)
@@ -2061,14 +2155,15 @@ PROSODY INSTRUCTIONS (for natural speech):
     
     async def _stream_background_audio_loop(self):
         """
-        Continuously stream background audio in a loop.
-        PAUSES when TTS is speaking to avoid conflicts.
-        Uses proper pacing with drift correction for smooth playback.
+        Continuously stream background audio in a loop with Vapi-style volume ducking.
+        Uses smooth fade in/out instead of pause/resume.
+        When TTS is speaking: volume reduces to duck_volume (smooth fade out)
+        When TTS is silent: volume restores to full (smooth fade in)
         """
         if not self._bg_audio_mulaw or self._bg_audio_length == 0:
             return
         
-        print(f"🔄 Background audio loop started (continuous streaming, pauses during TTS)")
+        print(f"🔄 Background audio loop started (Vapi-style volume ducking with smooth fade)")
         sys.stdout.flush()
         
         send_interval = 0.02  # 20ms per frame
@@ -2076,20 +2171,38 @@ PROSODY INSTRUCTIONS (for natural speech):
         first = True
         next_send = time.perf_counter()
         
+        # Fade parameters for smooth transitions (Vapi-style)
+        fade_step = 0.08  # 8% volume change per frame (smooth but responsive fade)
+        fade_duration_frames = 8  # 8 frames = 160ms for fade (quick but smooth transition)
+        
         try:
             while True:
                 if not self.stream_sid:
                     await asyncio.sleep(0.1)
                     continue
                 
-                # PAUSE background audio when TTS is speaking (no noise when AI speaks)
+                # VAPI-STYLE: Volume ducking instead of pause
+                # Update target volume based on TTS state
                 if self.is_speaking:
-                    # Reset timing when pausing so resume is smooth
-                    first = True
-                    next_send = time.perf_counter()
-                    await asyncio.sleep(0.1)  # Check every 100ms
-                    continue
+                    # TTS is speaking - duck background volume
+                    self._bg_audio_target_volume = self._bg_audio_duck_volume
+                else:
+                    # TTS is silent - restore full background volume
+                    self._bg_audio_target_volume = self._bg_audio_volume
                 
+                # Smooth fade: gradually transition current volume to target
+                if abs(self._bg_audio_current_volume - self._bg_audio_target_volume) > 0.01:
+                    # Calculate fade step (smooth transition)
+                    volume_diff = self._bg_audio_target_volume - self._bg_audio_current_volume
+                    step = volume_diff / fade_duration_frames
+                    # Clamp step to fade_step for smoothness
+                    if abs(step) > fade_step:
+                        step = fade_step if step > 0 else -fade_step
+                    self._bg_audio_current_volume += step
+                    # Clamp to valid range
+                    self._bg_audio_current_volume = max(0.0, min(1.0, self._bg_audio_current_volume))
+                
+                # Get background audio chunk
                 bg_chunk = get_background_audio_chunk(
                     self._bg_audio_offset,
                     frame_bytes,
@@ -2099,7 +2212,10 @@ PROSODY INSTRUCTIONS (for natural speech):
                 
                 self._bg_audio_offset = (self._bg_audio_offset + frame_bytes) % self._bg_audio_length
                 
-                payload = base64.b64encode(bg_chunk).decode("utf-8")
+                # Apply volume fade (Vapi-style ducking)
+                faded_chunk = apply_volume_fade(bg_chunk, self._bg_audio_current_volume)
+                
+                payload = base64.b64encode(faded_chunk).decode("utf-8")
                 await self.websocket.send_json({
                     "event": "media",
                     "streamSid": self.stream_sid,
