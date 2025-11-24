@@ -107,6 +107,7 @@ from datetime import datetime, timezone
 import uuid
 import sys
 import math
+import re
 
 # Google built-in endpointing (VAD) will be used via streaming_recognize
 
@@ -946,7 +947,7 @@ class BidirectionalStreamHandler:
         self._bg_audio_offset = 0
         self._bg_audio_mulaw = None
         self._bg_audio_length = 0
-        self._bg_audio_volume = 0.3  # 30% volume (-10dB)
+        self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - increased for better audibility
         self._use_background_audio = False
         
         # Load and start background audio if available
@@ -1061,7 +1062,7 @@ class BidirectionalStreamHandler:
                         lang=lang,
                         voice=voice,
                         use_chirp3_hd=True,
-                        speaking_rate=0.95,
+                        speaking_rate=1.0,  # Changed from 0.95 to 1.0
                         use_ssml=False
                     )
                     cached_count += 1
@@ -1559,7 +1560,21 @@ Previous conversation:
 
 IMPORTANT: 
 - Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally.
-- If you have completed all your objectives/questions from the conversation, naturally end the conversation with a friendly closing (e.g., "Thank you for calling, have a great day!" or similar). DO NOT restart the conversation or ask questions again once everything is complete."""
+- If you have completed all your objectives/questions from the conversation, naturally end the conversation with a friendly closing (e.g., "Thank you for calling, have a great day!" or similar). DO NOT restart the conversation or ask questions again once everything is complete.
+
+PROSODY INSTRUCTIONS (for natural speech):
+- Generate your response with SSML prosody tags that match the context and emotion
+- Use <prosody rate="X%" pitch="Yst"> tags around sentences/phrases
+- Rate options: 95% (slow/thoughtful), 98% (slightly slow), 100% (normal), 102% (slightly fast), 105% (fast/excited)
+- Pitch options: -2st (low/serious), -1st (slightly low), 0st (normal), +1st (slightly high), +2st (high/happy)
+- Match prosody to context:
+  * Questions/uncertainty: rate="98%" pitch="-1st"
+  * Excited/happy: rate="102%" pitch="+1st" or "+2st"
+  * Serious/important: rate="95%" pitch="-1st" or "-2st"
+  * Normal conversation: rate="100%" pitch="0st"
+- Add <break time="150ms"/> after sentences for natural pauses
+- Wrap entire response in <speak>...</speak> tags
+- Example: <speak><prosody rate="100%" pitch="0st">Hello, how can I help you?</prosody><break time="150ms"/><prosody rate="98%" pitch="-1st">Let me check that for you.</prosody></speak>"""
             
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self.agent and self.agent.system_prompt:
@@ -1585,7 +1600,20 @@ Guidelines:
 
 IMPORTANT: 
 - Follow your custom instructions above while maintaining natural conversation flow.
-- If you have completed all objectives/questions from your custom instructions, naturally end the conversation with a friendly closing. DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete."""
+- If you have completed all objectives/questions from your custom instructions, naturally end the conversation with a friendly closing. DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete.
+
+PROSODY INSTRUCTIONS (for natural speech):
+- Generate your response with SSML prosody tags that match the context and emotion
+- Use <prosody rate="X%" pitch="Yst"> tags around sentences/phrases
+- Rate options: 95% (slow/thoughtful), 98% (slightly slow), 100% (normal), 102% (slightly fast), 105% (fast/excited)
+- Pitch options: -2st (low/serious), -1st (slightly low), 0st (normal), +1st (slightly high), +2st (high/happy)
+- Match prosody to context:
+  * Questions/uncertainty: rate="98%" pitch="-1st"
+  * Excited/happy: rate="102%" pitch="+1st" or "+2st"
+  * Serious/important: rate="95%" pitch="-1st" or "-2st"
+  * Normal conversation: rate="100%" pitch="0st"
+- Add <break time="150ms"/> after sentences for natural pauses
+- Wrap entire response in <speak>...</speak> tags"""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
                 # Model has system prompt - use it
                 system_prompt = f"""You are {agent_name}, a real person taking phone calls.
@@ -1606,7 +1634,20 @@ Guidelines:
 
 IMPORTANT: 
 - Follow the model instructions above.
-- If you have completed all objectives/questions, naturally end the conversation with a friendly closing. DO NOT restart the conversation or repeat questions once everything is complete."""
+- If you have completed all objectives/questions, naturally end the conversation with a friendly closing. DO NOT restart the conversation or repeat questions once everything is complete.
+
+PROSODY INSTRUCTIONS (for natural speech):
+- Generate your response with SSML prosody tags that match the context and emotion
+- Use <prosody rate="X%" pitch="Yst"> tags around sentences/phrases
+- Rate options: 95% (slow/thoughtful), 98% (slightly slow), 100% (normal), 102% (slightly fast), 105% (fast/excited)
+- Pitch options: -2st (low/serious), -1st (slightly low), 0st (normal), +1st (slightly high), +2st (high/happy)
+- Match prosody to context:
+  * Questions/uncertainty: rate="98%" pitch="-1st"
+  * Excited/happy: rate="102%" pitch="+1st" or "+2st"
+  * Serious/important: rate="95%" pitch="-1st" or "-2st"
+  * Normal conversation: rate="100%" pitch="0st"
+- Add <break time="150ms"/> after sentences for natural pauses
+- Wrap entire response in <speak>...</speak> tags"""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
@@ -1734,9 +1775,28 @@ IMPORTANT:
                     print(f"📝 Full LLM response ready ({len(full_response.split())} words): '{full_response[:60]}...'")
                     sys.stdout.flush()
                     
-                    # Preprocess with SSML (using middleware - automatic humanization!)
+                    # Preprocess with SSML (check if LLM generated SSML with context-aware prosody)
                     if self._use_ssml:
-                        enhanced_text = preprocess_for_tts(full_response)
+                        # Check if LLM already generated SSML (contains <speak> tags)
+                        full_response_clean = full_response.strip()
+                        if '<speak>' in full_response_clean and '</speak>' in full_response_clean:
+                            # Extract SSML content (handle cases where LLM adds extra text)
+                            ssml_match = re.search(r'<speak>.*?</speak>', full_response_clean, re.DOTALL)
+                            if ssml_match:
+                                # LLM generated SSML with context-aware prosody - use it directly!
+                                enhanced_text = ssml_match.group(0)
+                                print(f"✅ Using LLM-generated SSML with context-aware prosody")
+                                sys.stdout.flush()
+                            else:
+                                # SSML tags found but malformed - fallback to middleware
+                                enhanced_text = preprocess_for_tts(full_response)
+                                print(f"⚠️ LLM generated malformed SSML, using middleware fallback")
+                                sys.stdout.flush()
+                        else:
+                            # Fallback to middleware for SSML generation (rule-based)
+                            enhanced_text = preprocess_for_tts(full_response)
+                            print(f"🔄 Using middleware SSML generation (LLM didn't generate SSML)")
+                            sys.stdout.flush()
                     else:
                         enhanced_text = quick_clean(full_response)
                     
@@ -1858,7 +1918,7 @@ IMPORTANT:
                         lang=lang,
                         voice=voice,
                         use_chirp3_hd=True,
-                        speaking_rate=0.95,
+                        speaking_rate=1.0,  # Changed from 0.95 to 1.0 for normal speed
                         use_ssml=use_ssml,
                         add_office_bg=False  # Background mixing handled separately
                     )
@@ -1870,26 +1930,20 @@ IMPORTANT:
                         self._prev_tts_tail = b""
                         return
                     
-                    # Stream with background audio mixing if enabled
+                    # Stream TTS normally - background audio runs separately in parallel
+                    # Twilio will naturally mix both streams at the audio level
                     if audio_bytes and not self._tts_cancel.is_set():
                         prime_frames = 0 if self._twilio_buffer_primed else 1
                         
-                        if self._use_background_audio and self._bg_audio_mulaw:
-                            # Stream with background audio mixing
-                            await self._stream_mulaw_with_background(
-                                audio_bytes=audio_bytes,
-                                cancel=self._tts_cancel
-                            )
-                        else:
-                            # Stream without background (original method)
-                            await stream_mulaw_bytes_over_twilio(
-                                websocket=self.websocket,
-                                stream_sid=self.stream_sid,
-                                audio_bytes=audio_bytes,
-                                pace_20ms=True,
-                                cancel=self._tts_cancel,
-                                prime_frames=prime_frames,
-                            )
+                        # Always use normal streaming - background audio loop handles background separately
+                        await stream_mulaw_bytes_over_twilio(
+                            websocket=self.websocket,
+                            stream_sid=self.stream_sid,
+                            audio_bytes=audio_bytes,
+                            pace_20ms=True,
+                            cancel=self._tts_cancel,
+                            prime_frames=prime_frames,
+                        )
                         self._twilio_buffer_primed = True
                         print(f"✅ Streamed complete response: {len(audio_bytes)} bytes ({len(audio_bytes)/8000:.2f}s audio)")
                         sys.stdout.flush()
@@ -1907,7 +1961,8 @@ IMPORTANT:
     async def _stream_background_audio_loop(self):
         """
         Continuously stream background audio in a loop.
-        Runs independently, mixing with TTS when it arrives.
+        Runs independently in parallel with TTS - Twilio mixes them naturally.
+        Uses proper pacing with drift correction for smooth playback.
         """
         if not self._bg_audio_mulaw or self._bg_audio_length == 0:
             return
@@ -1917,6 +1972,8 @@ IMPORTANT:
         
         send_interval = 0.02  # 20ms per frame
         frame_bytes = MULAW_FRAME_BYTES  # 160 bytes at 8kHz
+        first = True
+        next_send = time.perf_counter()
         
         try:
             while True:
@@ -1940,7 +1997,19 @@ IMPORTANT:
                     "media": {"payload": payload}
                 })
                 
-                await asyncio.sleep(send_interval)
+                # Proper pacing with drift correction (same as TTS streaming)
+                if not first:
+                    next_send += send_interval
+                    now = time.perf_counter()
+                    sleep_dur = next_send - now
+                    if sleep_dur > 0:
+                        await asyncio.sleep(sleep_dur)
+                    elif sleep_dur < -0.03:
+                        # We're late by >30ms; reset schedule to avoid cumulative jitter
+                        next_send = time.perf_counter()
+                else:
+                    first = False
+                    next_send = time.perf_counter() + send_interval
                 
         except asyncio.CancelledError:
             print(f"🛑 Background audio streaming cancelled")
@@ -1956,9 +2025,11 @@ IMPORTANT:
     ):
         """
         Stream TTS audio mixed with continuous background audio.
+        Uses proper pacing with drift correction to prevent stuttering.
         """
         send_interval = 0.02  # 20ms
-        frame_bytes = MULAW_FRAME_BYTES
+        first = True
+        next_send = time.perf_counter()
         
         for frame in iter_mulaw_20ms_frames(audio_bytes):
             if cancel and cancel.is_set():
@@ -1983,7 +2054,19 @@ IMPORTANT:
                 "media": {"payload": payload}
             })
             
-            await asyncio.sleep(send_interval)
+            # Proper pacing with drift correction (same as stream_mulaw_bytes_over_twilio)
+            if not first:
+                next_send += send_interval
+                now = time.perf_counter()
+                sleep_dur = next_send - now
+                if sleep_dur > 0:
+                    await asyncio.sleep(sleep_dur)
+                elif sleep_dur < -0.03:
+                    # We're late by >30ms; reset schedule to avoid cumulative jitter
+                    next_send = time.perf_counter()
+            else:
+                first = False
+                next_send = time.perf_counter() + send_interval
     
     async def stream_tts_response(self, text: str):
         """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy.
@@ -2010,12 +2093,12 @@ IMPORTANT:
 
                     # Begin generating suffix in parallel (if any)
                     suffix_task = asyncio.create_task(
-                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95, add_office_bg=True)
+                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=1.0, add_office_bg=True)
                     ) if suffix else None
 
                     # Generate prefix audio immediately
                     tts_start = datetime.now(timezone.utc)
-                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=0.95, add_office_bg=True)
+                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=1.0, add_office_bg=True)
                     tts_gen_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     print(f"⏱️ TTS(first) latency: {tts_gen_time:.3f}s for '{prefix[:20]}...'")
                     sys.stdout.flush()
@@ -2495,6 +2578,7 @@ async def tts_only_websocket(
                                 lang=lang,
                                 voice=voice,
                                 use_chirp3_hd=True,
+                                speaking_rate=1.0,  # Added for normal speed
                                 add_office_bg=True  # Add office background noise
                             )
                             
@@ -2529,6 +2613,7 @@ async def tts_only_websocket(
                         lang=lang,
                         voice=voice,
                         use_chirp3_hd=True,
+                        speaking_rate=1.0,  # Added for normal speed
                         add_office_bg=True  # Add office background noise
                     )
                     
