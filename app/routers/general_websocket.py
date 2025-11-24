@@ -374,6 +374,53 @@ async def broadcast_call_event(call_session_id: str, event_type: str, event_data
     }
     await websocket_manager.broadcast_to_all(message, "call_event")
 
+async def broadcast_credit_update(call_session_id: str, remaining_credits: float, metadata: dict = None):
+    """Broadcast real-time credit update to all connected clients"""
+    message = {
+        "type": "credit_update",
+        "event": "credit_update",
+        "call_session_id": call_session_id,
+        "remaining_credits": round(remaining_credits, 4),
+        "metadata": metadata or {},
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await websocket_manager.broadcast_to_all(message, "credit_update")
+
+async def broadcast_balance_zero(call_session_id: str, metadata: dict = None):
+    """Broadcast when balance reaches zero"""
+    message = {
+        "type": "balance_zero",
+        "event": "balance_zero",
+        "call_session_id": call_session_id,
+        "metadata": metadata or {},
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await websocket_manager.broadcast_to_all(message, "balance_zero")
+
+async def broadcast_call_summary(call_session_id: str, total_cost: float, duration_sec: int, components: dict = None):
+    """Broadcast final call summary"""
+    message = {
+        "type": "call_summary",
+        "event": "call_summary",
+        "call_session_id": call_session_id,
+        "total_cost": round(total_cost, 2),
+        "duration_sec": duration_sec,
+        "components": components or {},
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await websocket_manager.broadcast_to_all(message, "call_summary")
+
+async def broadcast_topup_needed(call_session_id: str, remaining_credits: float):
+    """Broadcast when top-up is needed"""
+    message = {
+        "type": "topup_needed",
+        "event": "topup_needed",
+        "call_session_id": call_session_id,
+        "remaining_credits": round(remaining_credits, 4),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await websocket_manager.broadcast_to_all(message, "topup_needed")
+
 async def broadcast_system_notification(notification_type: str, message: str, metadata: dict = None):
     """Broadcast system notification to all connected clients"""
     notification = {

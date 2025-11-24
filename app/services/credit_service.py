@@ -12,6 +12,8 @@ import uuid
 import asyncio
 from datetime import datetime, timezone
 import logging
+import time
+from app.services.pricing_service import pricing_service
 
 logger = logging.getLogger(__name__)
 
@@ -30,32 +32,51 @@ class CreditService:
     }
     
     # How often to deduct credits (in seconds)
-    DEDUCTION_INTERVAL = 30  # Deduct every 30 seconds (changed from 60)
+    DEDUCTION_INTERVAL = 1  # Deduct every 1 second (Vapi style - per-second deduction)
     
     def __init__(self):
         self._active_monitors = {}  # {call_session_id: task}
     
-    def get_credit_cost_for_model(self, model_name: str) -> int:
+    def get_credit_cost_for_model(self, model_name: str) -> float:
         """
-        Get credit cost per 30-second interval for a specific model
+        Get credit cost per minute for a specific model using pricing_service
+        Converts USD pricing to credits: $1 = 10 credits (1 credit = $0.10)
         
         Args:
             model_name: Name of the model
             
         Returns:
-            Credits per 30 seconds (half of per-minute cost)
+            Credits per minute (float for precision)
         """
-        # Check for exact match first
-        if model_name in self.MODEL_CREDIT_COSTS:
-            return self.MODEL_CREDIT_COSTS[model_name]
-        
-        # Check for partial match (e.g., "gemini-2.0-flash" in "gemini-2.0-flash-thinking-exp")
-        for key, cost in self.MODEL_CREDIT_COSTS.items():
-            if key.lower() in model_name.lower():
-                return cost
-        
-        # Return default cost
-        return self.MODEL_CREDIT_COSTS["default"]
+        try:
+            # Get pricing from pricing_service (includes LLM + Twilio)
+            pricing = pricing_service.get_pricing_for_model(
+                model_name=model_name,
+                include_twilio=True,  # Include Twilio cost
+                eleven_plan=None,  # TTS cost handled separately if needed
+                tts_turbo=False
+            )
+            
+            total_cost_per_minute_usd = pricing.get("total_cost_per_minute")
+            
+            if total_cost_per_minute_usd is None or total_cost_per_minute_usd == 0:
+                # Fallback to default if model not found in pricing_service
+                logger.warning(f"Model {model_name} not found in pricing_service, using default")
+                return 10.0  # Default: 10 credits/min = $1/min
+            
+            # Convert USD to credits: $1 = 10 credits, so multiply by 10
+            credits_per_minute = total_cost_per_minute_usd * 10.0
+            
+            logger.info(
+                f"Model {model_name}: ${total_cost_per_minute_usd:.6f}/min = {credits_per_minute:.2f} credits/min"
+            )
+            
+            return credits_per_minute
+            
+        except Exception as e:
+            logger.error(f"Error getting pricing for model {model_name}: {e}")
+            # Fallback to default
+            return 10.0  # Default: 10 credits/min
     
     def get_tenant_credits(self, db: Session, tenant_id: uuid.UUID) -> int:
         """
@@ -94,8 +115,8 @@ class CreditService:
             Tuple of (has_sufficient, current_credits, required_credits)
         """
         current_credits = self.get_tenant_credits(db, tenant_id)
-        cost_per_minute = self.get_credit_cost_for_model(model_name)
-        required_credits = cost_per_minute * estimated_minutes
+        cost_per_minute = self.get_credit_cost_for_model(model_name)  # Now returns float
+        required_credits = int(cost_per_minute * estimated_minutes)  # Convert to int for comparison
         
         # Change: Only require credits > 0 (call will end when reaching 0 during monitoring)
         return (current_credits > 0, current_credits, required_credits)
@@ -179,11 +200,13 @@ class CreditService:
             return
         
         model_name = agent.model.model_name
+        # Get credit cost per minute from pricing_service (now returns float)
         credit_cost_per_minute = self.get_credit_cost_for_model(model_name)
         
         logger.info(
             f"Starting credit monitor for call {call_session_id}. "
-            f"Model: {model_name}, Cost: {credit_cost_per_minute} credits/min"
+            f"Model: {model_name}, Cost: {credit_cost_per_minute:.2f} credits/min "
+            f"({credit_cost_per_minute/60.0:.4f} credits/sec)"
         )
         
         # Create monitoring task
@@ -196,102 +219,265 @@ class CreditService:
     
     async def _monitor_and_deduct_credits(
         self,
-        db: Session,
+        db: Session,  # Initial session (will create new ones)
         call_session_id: uuid.UUID,
         tenant_id: uuid.UUID,
         model_name: str,
-        credit_cost_per_minute: int
+        credit_cost_per_minute: float
     ):
         """
         Background task to monitor and deduct credits during call
+        NOW WITH PER-SECOND DEDUCTION AND REAL-TIME UPDATES (Vapi Style)
+        
+        CRITICAL: Creates its own DB sessions to avoid session expiration
         
         Args:
-            db: Database session
+            db: Database session (initial, will create new ones)
             call_session_id: Call session UUID
             tenant_id: Tenant UUID
             model_name: Model name
-            credit_cost_per_minute: Credits to deduct per minute
+            credit_cost_per_minute: Credits to deduct per minute (float)
         """
+        # Initialize variables before try block (accessible in finally)
+        accumulated_credits = 0.0  # Fractional credits accumulated
+        total_deducted = 0.0  # Total credits deducted (for summary)
+        
         try:
-            deduction_count = 0
+            from app.routers.general_websocket import (
+                broadcast_credit_update,
+                broadcast_balance_zero,
+                broadcast_call_summary,
+                broadcast_topup_needed
+            )
+            from app.db.session import SessionLocal  # Import for new sessions
+            
+            # Calculate per-second credit cost (float for precision)
+            per_second_credits = credit_cost_per_minute / 60.0  # e.g., 10/60 = 0.1667
+            
+            # Track fractional credits in memory (not in DB)
+            last_topup_warning = 0.0  # Track last top-up warning to avoid spam
+            
+            logger.info(
+                f"Starting per-second credit monitor for call {call_session_id}. "
+                f"Model: {model_name}, Cost: {credit_cost_per_minute:.2f} credits/min "
+                f"({per_second_credits:.4f} credits/sec)"
+            )
             
             while True:
-                # Wait for the deduction interval
+                # Wait for 1 second
                 await asyncio.sleep(self.DEDUCTION_INTERVAL)
                 
-                # Check if call is still active
-                call_session = db.query(CallSession).filter(
-                    CallSession.id == call_session_id
-                ).first()
-                
-                if not call_session:
-                    logger.info(f"Call session {call_session_id} not found, stopping monitor")
-                    break
-                
-                if call_session.status not in ["active", "in-progress"]:
-                    logger.info(f"Call {call_session_id} status is {call_session.status}, stopping monitor")
-                    break
-                
-                # Deduct credits (every 30 seconds)
-                deduction_count += 1
-                success, remaining_credits = self.deduct_credits(
-                    db=db,
-                    tenant_id=tenant_id,
-                    amount=credit_cost_per_minute,
-                    call_session_id=call_session_id,
-                    description=f"Call 30s interval {deduction_count} - Model: {model_name}"
-                )
-                
-                if not success:
-                    # Insufficient credits - end the call
-                    logger.warning(
-                        f"Insufficient credits for call {call_session_id}. "
-                        f"Ending call. Remaining credits: {remaining_credits}"
-                    )
+                # CRITICAL: Create new DB session for each iteration (avoids session expiration)
+                db = SessionLocal()
+                try:
+                    # Check if call is still active
+                    call_session = db.query(CallSession).filter(
+                        CallSession.id == call_session_id
+                    ).first()
                     
-                    # Update call session status
-                    call_session.status = "completed"
-                    call_session.end_time = datetime.now(timezone.utc)
-                    call_session.ended_reason = "Insufficient credits"
+                    if not call_session:
+                        logger.info(f"Call session {call_session_id} not found, stopping monitor")
+                        break
                     
-                    if call_session.start_time:
-                        duration = (call_session.end_time - call_session.start_time).total_seconds()
-                        call_session.duration = int(duration)
+                    if call_session.status not in ["active", "in-progress"]:
+                        logger.info(f"Call {call_session_id} status is {call_session.status}, stopping monitor")
+                        # Call ended normally - send final summary
+                        if call_session.status == "completed":
+                            try:
+                                if call_session.start_time and call_session.end_time:
+                                    duration = (call_session.end_time - call_session.start_time).total_seconds()
+                                else:
+                                    duration = 0
+                                
+                                # Deduct any remaining accumulated credits
+                                if accumulated_credits >= 1.0:
+                                    credits_to_deduct = int(accumulated_credits)
+                                    self.deduct_credits(
+                                        db=db,
+                                        tenant_id=tenant_id,
+                                        amount=credits_to_deduct,
+                                        call_session_id=call_session_id,
+                                        description=f"Final call deduction - Model: {model_name}"
+                                    )
+                                    total_deducted += float(credits_to_deduct)
+                                
+                                await broadcast_call_summary(
+                                    call_session_id=str(call_session_id),
+                                    total_cost=round(total_deducted, 2),
+                                    duration_sec=int(duration),
+                                    components={
+                                        "platform": round(total_deducted, 2),
+                                        "model": model_name
+                                    }
+                                )
+                            except Exception as e:
+                                logger.error(f"Error sending final summary: {e}")
+                        break
                     
-                    db.commit()
+                    # Get current balance from DB (integer)
+                    current_db_credits = self.get_tenant_credits(db, tenant_id)
                     
-                    # Try to end the Twilio call
+                    # Calculate effective balance (DB credits - accumulated fractional)
+                    effective_balance = float(current_db_credits) - accumulated_credits
+                    
+                    # Accumulate per-second credits
+                    accumulated_credits += per_second_credits
+                    total_deducted += per_second_credits
+                    
+                    # If accumulated >= 1 credit, deduct from DB
+                    if accumulated_credits >= 1.0:
+                        credits_to_deduct = int(accumulated_credits)  # Convert to int for DB
+                        accumulated_credits -= float(credits_to_deduct)  # Keep remainder
+                        
+                        # Deduct from DB (using existing method - NO CHANGES to this method)
+                        success, remaining_db_credits = self.deduct_credits(
+                            db=db,
+                            tenant_id=tenant_id,
+                            amount=credits_to_deduct,  # Integer amount
+                            call_session_id=call_session_id,
+                            description=f"Call per-second accumulation - Model: {model_name}"
+                        )
+                        
+                        if not success:
+                            # Balance reached zero - end call
+                            logger.warning(
+                                f"Balance reached zero for call {call_session_id}. "
+                                f"Total deducted: {total_deducted:.2f}"
+                            )
+                            
+                            # Send balance zero event
+                            try:
+                                await broadcast_balance_zero(
+                                    call_session_id=str(call_session_id),
+                                    metadata={
+                                        "total_deducted": round(total_deducted, 2),
+                                        "model_name": model_name
+                                    }
+                                )
+                            except Exception as e:
+                                logger.error(f"Error broadcasting balance zero: {e}")
+                            
+                            # Update call session status
+                            call_session.status = "completed"
+                            call_session.end_time = datetime.now(timezone.utc)
+                            call_session.ended_reason = "Insufficient credits"
+                            
+                            if call_session.start_time:
+                                duration = (call_session.end_time - call_session.start_time).total_seconds()
+                                call_session.duration = int(duration)
+                            
+                            db.commit()
+                            
+                            # Send final call summary
+                            try:
+                                await broadcast_call_summary(
+                                    call_session_id=str(call_session_id),
+                                    total_cost=round(total_deducted, 2),
+                                    duration_sec=int(duration) if call_session.start_time else 0,
+                                    components={
+                                        "platform": round(total_deducted, 2),
+                                        "model": model_name
+                                    }
+                                )
+                            except Exception as e:
+                                logger.error(f"Error broadcasting call summary: {e}")
+                            
+                            # Try to end the Twilio call
+                            try:
+                                await self._end_twilio_call(call_session.twilio_call_sid)
+                            except Exception as e:
+                                logger.error(f"Error ending Twilio call: {e}")
+                            
+                            # Broadcast call ended event
+                            try:
+                                from app.routers.general_websocket import broadcast_call_status_update
+                                await broadcast_call_status_update(
+                                    call_session_id=str(call_session_id),
+                                    status="completed",
+                                    metadata={
+                                        "reason": "insufficient_credits",
+                                        "message": "Call ended due to insufficient credits",
+                                        "timestamp": datetime.now(timezone.utc).isoformat()
+                                    }
+                                )
+                            except Exception as e:
+                                logger.error(f"Error broadcasting call end event: {e}")
+                            
+                            break
+                        
+                        # Update effective balance after DB deduction
+                        effective_balance = float(remaining_db_credits) - accumulated_credits
+                    else:
+                        # No DB deduction yet, but update effective balance
+                        effective_balance = float(current_db_credits) - accumulated_credits
+                    
+                    # Send real-time credit update via WebSocket (every second)
                     try:
-                        await self._end_twilio_call(call_session.twilio_call_sid)
-                    except Exception as e:
-                        logger.error(f"Error ending Twilio call: {e}")
-                    
-                    # Broadcast call ended event
-                    try:
-                        from app.routers.general_websocket import broadcast_call_status_update
-                        await broadcast_call_status_update(
+                        await broadcast_credit_update(
                             call_session_id=str(call_session_id),
-                            status="completed",
+                            remaining_credits=effective_balance,  # Show fractional balance
                             metadata={
-                                "reason": "insufficient_credits",
-                                "message": "Call ended due to insufficient credits",
-                                "timestamp": datetime.now(timezone.utc).isoformat()
+                                "per_second_cost": round(per_second_credits, 4),
+                                "total_deducted": round(total_deducted, 4),
+                                "accumulated": round(accumulated_credits, 4),
+                                "db_credits": current_db_credits,
+                                "model_name": model_name
                             }
                         )
                     except Exception as e:
-                        logger.error(f"Error broadcasting call end event: {e}")
+                        logger.error(f"Error broadcasting credit update: {e}")
                     
-                    break
+                    # Check if balance is low and send top-up reminder (once per 30 seconds to avoid spam)
+                    now = time.time()
+                    if effective_balance < 5.0 and effective_balance > 0 and (now - last_topup_warning) > 30:
+                        try:
+                            await broadcast_topup_needed(
+                                call_session_id=str(call_session_id),
+                                remaining_credits=effective_balance
+                            )
+                            last_topup_warning = now
+                        except Exception as e:
+                            logger.error(f"Error broadcasting top-up needed: {e}")
+                    
+                    logger.debug(
+                        f"Call {call_session_id}: Accumulated {accumulated_credits:.4f}, "
+                        f"Effective balance: {effective_balance:.4f}, "
+                        f"Total deducted: {total_deducted:.4f}"
+                    )
                 
-                logger.info(
-                    f"Call {call_session_id}: Deducted {credit_cost_per_minute} credits. "
-                    f"Remaining: {remaining_credits}"
-                )
+                finally:
+                    # CRITICAL: Close DB session after each iteration
+                    db.close()
         
         except Exception as e:
             logger.error(f"Error in credit monitoring for call {call_session_id}: {e}")
+            import traceback
+            traceback.print_exc()
         
         finally:
+            # Final cleanup: Deduct any remaining accumulated credits
+            try:
+                db = SessionLocal()
+                try:
+                    call_session = db.query(CallSession).filter(
+                        CallSession.id == call_session_id
+                    ).first()
+                    
+                    if call_session and accumulated_credits >= 1.0:
+                        credits_to_deduct = int(accumulated_credits)
+                        self.deduct_credits(
+                            db=db,
+                            tenant_id=tenant_id,
+                            amount=credits_to_deduct,
+                            call_session_id=call_session_id,
+                            description=f"Final accumulated credits - Model: {model_name}"
+                        )
+                        total_deducted += float(credits_to_deduct)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Error in final cleanup: {e}")
+            
             # Clean up monitor
             if str(call_session_id) in self._active_monitors:
                 del self._active_monitors[str(call_session_id)]
