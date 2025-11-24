@@ -162,10 +162,10 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         from pydub import AudioSegment
     except ImportError as import_error:
         error_msg = str(import_error)
-        if "pyaudioop" in error_msg or "audioop" in error_msg:
-            print(f"❌ Missing dependency: pyaudioop is required for Python 3.13+")
-            print(f"❌ Please install: pip install pyaudioop")
-            print(f"❌ Or add 'pyaudioop' to requirements.txt")
+        if "audioop" in error_msg:
+            print(f"⚠️ Python 3.13+ detected: audioop module was removed")
+            print(f"⚠️ Please install audioop-lts: pip install audioop-lts")
+            print(f"⚠️ Background audio will be disabled until audioop-lts is installed")
         else:
             print(f"❌ Failed to import pydub: {import_error}")
         sys.stdout.flush()
