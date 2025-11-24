@@ -208,7 +208,7 @@ def get_background_audio_chunk(offset: int, length: int, bg_audio: bytes, bg_len
         length: Number of bytes to get
         bg_audio: Background audio MULAW bytes
         bg_length: Length of background audio
-    
+        
     Returns:
         MULAW audio chunk (looped if needed)
     """
@@ -526,125 +526,6 @@ def strip_ssml_tags(text: str) -> str:
     return text.strip()
 
 
-def validate_and_fix_ssml(ssml_text: str) -> str:
-    """
-    Validate and fix common SSML issues from LLM generation.
-    Keeps LLM-generated SSML and prosody, just fixes formatting errors.
-    Handles incomplete tags (missing quotes, missing closing brackets).
-    Returns cleaned SSML or None if too malformed.
-    """
-    if not ssml_text or not ssml_text.strip():
-        return None
-    
-    import re
-    
-    # Remove any text before <speak> or after </speak>
-    ssml_match = re.search(r'<speak>.*?</speak>', ssml_text, re.DOTALL)
-    if not ssml_match:
-        return None
-    
-    ssml = ssml_match.group(0)
-    
-    # CRITICAL: Fix incomplete tags FIRST (missing closing quotes/brackets)
-    # Fix incomplete break tags: <break time="150ms -> <break time="150ms"/>
-    # Handle cases where closing quote or bracket is missing
-    def fix_incomplete_break(match):
-        time_val = match.group(1)
-        unit = match.group(2) if match.group(2) else "ms"
-        return f'<break time="{time_val}{unit}"/>'
-    
-    ssml = re.sub(r'<break\s+time="(\d+)(ms|s)?', fix_incomplete_break, ssml)
-    ssml = re.sub(r"<break\s+time='(\d+)(ms|s)?", r"<break time='\1\2'/>", ssml)
-    
-    # Fix incomplete prosody tags: <prosody rate="98%" pitch="-1 -> <prosody rate="98%" pitch="-1st">
-    def fix_incomplete_prosody(match):
-        attrs = match.group(1)
-        # Check if pitch attribute is incomplete
-        if 'pitch="' in attrs and not re.search(r'pitch="[^"]*"', attrs):
-            # Fix incomplete pitch: pitch="-1 -> pitch="-1st"
-            attrs = re.sub(r'pitch="([^"]*)$', r'pitch="\1st"', attrs)
-        # Add missing closing quote if needed
-        if not attrs.rstrip().endswith('"') and not attrs.rstrip().endswith("'"):
-            attrs = attrs.rstrip() + '"'
-        # Add missing closing bracket
-        if not attrs.endswith('>'):
-            attrs += '>'
-        return f'<prosody {attrs}'
-    
-    # Fix incomplete prosody tags (tags without closing >)
-    ssml = re.sub(r'<prosody\s+([^>]*?)(?<!>)(?<!")$', fix_incomplete_prosody, ssml, flags=re.MULTILINE)
-    
-    # Fix common LLM mistakes while preserving SSML structure:
-    # 1. Fix prosody rate values (ensure they have %)
-    ssml = re.sub(r'rate="(\d+)"', r'rate="\1%"', ssml)  # "100" -> "100%"
-    ssml = re.sub(r"rate='(\d+)'", r"rate='\1%'", ssml)
-    
-    # 2. Fix prosody pitch values (ensure they have "st")
-    ssml = re.sub(r'pitch="([+-]?\d+)"', r'pitch="\1st"', ssml)  # "0" -> "0st", "+1" -> "+1st"
-    ssml = re.sub(r"pitch='([+-]?\d+)'", r"pitch='\1st'", ssml)
-    
-    # 3. Fix break time values (ensure they have "ms" or "s")
-    ssml = re.sub(r'time="(\d+)"', r'time="\1ms"', ssml)  # "150" -> "150ms"
-    ssml = re.sub(r"time='(\d+)'", r"time='\1ms'", ssml)
-    
-    # 4. Validate prosody rate range (95% to 105%) - clamp to valid range
-    def fix_rate(match):
-        rate = match.group(1)
-        try:
-            rate_num = float(rate.rstrip('%'))
-            if rate_num < 95:
-                return 'rate="95%"'
-            elif rate_num > 105:
-                return 'rate="105%"'
-        except:
-            return 'rate="100%"'
-        return match.group(0)
-    
-    ssml = re.sub(r'rate="([^"]+)"', fix_rate, ssml)
-    
-    # 5. Validate prosody pitch range (-2st to +2st) - clamp to valid range
-    def fix_pitch(match):
-        pitch = match.group(1)
-        try:
-            pitch_clean = pitch.rstrip('st').strip()
-            pitch_num = float(pitch_clean)
-            if pitch_num < -2:
-                return 'pitch="-2st"'
-            elif pitch_num > 2:
-                return 'pitch="+2st"'
-        except:
-            return 'pitch="0st"'
-        return match.group(0)
-    
-    ssml = re.sub(r'pitch="([^"]+)"', fix_pitch, ssml)
-    
-    # 6. Ensure all prosody tags are properly closed
-    prosody_open = len(re.findall(r'<prosody[^>]*>', ssml))
-    prosody_close = len(re.findall(r'</prosody>', ssml))
-    if prosody_open > prosody_close:
-        # Add missing closing tags before </speak>
-        missing_closes = prosody_open - prosody_close
-        ssml = ssml.replace('</speak>', '</prosody>' * missing_closes + '</speak>')
-    
-    # 7. Ensure all break tags are self-closing (fix <break> to <break/>)
-    ssml = re.sub(r'<break([^>]*?)(?<!/)>', r'<break\1/>', ssml)
-    
-    # 8. Final validation: Check if SSML is well-formed (has proper closing tags)
-    # If still malformed, return None to trigger fallback
-    try:
-        # Quick check: count opening vs closing tags
-        open_count = len(re.findall(r'<(?!/)[^>]+>', ssml))
-        close_count = len(re.findall(r'</[^>]+>', ssml))
-        self_close_count = len(re.findall(r'<[^>]+/>', ssml))
-        
-        # Rough validation: should have balanced tags or self-closing tags
-        if open_count > (close_count + self_close_count) * 2:
-            # Too many unclosed tags - likely malformed
-            return None
-    except:
-        pass
-    
-    return ssml
 
 
 def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
@@ -1735,20 +1616,8 @@ Previous conversation:
 
 IMPORTANT: 
 - Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally.
-- If you have completed all your objectives/questions from the conversation, naturally end the conversation with a friendly closing (e.g., "Thank you for calling, have a great day!" or similar). DO NOT restart the conversation or ask questions again once everything is complete.
-
-PROSODY INSTRUCTIONS (for natural speech):
-- Generate your response with SSML prosody tags that match the context and emotion
-- Use <prosody rate="X%" pitch="Yst"> tags around sentences/phrases
-- Rate options: 95% (slow/thoughtful), 98% (slightly slow), 100% (normal), 102% (slightly fast), 105% (fast/excited)
-- Pitch options: -2st (low/serious), -1st (slightly low), 0st (normal), +1st (slightly high), +2st (high/happy)
-- Match prosody to context:
-  * Questions/uncertainty: rate="98%" pitch="-1st"
-  * Excited/happy: rate="102%" pitch="+1st" or "+2st"
-  * Serious/important: rate="95%" pitch="-1st" or "-2st"
-  * Normal conversation: rate="100%" pitch="0st"
-- Add <break time="150ms"/> after sentences for natural pauses
-- Wrap entire response in <speak>...</speak> tags
+- If you have completed all your objectives/questions from the conversation, naturally end the conversation with a friendly closing (e.g., "Thank you for calling, have a great day!" or similar). 
+- DO NOT restart the conversation, repeat questions, or ask questions again once everything is complete. Once all objectives are finished, end the call gracefully.
 - Example: <speak><prosody rate="100%" pitch="0st">Hello, how can I help you?</prosody><break time="150ms"/><prosody rate="98%" pitch="-1st">Let me check that for you.</prosody></speak>"""
             
             # Use agent's custom system prompt if available, otherwise use base prompt
@@ -1775,20 +1644,8 @@ Guidelines:
 
 IMPORTANT: 
 - Follow your custom instructions above while maintaining natural conversation flow.
-- If you have completed all objectives/questions from your custom instructions, naturally end the conversation with a friendly closing. DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete.
-
-PROSODY INSTRUCTIONS (for natural speech):
-- Generate your response with SSML prosody tags that match the context and emotion
-- Use <prosody rate="X%" pitch="Yst"> tags around sentences/phrases
-- Rate options: 95% (slow/thoughtful), 98% (slightly slow), 100% (normal), 102% (slightly fast), 105% (fast/excited)
-- Pitch options: -2st (low/serious), -1st (slightly low), 0st (normal), +1st (slightly high), +2st (high/happy)
-- Match prosody to context:
-  * Questions/uncertainty: rate="98%" pitch="-1st"
-  * Excited/happy: rate="102%" pitch="+1st" or "+2st"
-  * Serious/important: rate="95%" pitch="-1st" or "-2st"
-  * Normal conversation: rate="100%" pitch="0st"
-- Add <break time="150ms"/> after sentences for natural pauses
-- Wrap entire response in <speak>...</speak> tags"""
+- If you have completed all objectives/questions from your custom instructions, naturally end the conversation with a friendly closing. 
+- DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete. Once everything is finished, end the call gracefully."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
                 # Model has system prompt - use it
                 system_prompt = f"""You are {agent_name}, a real person taking phone calls.
@@ -1809,20 +1666,8 @@ Guidelines:
 
 IMPORTANT: 
 - Follow the model instructions above.
-- If you have completed all objectives/questions, naturally end the conversation with a friendly closing. DO NOT restart the conversation or repeat questions once everything is complete.
-
-PROSODY INSTRUCTIONS (for natural speech):
-- Generate your response with SSML prosody tags that match the context and emotion
-- Use <prosody rate="X%" pitch="Yst"> tags around sentences/phrases
-- Rate options: 95% (slow/thoughtful), 98% (slightly slow), 100% (normal), 102% (slightly fast), 105% (fast/excited)
-- Pitch options: -2st (low/serious), -1st (slightly low), 0st (normal), +1st (slightly high), +2st (high/happy)
-- Match prosody to context:
-  * Questions/uncertainty: rate="98%" pitch="-1st"
-  * Excited/happy: rate="102%" pitch="+1st" or "+2st"
-  * Serious/important: rate="95%" pitch="-1st" or "-2st"
-  * Normal conversation: rate="100%" pitch="0st"
-- Add <break time="150ms"/> after sentences for natural pauses
-- Wrap entire response in <speak>...</speak> tags"""
+- If you have completed all objectives/questions, naturally end the conversation with a friendly closing. 
+- DO NOT restart the conversation, repeat questions, or ask questions again once everything is complete. Once all objectives are finished, end the call gracefully."""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
@@ -1869,26 +1714,8 @@ PROSODY INSTRUCTIONS (for natural speech):
                 elif self.agent.model.max_tokens:
                     max_tokens = self.agent.model.max_tokens
                 
-                # ADAPTIVE MAX TOKENS: Adjust based on query complexity (with higher limits)
-                user_word_count = len(user_text.split())
-                user_lower = user_text.lower().strip()
-                
-                # Quick yes/no/confirmations - short but reasonable
-                if user_lower in ["yes", "no", "yeah", "nope", "yep", "ok", "okay", "sure", "nah"]:
-                    max_tokens = min(max_tokens, 30)  # Increased from 15 to 30
-                    print(f"⚡ Quick confirmation - max_tokens: {max_tokens}")
-                # Very short queries (1-3 words) - medium response
-                elif user_word_count <= 3:
-                    max_tokens = min(max_tokens, 50)  # Increased from 25 to 50
-                    print(f"⚡ Short query - max_tokens: {max_tokens}")
-                # Medium queries (4-7 words) - use configured tokens
-                elif user_word_count <= 7:
-                    # Use full configured tokens (no limiting)
-                    print(f"📝 Medium query - max_tokens: {max_tokens}")
-                # Long queries - use configured max_tokens
-                else:
-                    print(f"📝 Complex query - max_tokens: {max_tokens}")
-                
+                # Use configured max_tokens exactly as set by user (no adaptive adjustments)
+                print(f"📝 Using configured max_tokens: {max_tokens}")
                 sys.stdout.flush()
                 
                 # Select service based on provider
@@ -1950,44 +1777,13 @@ PROSODY INSTRUCTIONS (for natural speech):
                     print(f"📝 Full LLM response ready ({len(full_response.split())} words): '{full_response[:60]}...'")
                     sys.stdout.flush()
                     
-                    # Preprocess with SSML (check if LLM generated SSML with context-aware prosody)
+                    # Preprocess with SSML using middleware (version 1.0.1 style - simple and reliable)
                     if self._use_ssml:
-                        # Check if LLM already generated SSML (contains <speak> tags)
-                        full_response_clean = full_response.strip()
-                        if '<speak>' in full_response_clean and '</speak>' in full_response_clean:
-                            # Extract SSML content (handle cases where LLM adds extra text)
-                            ssml_match = re.search(r'<speak>.*?</speak>', full_response_clean, re.DOTALL)
-                            if ssml_match:
-                                # Validate and fix LLM-generated SSML (keeps prosody, fixes formatting)
-                                validated_ssml = validate_and_fix_ssml(ssml_match.group(0))
-                                if validated_ssml:
-                                    # LLM generated SSML with context-aware prosody - validated and fixed!
-                                    enhanced_text = validated_ssml
-                                    print(f"✅ Using LLM-generated SSML with context-aware prosody (validated)")
-                                    sys.stdout.flush()
-                                else:
-                                    # SSML too malformed - strip SSML and use clean text with middleware
-                                    clean_text = strip_ssml_tags(full_response)
-                                    enhanced_text = preprocess_for_tts(clean_text)
-                                    print(f"⚠️ LLM SSML too malformed, using clean text with middleware fallback")
-                                    sys.stdout.flush()
-                            else:
-                                # SSML tags found but malformed - strip and use middleware
-                                clean_text = strip_ssml_tags(full_response)
-                                enhanced_text = preprocess_for_tts(clean_text)
-                                print(f"⚠️ LLM generated malformed SSML, using clean text with middleware fallback")
-                                sys.stdout.flush()
-                        elif '<' in full_response_clean and '>' in full_response_clean:
-                            # Has some tags but not proper SSML - strip all tags and use middleware
-                            clean_text = strip_ssml_tags(full_response)
-                            enhanced_text = preprocess_for_tts(clean_text)
-                            print(f"⚠️ Found incomplete SSML tags, stripping and using middleware fallback")
-                            sys.stdout.flush()
-                        else:
-                            # Fallback to middleware for SSML generation (rule-based)
-                            enhanced_text = preprocess_for_tts(full_response)
-                            print(f"🔄 Using middleware SSML generation (LLM didn't generate SSML)")
-                            sys.stdout.flush()
+                        # Strip any SSML tags that LLM might have generated (we use middleware for SSML)
+                        clean_text = strip_ssml_tags(full_response)
+                        enhanced_text = preprocess_for_tts(clean_text)
+                        print(f"🔄 Using middleware SSML generation (version 1.0.1 style)")
+                        sys.stdout.flush()
                     else:
                         enhanced_text = quick_clean(full_response)
                     
