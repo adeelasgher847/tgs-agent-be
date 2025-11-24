@@ -13,6 +13,7 @@ import asyncio
 from datetime import datetime, timezone
 import logging
 import time
+import math
 from app.services.pricing_service import pricing_service
 
 logger = logging.getLogger(__name__)
@@ -291,9 +292,9 @@ class CreditService:
                                 else:
                                     duration = 0
                                 
-                                # Deduct any remaining accumulated credits
-                                if accumulated_credits >= 1.0:
-                                    credits_to_deduct = int(accumulated_credits)
+                                # Deduct any remaining accumulated credits (round up to at least 1 credit)
+                                if accumulated_credits > 0:
+                                    credits_to_deduct = max(1, math.ceil(accumulated_credits))  # At least 1 credit minimum
                                     self.deduct_credits(
                                         db=db,
                                         tenant_id=tenant_id,
@@ -302,6 +303,10 @@ class CreditService:
                                         description=f"Final call deduction - Model: {model_name}"
                                     )
                                     total_deducted += float(credits_to_deduct)
+                                    logger.info(
+                                        f"Final deduction: {credits_to_deduct} credits "
+                                        f"(accumulated: {accumulated_credits:.4f}) for call {call_session_id}"
+                                    )
                                 
                                 await broadcast_call_summary(
                                     call_session_id=str(call_session_id),
@@ -465,8 +470,8 @@ class CreditService:
                         CallSession.id == call_session_id
                     ).first()
                     
-                    if call_session and accumulated_credits >= 1.0:
-                        credits_to_deduct = int(accumulated_credits)
+                    if call_session and accumulated_credits > 0:
+                        credits_to_deduct = max(1, math.ceil(accumulated_credits))  # At least 1 credit minimum
                         self.deduct_credits(
                             db=db,
                             tenant_id=tenant_id,
@@ -475,6 +480,10 @@ class CreditService:
                             description=f"Final accumulated credits - Model: {model_name}"
                         )
                         total_deducted += float(credits_to_deduct)
+                        logger.info(
+                            f"Final cleanup deduction: {credits_to_deduct} credits "
+                            f"(accumulated: {accumulated_credits:.4f}) for call {call_session_id}"
+                        )
                 finally:
                     db.close()
             except Exception as e:
