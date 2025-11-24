@@ -2507,8 +2507,7 @@ PROSODY INSTRUCTIONS (for natural speech):
                     
                     # 🎯 START CREDIT MONITORING - User actually picked up!
                     try:
-                        from app.services.credit_service import CreditService
-                        credit_service = CreditService()
+                        from app.services.credit_service import credit_service  # Use global instance
                         
                         # Check if monitoring already started (avoid duplicates)
                         if str(self.call_session.id) not in credit_service._active_monitors:
@@ -2519,7 +2518,7 @@ PROSODY INSTRUCTIONS (for natural speech):
                                 agent_id=self.call_session.agent_id
                             ))
                             print(f"✅ Started credit monitoring for session {self.call_session.id}")
-                            print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
+                            print(f"🔍 DEBUG: Credits will deduct per-second (Vapi style) while status is 'in-progress'")
                         else:
                             print(f"ℹ️ Credit monitoring already active for session {self.call_session.id}")
                     except Exception as e:
