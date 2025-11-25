@@ -42,7 +42,8 @@ class TwilioMediaStreamHandler:
         self.stream_sid = None
         self.call_sid = None
         self.is_connected = False
-        self._first_media_received = False  # Track first media packet for in-progress status
+        self._first_media_received = False  # Track first media packet
+        self._in_progress_sent = False  # Track if in-progress status has been sent
         self.current_speech = ""
         self.speech_active = False
         self.silence_counter = 0
@@ -232,7 +233,13 @@ class TwilioMediaStreamHandler:
                     # Reset activity timer when speech is detected
                     self.last_activity_time = datetime.now(timezone.utc)
                     
-                    print(f"✅ Speech segment received: '{transcript}'")
+                    # 🎯 Send "in-progress" status when confident word is detected (like "hello")
+                    # Only send once when we get a confident transcript with meaningful words
+                    if not self._in_progress_sent and confidence >= 0.5 and len(transcript.split()) > 0:
+                        await self._send_in_progress_status(transcript, confidence)
+                        self._in_progress_sent = True
+                    
+                    print(f"✅ Speech segment received: '{transcript}' (confidence: {confidence:.2f})")
                     print(f"🎤 Total accumulated speech: '{self.current_speech.strip()}'")
                     sys.stdout.flush()
             else:
@@ -374,6 +381,59 @@ class TwilioMediaStreamHandler:
             import traceback
             traceback.print_exc()
     
+    async def _send_in_progress_status(self, transcript: str, confidence: float):
+        """Send in-progress status when confident word is detected"""
+        try:
+            from datetime import datetime, timezone
+            from app.routers.voice import broadcast_call_status_update
+            
+            if not self.call_session:
+                return
+            
+            print("=" * 80)
+            print(f"🎯 CONFIDENT WORD DETECTED: '{transcript}' (confidence: {confidence:.2f})")
+            print(f"✅ Sending 'in-progress' status now")
+            print("=" * 80)
+            import sys
+            sys.stdout.flush()
+            
+            try:
+                if self.call_session.status != "in-progress":
+                    old_status = self.call_session.status
+                    self.call_session.status = "in-progress"
+                    
+                    # Set start time when confident speech is detected
+                    if not self.call_session.start_time:
+                        self.call_session.start_time = datetime.now(timezone.utc)
+                    
+                    self.db.commit()
+                    print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (confident word detected)")
+                
+                # Broadcast "in-progress" event (confident word detected)
+                await broadcast_call_status_update(
+                    call_session_id=str(self.call_session.id),
+                    status="in-progress",
+                    metadata={
+                        "call_sid": self.call_sid,
+                        "stream_sid": self.stream_sid,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message": "connected",
+                        "event": "confident_speech_detected",
+                        "detected_word": transcript,
+                        "confidence": confidence
+                    }
+                )
+                print(f"✅ Broadcasted 'in-progress' status (confident word: '{transcript}')")
+            except Exception as e:
+                print(f"❌ Failed to send in-progress status: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        except Exception as e:
+            print(f"❌ Error in _send_in_progress_status: {e}")
+            import traceback
+            traceback.print_exc()
+    
     async def _add_to_transcript(
         self,
         role: str,
@@ -461,46 +521,17 @@ class TwilioMediaStreamHandler:
         """Handle user pickup - called on first media packet (same as bidirectional_stream.py)"""
         try:
             from datetime import datetime, timezone
-            from app.routers.voice import broadcast_call_status_update
             
             print("=" * 80)
             print(f"🎉 FIRST MEDIA PACKET - USER PICKED UP!")
             print(f"✅ Audio stream active - User actually answered")
+            print(f"⏳ Waiting for confident speech (like 'hello') before sending 'in-progress' status")
             print("=" * 80)
             import sys
             sys.stdout.flush()
             
-            # Update call session status to "in-progress" (user accepted call)
-            if self.call_session:
-                try:
-                    if self.call_session.status != "in-progress":
-                        old_status = self.call_session.status
-                        self.call_session.status = "in-progress"
-                        
-                        # Set start time when user actually picks up
-                        if not self.call_session.start_time:
-                            self.call_session.start_time = datetime.now(timezone.utc)
-                        
-                        self.db.commit()
-                        print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (user picked up)")
-                    
-                    # Broadcast "in-progress" event (user accepted call)
-                    await broadcast_call_status_update(
-                        call_session_id=str(self.call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "call_sid": self.call_sid,
-                            "stream_sid": self.stream_sid,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "connected",
-                            "event": "first_media_packet"
-                        }
-                    )
-                    print(f"✅ Broadcasted 'in-progress' status (user picked up)")
-                except Exception as e:
-                    print(f"❌ Failed to handle user pickup: {e}")
-                    import traceback
-                    traceback.print_exc()
+            # Don't send in-progress status here - wait for confident word detection
+            # Status will be sent in process_audio_buffer() when confident transcript is detected
         
         except Exception as e:
             print(f"❌ Error in _handle_user_pickup: {e}")

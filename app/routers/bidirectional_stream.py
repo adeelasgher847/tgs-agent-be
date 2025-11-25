@@ -995,6 +995,7 @@ class BidirectionalStreamHandler:
         # User pickup detection (VAPI-style: actual user audio = user picked up)
         self._user_picked_up = False
         self._first_media_received = False
+        self._in_progress_sent = False  # Track if in-progress status has been sent
         self._skip_audio_until = None  # Timestamp until which to skip audio (system messages)
         self._audio_level_samples = []  # Track audio levels to detect actual user audio
         self._min_audio_level_threshold = 100  # Minimum audio level to consider as user audio (not silence/system noise)
@@ -1331,6 +1332,12 @@ class BidirectionalStreamHandler:
                 print(f"⚠️ Skipping low-confidence transcript (confidence: {confidence:.2f})")
                 sys.stdout.flush()
                 return
+            
+            # 🎯 Send "in-progress" status when confident word is detected (like "hello")
+            # Only send once when we get a confident transcript with meaningful words
+            if not self._in_progress_sent and confidence >= 0.5 and len(transcript.split()) > 0:
+                await self._send_in_progress_status(transcript, confidence)
+                self._in_progress_sent = True
             
             # Reset user speech timer (user finished speaking)
             self._last_user_speech_start = 0.0
@@ -2193,6 +2200,79 @@ IMPORTANT:
             print(f"❌ Error sending audio: {e}")
             sys.stdout.flush()
     
+    async def _send_in_progress_status(self, transcript: str, confidence: float):
+        """Send in-progress status when confident word is detected"""
+        try:
+            if not self.call_session:
+                return
+            
+            print("=" * 80)
+            print(f"🎯 CONFIDENT WORD DETECTED: '{transcript}' (confidence: {confidence:.2f})")
+            print(f"✅ Sending 'in-progress' status now")
+            print("=" * 80)
+            sys.stdout.flush()
+            
+            try:
+                if self.call_session.status != "in-progress":
+                    old_status = self.call_session.status
+                    self.call_session.status = "in-progress"
+                    
+                    # Set start time when confident speech is detected
+                    if not self.call_session.start_time:
+                        self.call_session.start_time = datetime.now(timezone.utc)
+                    
+                    self.db.commit()
+                    print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (confident word detected)")
+                
+                # Broadcast "in-progress" event (confident word detected)
+                await broadcast_call_status_update(
+                    call_session_id=str(self.call_session.id),
+                    status="in-progress",
+                    metadata={
+                        "call_sid": self.call_sid,
+                        "stream_sid": self.stream_sid,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message": "connected",
+                        "event": "confident_speech_detected",
+                        "detected_word": transcript,
+                        "confidence": confidence
+                    }
+                )
+                print(f"✅ Broadcasted 'in-progress' status (confident word: '{transcript}')")
+                
+                # 🎯 START CREDIT MONITORING - Confident speech detected!
+                try:
+                    from app.services.credit_service import CreditService
+                    credit_service = CreditService()
+                    
+                    # Check if monitoring already started (avoid duplicates)
+                    if str(self.call_session.id) not in credit_service._active_monitors:
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=self.db,
+                            call_session_id=self.call_session.id,
+                            tenant_id=self.call_session.tenant_id,
+                            agent_id=self.call_session.agent_id
+                        ))
+                        print(f"✅ Started credit monitoring for session {self.call_session.id}")
+                        print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
+                    else:
+                        print(f"ℹ️ Credit monitoring already active for session {self.call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to start credit monitoring: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
+            except Exception as e:
+                print(f"❌ Failed to send in-progress status: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        except Exception as e:
+            print(f"❌ Error in _send_in_progress_status: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+    
     async def _add_to_transcript(
         self,
         role: str,
@@ -2266,71 +2346,18 @@ IMPORTANT:
             print("=" * 80)
             print(f"🎉 ACTUAL USER AUDIO DETECTED - USER PICKED UP!")
             print(f"✅ Audio stream active - User actually answered with real audio")
+            print(f"⏳ Waiting for confident speech (like 'hello') before sending 'in-progress' status")
             print("=" * 80)
             sys.stdout.flush()
             
-            # Update call session status to "in-progress" (user accepted call)
-            if self.call_session:
-                print(f"✅ Call session found: {self.call_session.id}, current status: {self.call_session.status}")
+            # Don't send in-progress status here - wait for confident word detection
+            # Status will be sent in _process_transcript() when confident transcript is detected
+            
+            # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start streaming
+            if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
+                self._bg_audio_task = asyncio.create_task(self._stream_background_audio_loop())
+                print(f"🔄 Started background audio streaming loop")
                 sys.stdout.flush()
-                try:
-                    if self.call_session.status != "in-progress":
-                        old_status = self.call_session.status
-                        self.call_session.status = "in-progress"
-                        
-                        # Set start time when user actually picks up
-                        if not self.call_session.start_time:
-                            self.call_session.start_time = datetime.now(timezone.utc)
-                        
-                        self.db.commit()
-                        print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (user picked up)")
-                    
-                    # Broadcast "in-progress" event (user accepted call)
-                    await broadcast_call_status_update(
-                        call_session_id=str(self.call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "call_sid": self.call_sid,
-                            "stream_sid": self.stream_sid,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "connected",
-                            "event": "first_media_packet"
-                        }
-                    )
-                    print(f"✅ Broadcasted 'in-progress' status (user picked up)")
-                    
-                    # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start streaming
-                    if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
-                        self._bg_audio_task = asyncio.create_task(self._stream_background_audio_loop())
-                        print(f"🔄 Started background audio streaming loop")
-                        sys.stdout.flush()
-                    
-                    # 🎯 START CREDIT MONITORING - User actually picked up!
-                    try:
-                        from app.services.credit_service import CreditService
-                        credit_service = CreditService()
-                        
-                        # Check if monitoring already started (avoid duplicates)
-                        if str(self.call_session.id) not in credit_service._active_monitors:
-                            asyncio.create_task(credit_service.start_credit_monitoring(
-                                db=self.db,
-                                call_session_id=self.call_session.id,
-                                tenant_id=self.call_session.tenant_id,
-                                agent_id=self.call_session.agent_id
-                            ))
-                            print(f"✅ Started credit monitoring for session {self.call_session.id}")
-                            print(f"🔍 DEBUG: Credits will deduct every 30s while status is 'in-progress'")
-                        else:
-                            print(f"ℹ️ Credit monitoring already active for session {self.call_session.id}")
-                    except Exception as e:
-                        print(f"❌ Failed to start credit monitoring: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        
-                except Exception as e:
-                    print(f"❌ Failed to handle user pickup: {e}")
-                    import traceback
-                    traceback.print_exc()
             
             # ⚠️ AUTO-GREETING DISABLED - Agent waits for user to speak first
             # Auto-greeting disabled - waiting for user to speak first
