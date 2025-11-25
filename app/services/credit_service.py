@@ -213,7 +213,7 @@ class CreditService:
         Start monitoring and deducting credits for an active call (Vapi-style real-time)
         
         Args:
-            db: Database session
+            db: Database session (used only for initial setup, monitoring creates its own session)
             call_session_id: Call session UUID
             tenant_id: Tenant UUID
             agent_id: Agent UUID
@@ -222,7 +222,7 @@ class CreditService:
             logger.warning(f"Credit monitor already active for call {call_session_id}")
             return
         
-        # Get agent and model information
+        # Get agent and model information (using provided session for initial query)
         agent = db.query(Agent).filter(Agent.id == agent_id).first()
         if not agent or not agent.model:
             logger.error(f"Agent {agent_id} or model not found")
@@ -244,17 +244,16 @@ class CreditService:
             f"(Vapi-style per-second billing)"
         )
         
-        # Create monitoring task
+        # Create monitoring task (will create its own DB session for thread-safety)
         task = asyncio.create_task(
             self._monitor_and_deduct_credits(
-                db, call_session_id, tenant_id, model_name, credits_per_minute
+                call_session_id, tenant_id, model_name, credits_per_minute
             )
         )
         self._active_monitors[call_id_str] = task
     
     async def _monitor_and_deduct_credits(
         self,
-        db: Session,
         call_session_id: uuid.UUID,
         tenant_id: uuid.UUID,
         model_name: str,
@@ -265,13 +264,16 @@ class CreditService:
         Vapi-style: Real-time per-second billing with accurate duration tracking
         
         Args:
-            db: Database session
             call_session_id: Call session UUID
             tenant_id: Tenant UUID
             model_name: Model name
             credits_per_minute: Credits per minute for the model
         """
         call_id_str = str(call_session_id)
+        
+        # Create dedicated DB session for this async task (Vapi-style: proper session handling)
+        from app.db.session import SessionLocal
+        db = SessionLocal()
         
         try:
             while True:
@@ -419,6 +421,9 @@ class CreditService:
                     )
             except Exception as e:
                 logger.error(f"Error in final credit deduction: {e}")
+            finally:
+                # Close DB session (Vapi-style: proper cleanup)
+                db.close()
             
             # Clean up monitor and tracking
             if call_id_str in self._active_monitors:
