@@ -85,28 +85,28 @@ class CreditService:
         logger.warning(f"Model '{model_name}' not found in pricing, using default cost")
         return self.MODEL_CREDIT_COSTS_PER_MINUTE["default"]
     
-    def calculate_credits_for_duration(self, duration_seconds: float, credits_per_minute: int) -> int:
+    def calculate_credits_for_duration(self, duration_seconds: float, credits_per_minute: int) -> float:
         """
-        Calculate credits for a specific duration (Vapi-style: per-second with rounding)
+        Calculate credits for a specific duration (Vapi-style: per-second accurate calculation)
         
         Args:
             duration_seconds: Duration in seconds (can be fractional)
             credits_per_minute: Credits per minute for the model
             
         Returns:
-            Credits to deduct (rounded up to ensure fair billing)
+            Credits to deduct (as float for accurate billing)
         """
         if duration_seconds <= 0:
-            return 0
+            return 0.0
         
-        # Vapi-style: Calculate per-second cost
+        # Vapi-style: Calculate per-second cost (accurate, no rounding)
         credits_per_second = credits_per_minute / 60.0
         total_credits = duration_seconds * credits_per_second
         
-        # Round up to nearest integer (industry standard - charge for partial seconds)
-        return math.ceil(total_credits)
+        # Return float for accurate billing (no rounding until final deduction)
+        return round(total_credits, 4)  # Round to 4 decimal places for precision
     
-    def get_tenant_credits(self, db: Session, tenant_id: uuid.UUID) -> int:
+    def get_tenant_credits(self, db: Session, tenant_id: uuid.UUID) -> float:
         """
         Get current credit balance for a tenant
         
@@ -115,12 +115,12 @@ class CreditService:
             tenant_id: Tenant UUID
             
         Returns:
-            Current credit balance
+            Current credit balance (as float)
         """
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenant:
-            return 0
-        return tenant.credits or 0
+            return 0.0
+        return float(tenant.credits or 0)
     
     def has_sufficient_credits(
         self, 
@@ -128,7 +128,7 @@ class CreditService:
         tenant_id: uuid.UUID, 
         model_name: str,
         estimated_minutes: int = 1
-    ) -> tuple[bool, int, int]:
+    ) -> tuple[bool, float, float]:
         """
         Check if tenant has sufficient credits for a call
         
@@ -143,7 +143,7 @@ class CreditService:
         """
         current_credits = self.get_tenant_credits(db, tenant_id)
         credits_per_minute = self.get_credit_cost_per_minute(model_name)
-        required_credits = credits_per_minute * estimated_minutes
+        required_credits = float(credits_per_minute * estimated_minutes)
         
         # Require credits > 0 (call will end when reaching 0 during monitoring)
         return (current_credits > 0, current_credits, required_credits)
@@ -152,17 +152,17 @@ class CreditService:
         self, 
         db: Session, 
         tenant_id: uuid.UUID, 
-        amount: int,
+        amount: float,
         call_session_id: Optional[uuid.UUID] = None,
         description: str = None
-    ) -> tuple[bool, int]:
+    ) -> tuple[bool, float]:
         """
-        Deduct credits from tenant account
+        Deduct credits from tenant account (supports float credits)
         
         Args:
             db: Database session
             tenant_id: Tenant UUID
-            amount: Amount of credits to deduct
+            amount: Amount of credits to deduct (can be float)
             call_session_id: Optional call session ID for tracking
             description: Optional description of the deduction
             
@@ -172,9 +172,9 @@ class CreditService:
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenant:
             logger.error(f"Tenant {tenant_id} not found")
-            return (False, 0)
+            return (False, 0.0)
         
-        current_credits = tenant.credits or 0
+        current_credits = float(tenant.credits or 0)
         
         # Check if we have sufficient credits to deduct
         if current_credits <= 0:
@@ -182,7 +182,7 @@ class CreditService:
             return (False, current_credits)
         
         # Deduct credits but never allow negative balance
-        new_credits = max(0, current_credits - amount)
+        new_credits = max(0.0, current_credits - amount)
         tenant.credits = new_credits
         
         # ✅ IMMEDIATE DATABASE UPDATE - Commit right away
@@ -193,14 +193,15 @@ class CreditService:
         credits_exhausted = (new_credits == 0 and current_credits > 0)
         
         logger.info(
-            f"✅ Deducted {amount} credits from tenant {tenant_id}. "
-            f"Remaining: {tenant.credits} (updated in DB). "
+            f"✅ Deducted {amount:.4f} credits from tenant {tenant_id}. "
+            f"Remaining: {float(tenant.credits):.4f} (updated in DB). "
             f"Call: {call_session_id}. "
             f"Description: {description}"
         )
+        print(f"💰 CREDIT DEDUCTION: Deducted {amount:.4f} credits | Remaining: {float(tenant.credits):.4f} | Call: {call_session_id}")
         
         # Return success=False if credits exhausted (call should end immediately)
-        return (not credits_exhausted, tenant.credits)
+        return (not credits_exhausted, float(tenant.credits))
     
     async def start_credit_monitoring(
         self,
@@ -241,8 +242,9 @@ class CreditService:
         logger.info(
             f"Starting credit monitor for call {call_session_id}. "
             f"Model: {model_name}, Cost: {credits_per_minute} credits/min "
-            f"(Vapi-style per-second billing)"
+            f"(Vapi-style per-second billing with float precision)"
         )
+        print(f"💰 CREDIT MONITORING STARTED: Call {call_session_id} | Model: {model_name} | Cost: {credits_per_minute} credits/min | Float credits enabled")
         
         # Create monitoring task (will create its own DB session for thread-safety)
         task = asyncio.create_task(
@@ -335,15 +337,17 @@ class CreditService:
                     accumulated += elapsed_seconds
                     self._accumulated_seconds[call_id_str] = accumulated
                     
-                    # Calculate credits for accumulated time (Vapi-style: per-second)
-                    credits_to_deduct = self.calculate_credits_for_duration(accumulated, credits_per_minute)
+                    # Calculate credits for accumulated time (Vapi-style: per-second, as float)
+                    credits_to_deduct_float = self.calculate_credits_for_duration(accumulated, credits_per_minute)
                     
-                    if credits_to_deduct > 0:
+                    # Only deduct if we have at least 0.01 credits (prevents micro-deductions)
+                    # This ensures accurate billing without over-deduction
+                    if credits_to_deduct_float >= 0.01:
                         # ✅ Deduct accumulated credits (updates DB immediately)
                         success, remaining_credits = self.deduct_credits(
                             db=db,
                             tenant_id=tenant_id,
-                            amount=credits_to_deduct,
+                            amount=credits_to_deduct_float,
                             call_session_id=call_session_id,
                             description=f"Call duration: {accumulated:.1f}s - Model: {model_name}"
                         )
@@ -398,9 +402,10 @@ class CreditService:
                         self._last_deduction_time[call_id_str] = current_time
                         
                         logger.info(
-                            f"Call {call_session_id}: Deducted {credits_to_deduct} credits "
-                            f"for {accumulated:.1f}s duration. Remaining: {remaining_credits}"
+                            f"Call {call_session_id}: Deducted {credits_to_deduct_float:.4f} credits "
+                            f"for {accumulated:.1f}s duration. Remaining: {remaining_credits:.4f}"
                         )
+                        print(f"💰 CREDIT DEDUCTED: {credits_to_deduct_float:.4f} credits for {accumulated:.1f}s | Remaining: {remaining_credits:.4f} | Call: {call_session_id}")
         
         except asyncio.CancelledError:
             logger.info(f"Credit monitor cancelled for call {call_session_id}")
@@ -456,7 +461,7 @@ class CreditService:
             # Calculate final credits for remaining time
             final_credits = self.calculate_credits_for_duration(accumulated, credits_per_minute)
             
-            if final_credits > 0:
+            if final_credits >= 0.01:  # Only deduct if at least 0.01 credits
                 success, remaining_credits = self.deduct_credits(
                     db=db,
                     tenant_id=tenant_id,
@@ -466,9 +471,10 @@ class CreditService:
                 )
                 
                 logger.info(
-                    f"Call {call_session_id}: Final deduction of {final_credits} credits "
-                    f"for {accumulated:.1f}s. Remaining: {remaining_credits}"
+                    f"Call {call_session_id}: Final deduction of {final_credits:.4f} credits "
+                    f"for {accumulated:.1f}s. Remaining: {remaining_credits:.4f}"
                 )
+                print(f"💰 FINAL CREDIT DEDUCTION: {final_credits:.4f} credits for {accumulated:.1f}s | Remaining: {remaining_credits:.4f} | Call: {call_session_id}")
     
     async def _end_twilio_call(self, twilio_call_sid: str):
         """
