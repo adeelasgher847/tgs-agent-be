@@ -235,7 +235,7 @@ class TwilioMediaStreamHandler:
                     
                     # 🎯 Send "in-progress" status when confident word is detected (like "hello")
                     # Only send once when we get a confident transcript with meaningful words
-                    if not self._in_progress_sent and confidence >= 0.5 and len(transcript.split()) > 0:
+                    if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
                         await self._send_in_progress_status(transcript, confidence)
                         self._in_progress_sent = True
                     
