@@ -13,7 +13,7 @@ import csv
 import io
 
 from app.api.deps import get_db, require_tenant
-from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
+from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse, BulkCallInitiateRequest
 from app.schemas.base import SuccessResponse
 from app.services.twilio_service import twilio_service
 from app.services.agent_service import agent_service
@@ -412,220 +412,203 @@ async def initiate_call(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/calls/upload-csv", response_model=SuccessResponse[dict])
-async def upload_calls_csv(
-    file: UploadFile = File(...),
-    use_workflow: bool = Form(False, description="Use n8n workflow (True) or direct call (False)"),
+@router.post("/calls/initiate-bulk", response_model=SuccessResponse[dict])
+async def initiate_bulk_calls(
+    request: BulkCallInitiateRequest,
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
-    Upload CSV file with call data.
+    Initiate multiple calls using JSON array (similar to /call/initiate but for bulk).
     
-    CSV Format (required columns):
-    - phone_number: +923001234567 (required)
-    - agent_id: UUID (required) - Must be a valid agent ID belonging to your tenant
-    - call_time: 2025-11-26 15:30:00 (optional, if missing = immediate call)
-    - status: pending (optional, default: pending)
-    
-    Example CSV:
-    phone_number,agent_id,call_time,status
-    +923001234567,5e2b3c7c-xxxx-xxxx-xxxx-xxxxxxxxxxxx,2025-11-26 15:30:00,pending
-    +923001234568,7f3d4e8d-yyyy-yyyy-yyyy-yyyyyyyyyyyy,,pending
-    
-    Parameters:
-    - use_workflow: If True, returns data for n8n workflow. If False, initiates calls immediately.
+    Request Payload:
+    {
+        "calls": [
+            {
+                "phone_number": "+15712904243",
+                "agent_id": "4f5e49c9-5049-403d-a934-19239046e9ee",
+                "call_time": "2025-11-27 01:00:00",  // Optional, if missing = immediate call
+                "status": "pending"  // Optional
+            }
+        ]
+    }
     """
     try:
-        # Read CSV file
-        contents = await file.read()
-        csv_text = contents.decode('utf-8')
-        csv_reader = csv.DictReader(io.StringIO(csv_text))
+        if not request.calls:
+            raise HTTPException(status_code=400, detail="Calls array cannot be empty")
         
-        rows = []
-        for row in csv_reader:
-            rows.append({
-                'phone_number': row.get('phone_number', '').strip(),
-                'agent_id': row.get('agent_id', '').strip(),  # Required
-                'call_time': row.get('call_time', '').strip(),
-                'status': row.get('status', 'pending').strip()
-            })
+        results = []
+        initiated_count = 0
+        failed_count = 0
+        scheduled_count = 0
         
-        if not rows:
-            raise HTTPException(status_code=400, detail="CSV file is empty or invalid")
-        
-        if use_workflow:
-            # Workflow mode: Return data for n8n to process
-            return create_success_response(
-                {
-                    'message': 'CSV data ready for n8n workflow',
-                    'rows': rows,
-                    'total_rows': len(rows),
-                    'instructions': 'n8n will read this data and trigger calls based on call_time and agent_id'
-                },
-                f"CSV processed. {len(rows)} rows ready for workflow."
-            )
-        else:
-            # Direct call mode: Initiate calls immediately
-            results = []
-            for row_data in rows:
-                # Validate phone number (required)
-                if not row_data.get('phone_number'):
+        for call_data in request.calls:
+            try:
+                # Validate phone number
+                if not call_data.phone_number:
                     results.append({
-                        'phone_number': row_data.get('phone_number', 'N/A'),
+                        'phone_number': call_data.phone_number or 'N/A',
+                        'agent_id': call_data.agent_id,
+                        'status': 'failed',
                         'error': 'Phone number is required'
                     })
+                    failed_count += 1
                     continue
                 
-                if not twilio_service.validate_phone_number(row_data['phone_number']):
+                if not twilio_service.validate_phone_number(call_data.phone_number):
                     results.append({
-                        'phone_number': row_data['phone_number'],
+                        'phone_number': call_data.phone_number,
+                        'agent_id': call_data.agent_id,
+                        'status': 'failed',
                         'error': 'Invalid phone number format. Must start with +'
                     })
+                    failed_count += 1
                     continue
                 
-                # Validate agent_id (required)
-                agent_id = row_data.get('agent_id')
-                if not agent_id:
-                    results.append({
-                        'phone_number': row_data['phone_number'],
-                        'error': 'agent_id is required in CSV. Please provide a valid agent UUID.'
-                    })
-                    continue
-                
-                # Validate agent exists and belongs to tenant
+                # Validate agent_id
                 try:
-                    agent_uuid = uuid.UUID(agent_id)
-                    agent = agent_service.get_agent_by_id(db, agent_uuid, user.current_tenant_id)
+                    agent_id = uuid.UUID(call_data.agent_id)
+                    agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
                     if not agent:
                         results.append({
-                            'phone_number': row_data['phone_number'],
-                            'error': f'Agent {agent_id} not found or does not belong to your tenant'
+                            'phone_number': call_data.phone_number,
+                            'agent_id': call_data.agent_id,
+                            'status': 'failed',
+                            'error': f'Agent {call_data.agent_id} not found or does not belong to your tenant'
                         })
+                        failed_count += 1
                         continue
                 except ValueError:
                     results.append({
-                        'phone_number': row_data['phone_number'],
-                        'error': f'Invalid agent ID format: {agent_id}. Must be a valid UUID.'
+                        'phone_number': call_data.phone_number,
+                        'agent_id': call_data.agent_id,
+                        'status': 'failed',
+                        'error': f'Invalid agent ID format: {call_data.agent_id}. Must be a valid UUID.'
                     })
+                    failed_count += 1
                     continue
                 
                 # Check if call_time is in future (schedule for later)
                 call_time = None
-                if row_data.get('call_time'):
+                if call_data.call_time:
                     try:
-                        # Try parsing different time formats
-                        call_time_str = row_data['call_time']
+                        call_time_str = call_data.call_time
                         if 'T' in call_time_str:
                             call_time = datetime.fromisoformat(call_time_str.replace('Z', '+00:00'))
                         else:
                             call_time = datetime.strptime(call_time_str, '%Y-%m-%d %H:%M:%S')
-                            # Assume local timezone, convert to UTC if needed
                             call_time = call_time.replace(tzinfo=timezone.utc)
                         
                         if call_time > datetime.now(timezone.utc):
                             # Future call - for now, skip (can be implemented with ScheduledCall model)
                             results.append({
-                                'phone_number': row_data['phone_number'],
+                                'phone_number': call_data.phone_number,
+                                'agent_id': call_data.agent_id,
                                 'status': 'scheduled',
-                                'call_time': row_data['call_time'],
-                                'agent_id': str(agent.id),
-                                'agent_name': agent.name,
-                                'message': 'Call scheduled for future time. Use n8n workflow for scheduled calls.'
+                                'call_time': call_data.call_time,
+                                'message': 'Call scheduled for future time. Scheduled calls feature coming soon.'
                             })
+                            scheduled_count += 1
                             continue
                     except ValueError as e:
-                        print(f"⚠️ Invalid call_time format: {row_data['call_time']}, proceeding with immediate call")
+                        print(f"⚠️ Invalid call_time format: {call_data.call_time}, proceeding with immediate call")
                 
-                # Initiate call immediately
-                try:
-                    # Check credits before initiating call
-                    if not agent.model:
-                        results.append({
-                            'phone_number': row_data['phone_number'],
-                            'error': 'Agent does not have a model configured'
-                        })
-                        continue
-                    
-                    model_name = agent.model.model_name
-                    has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
-                        db=db,
-                        tenant_id=user.current_tenant_id,
-                        model_name=model_name,
-                        estimated_minutes=1
-                    )
-                    
-                    if not has_sufficient:
-                        results.append({
-                            'phone_number': row_data['phone_number'],
-                            'error': f'Insufficient credits. Current: {current_credits}, Required: {required_credits}'
-                        })
-                        continue
-                    
-                    # Create call session
-                    call_session = call_session_service.create_call_session(
-                        db=db,
-                        user_id=user.id,
-                        agent_id=agent.id,
-                        tenant_id=user.current_tenant_id,
-                        call_type="outbound",
-                        customer_phone_number=row_data['phone_number']
-                    )
-                    
-                    # Build webhook URLs
-                    webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
-                    status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
-                    
-                    # Make call via Twilio
-                    call = twilio_service.make_call(
-                        to_number=row_data['phone_number'],
-                        from_number=twilio_service.get_phone_number(),
-                        webhook_url=webhook_url,
-                        status_callback_url=status_callback_url
-                    )
-                    
-                    # Update call session with Twilio SID
-                    call_session.twilio_call_sid = call.sid
-                    db.commit()
-                    
+                # Check credits
+                if not agent.model:
                     results.append({
-                        'phone_number': row_data['phone_number'],
-                        'call_session_id': str(call_session.id),
-                        'twilio_call_sid': call.sid,
-                        'agent_id': str(agent.id),
-                        'agent_name': agent.name,
-                        'status': 'initiated'
+                        'phone_number': call_data.phone_number,
+                        'agent_id': call_data.agent_id,
+                        'status': 'failed',
+                        'error': 'Agent does not have a model configured'
                     })
-                    
-                    print(f"✅ Call initiated for {row_data['phone_number']} using agent {agent.name}")
-                    
-                except Exception as e:
-                    print(f"❌ Error initiating call for {row_data['phone_number']}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    failed_count += 1
+                    continue
+                
+                model_name = agent.model.model_name
+                has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
+                    db=db,
+                    tenant_id=user.current_tenant_id,
+                    model_name=model_name,
+                    estimated_minutes=1
+                )
+                
+                if not has_sufficient:
                     results.append({
-                        'phone_number': row_data['phone_number'],
-                        'error': str(e)
+                        'phone_number': call_data.phone_number,
+                        'agent_id': call_data.agent_id,
+                        'status': 'failed',
+                        'error': f'Insufficient credits. Current: {current_credits}, Required: {required_credits}'
                     })
-            
-            return create_success_response(
-                {
-                    'total_rows': len(rows),
-                    'processed': len([r for r in results if 'error' not in r and r.get('status') != 'scheduled']),
-                    'failed': len([r for r in results if 'error' in r]),
-                    'scheduled': len([r for r in results if r.get('status') == 'scheduled']),
-                    'results': results
-                },
-                f"Processed {len(rows)} rows from CSV. {len([r for r in results if 'error' not in r and r.get('status') != 'scheduled'])} calls initiated."
-            )
+                    failed_count += 1
+                    continue
+                
+                # Create call session
+                call_session = call_session_service.create_call_session(
+                    db=db,
+                    user_id=user.id,
+                    agent_id=agent.id,
+                    tenant_id=user.current_tenant_id,
+                    call_type="outbound",
+                    customer_phone_number=call_data.phone_number
+                )
+                
+                # Build webhook URLs
+                webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
+                status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
+                
+                # Make call via Twilio
+                call = twilio_service.make_call(
+                    to_number=call_data.phone_number,
+                    from_number=twilio_service.get_phone_number(),
+                    webhook_url=webhook_url,
+                    status_callback_url=status_callback_url
+                )
+                
+                # Update call session with Twilio SID
+                call_session.twilio_call_sid = call.sid
+                db.commit()
+                
+                results.append({
+                    'phone_number': call_data.phone_number,
+                    'agent_id': call_data.agent_id,
+                    'call_session_id': str(call_session.id),
+                    'twilio_call_sid': call.sid,
+                    'status': 'initiated'
+                })
+                initiated_count += 1
+                
+                print(f"✅ Call initiated for {call_data.phone_number} using agent {agent.name}")
+                
+            except Exception as e:
+                print(f"❌ Error initiating call for {call_data.phone_number}: {e}")
+                import traceback
+                traceback.print_exc()
+                results.append({
+                    'phone_number': call_data.phone_number,
+                    'agent_id': call_data.agent_id,
+                    'status': 'failed',
+                    'error': str(e)
+                })
+                failed_count += 1
+        
+        return create_success_response(
+            {
+                'total': len(request.calls),
+                'initiated': initiated_count,
+                'failed': failed_count,
+                'scheduled': scheduled_count,
+                'results': results
+            },
+            f"Processed {len(request.calls)} calls. {initiated_count} initiated, {failed_count} failed."
+        )
     
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error processing CSV: {e}")
+        print(f"❌ Error processing bulk calls: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to process CSV: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process bulk calls: {str(e)}")
 
 
 @router.post("/webhook/call-events", response_class=HTMLResponse,include_in_schema=False)

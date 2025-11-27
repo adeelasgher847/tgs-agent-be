@@ -72,6 +72,17 @@ class CallInitiateResponse(BaseModel):
     status: str
 
 
+# Bulk call initiation schemas
+class BulkCallItem(BaseModel):
+    phone_number: str
+    agent_id: str
+    call_time: Optional[str] = None  # Format: "YYYY-MM-DD HH:MM:SS"
+    status: Optional[str] = "pending"
+
+class BulkCallInitiateRequest(BaseModel):
+    calls: List[BulkCallItem]
+
+
 # Web-based voice chat schemas (Talk to Assistant feature)
 class VoiceChatStartRequest(BaseModel):
     agent_id: str
