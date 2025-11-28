@@ -22,28 +22,30 @@ router = APIRouter()
 scheduled_call_service = ScheduledCallService()
 
 
-@router.post("/upload", response_model=SuccessResponse[CSVUploadResponse])
+@router.post("", response_model=SuccessResponse[CSVUploadResponse])
 async def upload_scheduled_calls_csv(
     file: UploadFile = File(..., description="CSV file with scheduled calls"),
-    timezone: str = Query("UTC", description="Default timezone for scheduled_time if not specified in CSV"),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
-    Upload CSV file to create scheduled calls.
+    Upload CSV file to create scheduled calls and trigger n8n webhooks.
     
     CSV format should have the following columns:
     - phone_number: Phone number to call (required)
     - agent_id: UUID of the agent (required)
-    - scheduled_time: Scheduled time in format YYYY-MM-DD HH:MM:SS or ISO format (required)
-    - timezone: Timezone string (optional, defaults to query parameter or UTC)
+    - call_time_utc: Scheduled time in UTC (required) - ISO format (YYYY-MM-DDTHH:MM:SSZ) or YYYY-MM-DD HH:MM:SS
+    - status: Status (optional, defaults to "pending")
     
     Example CSV:
-    phone_number,agent_id,scheduled_time,timezone
-    +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-01-15 14:30:00,America/New_York
-    +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-01-15 16:00:00,Europe/London
+    phone_number,agent_id,call_time_utc,status
+    +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-01-15T14:30:00Z,pending
+    +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-01-15 16:00:00,pending
     
-    The scheduled_time will be converted from the specified timezone to UTC before saving.
+    After creating each scheduled call, a webhook is sent to n8n with:
+    - schedule_id, tenant_id, user_id, phone_number, agent_id, call_time_utc
+    
+    The call_time_utc should already be in UTC format.
     """
     try:
         # Validate file type
@@ -54,13 +56,12 @@ async def upload_scheduled_calls_csv(
         content = await file.read()
         csv_content = content.decode('utf-8')
         
-        # Parse CSV and create scheduled calls
-        result = scheduled_call_service.parse_csv_and_create_calls(
+        # Parse CSV and create scheduled calls (async, triggers n8n webhooks)
+        result = await scheduled_call_service.parse_csv_and_create_calls(
             db=db,
             tenant_id=user.current_tenant_id,
             user_id=user.id,
-            csv_content=csv_content,
-            user_timezone=timezone
+            csv_content=csv_content
         )
         
         return create_success_response(
@@ -74,7 +75,7 @@ async def upload_scheduled_calls_csv(
         raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
 
 
-@router.get("/", response_model=SuccessResponse[ScheduledCallList])
+@router.get("", response_model=SuccessResponse[ScheduledCallList])
 async def get_scheduled_calls(
     skip: int = Query(0, ge=0, description="Number of records to skip (for pagination)"),
     limit: int = Query(50, ge=1, le=50, description="Maximum number of records to return (max 50)"),
@@ -82,7 +83,7 @@ async def get_scheduled_calls(
     db: Session = Depends(get_db)
 ):
     """
-    Get all pending calls based on current UTC time with pagination.
+    Get all pending scheduled calls with pagination (defaults to pending status only).
     
     Returns only calls with status 'pending' that are scheduled for the future.
     Maximum 50 records per request. Use skip and limit for pagination.
@@ -140,15 +141,17 @@ async def get_scheduled_calls(
         raise HTTPException(status_code=500, detail=f"Failed to get scheduled calls: {str(e)}")
 
 
-@router.patch("/{call_id}", response_model=SuccessResponse[ScheduledCallResponse])
+@router.patch("/{id}", response_model=SuccessResponse[ScheduledCallResponse])
 async def update_scheduled_call_status(
-    call_id: uuid.UUID,
+    id: uuid.UUID,
     status_update: ScheduledCallUpdate,
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
     Update the status of a scheduled call.
+    
+    This endpoint is typically called by n8n after a call is completed or fails.
     
     Valid status values:
     - pending: Call is pending
@@ -166,7 +169,7 @@ async def update_scheduled_call_status(
         # Update the scheduled call status
         updated_call = scheduled_call_service.update_scheduled_call_status(
             db=db,
-            call_id=call_id,
+            call_id=id,
             new_status=status_update.status,
             tenant_id=tenant_id,
             user_id=user_id

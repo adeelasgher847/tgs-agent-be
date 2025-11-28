@@ -31,4 +31,3 @@ google-cloud-texttospeech
 sendgrid
 pydub
 audioop-lts
-pytz

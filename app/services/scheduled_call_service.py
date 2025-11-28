@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 import uuid
 import csv
 import io
+import httpx
+import asyncio
 from app.models.scheduled_call import ScheduledCall
 from app.models.agent import Agent
 from app.schemas.scheduled_call import ScheduledCallCreate, CSVUploadResponse
-import pytz
+from app.core.config import settings
 
 class ScheduledCallService:
     @staticmethod
@@ -33,26 +35,58 @@ class ScheduledCallService:
         return scheduled_call
 
     @staticmethod
-    def parse_csv_and_create_calls(
+    async def send_n8n_webhook(scheduled_call: ScheduledCall):
+        """Send webhook to n8n with scheduled call data"""
+        if not settings.N8N_WEBHOOK_URL:
+            print("⚠️ N8N_WEBHOOK_URL not configured, skipping webhook")
+            return
+        
+        payload = {
+            "schedule_id": str(scheduled_call.id),
+            "tenant_id": str(scheduled_call.tenant_id),
+            "user_id": str(scheduled_call.user_id),
+            "phone_number": scheduled_call.phone_number,
+            "agent_id": str(scheduled_call.agent_id),
+            "call_time_utc": scheduled_call.scheduled_time_utc.isoformat()
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(settings.N8N_WEBHOOK_URL, json=payload)
+                response.raise_for_status()
+                print(f"✅ n8n webhook sent for schedule_id: {scheduled_call.id}")
+        except Exception as e:
+            print(f"⚠️ Failed to send n8n webhook for schedule_id {scheduled_call.id}: {e}")
+            # Don't fail the entire operation if webhook fails
+
+    @staticmethod
+    async def parse_csv_and_create_calls(
         db: Session,
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
-        csv_content: str,
-        user_timezone: str = "UTC"
+        csv_content: str
     ) -> CSVUploadResponse:
         """
         Parse CSV file and create scheduled calls.
         
         Expected CSV format:
-        phone_number,agent_id,scheduled_time,timezone
+        phone_number,agent_id,call_time_utc,status
         
-        scheduled_time should be in format: YYYY-MM-DD HH:MM:SS or ISO format
-        timezone should be a valid timezone string (e.g., 'America/New_York', 'UTC', 'Europe/London')
+        - phone_number: Phone number to call (required)
+        - agent_id: UUID of the agent (required)
+        - call_time_utc: Scheduled time in UTC (required) - ISO format (YYYY-MM-DDTHH:MM:SSZ) or YYYY-MM-DD HH:MM:SS
+        - status: Status (optional, defaults to "pending")
+        
+        Example CSV:
+        phone_number,agent_id,call_time_utc,status
+        +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-01-15T14:30:00Z,pending
+        +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-01-15 16:00:00,pending
         """
         reader = csv.DictReader(io.StringIO(csv_content))
         successful_rows = 0
         failed_rows = 0
         errors = []
+        webhook_tasks = []
         
         for row_num, row in enumerate(reader, start=2):  # Start at 2 (row 1 is header)
             try:
@@ -67,58 +101,44 @@ class ScheduledCallService:
                     failed_rows += 1
                     continue
                 
-                if not row.get('scheduled_time'):
-                    errors.append(f"Row {row_num}: Missing scheduled_time")
+                if not row.get('call_time_utc'):
+                    errors.append(f"Row {row_num}: Missing call_time_utc")
                     failed_rows += 1
                     continue
                 
-                # Get timezone (default to user_timezone parameter or UTC)
-                tz_str = row.get('timezone', user_timezone)
-                if not tz_str:
-                    tz_str = "UTC"
-                
-                # Parse scheduled_time
-                scheduled_time_str = row['scheduled_time'].strip()
+                # Parse call_time_utc (already in UTC)
+                call_time_str = row['call_time_utc'].strip()
                 try:
-                    # Try parsing ISO format first
-                    if 'T' in scheduled_time_str or '+' in scheduled_time_str or scheduled_time_str.endswith('Z'):
-                        scheduled_time = datetime.fromisoformat(scheduled_time_str.replace('Z', '+00:00'))
+                    # Try parsing ISO format first (with Z or +00:00)
+                    if 'T' in call_time_str or '+' in call_time_str or call_time_str.endswith('Z'):
+                        # Handle ISO format
+                        if call_time_str.endswith('Z'):
+                            call_time_str = call_time_str.replace('Z', '+00:00')
+                        scheduled_time_utc = datetime.fromisoformat(call_time_str)
                     else:
-                        # Try parsing common formats
+                        # Try parsing common formats (assume UTC)
                         for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d %H:%M']:
                             try:
-                                scheduled_time = datetime.strptime(scheduled_time_str, fmt)
+                                scheduled_time_utc = datetime.strptime(call_time_str, fmt)
+                                # Make it timezone-aware (UTC)
+                                scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
                                 break
                             except ValueError:
                                 continue
                         else:
-                            raise ValueError(f"Unable to parse date format: {scheduled_time_str}")
+                            raise ValueError(f"Unable to parse date format: {call_time_str}")
+                    
+                    # Ensure it's timezone-aware and in UTC
+                    if scheduled_time_utc.tzinfo is None:
+                        scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
+                    else:
+                        # Convert to UTC if it has timezone info
+                        scheduled_time_utc = scheduled_time_utc.astimezone(timezone.utc)
+                        
                 except Exception as e:
-                    errors.append(f"Row {row_num}: Invalid scheduled_time format: {str(e)}")
+                    errors.append(f"Row {row_num}: Invalid call_time_utc format: {str(e)}")
                     failed_rows += 1
                     continue
-                
-                # Convert to user timezone if not timezone-aware
-                if scheduled_time.tzinfo is None:
-                    try:
-                        user_tz = pytz.timezone(tz_str)
-                        scheduled_time = user_tz.localize(scheduled_time)
-                    except pytz.exceptions.UnknownTimeZoneError:
-                        errors.append(f"Row {row_num}: Unknown timezone: {tz_str}")
-                        failed_rows += 1
-                        continue
-                else:
-                    # If already timezone-aware, convert to the specified timezone first
-                    try:
-                        user_tz = pytz.timezone(tz_str)
-                        scheduled_time = scheduled_time.astimezone(user_tz)
-                    except pytz.exceptions.UnknownTimeZoneError:
-                        errors.append(f"Row {row_num}: Unknown timezone: {tz_str}")
-                        failed_rows += 1
-                        continue
-                
-                # Convert to UTC
-                scheduled_time_utc = scheduled_time.astimezone(timezone.utc)
                 
                 # Parse agent_id
                 try:
@@ -142,20 +162,28 @@ class ScheduledCallService:
                     failed_rows += 1
                     continue
                 
+                # Get status (optional, default to "pending")
+                status = row.get('status', 'pending').strip().lower()
+                if status not in ["pending", "scheduled", "failed", "completed"]:
+                    status = "pending"
+                
                 # Create scheduled call
                 call_data = ScheduledCallCreate(
                     phone_number=row['phone_number'],
                     agent_id=agent_uuid,
                     scheduled_time_utc=scheduled_time_utc,
-                    status="pending"
+                    status=status
                 )
                 
-                ScheduledCallService.create_scheduled_call(
+                scheduled_call = ScheduledCallService.create_scheduled_call(
                     db=db,
                     tenant_id=tenant_id,
                     user_id=user_id,
                     call_data=call_data
                 )
+                
+                # Queue webhook task
+                webhook_tasks.append(ScheduledCallService.send_n8n_webhook(scheduled_call))
                 
                 successful_rows += 1
                 
@@ -163,6 +191,13 @@ class ScheduledCallService:
                 errors.append(f"Row {row_num}: Unexpected error: {str(e)}")
                 failed_rows += 1
                 continue
+        
+        # Send all webhooks in parallel (fire and forget)
+        if webhook_tasks:
+            try:
+                await asyncio.gather(*webhook_tasks, return_exceptions=True)
+            except Exception as e:
+                print(f"⚠️ Error sending webhooks: {e}")
         
         return CSVUploadResponse(
             total_rows=successful_rows + failed_rows,
