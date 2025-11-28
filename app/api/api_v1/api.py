@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.api_v1.endpoints import user, tenant, role, invite, accept_invite, billing, plan, provider, model, gemini, openai, scheduled_calls
+from app.api.api_v1.endpoints import user, tenant, role, invite, accept_invite, billing, plan, provider, model, gemini, openai
 from app.routers.agent import router as agent_router
 from app.routers.voice import router as voice_router
 from app.routers.voice_gather import router as voice_gather_router
@@ -11,6 +11,7 @@ from app.routers.general_websocket import router as general_websocket_router
 from app.routers.stt_websocket import router as stt_websocket_router
 from app.routers.tts_audio import router as tts_audio_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
+from app.routers.scheduled_calls import router as scheduled_calls_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -35,4 +36,5 @@ api_router.include_router(gemini.router, prefix="/gemini", tags=["gemini"],inclu
 api_router.include_router(openai.router, prefix="/openai", tags=["openai"],include_in_schema=False)
 api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
 api_router.include_router(bidirectional_stream_router, prefix="/stream", tags=["Bidirectional Streaming"], include_in_schema=False)
-api_router.include_router(scheduled_calls.router, prefix="/schedule", tags=["Scheduled Calls"])
+api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
+api_router.include_router(scheduled_calls_router, prefix="/scheduled-calls", tags=["Scheduled Calls (Legacy)"])

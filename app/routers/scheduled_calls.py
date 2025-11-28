@@ -24,6 +24,34 @@ router = APIRouter()
 scheduled_call_service = ScheduledCallService()
 
 
+async def _upload_scheduled_calls_csv_internal(
+    file: UploadFile,
+    user: User,
+    db: Session
+):
+    """Internal function to handle CSV upload logic"""
+    # Validate file type
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="File must be a CSV file")
+    
+    # Read file content
+    content = await file.read()
+    csv_content = content.decode('utf-8')
+    
+    # Parse CSV and create scheduled calls (async, triggers n8n webhooks)
+    result = await scheduled_call_service.parse_csv_and_create_calls(
+        db=db,
+        tenant_id=user.current_tenant_id,
+        user_id=user.id,
+        csv_content=csv_content
+    )
+    
+    return create_success_response(
+        result,
+        f"Processed {result.total_rows} rows: {result.successful_rows} successful, {result.failed_rows} failed"
+    )
+
+
 @router.post("", response_model=SuccessResponse[CSVUploadResponse])
 async def upload_scheduled_calls_csv(
     file: UploadFile = File(..., description="CSV file with scheduled calls"),
@@ -50,27 +78,28 @@ async def upload_scheduled_calls_csv(
     The call_time_utc should already be in UTC format.
     """
     try:
-        # Validate file type
-        if not file.filename.endswith('.csv'):
-            raise HTTPException(status_code=400, detail="File must be a CSV file")
-        
-        # Read file content
-        content = await file.read()
-        csv_content = content.decode('utf-8')
-        
-        # Parse CSV and create scheduled calls (async, triggers n8n webhooks)
-        result = await scheduled_call_service.parse_csv_and_create_calls(
-            db=db,
-            tenant_id=user.current_tenant_id,
-            user_id=user.id,
-            csv_content=csv_content
-        )
-        
-        return create_success_response(
-            result,
-            f"Processed {result.total_rows} rows: {result.successful_rows} successful, {result.failed_rows} failed"
-        )
-        
+        return await _upload_scheduled_calls_csv_internal(file, user, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
+
+
+@router.post("/upload", response_model=SuccessResponse[CSVUploadResponse])
+async def upload_scheduled_calls_csv_legacy(
+    file: UploadFile = File(..., description="CSV file with scheduled calls"),
+    timezone: str = Query("UTC", description="Deprecated - not used anymore. Use call_time_utc in UTC format in CSV."),
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    [DEPRECATED] Legacy endpoint for CSV upload. Use POST /api/v1/schedule instead.
+    
+    This endpoint is kept for backward compatibility.
+    The timezone parameter is ignored - CSV should use call_time_utc in UTC format.
+    """
+    try:
+        return await _upload_scheduled_calls_csv_internal(file, user, db)
     except HTTPException:
         raise
     except Exception as e:
