@@ -10,7 +10,6 @@ from app.api.deps import get_db, require_tenant, get_optional_tenant_user
 from app.models.user import User
 from app.schemas.scheduled_call import (
     ScheduledCallResponse,
-    ScheduledCallList,
     ScheduledCallUpdate,
     CSVUploadResponse
 )
@@ -83,122 +82,6 @@ async def upload_scheduled_calls_csv(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
-
-
-@router.post("/upload", response_model=SuccessResponse[CSVUploadResponse])
-async def upload_scheduled_calls_csv_legacy(
-    file: UploadFile = File(..., description="CSV file with scheduled calls"),
-    timezone: str = Query("UTC", description="Deprecated - not used anymore. Use call_time_utc in UTC format in CSV."),
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """
-    [DEPRECATED] Legacy endpoint for CSV upload. Use POST /api/v1/schedule instead.
-    
-    This endpoint is kept for backward compatibility.
-    The timezone parameter is ignored - CSV should use call_time_utc in UTC format.
-    """
-    try:
-        return await _upload_scheduled_calls_csv_internal(file, user, db)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
-
-
-@router.get("", response_model=SuccessResponse[ScheduledCallList])
-async def get_scheduled_calls(
-    request: Request,
-    skip: int = Query(0, ge=0, description="Number of records to skip (for pagination)"),
-    limit: int = Query(50, ge=1, le=50, description="Maximum number of records to return (max 50)"),
-    tenant_id: Optional[str] = Query(None, description="Tenant ID (required if using webhook secret)"),
-    user_id: Optional[str] = Query(None, description="User ID (optional, for filtering)"),
-    user: Optional[User] = Depends(get_optional_tenant_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Get all pending scheduled calls with pagination (defaults to pending status only).
-    
-    Returns only calls with status 'pending' that are scheduled for the future.
-    Maximum 50 records per request. Use skip and limit for pagination.
-    
-    Authentication: Either JWT token OR n8n webhook secret (X-N8N-Webhook-Secret header).
-    If using webhook secret, provide tenant_id (and optionally user_id) as query parameters.
-    
-    This endpoint is designed for workflow automation to fetch and initiate calls.
-    
-    Example:
-    - First page: skip=0, limit=50
-    - Second page: skip=50, limit=50
-    - Third page: skip=100, limit=50
-    """
-    try:
-        # Verify authentication: either JWT token OR webhook secret
-        is_webhook = await verify_n8n_webhook_secret_async(request)
-        
-        if is_webhook:
-            # Webhook authentication - get tenant_id and user_id from query params
-            if not tenant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="tenant_id query parameter is required when using webhook secret"
-                )
-            try:
-                tenant_uuid = uuid.UUID(tenant_id)
-                user_uuid = uuid.UUID(user_id) if user_id else None
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid UUID format for tenant_id or user_id"
-                )
-            tenant_id_filter = tenant_uuid
-            user_id_filter = user_uuid
-        else:
-            # JWT authentication - get from user token
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required: JWT token or n8n webhook secret"
-                )
-            tenant_id_filter = user.current_tenant_id
-            user_id_filter = user.id
-        
-        # Get pending calls with pagination
-        calls, total = scheduled_call_service.get_pending_calls(
-            db=db,
-            tenant_id=tenant_id_filter,
-            user_id=user_id_filter,
-            skip=skip,
-            limit=limit
-        )
-        
-        call_responses = [
-            ScheduledCallResponse(
-                id=call.id,
-                tenant_id=call.tenant_id,
-                user_id=call.user_id,
-                phone_number=call.phone_number,
-                agent_id=call.agent_id,
-                scheduled_time_utc=call.scheduled_time_utc,
-                status=call.status,
-                created_at=call.created_at,
-                updated_at=call.updated_at
-            )
-            for call in calls
-        ]
-        
-        return create_success_response(
-            ScheduledCallList(
-                calls=call_responses, 
-                total=total,
-                skip=skip,
-                limit=limit
-            ),
-            f"Retrieved {len(call_responses)} pending calls (total: {total})"
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get scheduled calls: {str(e)}")
 
 
 @router.patch("/{id}", response_model=SuccessResponse[ScheduledCallResponse])

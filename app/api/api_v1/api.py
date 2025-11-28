@@ -37,4 +37,3 @@ api_router.include_router(openai.router, prefix="/openai", tags=["openai"],inclu
 api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
 api_router.include_router(bidirectional_stream_router, prefix="/stream", tags=["Bidirectional Streaming"], include_in_schema=False)
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
-api_router.include_router(scheduled_calls_router, prefix="/scheduled-calls", tags=["Scheduled Calls (Legacy)"])
