@@ -12,13 +12,14 @@ import asyncio
 import csv
 import io
 
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_tenant, get_optional_tenant_user
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
 from app.schemas.base import SuccessResponse
 from app.services.twilio_service import twilio_service
 from app.services.agent_service import agent_service
 from app.models.agent import Agent
 from app.models.user import User
+from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.call_session import CallSession
 from app.services.call_session_service import call_session_service
 from app.services.voice_logging_service import VoiceLoggingService
@@ -266,17 +267,29 @@ def add_media_stream_to_response(
 
 @router.post("/call/initiate", response_model=SuccessResponse[CallInitiateResponse])
 async def initiate_call(
-    request: CallInitiateRequest,
-    user: User = Depends(require_tenant),
+    call_request: CallInitiateRequest,
+    http_request: Request,
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
     Endpoint to initiate a voice call using Twilio.
     
-    Request Payload:
+    Authentication: Either JWT token OR n8n webhook secret (X-N8N-Webhook-Secret header).
+    If using webhook secret, provide tenant_id (and optionally user_id) in request body.
+    
+    Request Payload (JWT auth):
     {
         "agentId": "agent_12345",
         "userPhoneNumber": "+1234567890"
+    }
+    
+    Request Payload (n8n webhook):
+    {
+        "agentId": "agent_12345",
+        "userPhoneNumber": "+1234567890",
+        "tenant_id": "tenant-uuid",
+        "user_id": "user-uuid" (optional)
     }
     
     Response:
@@ -287,15 +300,45 @@ async def initiate_call(
     }
     """
     try:
+        # Verify authentication: either JWT token OR webhook secret
+        is_webhook = await verify_n8n_webhook_secret_async(http_request)
+        
+        if is_webhook:
+            # Webhook authentication - get tenant_id and user_id from request body
+            if not call_request.tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="tenant_id is required in request body when using webhook secret"
+                )
+            try:
+                tenant_uuid = uuid.UUID(call_request.tenant_id)
+                user_uuid = uuid.UUID(call_request.user_id) if call_request.user_id else None
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid UUID format for tenant_id or user_id"
+                )
+            tenant_id_filter = tenant_uuid
+            user_id_filter = user_uuid
+        else:
+            # JWT authentication - get from user token
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required: JWT token or n8n webhook secret"
+                )
+            tenant_id_filter = user.current_tenant_id
+            user_id_filter = user.id
+        
         # Validate agent exists in database
         try:
-            agent_id = uuid.UUID(request.agentId)
-            agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
+            agent_id = uuid.UUID(call_request.agentId)
+            agent = agent_service.get_agent_by_id(db, agent_id, tenant_id_filter)
         except (ValueError, HTTPException):
-            raise HTTPException(status_code=404, detail=f"Agent {request.agentId} not found")
+            raise HTTPException(status_code=404, detail=f"Agent {call_request.agentId} not found")
         
         # Validate phone number format
-        if not twilio_service.validate_phone_number(request.userPhoneNumber):
+        if not twilio_service.validate_phone_number(call_request.userPhoneNumber):
             raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
         
         # Check credits before initiating call
@@ -305,7 +348,7 @@ async def initiate_call(
         model_name = agent.model.model_name
         has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
             db=db,
-            tenant_id=user.current_tenant_id,
+            tenant_id=tenant_id_filter,
             model_name=model_name,
             estimated_minutes=1  # Check for at least 1 minute
         )
@@ -326,19 +369,19 @@ async def initiate_call(
         # Create call session first so we can include the ID in webhook URLs
         call_session = call_session_service.create_call_session(
             db=db,
-            user_id=user.id,
+            user_id=user_id_filter,
             agent_id=agent.id,
-            tenant_id=user.current_tenant_id,
+            tenant_id=tenant_id_filter,
             twilio_call_sid="",  # Will be updated after call is made
             from_number=twilio_service.get_phone_number(),
-            to_number=request.userPhoneNumber,
+            to_number=call_request.userPhoneNumber,
             call_type="outbound"  # Agent is initiating the call, so it's outbound
         )
         
         # Direct WebSocket streaming connection (Vapi-style - no intermediate messages!)
         # User speaks first, agent responds naturally
-        webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
-        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user.id}&callSessionId={call_session.id}"
+        webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
+        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         
         print(f"Making call with webhook_url: {webhook_url}")
         print(f"Making call with status_callback_url: {status_callback_url}")
@@ -351,7 +394,7 @@ async def initiate_call(
                 metadata={
                     "agent_id": str(agent.id),
                     "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
+                    "to_number": call_request.userPhoneNumber,
                     "from_number": twilio_service.get_phone_number(),
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
@@ -362,7 +405,7 @@ async def initiate_call(
         
         # Make the call using Twilio
         call = twilio_service.make_call(
-            to_number=request.userPhoneNumber,
+            to_number=call_request.userPhoneNumber,
             from_number=twilio_service.get_phone_number(),
             webhook_url=webhook_url,
             status_callback_url=status_callback_url

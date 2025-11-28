@@ -63,6 +63,8 @@ class AccountInfo(BaseModel):
 class CallInitiateRequest(BaseModel):
     agentId: str
     userPhoneNumber: str
+    tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
+    user_id: Optional[str] = None  # Optional, for n8n webhook calls
 
 
 class CallInitiateResponse(BaseModel):

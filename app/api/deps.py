@@ -103,6 +103,42 @@ def require_tenant(
     return user
 
 
+def get_optional_tenant_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """Try to get user with tenant, but return None if authentication fails.
+    Used for endpoints that support both JWT and webhook secret authentication."""
+    if not credentials:
+        return None
+    
+    try:
+        payload = verify_token(credentials.credentials)
+        if not payload:
+            return None
+        
+        tenant_id = payload.get("tenant_id")
+        if not tenant_id:
+            return None
+        
+        user_id_str = payload.get("user_id")
+        if not user_id_str:
+            return None
+        
+        try:
+            user_id = uuid.UUID(user_id_str)
+            tenant_uuid = uuid.UUID(tenant_id)
+        except ValueError:
+            return None
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.current_tenant_id = tenant_uuid
+        return user
+    except:
+        return None
+
+
 def require_admin(
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)

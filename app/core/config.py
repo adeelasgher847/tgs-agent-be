@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # Webhook Configuration
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
     N8N_WEBHOOK_URL: str = ""  # n8n webhook URL for scheduled calls
+    N8N_WEBHOOK_SECRET: str = ""  # Secret for verifying n8n webhook requests
     # Email settings (SendGrid)
     SENDGRID_API_KEY: str = ""
     SENDGRID_SENDER_EMAIL: str = ""

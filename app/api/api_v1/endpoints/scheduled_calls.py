@@ -2,10 +2,11 @@
 Scheduled Calls API endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status, Request
 from sqlalchemy.orm import Session
+from typing import Optional
 import uuid
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_tenant, get_optional_tenant_user
 from app.models.user import User
 from app.schemas.scheduled_call import (
     ScheduledCallResponse,
@@ -15,6 +16,7 @@ from app.schemas.scheduled_call import (
 )
 from app.services.scheduled_call_service import ScheduledCallService
 from app.utils.response import create_success_response
+from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.schemas.base import SuccessResponse
 
 router = APIRouter()
@@ -77,9 +79,12 @@ async def upload_scheduled_calls_csv(
 
 @router.get("", response_model=SuccessResponse[ScheduledCallList])
 async def get_scheduled_calls(
+    request: Request,
     skip: int = Query(0, ge=0, description="Number of records to skip (for pagination)"),
     limit: int = Query(50, ge=1, le=50, description="Maximum number of records to return (max 50)"),
-    user: User = Depends(require_tenant),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required if using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (optional, for filtering)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -88,8 +93,8 @@ async def get_scheduled_calls(
     Returns only calls with status 'pending' that are scheduled for the future.
     Maximum 50 records per request. Use skip and limit for pagination.
     
-    Tenant ID and User ID are automatically extracted from the access token.
-    Only returns calls for the authenticated user's tenant and user.
+    Authentication: Either JWT token OR n8n webhook secret (X-N8N-Webhook-Secret header).
+    If using webhook secret, provide tenant_id (and optionally user_id) as query parameters.
     
     This endpoint is designed for workflow automation to fetch and initiate calls.
     
@@ -99,15 +104,41 @@ async def get_scheduled_calls(
     - Third page: skip=100, limit=50
     """
     try:
-        # Get tenant_id and user_id from access token (via require_tenant dependency)
-        tenant_id = user.current_tenant_id
-        user_id = user.id
+        # Verify authentication: either JWT token OR webhook secret
+        is_webhook = await verify_n8n_webhook_secret_async(request)
+        
+        if is_webhook:
+            # Webhook authentication - get tenant_id and user_id from query params
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="tenant_id query parameter is required when using webhook secret"
+                )
+            try:
+                tenant_uuid = uuid.UUID(tenant_id)
+                user_uuid = uuid.UUID(user_id) if user_id else None
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid UUID format for tenant_id or user_id"
+                )
+            tenant_id_filter = tenant_uuid
+            user_id_filter = user_uuid
+        else:
+            # JWT authentication - get from user token
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required: JWT token or n8n webhook secret"
+                )
+            tenant_id_filter = user.current_tenant_id
+            user_id_filter = user.id
         
         # Get pending calls with pagination
         calls, total = scheduled_call_service.get_pending_calls(
             db=db,
-            tenant_id=tenant_id,
-            user_id=user_id,
+            tenant_id=tenant_id_filter,
+            user_id=user_id_filter,
             skip=skip,
             limit=limit
         )
@@ -145,13 +176,19 @@ async def get_scheduled_calls(
 async def update_scheduled_call_status(
     id: uuid.UUID,
     status_update: ScheduledCallUpdate,
-    user: User = Depends(require_tenant),
+    request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required if using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (optional, for filtering)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
     Update the status of a scheduled call.
     
     This endpoint is typically called by n8n after a call is completed or fails.
+    
+    Authentication: Either JWT token OR n8n webhook secret (X-N8N-Webhook-Secret header).
+    If using webhook secret, provide tenant_id (and optionally user_id) as query parameters.
     
     Valid status values:
     - pending: Call is pending
@@ -162,17 +199,43 @@ async def update_scheduled_call_status(
     Only the owner of the call (same tenant and user) can update the status.
     """
     try:
-        # Get tenant_id and user_id from access token
-        tenant_id = user.current_tenant_id
-        user_id = user.id
+        # Verify authentication: either JWT token OR webhook secret
+        is_webhook = await verify_n8n_webhook_secret_async(request)
+        
+        if is_webhook:
+            # Webhook authentication - get tenant_id and user_id from query params
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="tenant_id query parameter is required when using webhook secret"
+                )
+            try:
+                tenant_uuid = uuid.UUID(tenant_id)
+                user_uuid = uuid.UUID(user_id) if user_id else None
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid UUID format for tenant_id or user_id"
+                )
+            tenant_id_filter = tenant_uuid
+            user_id_filter = user_uuid
+        else:
+            # JWT authentication - get from user token
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required: JWT token or n8n webhook secret"
+                )
+            tenant_id_filter = user.current_tenant_id
+            user_id_filter = user.id
         
         # Update the scheduled call status
         updated_call = scheduled_call_service.update_scheduled_call_status(
             db=db,
             call_id=id,
             new_status=status_update.status,
-            tenant_id=tenant_id,
-            user_id=user_id
+            tenant_id=tenant_id_filter,
+            user_id=user_id_filter
         )
         
         # Convert to response model

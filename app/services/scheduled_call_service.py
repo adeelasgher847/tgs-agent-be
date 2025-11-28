@@ -47,12 +47,18 @@ class ScheduledCallService:
             "user_id": str(scheduled_call.user_id),
             "phone_number": scheduled_call.phone_number,
             "agent_id": str(scheduled_call.agent_id),
-            "call_time_utc": scheduled_call.scheduled_time_utc.isoformat()
+            "call_time_utc": scheduled_call.scheduled_time_utc.isoformat(),
+            "webhook_secret": settings.N8N_WEBHOOK_SECRET  # Include secret for n8n to use
         }
+        
+        # Prepare headers with secret (preferred method)
+        headers = {}
+        if settings.N8N_WEBHOOK_SECRET:
+            headers["X-N8N-Webhook-Secret"] = settings.N8N_WEBHOOK_SECRET
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(settings.N8N_WEBHOOK_URL, json=payload)
+                response = await client.post(settings.N8N_WEBHOOK_URL, json=payload, headers=headers)
                 response.raise_for_status()
                 print(f"✅ n8n webhook sent for schedule_id: {scheduled_call.id}")
         except Exception as e:
