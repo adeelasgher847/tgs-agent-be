@@ -54,17 +54,17 @@ class MondayService:
         }
         '''
         
-        # Column values - these need to match your Monday.com board column IDs
-        # Note: You may need to adjust column IDs based on your actual Monday.com board setup
+        # Column values - matched to actual Monday.com board column IDs (Board: 5025385619)
+        # Column IDs fetched from Monday.com API on 2025-12-02
         column_values = {
-            "text": phone_number,  # Simple text columns
-            "text4": agent_id,
-            "text7": call_time_utc,
-            "text8": tenant_id,
-            "text9": user_id,
-            "text5": schedule_id,
-            "status": {"label": "pending"}  # lowercase to match Monday.com status labels
+            "text_mky84z85": agent_id,         # agent_id column
+            "text_mky8xmrx": call_time_utc,    # call_time_utc column
+            "text_mky8e7q8": tenant_id,        # tenant_id column
+            "text_mky8bky7": user_id,          # user_id column
+            "status": {"label": "pending"}     # status column (lowercase labels)
         }
+        
+        # Note: phone_number is set as item name, schedule_id not stored (optional tracking column)
         
         variables = {
             "boardId": settings.MONDAY_BOARD_ID,
