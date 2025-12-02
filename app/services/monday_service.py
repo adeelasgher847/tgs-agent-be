@@ -63,7 +63,7 @@ class MondayService:
             "text8": tenant_id,
             "text9": user_id,
             "text5": schedule_id,
-            "status": {"label": "Pending"}
+            "status": {"label": "pending"}  # lowercase to match Monday.com status labels
         }
         
         variables = {
@@ -116,7 +116,7 @@ class MondayService:
         
         Args:
             item_id: Monday.com item ID
-            status: Status label (e.g., "Called", "Failed", "Waiting")
+            status: Status label (e.g., "called", "failed", "waiting") - lowercase
             call_sid: Twilio call SID (optional)
             error_message: Error message if failed (optional)
         
