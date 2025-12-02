@@ -23,23 +23,36 @@ async def upload_scheduled_calls_csv(
     db: Session = Depends(get_db)
 ):
     """
-    Upload CSV file to trigger n8n webhooks for scheduled calls automation.
+    Upload CSV file to create scheduled calls in Monday.com board.
     
-    CSV format should have the following columns:
-    - phone_number: Phone number to call (required)
-    - agent_id: UUID of the agent (required)
-    - call_time_utc: Scheduled time in UTC (required) - ISO format (YYYY-MM-DDTHH:MM:SSZ) or YYYY-MM-DD HH:MM:SS
-    
-    Example CSV:
+    **CSV Format (3 columns only):**
+    ```
     phone_number,agent_id,call_time_utc
-    +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-01-15T14:30:00Z
-    +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-01-15 16:00:00
+    ```
     
-    After parsing each row, a webhook is sent to n8n with:
-    - schedule_id (auto-generated UUID), tenant_id, user_id, phone_number, agent_id, call_time_utc
+    **Required Columns:**
+    - `phone_number`: Phone number to call (e.g., +1234567890)
+    - `agent_id`: UUID of the agent (must exist in your tenant)
+    - `call_time_utc`: Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS
     
-    The call_time_utc should already be in UTC format.
-    No data is stored in the database - only webhooks are sent to n8n for automation.
+    **Note:** `tenant_id` and `user_id` are automatically taken from your logged-in session.
+    
+    **Example CSV:**
+    ```csv
+    phone_number,agent_id,call_time_utc
+    +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-12-02T14:30:00Z
+    +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-12-02 16:00:00
+    ```
+    
+    **Flow:**
+    1. Backend parses CSV and validates data
+    2. Creates items in Monday.com board (status: "Pending")
+    3. n8n cron (every 1 min) detects new items
+    4. n8n waits until call_time_utc
+    5. n8n calls backend `/voice/call/initiate`
+    6. n8n updates Monday.com status ("Called" or "Failed")
+    
+    **No data is stored in the database** - everything is tracked in Monday.com.
     """
     try:
         # Validate file type
@@ -50,8 +63,8 @@ async def upload_scheduled_calls_csv(
         content = await file.read()
         csv_content = content.decode('utf-8')
         
-        # Parse CSV and send webhooks to n8n (no DB storage)
-        result = await scheduled_call_service.parse_csv_and_send_webhooks(
+        # Parse CSV and create Monday.com items
+        result = await scheduled_call_service.parse_csv_and_send_to_monday(
             db=db,
             tenant_id=user.current_tenant_id,
             user_id=user.id,
@@ -60,7 +73,7 @@ async def upload_scheduled_calls_csv(
         
         return create_success_response(
             result,
-            f"Processed {result.total_rows} rows: {result.successful_rows} successful, {result.failed_rows} failed. Webhooks sent to n8n."
+            f"Processed {result.total_rows} rows: {result.successful_rows} added to Monday.com, {result.failed_rows} failed. n8n will automatically trigger calls at scheduled times."
         )
         
     except HTTPException:

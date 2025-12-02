@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
+    
+    # Monday.com Configuration
+    MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
+    MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -10,6 +10,7 @@ import asyncio
 from app.models.agent import Agent
 from app.schemas.scheduled_call import CSVUploadResponse
 from app.core.config import settings
+from app.services.monday_service import MondayService
 
 
 class ScheduledCallService:
@@ -52,6 +53,142 @@ class ScheduledCallService:
             # Don't fail the entire operation if webhook fails
 
     @staticmethod
+    async def parse_csv_and_send_to_monday(
+        db: Session,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        csv_content: str
+    ) -> CSVUploadResponse:
+        """
+        Parse CSV file and create items in Monday.com board.
+        n8n will automatically pick them up via cron trigger.
+        
+        Expected CSV format (3 columns only):
+        phone_number,agent_id,call_time_utc
+        
+        - phone_number: Phone number to call (required)
+        - agent_id: UUID of the agent (required)
+        - call_time_utc: Scheduled time in UTC (required) - ISO format or YYYY-MM-DD HH:MM:SS
+        
+        tenant_id and user_id are automatically taken from logged-in user.
+        
+        Example CSV:
+        phone_number,agent_id,call_time_utc
+        +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-12-02T14:30:00Z
+        +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-12-02 16:00:00
+        """
+        reader = csv.DictReader(io.StringIO(csv_content))
+        successful_rows = 0
+        failed_rows = 0
+        errors = []
+        
+        for row_num, row in enumerate(reader, start=2):  # Start at 2 (row 1 is header)
+            try:
+                # Validate required fields
+                if not row.get('phone_number'):
+                    errors.append(f"Row {row_num}: Missing phone_number")
+                    failed_rows += 1
+                    continue
+                
+                if not row.get('agent_id'):
+                    errors.append(f"Row {row_num}: Missing agent_id")
+                    failed_rows += 1
+                    continue
+                
+                if not row.get('call_time_utc'):
+                    errors.append(f"Row {row_num}: Missing call_time_utc")
+                    failed_rows += 1
+                    continue
+                
+                # Parse call_time_utc
+                call_time_str = row['call_time_utc'].strip()
+                try:
+                    if 'T' in call_time_str or '+' in call_time_str or call_time_str.endswith('Z'):
+                        if call_time_str.endswith('Z'):
+                            call_time_str = call_time_str.replace('Z', '+00:00')
+                        scheduled_time_utc = datetime.fromisoformat(call_time_str)
+                    else:
+                        for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d %H:%M']:
+                            try:
+                                scheduled_time_utc = datetime.strptime(call_time_str, fmt)
+                                scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            raise ValueError(f"Unable to parse date format: {call_time_str}")
+                    
+                    if scheduled_time_utc.tzinfo is None:
+                        scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
+                    else:
+                        scheduled_time_utc = scheduled_time_utc.astimezone(timezone.utc)
+                        
+                except Exception as e:
+                    errors.append(f"Row {row_num}: Invalid call_time_utc format: {str(e)}")
+                    failed_rows += 1
+                    continue
+                
+                # Parse agent_id
+                try:
+                    agent_uuid = uuid.UUID(row['agent_id'])
+                except ValueError:
+                    errors.append(f"Row {row_num}: Invalid agent_id format: {row['agent_id']}")
+                    failed_rows += 1
+                    continue
+                
+                # Verify agent exists and belongs to tenant
+                agent = db.query(Agent).filter(
+                    and_(
+                        Agent.id == agent_uuid,
+                        Agent.tenant_id == tenant_id,
+                        Agent.is_deleted == False
+                    )
+                ).first()
+                
+                if not agent:
+                    errors.append(f"Row {row_num}: Agent not found or doesn't belong to tenant")
+                    failed_rows += 1
+                    continue
+                
+                # Generate unique schedule_id
+                schedule_id = uuid.uuid4()
+                
+                # Create Monday.com item (synchronous, but fast)
+                try:
+                    result = MondayService.create_scheduled_call_item(
+                        schedule_id=str(schedule_id),
+                        phone_number=row['phone_number'],
+                        agent_id=str(agent_uuid),
+                        call_time_utc=scheduled_time_utc.isoformat(),
+                        tenant_id=str(tenant_id),
+                        user_id=str(user_id)
+                    )
+                    
+                    if result:
+                        successful_rows += 1
+                        print(f"✅ Row {row_num}: Added to Monday.com - {row['phone_number']}")
+                    else:
+                        errors.append(f"Row {row_num}: Failed to create Monday.com item")
+                        failed_rows += 1
+                        
+                except Exception as e:
+                    errors.append(f"Row {row_num}: Monday.com error: {str(e)}")
+                    failed_rows += 1
+                    continue
+                
+            except Exception as e:
+                errors.append(f"Row {row_num}: Unexpected error: {str(e)}")
+                failed_rows += 1
+                continue
+        
+        return CSVUploadResponse(
+            total_rows=successful_rows + failed_rows,
+            successful_rows=successful_rows,
+            failed_rows=failed_rows,
+            errors=errors
+        )
+
+    @staticmethod
     async def parse_csv_and_send_webhooks(
         db: Session,
         tenant_id: uuid.UUID,
@@ -59,8 +196,10 @@ class ScheduledCallService:
         csv_content: str
     ) -> CSVUploadResponse:
         """
-        Parse CSV file and send webhooks to n8n for automation.
+        [LEGACY] Parse CSV file and send webhooks to n8n for automation.
         No DB storage - just parse, validate, and send webhooks.
+        
+        Note: This is the old flow. Use parse_csv_and_send_to_monday() for Monday.com integration.
         
         Expected CSV format:
         phone_number,agent_id,call_time_utc
