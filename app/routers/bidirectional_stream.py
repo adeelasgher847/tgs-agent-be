@@ -145,9 +145,11 @@ _background_audio_length_cache = 0
 
 def decode_background_audio_from_base64() -> tuple[bytes, int]:
     """
-    Decode base64 MP3 and convert to MULAW format.
-    Returns (mulaw_bytes, length_in_bytes).
-    Cached after first load.
+    Decode BACKGROUND_AUDIO_BASE64 (MP3) into MULAW using imageio-ffmpeg.
+    
+    - Uses ffmpeg binary from imageio-ffmpeg package (project-local, no system install needed).
+    - If decode succeeds: background audio will play normally.
+    - If any error occurs: only warning + silence returned, call will NOT crash.
     """
     global _background_audio_mulaw_cache, _background_audio_length_cache
     
@@ -159,40 +161,57 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         return b'', 0
     
     try:
-        from io import BytesIO
-        from pydub import AudioSegment
-    except ImportError as import_error:
-        error_msg = str(import_error)
-        if "audioop" in error_msg:
-            print(f"⚠️ Python 3.13+ detected: audioop module was removed")
-            print(f"⚠️ Please install audioop-lts: pip install audioop-lts")
-            print(f"⚠️ Background audio will be disabled until audioop-lts is installed")
-        else:
-            print(f"❌ Failed to import pydub: {import_error}")
-        sys.stdout.flush()
-        return b'', 0
-    
-    try:
+        import subprocess
+        from imageio_ffmpeg import get_ffmpeg_exe
+        
+        # Get local ffmpeg binary path from imageio-ffmpeg
+        ffmpeg_exe = get_ffmpeg_exe()
+        
+        # Decode base64 → MP3 bytes
         mp3_bytes = base64.b64decode(BACKGROUND_AUDIO_BASE64)
-        audio = AudioSegment.from_mp3(BytesIO(mp3_bytes))
-        audio = audio.set_frame_rate(8000)
-        audio = audio.set_channels(1)
-        raw_audio = audio.raw_data
+        
+        # Use ffmpeg to convert MP3 → raw PCM (s16le, 8kHz, mono)
+        proc = subprocess.run(
+            [
+                ffmpeg_exe,
+                "-hide_banner",
+                "-loglevel", "error",
+                "-f", "mp3",
+                "-i", "pipe:0",
+                "-f", "s16le",
+                "-acodec", "pcm_s16le",
+                "-ar", "8000",
+                "-ac", "1",
+                "pipe:1",
+            ],
+            input=mp3_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        
+        raw_audio = proc.stdout
+        if not raw_audio:
+            print("⚠️ ffmpeg decoded empty audio; using silence.")
+            return b'', 0
+        
+        # Convert 16-bit PCM → MULAW (using existing helper function)
         linear_samples = []
         for i in range(0, len(raw_audio), 2):
             sample = int.from_bytes(raw_audio[i:i+2], byteorder='little', signed=True)
             linear_samples.append(sample)
+        
         mulaw_bytes = bytes([linear_to_ulaw_sample(sample) for sample in linear_samples])
         
         _background_audio_mulaw_cache = mulaw_bytes
         _background_audio_length_cache = len(mulaw_bytes)
         
-        print(f"✅ Decoded background audio from base64: {len(mulaw_bytes)} bytes MULAW ({len(mulaw_bytes)/8000:.2f}s)")
+        print(f"✅ Decoded background audio via imageio-ffmpeg: {len(mulaw_bytes)} bytes MULAW ({len(mulaw_bytes)/8000:.2f}s)")
         sys.stdout.flush()
         return mulaw_bytes, len(mulaw_bytes)
         
     except Exception as e:
-        print(f"❌ Failed to decode background audio: {e}")
+        print(f"⚠️ Failed to decode background audio via imageio-ffmpeg, using silence instead: {e}")
         import traceback
         traceback.print_exc()
         sys.stdout.flush()
