@@ -243,9 +243,9 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
 
     if not user:
         # Create new user
-        # Always prefer provider-provided names. Fallback: split full name.
-        first_name = given_name or (name.split()[0] if name else None)
-        last_name = family_name or (" ".join(name.split()[1:]) if name and len(name.split()) > 1 else None)
+        # Always prefer provider-provided names. Fallback: split full name or use default.
+        first_name = given_name or (name.split()[0] if name else "User")
+        last_name = family_name or (" ".join(name.split()[1:]) if name and len(name.split()) > 1 else ".")
         hashed_password = get_password_hash(secrets.token_urlsafe(32))  # placeholder for social
 
         db_user = User(
