@@ -31,3 +31,4 @@ google-cloud-texttospeech
 sendgrid
 pydub
 audioop-lts
+imageio-ffmpeg

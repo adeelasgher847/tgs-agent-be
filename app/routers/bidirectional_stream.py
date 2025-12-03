@@ -164,13 +164,9 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         import subprocess
         from imageio_ffmpeg import get_ffmpeg_exe
         
-        # Get local ffmpeg binary path from imageio-ffmpeg
-        ffmpeg_exe = get_ffmpeg_exe()
-        
-        # Decode base64 → MP3 bytes
+        ffmpeg_exe = get_ffmpeg_exe()  # local ffmpeg path
         mp3_bytes = base64.b64decode(BACKGROUND_AUDIO_BASE64)
         
-        # Use ffmpeg to convert MP3 → raw PCM (s16le, 8kHz, mono)
         proc = subprocess.run(
             [
                 ffmpeg_exe,
@@ -195,7 +191,6 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
             print("⚠️ ffmpeg decoded empty audio; using silence.")
             return b'', 0
         
-        # Convert 16-bit PCM → MULAW (using existing helper function)
         linear_samples = []
         for i in range(0, len(raw_audio), 2):
             sample = int.from_bytes(raw_audio[i:i+2], byteorder='little', signed=True)
