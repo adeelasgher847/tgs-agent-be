@@ -426,7 +426,7 @@ async def initiate_call(
                     "call_sid": call.sid,
                     "agent_id": str(agent.id),
                     "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
+                    "to_number": call_request.userPhoneNumber,
                     "from_number": twilio_service.get_phone_number(),
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
@@ -900,6 +900,48 @@ async def handle_call_events_webhook(
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
                     print(f"✅ Stopped credit monitoring for no-answer call session {call_session.id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+            
+            return HTMLResponse("", media_type="application/xml")
+        
+        elif call_status == "canceled":
+            # Call canceled - handle cancellation (hung up while ringing)
+            print(f"Call canceled - SID: {call_sid}")
+            
+            # Broadcast call canceled event (non-blocking - fire and forget)
+            if call_session:
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="canceled",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    print(f"✅ Queued call canceled event for session {call_session.id}")
+                    
+                    # Also broadcast call ended event for canceled calls (non-blocking - fire and forget)
+                    asyncio.create_task(broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="canceled",
+                        duration=0,
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    print(f"✅ Queued call ended (canceled) event for session {call_session.id}")
+                except Exception as e:
+                    print(f"❌ Failed to broadcast call canceled event: {e}")
+                
+                # Stop credit monitoring when call is canceled
+                try:
+                    credit_service.stop_credit_monitoring(call_session.id)
+                    print(f"✅ Stopped credit monitoring for canceled call session {call_session.id}")
                 except Exception as e:
                     print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
