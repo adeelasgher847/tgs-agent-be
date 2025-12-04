@@ -145,27 +145,58 @@ _background_audio_length_cache = 0
 
 def decode_background_audio_from_base64() -> tuple[bytes, int]:
     """
-    Background audio loader - Using built-in wave module (no pydub dependency).
+    Decode base64 MP3 and convert to MULAW format.
     Returns (mulaw_bytes, length_in_bytes).
     Cached after first load.
-    
-    Note: Background audio temporarily disabled to avoid pydub/Python 3.13 issues.
-    To re-enable: Convert background audio to WAV format and use wave module.
     """
     global _background_audio_mulaw_cache, _background_audio_length_cache
     
     if _background_audio_mulaw_cache is not None:
         return _background_audio_mulaw_cache, _background_audio_length_cache
     
-    # Background audio temporarily disabled (no pydub dependency)
-    print("ℹ️ Background audio disabled (pydub dependency removed for Python 3.13 compatibility)")
-    print("ℹ️ Calls will work normally with silence during agent thinking time")
-    sys.stdout.flush()
+    if not BACKGROUND_AUDIO_BASE64:
+        print("⚠️ No background audio configured (BACKGROUND_AUDIO_BASE64 is empty)")
+        return b'', 0
     
-    _background_audio_mulaw_cache = b''
-    _background_audio_length_cache = 0
+    try:
+        from io import BytesIO
+        from pydub import AudioSegment
+    except ImportError as import_error:
+        error_msg = str(import_error)
+        if "audioop" in error_msg:
+            print(f"⚠️ Python 3.13+ detected: audioop module was removed")
+            print(f"⚠️ Please install audioop-lts: pip install audioop-lts")
+            print(f"⚠️ Background audio will be disabled until audioop-lts is installed")
+        else:
+            print(f"❌ Failed to import pydub: {import_error}")
+        sys.stdout.flush()
+        return b'', 0
     
-    return b'', 0
+    try:
+        mp3_bytes = base64.b64decode(BACKGROUND_AUDIO_BASE64)
+        audio = AudioSegment.from_mp3(BytesIO(mp3_bytes))
+        audio = audio.set_frame_rate(8000)
+        audio = audio.set_channels(1)
+        raw_audio = audio.raw_data
+        linear_samples = []
+        for i in range(0, len(raw_audio), 2):
+            sample = int.from_bytes(raw_audio[i:i+2], byteorder='little', signed=True)
+            linear_samples.append(sample)
+        mulaw_bytes = bytes([linear_to_ulaw_sample(sample) for sample in linear_samples])
+        
+        _background_audio_mulaw_cache = mulaw_bytes
+        _background_audio_length_cache = len(mulaw_bytes)
+        
+        print(f"✅ Decoded background audio from base64: {len(mulaw_bytes)} bytes MULAW ({len(mulaw_bytes)/8000:.2f}s)")
+        sys.stdout.flush()
+        return mulaw_bytes, len(mulaw_bytes)
+        
+    except Exception as e:
+        print(f"❌ Failed to decode background audio: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.stdout.flush()
+        return b'', 0
 
 
 def get_background_audio_chunk(offset: int, length: int, bg_audio: bytes, bg_length: int) -> bytes:

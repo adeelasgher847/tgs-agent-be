@@ -35,26 +35,35 @@ class TwilioService:
         from app.core.config import settings
         recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
         
-        call = client.calls.create(
-            to=to_number,
-            from_=from_number,
-            url=webhook_url,
-            status_callback=status_callback_url,
-            status_callback_event=['initiated', 'ringing', 'answered', 'completed', 'busy', 'no-answer', 'canceled', 'failed'],  # All possible statuses
-            status_callback_method='POST',
-            record=record,  # Enable call recording
-            recording_channels='dual',  # Record both channels
-            recording_status_callback=recording_status_callback_url,  # Get recording status updates
-            timeout=30,  # Answer timeout (30 seconds)
-            
-            # ⚠️ AMD TEMPORARILY DISABLED FOR TESTING
-            # AMD was causing all calls to show as 'completed' (voicemail detection)
-            # TODO: Re-enable after verifying busy/no-answer/canceled statuses work
-            # machine_detection='DetectMessageEnd',
-            # machine_detection_timeout=5,
-        )
+        # Build call parameters
+        call_params = {
+            'to': to_number,
+            'from_': from_number,
+            'status_callback': status_callback_url,
+            'status_callback_event': ['initiated', 'ringing', 'answered', 'completed', 'busy', 'no-answer', 'canceled', 'failed'],
+            'status_callback_method': 'POST',
+            'record': record,
+            'recording_channels': 'dual',
+            'recording_status_callback': recording_status_callback_url,
+            'timeout': 30,
+        }
         
-        print(f"✅ Call initiated with all status callbacks (AMD disabled for testing)")
+        # Add webhook URL only if provided (bot enabled)
+        if webhook_url:
+            call_params['url'] = webhook_url
+            print(f"✅ Bot enabled - webhook URL provided")
+        else:
+            print(f"⚠️ Bot disabled - no webhook URL (testing mode)")
+        
+        # ⚠️ AMD TEMPORARILY DISABLED FOR TESTING
+        # AMD was causing all calls to show as 'completed' (voicemail detection)
+        # TODO: Re-enable after verifying busy/no-answer/canceled statuses work
+        # call_params['machine_detection'] = 'DetectMessageEnd'
+        # call_params['machine_detection_timeout'] = 5
+        
+        call = client.calls.create(**call_params)
+        
+        print(f"✅ Call initiated with all status callbacks (AMD disabled)")
         
         return call
     

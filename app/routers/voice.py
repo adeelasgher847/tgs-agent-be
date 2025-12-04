@@ -404,13 +404,16 @@ async def initiate_call(
             print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         
         # Make the call using Twilio
+        # ⚠️ BOT DISABLED FOR TESTING - webhook_url commented out
+        # This allows testing of pure call statuses (busy, no-answer, canceled)
+        # without bot automatically answering
         call = twilio_service.make_call(
             to_number=call_request.userPhoneNumber,
             from_number=twilio_service.get_phone_number(),
-            webhook_url=webhook_url,
+            webhook_url=None,  # Bot disabled - no automatic answer
             status_callback_url=status_callback_url
         )
-        print(f"✅ Call initiated successfully")
+        print(f"✅ Call initiated successfully (BOT DISABLED - testing mode)")
         
         # Update call session with Twilio SID
         call_session.twilio_call_sid = call.sid
@@ -500,22 +503,6 @@ async def handle_call_events_webhook(
         from_number = form_data.get("From", "")
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
-        
-        # 🔍 RAW TWILIO WEBHOOK DATA LOGGING (for debugging status issues)
-        print("=" * 80)
-        print("🔍 RAW TWILIO WEBHOOK DATA:")
-        print(f"   CallStatus: {call_status}")
-        print(f"   CallSid: {call_sid}")
-        print(f"   Direction: {direction}")
-        print(f"   AnsweredBy: {form_data.get('AnsweredBy', 'N/A')}")  # AMD result
-        print(f"   CallDuration: {form_data.get('CallDuration', 'N/A')}")
-        print(f"   To: {to_number}")
-        print(f"   From: {from_number}")
-        print(f"   Timestamp: {form_data.get('Timestamp', 'N/A')}")
-        print("   ALL FORM DATA:")
-        for key, value in form_data.items():
-            print(f"      {key}: {value}")
-        print("=" * 80)
         
         # Note: Speech input is now handled by Google Cloud STT via WebSocket
         # The old Twilio SpeechResult is no longer used
