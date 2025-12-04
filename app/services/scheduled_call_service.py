@@ -1,19 +1,79 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import and_
-from typing import Optional
 from datetime import datetime, timezone
-import uuid
 import csv
 import io
 import httpx
 import asyncio
-from app.models.agent import Agent
-from app.schemas.scheduled_call import CSVUploadResponse
+import uuid
+from typing import Optional, Tuple
+
+from fastapi import HTTPException
+from sqlalchemy import and_
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
+from app.models.agent import Agent
+from app.models.scheduled_call import ScheduledCall
+from app.models.tenant import Tenant
+from app.schemas.scheduled_call import CSVUploadResponse
 from app.services.monday_service import MondayService
 
 
 class ScheduledCallService:
+    @staticmethod
+    def _get_tenant(db: Session, tenant_id: uuid.UUID) -> Tenant:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        return tenant
+
+    @staticmethod
+    def get_or_create_board_for_tenant(db: Session, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, dict]:
+        tenant = ScheduledCallService._get_tenant(db, tenant_id)
+        board_record = db.query(ScheduledCall).filter(ScheduledCall.tenant_id == tenant_id).first()
+
+        if not board_record:
+            try:
+                workspace_id = getattr(settings, "MONDAY_WORKSPACE_ID", None)
+                board = MondayService.create_board(
+                    board_name=f"Scheduled Calls - {tenant.name}",
+                    workspace_id=workspace_id,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Failed to create Monday.com board: {exc}")
+
+            board_record = ScheduledCall(
+                tenant_id=tenant_id,
+                monday_board_id=board["id"],
+                monday_board_url=board["url"],
+            )
+            db.add(board_record)
+            db.commit()
+            db.refresh(board_record)
+
+        try:
+            column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to prepare Monday.com board: {exc}")
+
+        return board_record, column_map
+
+    @staticmethod
+    def get_board_for_tenant(db: Session, tenant_id: uuid.UUID) -> Optional[ScheduledCall]:
+        return db.query(ScheduledCall).filter(ScheduledCall.tenant_id == tenant_id).first()
+
+    @staticmethod
+    def clear_board_items(db: Session, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, int]:
+        board_record = ScheduledCallService.get_board_for_tenant(db, tenant_id)
+        if not board_record:
+            raise HTTPException(status_code=404, detail="Board not found for tenant")
+
+        try:
+            deleted = MondayService.delete_all_items(board_record.monday_board_id)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to clear Monday.com board items: {exc}")
+
+        return board_record, deleted
+
     @staticmethod
     async def send_n8n_webhook(
         schedule_id: uuid.UUID,
@@ -77,6 +137,7 @@ class ScheduledCallService:
         +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-12-02T14:30:00Z
         +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-12-02 16:00:00
         """
+        board_record, column_map = ScheduledCallService.get_or_create_board_for_tenant(db, tenant_id)
         reader = csv.DictReader(io.StringIO(csv_content))
         successful_rows = 0
         failed_rows = 0
@@ -150,13 +211,11 @@ class ScheduledCallService:
                     failed_rows += 1
                     continue
                 
-                # Generate unique schedule_id
-                schedule_id = uuid.uuid4()
-                
                 # Create Monday.com item (synchronous, but fast)
                 try:
                     result = MondayService.create_scheduled_call_item(
-                        schedule_id=str(schedule_id),
+                        board_id=board_record.monday_board_id,
+                        column_map=column_map,
                         phone_number=row['phone_number'],
                         agent_id=str(agent_uuid),
                         call_time_utc=scheduled_time_utc.isoformat(),
@@ -185,7 +244,9 @@ class ScheduledCallService:
             total_rows=successful_rows + failed_rows,
             successful_rows=successful_rows,
             failed_rows=failed_rows,
-            errors=errors
+            errors=errors,
+            board_id=board_record.monday_board_id,
+            board_url=board_record.monday_board_url,
         )
 
     @staticmethod

@@ -22,3 +22,4 @@ class Tenant(Base):
     call_logs = relationship("CallLog", back_populates="tenant")
     phone_numbers = relationship("PhoneNumber", back_populates="tenant")
     subscription = relationship("Subscription", back_populates="tenant", uselist=False)
+    scheduled_call = relationship("ScheduledCall", back_populates="tenant", uselist=False)

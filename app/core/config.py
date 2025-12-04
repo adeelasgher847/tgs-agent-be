@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     # Monday.com Configuration
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
+    MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
