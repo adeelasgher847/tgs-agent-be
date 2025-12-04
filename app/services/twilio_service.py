@@ -28,7 +28,7 @@ class TwilioService:
         return self._client
     
     def make_call(self, to_number, from_number, webhook_url, status_callback_url, record=True):
-        """Make an outbound call with improved reliability and optional recording"""
+        """Make an outbound call with improved reliability, recording, and AMD"""
         client = self.get_client()
         
         # Set up recording status callback URL (use settings for correct base URL)
@@ -40,16 +40,19 @@ class TwilioService:
             from_=from_number,
             url=webhook_url,
             status_callback=status_callback_url,
-            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed', 'busy', 'no-answer', 'canceled', 'failed'],  # All possible statuses
             status_callback_method='POST',
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
             timeout=30,  # Answer timeout (30 seconds)
             
-            # NO AMD - Fast webhook response prevents Twilio announcements naturally!
-            # Instant TwiML (< 10ms) + Auto-greeting = No "Please hold" messages
+            # AMD enabled to detect human vs voicemail
+            machine_detection='DetectMessageEnd',  # Best detection method
+            machine_detection_timeout=5,  # Wait 5 seconds max
         )
+        
+        print(f"✅ Call initiated with AMD enabled and all status callbacks")
         
         return call
     
