@@ -170,6 +170,15 @@ class CallSessionService:
         call_session = self.get_call_session_by_id(db, session_id)
         if call_session:
             call_session.status = status
+            
+            # Update ended_reason, success_evaluation, and cost on call_session
+            if ended_reason:
+                call_session.ended_reason = ended_reason
+            if success_evaluation:
+                call_session.success_evaluation = success_evaluation
+            if cost is not None:
+                call_session.cost = cost
+            
             if status in ["completed", "failed", "busy"]:
                 call_session.end_time = datetime.now(timezone.utc)
                 if call_session.start_time:

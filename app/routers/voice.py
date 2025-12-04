@@ -599,7 +599,6 @@ async def handle_call_events_webhook(
         # Set end time and calculate duration when call completes
         if call_session and call_status == "completed":
             call_session.end_time = datetime.now(timezone.utc)
-            call_session.ended_reason = "hung up"  # Set to "hung up" when Twilio sends completed status
             if call_session.start_time:
                 duration = (call_session.end_time - call_session.start_time).total_seconds()
                 call_session.duration = int(duration)
@@ -1709,7 +1708,6 @@ async def end_call(
         # Update call session status
         call_session.status = "completed"
         call_session.end_time = datetime.now(timezone.utc)
-        call_session.ended_reason = "completed"  # Set to "completed" when manually ended via endpoint
         
         if call_session.start_time:
             duration = (call_session.end_time - call_session.start_time).total_seconds()
