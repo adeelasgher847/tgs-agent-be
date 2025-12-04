@@ -108,11 +108,14 @@ class MondayService:
             }
         }
         """
+        # Monday.com expects defaults as a JSON string, not a dict
+        defaults_json = json.dumps(defaults) if defaults else None
+        
         variables = {
             "boardId": board_id,
             "title": title,
             "type": column_type,
-            "defaults": defaults,
+            "defaults": defaults_json,
         }
         data = MondayService._execute(query, variables)
         column = data.get("create_column")
