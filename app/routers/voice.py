@@ -630,10 +630,7 @@ async def handle_call_events_webhook(
                 except Exception as e:
                     print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
-            # Commit the status update
-            db.commit()
-            
-            # Update associated call log with ended_reason "hung up"
+            # Update call session AND call log together (single commit)
             call_session_service.update_call_session_status(
                 db, 
                 call_session.id, 
@@ -1718,9 +1715,7 @@ async def end_call(
             duration = (call_session.end_time - call_session.start_time).total_seconds()
             call_session.duration = int(duration)
         
-        db.commit()
-        
-        # Update associated call log with ended_reason
+        # Update call session AND call log together (single commit)
         call_session_service.update_call_session_status(
             db, 
             call_session.id, 
