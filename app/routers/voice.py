@@ -501,6 +501,22 @@ async def handle_call_events_webhook(
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
         
+        # 🔍 RAW TWILIO WEBHOOK DATA LOGGING (for debugging status issues)
+        print("=" * 80)
+        print("🔍 RAW TWILIO WEBHOOK DATA:")
+        print(f"   CallStatus: {call_status}")
+        print(f"   CallSid: {call_sid}")
+        print(f"   Direction: {direction}")
+        print(f"   AnsweredBy: {form_data.get('AnsweredBy', 'N/A')}")  # AMD result
+        print(f"   CallDuration: {form_data.get('CallDuration', 'N/A')}")
+        print(f"   To: {to_number}")
+        print(f"   From: {from_number}")
+        print(f"   Timestamp: {form_data.get('Timestamp', 'N/A')}")
+        print("   ALL FORM DATA:")
+        for key, value in form_data.items():
+            print(f"      {key}: {value}")
+        print("=" * 80)
+        
         # Note: Speech input is now handled by Google Cloud STT via WebSocket
         # The old Twilio SpeechResult is no longer used
         # speech_result = form_data.get("SpeechResult", "")

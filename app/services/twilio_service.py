@@ -47,12 +47,14 @@ class TwilioService:
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
             timeout=30,  # Answer timeout (30 seconds)
             
-            # AMD enabled to detect human vs voicemail
-            machine_detection='DetectMessageEnd',  # Best detection method
-            machine_detection_timeout=5,  # Wait 5 seconds max
+            # ⚠️ AMD TEMPORARILY DISABLED FOR TESTING
+            # AMD was causing all calls to show as 'completed' (voicemail detection)
+            # TODO: Re-enable after verifying busy/no-answer/canceled statuses work
+            # machine_detection='DetectMessageEnd',
+            # machine_detection_timeout=5,
         )
         
-        print(f"✅ Call initiated with AMD enabled and all status callbacks")
+        print(f"✅ Call initiated with all status callbacks (AMD disabled for testing)")
         
         return call
     
