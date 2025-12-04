@@ -56,7 +56,7 @@ async def upload_scheduled_calls_csv(
     record per tenant so we can re-use the same board on future uploads.
     """
     try:
-        # Validate file type
+        # Validate file tyype
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail="File must be a CSV file")
         
