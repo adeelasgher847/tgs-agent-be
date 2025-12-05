@@ -120,9 +120,11 @@ from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
 from app.services.credit_service import credit_service
+from app.services.twilio_service import twilio_service
+from app.services.call_analysis_service import CallAnalysisService
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
-from app.routers.general_websocket import broadcast_call_status_update
+from app.routers.general_websocket import broadcast_call_status_update, broadcast_call_ended
 from app.middleware.tts_preprocessing_middleware import preprocess_for_tts, quick_clean
 from app.utils.audio_constants import BACKGROUND_AUDIO_BASE64
 
@@ -1349,6 +1351,20 @@ class BidirectionalStreamHandler:
             print(f"✅ User finished speaking - ready to respond")
             sys.stdout.flush()
             
+            # 🆕 CHECK FOR EARLY DISINTEREST - Before adding to transcript
+            if await CallAnalysisService.check_for_early_disinterest(self.call_session, transcript):
+                # Add user message to transcript first
+                await self._add_to_transcript("client", transcript, "speech", confidence)
+                # End call early
+                await CallAnalysisService.end_call_early(
+                    db=self.db,
+                    call_session=self.call_session,
+                    call_sid=self.call_sid,
+                    reason="user_disinterest",
+                    agent=self.agent
+                )
+                return  # Don't generate response, call is ending
+            
             # Add to transcript
             await self._add_to_transcript("client", transcript, "speech", confidence)
             
@@ -1865,6 +1881,36 @@ IMPORTANT:
 
             if final_text:
                 await self._add_to_transcript("agent", final_text, "agent_response")
+                
+                # 🆕 CHECK 1: All objectives/questions completed?
+                if await CallAnalysisService.check_if_all_objectives_complete(
+                    self.call_session,
+                    self.agent,
+                    final_text
+                ):
+                    print(f"✅ All objectives completed - ending call")
+                    sys.stdout.flush()
+                    await CallAnalysisService.end_call_early(
+                        db=self.db,
+                        call_session=self.call_session,
+                        call_sid=self.call_sid,
+                        reason="all_objectives_completed",
+                        agent=self.agent
+                    )
+                    return  # Don't continue conversation
+                
+                # 🆕 CHECK 2: Rude user behavior detected?
+                if await CallAnalysisService.check_for_rude_behavior(self.call_session, user_text):
+                    print(f"🚫 Rude behavior detected - ending call")
+                    sys.stdout.flush()
+                    await CallAnalysisService.end_call_early(
+                        db=self.db,
+                        call_session=self.call_session,
+                        call_sid=self.call_sid,
+                        reason="rude_user_behavior",
+                        agent=self.agent
+                    )
+                    return  # Don't continue conversation
         
         except Exception as e:
             print(f"❌ Error generating response: {e}")
