@@ -162,7 +162,7 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
     
     try:
         from io import BytesIO
-        from pydub import AudioSegment
+        from pydub import AudioSegment # type:ignore
     except ImportError as import_error:
         error_msg = str(import_error)
         if "audioop" in error_msg:
