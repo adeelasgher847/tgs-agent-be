@@ -445,7 +445,8 @@ async def initiate_call(
                 callSessionId=str(call_session.id),
                 status="initiated",
                 board_id=call_request.board_id,  # Echo back if provided by n8n
-                monday_item_id=call_request.monday_item_id  # Echo back if provided by n8n
+                monday_item_id=call_request.monday_item_id,  # Echo back if provided by n8n
+                status_column_id=call_request.status_column_id  # Echo back if provided by n8n
             ),
             "Call initiated successfully"
         )
