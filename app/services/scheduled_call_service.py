@@ -117,27 +117,41 @@ class ScheduledCallService:
         db: Session,
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
-        csv_content: str
+        csv_content: str,
+        default_agent_id: uuid.UUID  # Required parameter - agent selected before upload
     ) -> CSVUploadResponse:
         """
         Parse CSV file and create items in Monday.com board.
         n8n will automatically pick them up via cron trigger.
         
-        Expected CSV format (3 columns only):
-        phone_number,agent_id,call_time_utc
+        Expected CSV format (2 columns only):
+        phone_number,call_time_utc
         
         - phone_number: Phone number to call (required)
-        - agent_id: UUID of the agent (required)
         - call_time_utc: Scheduled time in UTC (required) - ISO format or YYYY-MM-DD HH:MM:SS
+        - agent_id: Taken from default_agent_id parameter (all calls use same agent)
         
         tenant_id and user_id are automatically taken from logged-in user.
         
         Example CSV:
-        phone_number,agent_id,call_time_utc
-        +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-12-02T14:30:00Z
-        +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-12-02 16:00:00
+        phone_number,call_time_utc
+        +1234567890,2024-12-02T14:30:00Z
+        +0987654321,2024-12-02T14:31:00Z
         """
         board_record, column_map = ScheduledCallService.get_or_create_board_for_tenant(db, tenant_id)
+        
+        # Verify agent once before processing all rows
+        agent = db.query(Agent).filter(
+            and_(
+                Agent.id == default_agent_id,
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False
+            )
+        ).first()
+        
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found or doesn't belong to tenant")
+        
         reader = csv.DictReader(io.StringIO(csv_content))
         successful_rows = 0
         failed_rows = 0
@@ -151,15 +165,13 @@ class ScheduledCallService:
                     failed_rows += 1
                     continue
                 
-                if not row.get('agent_id'):
-                    errors.append(f"Row {row_num}: Missing agent_id")
-                    failed_rows += 1
-                    continue
-                
                 if not row.get('call_time_utc'):
                     errors.append(f"Row {row_num}: Missing call_time_utc")
                     failed_rows += 1
                     continue
+                
+                # Use default_agent_id for all rows (no need to check CSV for agent_id)
+                agent_uuid = default_agent_id
                 
                 # Parse call_time_utc
                 call_time_str = row['call_time_utc'].strip()
@@ -186,28 +198,6 @@ class ScheduledCallService:
                         
                 except Exception as e:
                     errors.append(f"Row {row_num}: Invalid call_time_utc format: {str(e)}")
-                    failed_rows += 1
-                    continue
-                
-                # Parse agent_id
-                try:
-                    agent_uuid = uuid.UUID(row['agent_id'])
-                except ValueError:
-                    errors.append(f"Row {row_num}: Invalid agent_id format: {row['agent_id']}")
-                    failed_rows += 1
-                    continue
-                
-                # Verify agent exists and belongs to tenant
-                agent = db.query(Agent).filter(
-                    and_(
-                        Agent.id == agent_uuid,
-                        Agent.tenant_id == tenant_id,
-                        Agent.is_deleted == False
-                    )
-                ).first()
-                
-                if not agent:
-                    errors.append(f"Row {row_num}: Agent not found or doesn't belong to tenant")
                     failed_rows += 1
                     continue
                 

@@ -2,10 +2,13 @@
 Scheduled Calls API endpoints with Monday.com integration (per-tenant boards)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
+import uuid
 from app.api.deps import get_db, require_tenant
 from app.models.user import User
+from app.models.agent import Agent
 from app.schemas.scheduled_call import CSVUploadResponse, BoardInfoResponse, DeleteBoardItemsResponse
 from app.services.scheduled_call_service import ScheduledCallService
 from app.utils.response import create_success_response
@@ -19,46 +22,70 @@ scheduled_call_service = ScheduledCallService()
 @router.post("", response_model=SuccessResponse[CSVUploadResponse])
 async def upload_scheduled_calls_csv(
     file: UploadFile = File(..., description="CSV file with scheduled calls"),
+    agent_id: str = Query(..., description="Agent ID to use for all calls in this CSV (required)"),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
     Upload CSV file to create scheduled calls in Monday.com board.
     
-    **CSV Format (3 columns only):**
+    **CSV Format (2 columns only):**
     ```
-    phone_number,agent_id,call_time_utc
+    phone_number,call_time_utc
     ```
+    
+    **Required:**
+    - Select agent before upload (agent_id query parameter - required)
+    - CSV with phone_number and call_time_utc only
     
     **Required Columns:**
     - `phone_number`: Phone number to call (e.g., +1234567890)
-    - `agent_id`: UUID of the agent (must exist in your tenant)
     - `call_time_utc`: Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS
     
     **Note:** `tenant_id` and `user_id` are automatically taken from your logged-in session.
+    All calls in this CSV will use the selected agent.
     
     **Example CSV:**
     ```csv
-    phone_number,agent_id,call_time_utc
-    +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-12-02T14:30:00Z
-    +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-12-02 16:00:00
+    phone_number,call_time_utc
+    +1234567890,2024-12-02T14:30:00Z
+    +0987654321,2024-12-02T14:31:00Z
+    +1234567892,2024-12-02T14:32:00Z
     ```
     
     **Flow:**
-    1. Backend parses CSV and validates data
-    2. Creates items in the tenant's dedicated Monday.com board (status: "Pending")
-    3. n8n cron (every 1 min) detects new items
-    4. n8n waits until call_time_utc
-    5. n8n calls backend `/voice/call/initiate`
-    6. n8n updates Monday.com status ("Called" or "Failed")
+    1. Select agent from dropdown
+    2. Upload CSV (2 columns: phone_number, call_time_utc)
+    3. Backend parses CSV and validates data
+    4. Creates items in the tenant's dedicated Monday.com board (status: "Pending")
+    5. n8n cron (every 1 min) detects new items
+    6. n8n waits until call_time_utc
+    7. n8n calls backend `/voice/call/initiate`
+    8. n8n updates Monday.com status ("Called" or "Failed")
     
     **Data storage:** CSV rows live only in Monday.com. The backend stores one board
     record per tenant so we can re-use the same board on future uploads.
     """
     try:
-        # Validate file tyype
+        # Validate file type
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail="File must be a CSV file")
+        
+        # Validate and verify agent_id (REQUIRED)
+        try:
+            agent_uuid = uuid.UUID(agent_id)
+            # Verify agent exists and belongs to tenant
+            agent = db.query(Agent).filter(
+                and_(
+                    Agent.id == agent_uuid,
+                    Agent.tenant_id == user.current_tenant_id,
+                    Agent.is_deleted == False
+                )
+            ).first()
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found or doesn't belong to tenant")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid agent_id format")
         
         # Read file content
         content = await file.read()
@@ -67,7 +94,8 @@ async def upload_scheduled_calls_csv(
             db=db,
             tenant_id=user.current_tenant_id,
             user_id=user.id,
-            csv_content=csv_content
+            csv_content=csv_content,
+            default_agent_id=agent_uuid  # Pass selected agent (required)
         )
 
         message = (
