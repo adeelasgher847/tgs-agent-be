@@ -10,7 +10,7 @@ import uuid
 from app.api.deps import get_db, require_tenant
 from app.models.user import User
 from app.models.agent import Agent
-from app.schemas.scheduled_call import CSVUploadResponse, BoardInfoResponse, DeleteBoardItemsResponse
+from app.schemas.scheduled_call import CSVUploadResponse, BoardInfoResponse, DeleteBoardItemsResponse, SingleCallRequest, SingleCallResponse
 from app.services.scheduled_call_service import ScheduledCallService
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
@@ -110,6 +110,57 @@ async def upload_scheduled_calls_csv(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
+
+
+@router.post("/single-call", response_model=SuccessResponse[SingleCallResponse])
+async def create_single_scheduled_call(
+    call_request: SingleCallRequest,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a single scheduled call in Monday.com board.
+    
+    **Request Body:**
+    ```json
+    {
+        "phone_number": "+1234567890",
+        "agent_id": "550e8400-e29b-41d4-a716-446655440000",
+        "call_time_utc": "2024-12-02T14:30:00Z"
+    }
+    ```
+    
+    **Flow:**
+    1. Validates agent exists and belongs to tenant
+    2. Creates item in user's Monday.com board (status: "Pending")
+    3. n8n cron detects new item and triggers call at scheduled time
+    
+    **Note:** `tenant_id` and `user_id` are automatically taken from logged-in session.
+    """
+    try:
+        # Parse agent_id
+        try:
+            agent_uuid = uuid.UUID(call_request.agent_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid agent_id format")
+        
+        result = await scheduled_call_service.create_single_scheduled_call(
+            db=db,
+            tenant_id=user.current_tenant_id,
+            user_id=user.id,
+            phone_number=call_request.phone_number,
+            agent_id=agent_uuid,
+            call_time_utc=call_request.call_time_utc
+        )
+        
+        return create_success_response(
+            SingleCallResponse(**result),
+            result["message"]
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create scheduled call: {str(e)}")
 
 
 @router.get("/board", response_model=SuccessResponse[BoardInfoResponse])

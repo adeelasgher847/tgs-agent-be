@@ -19,3 +19,19 @@ class DeleteBoardItemsResponse(BaseModel):
     items_deleted: int
     board_id: str
     board_url: str
+
+
+class SingleCallRequest(BaseModel):
+    phone_number: str = Field(..., description="Phone number to call (e.g., +1234567890)")
+    agent_id: str = Field(..., description="Agent ID (UUID)")
+    call_time_utc: str = Field(..., description="Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS")
+
+
+class SingleCallResponse(BaseModel):
+    monday_item_id: str
+    board_id: str
+    board_url: str
+    phone_number: str
+    agent_id: str
+    call_time_utc: str
+    message: str
