@@ -1846,7 +1846,7 @@ async def analyze_call_transcript(
     db: Session = Depends(get_db)
 ):
     """
-    Analyze call transcript using Gemini for summary and sentiment analysis
+    Analyze call transcript using LLM for summary, sentiment, and recommendations.
     
     Args:
         call_session_id: UUID of the call session
@@ -1854,7 +1854,10 @@ async def analyze_call_transcript(
         db: Database session
         
     Returns:
-        Analysis results including summary and sentiment
+        Analysis results including:
+        - summary: Brief call overview (2-3 sentences)
+        - sentiment: Sentiment analysis with score
+        - recommendations: Actionable recommendations based on agent's prompt/instructions (if agent has custom prompt)
     """
     try:
         # Validate call session ID
@@ -1875,16 +1878,27 @@ async def analyze_call_transcript(
         # 🎯 FLEXIBLE MODEL SELECTION WITH FALLBACK
         # Priority: 1. Call's model, 2. Gemini 2.0 Flash, 3. Llama, 4. GPT-4o Mini
         
-        # Try to use call's model first
+        # Try to use call's model first and get agent's prompt
         preferred_model = None
+        agent = None
+        agent_prompt = None
         if call_session.agent_id:
             try:
                 agent = agent_service.get_agent_by_id(db, call_session.agent_id, call_session.tenant_id)
-                if agent and agent.model:
-                    preferred_model = agent.model.model_name
-                    print(f"🔍 Found call's model: {preferred_model}")
+                if agent:
+                    # Get agent's system prompt (priority: agent.system_prompt > model.system_prompt)
+                    if agent.system_prompt:
+                        agent_prompt = agent.system_prompt
+                        print(f"📝 Using agent's custom system prompt ({len(agent_prompt)} chars)")
+                    elif agent.model and agent.model.system_prompt:
+                        agent_prompt = agent.model.system_prompt
+                        print(f"📝 Using model's system prompt ({len(agent_prompt)} chars)")
+                    
+                    if agent and agent.model:
+                        preferred_model = agent.model.model_name
+                        print(f"🔍 Found call's model: {preferred_model}")
             except Exception as e:
-                print(f"⚠️ Could not get call's model: {e}")
+                print(f"⚠️ Could not get call's model or agent prompt: {e}")
         
         # Fallback models in priority order
         fallback_models = [
@@ -1961,6 +1975,45 @@ async def analyze_call_transcript(
         Keep it brief and concise.
         """
         
+        # Create recommendations prompt based on agent's instructions
+        recommendations_prompt = f"""
+You are a professional call analyst reviewing this call. Based on the transcript and agent's instructions, provide STRICT, ACTIONABLE recommendations as if you're a real human manager giving direct feedback.
+
+Call Transcript:
+{transcript_text}
+
+Agent's Instructions/Purpose:
+{agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
+
+IMPORTANT - Write recommendations like a REAL HUMAN MANAGER:
+- Be direct, specific, and professional
+- Use imperative tone (e.g., "Follow up with customer", "Send email", "Update CRM")
+- Focus on concrete actions, not vague suggestions
+- Be concise and to the point (1 sentence per recommendation)
+- Prioritize what MUST be done vs what could be done
+- Base recommendations strictly on what happened in the call and agent's purpose
+
+Provide 2-4 STRICT recommendations in this exact format:
+1. [Specific action that MUST be taken]
+2. [Next critical step]
+3. [Follow-up requirement]
+4. [Any additional critical action]
+
+DO NOT use phrases like:
+- "Consider doing..."
+- "It might be good to..."
+- "You could..."
+- "Perhaps..."
+
+USE direct language like:
+- "Follow up with customer by [date/time]"
+- "Send [specific document/info] to customer"
+- "Update [system] with [specific data]"
+- "Schedule [action] for [timeframe]"
+
+Be strict, professional, and actionable - like a real manager giving direct instructions.
+"""
+        
         # Helper function to call appropriate service based on provider
         def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
             """Generate text using the appropriate service based on provider"""
@@ -2010,6 +2063,7 @@ async def analyze_call_transcript(
         # Perform analysis with automatic fallback on quota errors
         summary_result = None
         sentiment_result = None
+        recommendations_result = None
         used_model = None
         last_error = None
         
@@ -2035,6 +2089,20 @@ async def analyze_call_transcript(
                 # Generate sentiment analysis
                 sentiment_result = generate_analysis_text(current_model, current_api_key, sentiment_prompt, max_tokens=150)
                 
+                # Generate recommendations (only if agent has a prompt/instructions)
+                if agent_prompt:
+                    try:
+                        recommendations_result = generate_analysis_text(
+                            current_model, 
+                            current_api_key, 
+                            recommendations_prompt, 
+                            max_tokens=300
+                        )
+                        print(f"✅ Recommendations generated")
+                    except Exception as e:
+                        print(f"⚠️ Failed to generate recommendations: {e}")
+                        # Continue even if recommendations fail
+                
                 used_model = current_model.model_name
                 print(f"✅ Analysis successful with {used_model}")
                 break
@@ -2053,22 +2121,31 @@ async def analyze_call_transcript(
                     last_error = e
                     continue
         
-        # Check if we got results
+        # Check if we got required results
         if not summary_result or not sentiment_result:
             error_msg = f"Analysis failed with all models. Last error: {str(last_error)}"
             print(f"❌ {error_msg}")
             raise HTTPException(status_code=500, detail=error_msg)
         
         # Prepare response (hide model_id for security)
+        analysis_data = {
+            "summary": summary_result["content"].strip(),
+            "sentiment": sentiment_result["content"].strip()
+        }
+        
+        # Add recommendations if available
+        if recommendations_result:
+            analysis_data["recommendations"] = recommendations_result["content"].strip()
+        elif agent_prompt:
+            # If agent has prompt but recommendations failed, indicate it
+            analysis_data["recommendations"] = "Unable to generate recommendations at this time."
+        
         analysis_result = {
             "call_session_id": call_session_id,
             "transcript_message_count": len(transcript_messages),
             "call_duration": call_session.duration,
             "call_status": call_session.status,
-            "analysis": {
-                "summary": summary_result["content"].strip(),
-                "sentiment": sentiment_result["content"].strip()
-            },
+            "analysis": analysis_data,
             "model_used": used_model,  # Show which model was actually used
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
