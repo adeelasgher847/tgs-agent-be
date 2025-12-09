@@ -1989,15 +1989,15 @@ IMPORTANT - Write recommendations like a REAL HUMAN MANAGER:
 - Be direct, specific, and professional
 - Use imperative tone (e.g., "Follow up with customer", "Send email", "Update CRM")
 - Focus on concrete actions, not vague suggestions
-- Be concise and to the point (1 sentence per recommendation)
+- Each recommendation should be 2-3 sentences - provide context and action
 - Prioritize what MUST be done vs what could be done
 - Base recommendations strictly on what happened in the call and agent's purpose
 
 Provide 2-4 STRICT recommendations in this exact format:
-1. [Specific action that MUST be taken]
-2. [Next critical step]
-3. [Follow-up requirement]
-4. [Any additional critical action]
+1. [Specific action that MUST be taken - 2-3 sentences with context]
+2. [Next critical step - 2-3 sentences with context]
+3. [Follow-up requirement - 2-3 sentences with context]
+4. [Any additional critical action - 2-3 sentences with context]
 
 DO NOT use phrases like:
 - "Consider doing..."
@@ -2006,12 +2006,13 @@ DO NOT use phrases like:
 - "Perhaps..."
 
 USE direct language like:
-- "Follow up with customer by [date/time]"
-- "Send [specific document/info] to customer"
-- "Update [system] with [specific data]"
-- "Schedule [action] for [timeframe]"
+- "Follow up with customer by [date/time]. [Provide context about why this is important]."
+- "Send [specific document/info] to customer. [Explain what needs to be included and why]."
+- "Update [system] with [specific data]. [Mention what impact this will have]."
+- "Schedule [action] for [timeframe]. [Explain the reasoning behind this timeline]."
 
 Be strict, professional, and actionable - like a real manager giving direct instructions.
+Each recommendation must be 2-3 sentences: first sentence states the action, second/third sentence provides context or reasoning.
 """
         
         # Helper function to call appropriate service based on provider
@@ -2133,12 +2134,43 @@ Be strict, professional, and actionable - like a real manager giving direct inst
             "sentiment": sentiment_result["content"].strip()
         }
         
-        # Add recommendations if available
+        # Add recommendations if available - parse into array format
         if recommendations_result:
-            analysis_data["recommendations"] = recommendations_result["content"].strip()
+            recommendations_text = recommendations_result["content"].strip()
+            
+            # Parse recommendations into array (extract numbered list items)
+            import re
+            recommendations_list = []
+            
+            # Split by newline and extract numbered items
+            lines = recommendations_text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Match patterns like "1. ", "2. ", "1.", "2.", etc.
+                match = re.match(r'^\d+\.\s*(.+)$', line)
+                if match:
+                    recommendations_list.append(match.group(1).strip())
+                # Also handle cases without numbers but with bullet points
+                elif line.startswith('- ') or line.startswith('* '):
+                    recommendations_list.append(line[2:].strip())
+                # If no pattern matches but line is substantial, include it
+                elif len(line) > 20 and not recommendations_list:
+                    # First item might not have number
+                    recommendations_list.append(line)
+            
+            # If parsing failed, use original text as single item
+            if not recommendations_list:
+                recommendations_list = [recommendations_text]
+            
+            analysis_data["recommendations"] = recommendations_list
+            analysis_data["recommendations_text"] = recommendations_text  # Keep original for backward compatibility
         elif agent_prompt:
             # If agent has prompt but recommendations failed, indicate it
-            analysis_data["recommendations"] = "Unable to generate recommendations at this time."
+            analysis_data["recommendations"] = ["Unable to generate recommendations at this time."]
+            analysis_data["recommendations_text"] = "Unable to generate recommendations at this time."
         
         analysis_result = {
             "call_session_id": call_session_id,
