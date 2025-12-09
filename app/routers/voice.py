@@ -1977,7 +1977,7 @@ async def analyze_call_transcript(
         
         # Create recommendations prompt based on agent's instructions
         recommendations_prompt = f"""
-You are a professional call analyst reviewing this call. Based on the transcript and agent's instructions, provide STRICT, ACTIONABLE recommendations as if you're a real human manager giving direct feedback.
+You are a friendly colleague reviewing this call. Based on the transcript and agent's instructions, provide helpful, friendly recommendations in a casual, conversational English tone.
 
 Call Transcript:
 {transcript_text}
@@ -1985,34 +1985,27 @@ Call Transcript:
 Agent's Instructions/Purpose:
 {agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
 
-IMPORTANT - Write recommendations like a REAL HUMAN MANAGER:
-- Be direct, specific, and professional
-- Use imperative tone (e.g., "Follow up with customer", "Send email", "Update CRM")
-- Focus on concrete actions, not vague suggestions
-- Each recommendation should be 2-3 sentences - provide context and action
-- Prioritize what MUST be done vs what could be done
-- Base recommendations strictly on what happened in the call and agent's purpose
+IMPORTANT - Write recommendations in a FRIENDLY, CONVERSATIONAL English tone:
+- Use friendly, conversational language (like "I think you might want to...", "Perhaps it would be helpful to...", "You could consider...")
+- Be helpful and suggestive, not strict or commanding
+- Keep it casual and friendly - like a colleague giving friendly advice
+- Each recommendation should be 2-3 sentences
+- First sentence: Your friendly suggestion/opinion. Second/third sentence: Brief reason or context
+- Base recommendations on what happened in the call and agent's purpose
 
-Provide 2-4 STRICT recommendations in this exact format:
-1. [Specific action that MUST be taken - 2-3 sentences with context]
-2. [Next critical step - 2-3 sentences with context]
-3. [Follow-up requirement - 2-3 sentences with context]
-4. [Any additional critical action - 2-3 sentences with context]
+Provide 2-4 friendly recommendations in this format:
+1. [Your friendly suggestion]. [Brief reason or context - 2-3 sentences total]
+2. [Next helpful suggestion]. [Brief reason - 2-3 sentences total]
+3. [Additional friendly advice]. [Brief reason - 2-3 sentences total]
+4. [Any other helpful tip]. [Brief reason - 2-3 sentences total]
 
-DO NOT use phrases like:
-- "Consider doing..."
-- "It might be good to..."
-- "You could..."
-- "Perhaps..."
+USE friendly, conversational English like:
+- "I think you might want to follow up with the customer by end of day. This would help maintain timely communication and keep them engaged."
+- "Perhaps updating the CRM with call details would be helpful. This way the team gets visibility into the outreach efforts."
+- "You could consider scheduling a follow-up call for next week. This gives the candidate another opportunity to connect."
 
-USE direct language like:
-- "Follow up with customer by [date/time]. [Provide context about why this is important]."
-- "Send [specific document/info] to customer. [Explain what needs to be included and why]."
-- "Update [system] with [specific data]. [Mention what impact this will have]."
-- "Schedule [action] for [timeframe]. [Explain the reasoning behind this timeline]."
-
-Be strict, professional, and actionable - like a real manager giving direct instructions.
-Each recommendation must be 2-3 sentences: first sentence states the action, second/third sentence provides context or reasoning.
+Tone: Friendly, casual, helpful - like a colleague sharing suggestions in a warm, conversational way, not a manager giving orders.
+Keep it conversational and warm. 2-3 sentences per recommendation in friendly English.
 """
         
         # Helper function to call appropriate service based on provider
