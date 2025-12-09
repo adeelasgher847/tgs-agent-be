@@ -345,3 +345,93 @@ class MondayService:
 
         return deleted
 
+    @staticmethod
+    def _fetch_items_with_columns(board_id: str, cursor: Optional[str], limit: int, column_ids: List[str]) -> Tuple[List[Dict], Optional[str]]:
+        """Fetch items with specific column values for filtering."""
+        query = """
+        query ($boardId: [ID!], $cursor: String, $limit: Int!, $columnIds: [String!]) {
+            boards (ids: $boardId) {
+                items_page (cursor: $cursor, limit: $limit) {
+                    cursor
+                    items {
+                        id
+                        name
+                        column_values(ids: $columnIds) {
+                            id
+                            text
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data = MondayService._execute(query, {
+            "boardId": board_id,
+            "cursor": cursor,
+            "limit": limit,
+            "columnIds": column_ids
+        })
+        boards = data.get("boards") or []
+        if not boards:
+            return [], None
+        page = boards[0].get("items_page") or {}
+        items = page.get("items") or []
+        next_cursor = page.get("cursor")
+        return items, next_cursor
+
+    @staticmethod
+    def delete_items_by_tenant(board_id: str, tenant_id: str, column_map: Dict[str, str], batch_size: int = 50) -> int:
+        """
+        Delete items from board that belong to a specific tenant.
+        Filters by tenant_id column.
+
+        Args:
+            board_id: Monday.com board ID
+            tenant_id: Tenant ID to filter by (UUID string)
+            column_map: Column mapping dictionary (must include "tenant_id")
+            batch_size: Number of items to fetch per batch
+
+        Returns:
+            Number of items deleted.
+        """
+        tenant_column_id = column_map.get("tenant_id")
+        if not tenant_column_id:
+            raise ValueError("tenant_id column not found in board column map")
+
+        deleted = 0
+        cursor: Optional[str] = None
+
+        while True:
+            # Fetch items with tenant_id column
+            items, cursor = MondayService._fetch_items_with_columns(
+                board_id=board_id,
+                cursor=cursor,
+                limit=batch_size,
+                column_ids=[tenant_column_id]
+            )
+
+            if not items:
+                break
+
+            for item in items:
+                # Check if item belongs to this tenant
+                item_tenant_id = None
+                for col_val in item.get("column_values", []):
+                    if col_val.get("id") == tenant_column_id:
+                        item_tenant_id = col_val.get("text", "").strip()
+                        break
+
+                # Delete if tenant_id matches
+                if item_tenant_id == tenant_id:
+                    try:
+                        MondayService.delete_item(item["id"])
+                        deleted += 1
+                        print(f"✅ Deleted item {item['id']} (tenant: {tenant_id})")
+                    except Exception as exc:
+                        print(f"⚠️ Failed to delete Monday.com item {item['id']}: {exc}")
+
+            if not cursor:
+                break
+
+        return deleted
+

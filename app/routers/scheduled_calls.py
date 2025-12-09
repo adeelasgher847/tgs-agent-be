@@ -1,5 +1,6 @@
 """
-Scheduled Calls API endpoints with Monday.com integration (per-tenant boards)
+Scheduled Calls API endpoints with Monday.com integration (per-user boards).
+All tenants of a user share the same board, identified by tenant_id column in items.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
@@ -57,14 +58,14 @@ async def upload_scheduled_calls_csv(
     1. Select agent from dropdown
     2. Upload CSV (2 columns: phone_number, call_time_utc)
     3. Backend parses CSV and validates data
-    4. Creates items in the tenant's dedicated Monday.com board (status: "Pending")
+    4. Creates items in the user's Monday.com board (status: "Pending", tenant_id stored in column)
     5. n8n cron (every 1 min) detects new items
     6. n8n waits until call_time_utc
     7. n8n calls backend `/voice/call/initiate`
     8. n8n updates Monday.com status ("Called" or "Failed")
     
     **Data storage:** CSV rows live only in Monday.com. The backend stores one board
-    record per tenant so we can re-use the same board on future uploads.
+    record per user (shared by all their tenants). Items are identified by tenant_id column.
     """
     try:
         # Validate file type
@@ -114,11 +115,12 @@ async def upload_scheduled_calls_csv(
 @router.get("/board", response_model=SuccessResponse[BoardInfoResponse])
 async def get_board_url(user: User = Depends(require_tenant), db: Session = Depends(get_db)):
     """
-    Retrieve the Monday.com board URL for the current tenant.
+    Retrieve the Monday.com board URL for the current user.
+    All tenants of this user share the same board.
     """
-    board_record = scheduled_call_service.get_board_for_tenant(db, user.current_tenant_id)
+    board_record = scheduled_call_service.get_board_for_user(db, user.id)
     if not board_record:
-        raise HTTPException(status_code=404, detail="No scheduled calls board found for this tenant")
+        raise HTTPException(status_code=404, detail="No scheduled calls board found for this user")
 
     data = BoardInfoResponse(
         board_id=board_record.monday_board_id,
@@ -130,12 +132,17 @@ async def get_board_url(user: User = Depends(require_tenant), db: Session = Depe
 @router.delete("/board/items", response_model=SuccessResponse[DeleteBoardItemsResponse])
 async def clear_board_items(user: User = Depends(require_tenant), db: Session = Depends(get_db)):
     """
-    Remove all items from the tenant's Monday.com scheduled calls board, keeping the columns intact.
+    Remove all items belonging to the current tenant from the user's Monday.com board.
+    Only items with matching tenant_id are deleted, keeping other tenants' items intact.
     """
-    board_record, deleted = scheduled_call_service.clear_board_items(db, user.current_tenant_id)
+    board_record, deleted = scheduled_call_service.clear_board_items(
+        db, 
+        user.id,  # user_id
+        user.current_tenant_id  # tenant_id for filtering
+    )
     data = DeleteBoardItemsResponse(
         items_deleted=deleted,
         board_id=board_record.monday_board_id,
         board_url=board_record.monday_board_url,
     )
-    return create_success_response(data, f"Deleted {deleted} item(s) from the board")
+    return create_success_response(data, f"Deleted {deleted} item(s) for current tenant from the board")

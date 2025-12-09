@@ -8,21 +8,20 @@ from app.db.base_class import Base
 
 
 class ScheduledCall(Base):
-    """Monday.com board configuration per tenant - stores board info only, not actual call data."""
-
-    __tablename__ = "scheduledcall"
+    """Monday.com board configuration per user - stores board info only, not actual call data.
+    All tenants of a user share the same board, identified by tenant_id column in items."""
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False, unique=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, unique=True, index=True)
     monday_board_id = Column(String(50), nullable=False, index=True)
     monday_board_url = Column(String(500), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    tenant = relationship("Tenant", back_populates="scheduled_call")
+    user = relationship("User", back_populates="scheduled_call")
 
-    __table_args__ = (UniqueConstraint("tenant_id", name="uq_scheduledcall_tenant_id"),)
+    __table_args__ = (UniqueConstraint("user_id", name="uq_scheduledcall_user_id"),)
 
     def __repr__(self) -> str:  # pragma: no cover - repr for debugging
-        return f"<ScheduledCall(tenant_id={self.tenant_id}, board_id={self.monday_board_id})>"
+        return f"<ScheduledCall(user_id={self.user_id}, board_id={self.monday_board_id})>"
 

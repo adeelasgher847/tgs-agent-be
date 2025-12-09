@@ -41,3 +41,6 @@ class User(Base):
     # Call sessions
     call_sessions = relationship("CallSession", back_populates="user")
     transcript_messages = relationship("TranscriptMessage", back_populates="user")
+    
+    # Scheduled calls board (one board per user, shared by all their tenants)
+    scheduled_call = relationship("ScheduledCall", back_populates="user", uselist=False)

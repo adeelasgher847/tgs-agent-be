@@ -27,22 +27,33 @@ class ScheduledCallService:
         return tenant
 
     @staticmethod
-    def get_or_create_board_for_tenant(db: Session, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, dict]:
-        tenant = ScheduledCallService._get_tenant(db, tenant_id)
-        board_record = db.query(ScheduledCall).filter(ScheduledCall.tenant_id == tenant_id).first()
+    def get_or_create_board_for_user(db: Session, user_id: uuid.UUID) -> Tuple[ScheduledCall, dict]:
+        """
+        Get or create Monday.com board for a user.
+        All tenants of this user will use the same board.
+        Items are identified by tenant_id column.
+        """
+        from app.models.user import User
+        
+        board_record = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
 
         if not board_record:
             try:
+                # Get user email for board name
+                user = db.query(User).filter(User.id == user_id).first()
+                if not user:
+                    raise HTTPException(status_code=404, detail="User not found")
+                
                 workspace_id = getattr(settings, "MONDAY_WORKSPACE_ID", None)
                 board = MondayService.create_board(
-                    board_name=f"Scheduled Calls - {tenant.name}",
+                    board_name=f"Scheduled Calls - {user.email}",
                     workspace_id=workspace_id,
                 )
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=f"Failed to create Monday.com board: {exc}")
 
             board_record = ScheduledCall(
-                tenant_id=tenant_id,
+                user_id=user_id,
                 monday_board_id=board["id"],
                 monday_board_url=board["url"],
             )
@@ -58,19 +69,29 @@ class ScheduledCallService:
         return board_record, column_map
 
     @staticmethod
-    def get_board_for_tenant(db: Session, tenant_id: uuid.UUID) -> Optional[ScheduledCall]:
-        return db.query(ScheduledCall).filter(ScheduledCall.tenant_id == tenant_id).first()
+    def get_board_for_user(db: Session, user_id: uuid.UUID) -> Optional[ScheduledCall]:
+        """Get Monday.com board for a user."""
+        return db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
 
     @staticmethod
-    def clear_board_items(db: Session, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, int]:
-        board_record = ScheduledCallService.get_board_for_tenant(db, tenant_id)
+    def clear_board_items(db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, int]:
+        """
+        Delete only items belonging to this tenant from user's board.
+        Items are filtered by tenant_id column.
+        """
+        board_record = ScheduledCallService.get_board_for_user(db, user_id)
         if not board_record:
-            raise HTTPException(status_code=404, detail="Board not found for tenant")
+            raise HTTPException(status_code=404, detail="Board not found for user")
 
         try:
-            deleted = MondayService.delete_all_items(board_record.monday_board_id)
+            column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+            deleted = MondayService.delete_items_by_tenant(
+                board_id=board_record.monday_board_id,
+                tenant_id=str(tenant_id),
+                column_map=column_map
+            )
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to clear Monday.com board items: {exc}")
+            raise HTTPException(status_code=500, detail=f"Failed to clear tenant items: {exc}")
 
         return board_record, deleted
 
@@ -138,7 +159,7 @@ class ScheduledCallService:
         +1234567890,2024-12-02T14:30:00Z
         +0987654321,2024-12-02T14:31:00Z
         """
-        board_record, column_map = ScheduledCallService.get_or_create_board_for_tenant(db, tenant_id)
+        board_record, column_map = ScheduledCallService.get_or_create_board_for_user(db, user_id)
         
         # Verify agent once before processing all rows
         agent = db.query(Agent).filter(
