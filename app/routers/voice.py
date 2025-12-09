@@ -2033,11 +2033,11 @@ Provide a fit score (0-10) where:
 
 Format your response as:
 Fit Score: [number 0-10]
-Brief Explanation: [1-2 sentences explaining the score]
+Brief Explanation: [One line explaining the score - keep it concise]
 
 Example:
 Fit Score: 7
-Brief Explanation: The call addressed most of the recruitment objectives, but the candidate went to voicemail, so full assessment wasn't possible.
+Brief Explanation: The call covered most key requirements, candidate was interested, but some responses were vague and needed follow-up.
 """
         
         # Helper function to call appropriate service based on provider
