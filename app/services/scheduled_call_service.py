@@ -277,6 +277,7 @@ class ScheduledCallService:
     ) -> dict:
         """
         Create a single scheduled call item in Monday.com board.
+        Generates a unique batch_id for this single call.
         
         Args:
             db: Database session
@@ -287,7 +288,7 @@ class ScheduledCallService:
             call_time_utc: Scheduled time in UTC (ISO format string)
         
         Returns:
-            Dictionary with monday_item_id, board_id, board_url, etc.
+            Dictionary with monday_item_id, board_id, board_url, batch_id, etc.
         """
         # Get or create board for user
         board_record, column_map = ScheduledCallService.get_or_create_board_for_user(db, user_id)
@@ -333,7 +334,10 @@ class ScheduledCallService:
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid call_time_utc format: {str(e)}")
         
-        # Create Monday.com item
+        # Generate unique batch_id for this single call
+        batch_id = str(uuid.uuid4())
+        
+        # Create Monday.com item with batch_id
         try:
             result = MondayService.create_scheduled_call_item(
                 board_id=board_record.monday_board_id,
@@ -342,7 +346,8 @@ class ScheduledCallService:
                 agent_id=str(agent_id),
                 call_time_utc=scheduled_time_utc.isoformat(),
                 tenant_id=str(tenant_id),
-                user_id=str(user_id)
+                user_id=str(user_id),
+                batch_id=batch_id  # Pass batch_id for single call
             )
             
             if not result:
@@ -355,7 +360,8 @@ class ScheduledCallService:
                 "phone_number": phone_number,
                 "agent_id": str(agent_id),
                 "call_time_utc": scheduled_time_utc.isoformat(),
-                "message": "Scheduled call created successfully"
+                "batch_id": batch_id,  # Return batch_id
+                "message": f"Scheduled call created successfully. Batch ID: {batch_id}"
             }
         except HTTPException:
             raise

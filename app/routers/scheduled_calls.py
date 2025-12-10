@@ -3,12 +3,13 @@ Scheduled Calls API endpoints with Monday.com integration (per-user boards).
 All tenants of a user share the same board, identified by tenant_id column in items.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone
 import uuid
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_tenant, get_optional_tenant_user
+from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.user import User
 from app.models.agent import Agent
 from app.models.call_session import CallSession
@@ -405,33 +406,33 @@ async def upload_scheduled_calls_csv(
 
 @router.post("/single-call", response_model=SuccessResponse[SingleCallResponse])
 async def create_single_scheduled_call(
-    call_request: SingleCallRequest,
+    agent_id: str = Query(..., description="Agent ID (UUID)"),
+    phone_number: str = Query(..., description="Phone number to call (e.g., +1234567890)"),
+    call_time_utc: str = Query(..., description="Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS"),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
     Create a single scheduled call in Monday.com board.
     
-    **Request Body:**
-    ```json
-    {
-        "phone_number": "+1234567890",
-        "agent_id": "550e8400-e29b-41d4-a716-446655440000",
-        "call_time_utc": "2024-12-02T14:30:00Z"
-    }
-    ```
+    **Query Parameters:**
+    - `agent_id`: Agent ID (UUID)
+    - `phone_number`: Phone number to call (e.g., +1234567890)
+    - `call_time_utc`: Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS
     
     **Flow:**
     1. Validates agent exists and belongs to tenant
-    2. Creates item in user's Monday.com board (status: "Pending")
-    3. n8n cron detects new item and triggers call at scheduled time
+    2. Generates unique batch_id for this single call
+    3. Creates item in user's Monday.com board (status: "Pending", batch_id stored)
+    4. n8n cron detects new item and triggers call at scheduled time
+    5. When call completes (Called/Failed), n8n will send email for this batch
     
     **Note:** `tenant_id` and `user_id` are automatically taken from logged-in session.
     """
     try:
         # Parse agent_id
         try:
-            agent_uuid = uuid.UUID(call_request.agent_id)
+            agent_uuid = uuid.UUID(agent_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid agent_id format")
         
@@ -439,9 +440,9 @@ async def create_single_scheduled_call(
             db=db,
             tenant_id=user.current_tenant_id,
             user_id=user.id,
-            phone_number=call_request.phone_number,
+            phone_number=phone_number,
             agent_id=agent_uuid,
-            call_time_utc=call_request.call_time_utc
+            call_time_utc=call_time_utc
         )
         
         return create_success_response(
@@ -493,13 +494,24 @@ async def clear_board_items(user: User = Depends(require_tenant), db: Session = 
 @router.get("/batch/{batch_id}/analysis", response_model=SuccessResponse[dict])
 async def get_batch_analysis(
     batch_id: str,
-    user: User = Depends(require_tenant),
+    http_request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
     Get analysis data for a completed batch.
     
-    Returns comprehensive analysis including:
+    **Authentication:** 
+    - JWT token (default) - user and tenant from token
+    - OR X-N8N-Webhook-Secret header - provide tenant_id and user_id as query params
+    
+    **Query Parameters (for n8n webhook):**
+    - `tenant_id` (str, optional): Required when using webhook secret
+    - `user_id` (str, optional): Required when using webhook secret
+    
+    **Returns comprehensive analysis including:**
     - Total scheduled calls (from CSV)
     - Total calls made vs pending
     - Successfully called vs failed calls
@@ -507,16 +519,53 @@ async def get_batch_analysis(
     - Call times and details for each call
     - Success/failure rates
     - Total cost
+    - LLM transcript analysis for each call
     - Current timestamp (report generation time)
+    - user_email (for n8n to send email)
     
     **Matching Logic:**
     - First tries to match by call_session_id from Monday.com items (most accurate)
     - Falls back to phone number matching if call_session_id not available
     
-    **Note:** n8n workflow should update Monday.com items with call_session_id
-    after calling /voice/call/initiate endpoint.
+    **Note:** n8n workflow should:
+    1. Check batch completion on Monday.com
+    2. Wait 10 minutes
+    3. Call this endpoint with webhook secret + tenant_id + user_id
+    4. Use returned data to send email
     """
     try:
+        # Verify authentication: either JWT token OR webhook secret
+        is_webhook = await verify_n8n_webhook_secret_async(http_request)
+        
+        if is_webhook:
+            # Webhook authentication - get tenant_id and user_id from query params
+            if not tenant_id or not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="tenant_id and user_id are required as query parameters when using webhook secret"
+                )
+            try:
+                tenant_uuid = uuid.UUID(tenant_id)
+                user_uuid = uuid.UUID(user_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid UUID format for tenant_id or user_id"
+                )
+            
+            # Get user from database
+            user = db.query(User).filter(User.id == user_uuid).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            user.current_tenant_id = tenant_uuid
+        else:
+            # JWT authentication - get from user token
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required: JWT token or n8n webhook secret"
+                )
+        
         # Get user's board
         board_record = scheduled_call_service.get_board_for_user(db, user.id)
         if not board_record:

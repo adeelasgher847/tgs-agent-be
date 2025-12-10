@@ -35,4 +35,5 @@ class SingleCallResponse(BaseModel):
     phone_number: str
     agent_id: str
     call_time_utc: str
+    batch_id: str  # Unique batch ID for this single call
     message: str
