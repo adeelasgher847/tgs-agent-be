@@ -15,12 +15,300 @@ from app.models.call_session import CallSession
 from app.schemas.scheduled_call import CSVUploadResponse, BoardInfoResponse, DeleteBoardItemsResponse, SingleCallRequest, SingleCallResponse
 from app.services.scheduled_call_service import ScheduledCallService
 from app.services.monday_service import MondayService
+from app.services.transcript_service import transcript_service
+from app.services.agent_service import agent_service
+from app.services.model_service import ModelService
+from app.services.call_session_service import call_session_service
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
+from typing import Optional, Dict, Any
+import re
 
 router = APIRouter()
 
 scheduled_call_service = ScheduledCallService()
+model_service = ModelService()
+
+
+async def analyze_call_transcript_internal(
+    db: Session,
+    call_session: CallSession,
+    user: User
+) -> Optional[Dict[str, Any]]:
+    """
+    Internal helper function to analyze a call transcript.
+    Returns analysis dict or None if analysis fails.
+    """
+    try:
+        # Get transcript messages
+        transcript_messages = transcript_service.get_messages_by_session(db, call_session.id)
+        
+        if not transcript_messages:
+            return None
+        
+        # Format transcript for analysis
+        transcript_text = ""
+        for msg in transcript_messages:
+            role_label = "Agent" if msg.role == "agent" else "Customer"
+            transcript_text += f"{role_label}: {msg.message}\n"
+        
+        # Get agent and model info
+        agent = None
+        agent_prompt = None
+        preferred_model = None
+        
+        if call_session.agent_id:
+            try:
+                agent = agent_service.get_agent_by_id(db, call_session.agent_id, call_session.tenant_id)
+                if agent:
+                    if agent.system_prompt:
+                        agent_prompt = agent.system_prompt
+                    elif agent.model and agent.model.system_prompt:
+                        agent_prompt = agent.model.system_prompt
+                    
+                    if agent and agent.model:
+                        preferred_model = agent.model.model_name
+            except Exception as e:
+                print(f"⚠️ Could not get agent/model info: {e}")
+        
+        # Fallback models
+        fallback_models = [
+            preferred_model,
+            "gemini-2.0-flash",
+            "llama-3.3-70b-versatile",
+            "gpt-4o-mini"
+        ]
+        fallback_models = [m for m in fallback_models if m]
+        
+        # Find available model
+        model = None
+        for model_name in fallback_models:
+            try:
+                model = model_service.get_model_by_name(db, model_name)
+                if model:
+                    break
+            except Exception:
+                continue
+        
+        if not model:
+            return None
+        
+        # Get API key
+        current_api_key = None
+        if model.api_key:
+            from app.core.security import decrypt_api_key
+            current_api_key = decrypt_api_key(model.api_key)
+        
+        # Create prompts
+        summary_prompt = f"""
+        Analyze this call transcript and provide a brief summary in 2-3 sentences.
+        
+        Call Transcript:
+        {transcript_text}
+        
+        Provide only:
+        - Brief call overview
+        - Main topic/issue
+        - Outcome/resolution
+        
+        Keep it concise and to the point.
+        """
+        
+        sentiment_prompt = f"""
+        Analyze the sentiment of this call transcript and provide a brief assessment.
+        
+        Call Transcript:
+        {transcript_text}
+        
+        Provide only:
+        - Overall sentiment (positive/negative/neutral)
+        - Sentiment score (0-100)
+        - Customer satisfaction level (high/medium/low)
+        
+        Keep it brief and concise.
+        """
+        
+        recommendations_prompt = f"""
+You are a friendly colleague reviewing this call. Based on the transcript and agent's instructions, provide helpful, friendly recommendations in a casual, conversational English tone.
+
+Call Transcript:
+{transcript_text}
+
+Agent's Instructions/Purpose:
+{agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
+
+IMPORTANT - Write recommendations in a FRIENDLY, CONVERSATIONAL English tone:
+- Use friendly, conversational language
+- Be helpful and suggestive, not strict or commanding
+- Keep it casual and friendly - like a colleague giving friendly advice
+- Each recommendation should be 2-3 sentences
+
+Provide 2-4 friendly recommendations in this format:
+1. [Your friendly suggestion]. [Brief reason or context - 2-3 sentences total]
+2. [Next helpful suggestion]. [Brief reason - 2-3 sentences total]
+
+Keep it conversational and warm. 2-3 sentences per recommendation in friendly English.
+"""
+        
+        fit_score_prompt = f"""
+Evaluate how well this call aligned with the agent's purpose and instructions. Provide a fit score out of 10.
+
+Call Transcript:
+{transcript_text}
+
+Agent's Instructions/Purpose:
+{agent_prompt if agent_prompt else "No specific instructions provided. General customer service call."}
+
+Evaluate the call's alignment with the agent's purpose and provide a fit score (0-10).
+
+Format your response as:
+Fit Score: [number 0-10]
+Brief Explanation: [One line explaining the score - keep it concise]
+"""
+        
+        # Helper function to generate analysis text
+        def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
+            provider_name = (current_model.provider.name or "").strip().lower()
+            
+            if provider_name in ("gemini", "google", "google-ai", "google ai", "gemini-1.5-flash", "gemini-2.0-flash"):
+                from app.services.gemini_service import GeminiService
+                service = GeminiService()
+                return service.generate_text(
+                    prompt=prompt,
+                    model_name=current_model.model_name,
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                    api_key=current_api_key
+                )
+            elif provider_name in ("openai", "gpt", "gpt-4o-mini", "gpt-4o", "gpt-4"):
+                from app.services.openai_service import OpenAIService
+                service = OpenAIService()
+                return service.generate_text(
+                    prompt=prompt,
+                    system_prompt="You are an AI assistant that analyzes call transcripts.",
+                    model_name=current_model.model_name,
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                    api_key=current_api_key
+                )
+            elif provider_name in ("groq", "llama", "llama-3.3-70b-versatile"):
+                from app.services.groq_service import GroqService
+                service = GroqService()
+                return service.generate_text(
+                    prompt=prompt,
+                    system_prompt="You are an AI assistant that analyzes call transcripts.",
+                    model_name=current_model.model_name,
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                    api_key=current_api_key
+                )
+            else:
+                raise ValueError(f"Unsupported provider: {provider_name}")
+        
+        # Generate analysis
+        summary_result = None
+        sentiment_result = None
+        recommendations_result = None
+        fit_score_result = None
+        
+        try:
+            summary_result = generate_analysis_text(model, current_api_key, summary_prompt, max_tokens=200)
+            sentiment_result = generate_analysis_text(model, current_api_key, sentiment_prompt, max_tokens=150)
+            
+            if agent_prompt:
+                try:
+                    recommendations_result = generate_analysis_text(
+                        model, current_api_key, recommendations_prompt, max_tokens=300
+                    )
+                except Exception as e:
+                    print(f"⚠️ Failed to generate recommendations: {e}")
+                
+                try:
+                    fit_score_result = generate_analysis_text(
+                        model, current_api_key, fit_score_prompt, max_tokens=150
+                    )
+                except Exception as e:
+                    print(f"⚠️ Failed to generate fit score: {e}")
+        except Exception as e:
+            print(f"⚠️ Error generating analysis: {e}")
+            return None
+        
+        if not summary_result or not sentiment_result:
+            return None
+        
+        # Prepare analysis data
+        analysis_data = {
+            "summary": summary_result.get("content", "").strip() if summary_result else "",
+            "sentiment": sentiment_result.get("content", "").strip() if sentiment_result else ""
+        }
+        
+        # Parse recommendations
+        if recommendations_result:
+            recommendations_text = recommendations_result.get("content", "").strip()
+            recommendations_list = []
+            
+            lines = recommendations_text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                match = re.match(r'^\d+\.\s*(.+)$', line)
+                if match:
+                    recommendations_list.append(match.group(1).strip())
+                elif line.startswith('- ') or line.startswith('* '):
+                    recommendations_list.append(line[2:].strip())
+                elif len(line) > 20 and not recommendations_list:
+                    recommendations_list.append(line)
+            
+            if not recommendations_list:
+                recommendations_list = [recommendations_text]
+            
+            analysis_data["recommendations"] = recommendations_list
+            analysis_data["recommendations_text"] = recommendations_text
+        
+        # Parse fit score
+        fit_score = None
+        fit_score_explanation = None
+        if fit_score_result:
+            try:
+                fit_score_text = fit_score_result.get("content", "").strip()
+                score_match = re.search(r'Fit Score:\s*(\d+)', fit_score_text, re.IGNORECASE)
+                if score_match:
+                    score = int(score_match.group(1))
+                    if 0 <= score <= 10:
+                        fit_score = score
+                    elif 0 <= score <= 100:
+                        fit_score = round(score / 10)
+                    
+                    explanation_match = re.search(r'Brief Explanation:\s*(.+?)(?:\n|$)', fit_score_text, re.IGNORECASE | re.DOTALL)
+                    if explanation_match:
+                        fit_score_explanation = explanation_match.group(1).strip()
+                
+                if fit_score is None:
+                    numbers = re.findall(r'\b([0-9]|10)\b', fit_score_text)
+                    for num in numbers:
+                        score = int(num)
+                        if 0 <= score <= 10:
+                            fit_score = score
+                            break
+            except Exception as e:
+                print(f"⚠️ Failed to parse fit score: {e}")
+        
+        if fit_score is not None:
+            analysis_data["fit_score"] = fit_score
+            if fit_score_explanation:
+                analysis_data["fit_score_explanation"] = fit_score_explanation
+        
+        return {
+            "analysis": analysis_data,
+            "model_used": model.model_name,
+            "transcript_message_count": len(transcript_messages)
+        }
+        
+    except Exception as e:
+        print(f"⚠️ Error analyzing transcript for call session {call_session.id}: {e}")
+        return None
 
 
 @router.post("", response_model=SuccessResponse[CSVUploadResponse])
@@ -298,10 +586,10 @@ async def get_batch_analysis(
         total_duration = sum(cs.duration or 0 for cs in call_sessions)
         avg_duration = total_duration / total_calls_made if total_calls_made > 0 else 0
         
-        # Prepare call details
+        # Prepare call details with transcript analysis
         call_details = []
         for cs in call_sessions:
-            call_details.append({
+            call_detail = {
                 "call_session_id": str(cs.id),
                 "phone_number": cs.to_number,
                 "start_time": cs.start_time.isoformat() if cs.start_time else None,
@@ -312,7 +600,32 @@ async def get_batch_analysis(
                 "success_evaluation": cs.success_evaluation,
                 "ended_reason": cs.ended_reason,
                 "cost": float(cs.cost) if cs.cost else 0.0
-            })
+            }
+            
+            # Add transcript analysis if call is completed and has transcript
+            if cs.status == "completed":
+                try:
+                    transcript_analysis = await analyze_call_transcript_internal(
+                        db=db,
+                        call_session=cs,
+                        user=user
+                    )
+                    if transcript_analysis:
+                        call_detail["transcript_analysis"] = transcript_analysis.get("analysis")
+                        call_detail["analysis_model_used"] = transcript_analysis.get("model_used")
+                        call_detail["transcript_message_count"] = transcript_analysis.get("transcript_message_count", 0)
+                    else:
+                        call_detail["transcript_analysis"] = None
+                        call_detail["transcript_message_count"] = 0
+                except Exception as e:
+                    print(f"⚠️ Failed to analyze transcript for call {cs.id}: {e}")
+                    call_detail["transcript_analysis"] = None
+                    call_detail["transcript_message_count"] = 0
+            else:
+                call_detail["transcript_analysis"] = None
+                call_detail["transcript_message_count"] = 0
+            
+            call_details.append(call_detail)
         
         # Analysis summary
         analysis = {
