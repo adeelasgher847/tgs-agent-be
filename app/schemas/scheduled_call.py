@@ -8,6 +8,7 @@ class CSVUploadResponse(BaseModel):
     errors: List[str] = Field(default_factory=list)
     board_id: str
     board_url: str
+    batch_id: str  # Unique batch ID for this CSV upload
 
 
 class BoardInfoResponse(BaseModel):

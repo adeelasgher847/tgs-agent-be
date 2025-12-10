@@ -25,6 +25,8 @@ class MondayService:
         {"key": "call_time_utc", "title": "Call Time UTC", "type": "text"},
         {"key": "tenant_id", "title": "Tenant ID", "type": "text"},
         {"key": "user_id", "title": "User ID", "type": "text"},
+        {"key": "batch_id", "title": "Batch ID", "type": "text"},
+        {"key": "call_session_id", "title": "Call Session ID", "type": "text"},
     ]
 
     @staticmethod
@@ -205,6 +207,7 @@ class MondayService:
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
+        batch_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Create a scheduled call item in the tenant's Monday.com board."""
         required_keys = {"status", "agent_id", "call_time_utc", "tenant_id", "user_id"}
@@ -219,6 +222,10 @@ class MondayService:
             column_map["tenant_id"]: tenant_id,
             column_map["user_id"]: user_id,
         }
+        
+        # Add batch_id if provided and column exists
+        if batch_id and "batch_id" in column_map:
+            column_values[column_map["batch_id"]] = batch_id
 
         query = """
         mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) {
@@ -434,4 +441,178 @@ class MondayService:
                 break
 
         return deleted
+
+    @staticmethod
+    def get_items_by_batch_id(
+        board_id: str,
+        batch_id: str,
+        tenant_id: str,
+        column_map: Dict[str, str],
+        batch_size: int = 100
+    ) -> List[Dict]:
+        """
+        Fetch all items from a board with specific batch_id and tenant_id.
+        
+        Args:
+            board_id: Monday.com board ID
+            batch_id: Batch ID to filter by
+            tenant_id: Tenant ID to filter by (UUID string)
+            column_map: Column mapping dictionary (must include "batch_id" and "tenant_id")
+            batch_size: Number of items to fetch per batch
+            
+        Returns:
+            List of items matching the batch_id and tenant_id
+        """
+        batch_column_id = column_map.get("batch_id")
+        tenant_column_id = column_map.get("tenant_id")
+        
+        if not batch_column_id or not tenant_column_id:
+            raise ValueError("batch_id or tenant_id column not found in board column map")
+        
+        items = []
+        cursor: Optional[str] = None
+        
+        # Also fetch call_session_id column if available
+        call_session_column_id = column_map.get("call_session_id")
+        column_ids = [batch_column_id, tenant_column_id]
+        if call_session_column_id:
+            column_ids.append(call_session_column_id)
+        
+        while True:
+            # Fetch items with batch_id, tenant_id, and call_session_id columns
+            page_items, cursor = MondayService._fetch_items_with_columns(
+                board_id=board_id,
+                cursor=cursor,
+                limit=batch_size,
+                column_ids=column_ids
+            )
+            
+            if not page_items:
+                break
+            
+            for item in page_items:
+                # Check if item belongs to this batch and tenant
+                item_batch_id = None
+                item_tenant_id = None
+                
+                for col_val in item.get("column_values", []):
+                    if col_val.get("id") == batch_column_id:
+                        item_batch_id = col_val.get("text", "").strip()
+                    elif col_val.get("id") == tenant_column_id:
+                        item_tenant_id = col_val.get("text", "").strip()
+                
+                if item_batch_id == batch_id and item_tenant_id == tenant_id:
+                    items.append(item)
+            
+            if not cursor:
+                break
+        
+        return items
+
+    @staticmethod
+    def update_item_call_session_id(
+        board_id: str,
+        item_id: str,
+        call_session_id: str,
+        column_map: Dict[str, str]
+    ) -> Optional[dict]:
+        """
+        Update call_session_id column for a Monday.com item.
+        
+        Args:
+            board_id: Monday.com board ID
+            item_id: Monday.com item ID
+            call_session_id: Call session ID (UUID string)
+            column_map: Column mapping dictionary (must include "call_session_id")
+            
+        Returns:
+            Updated item data or None if failed
+        """
+        call_session_column_id = column_map.get("call_session_id")
+        if not call_session_column_id:
+            raise ValueError("call_session_id column not found in board column map")
+        
+        column_values = {call_session_column_id: call_session_id}
+        
+        query = """
+        mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+            change_multiple_column_values (
+                board_id: $boardId,
+                item_id: $itemId,
+                column_values: $columnValues
+            ) {
+                id
+            }
+        }
+        """
+        
+        variables = {
+            "boardId": board_id,
+            "itemId": item_id,
+            "columnValues": json.dumps(column_values),
+        }
+        
+        try:
+            return MondayService._execute(query, variables)
+        except Exception as exc:
+            print(f"⚠️ Failed to update call_session_id for Monday.com item {item_id}: {exc}")
+            return None
+
+    @staticmethod
+    def update_item_status_and_session_id(
+        board_id: str,
+        item_id: str,
+        status: str,
+        call_session_id: Optional[str],
+        column_map: Dict[str, str]
+    ) -> Optional[dict]:
+        """
+        Update both status and call_session_id for a Monday.com item in one call.
+        
+        Args:
+            board_id: Monday.com board ID
+            item_id: Monday.com item ID
+            status: Status to set ("Called" or "Failed")
+            call_session_id: Call session ID (UUID string) - optional
+            column_map: Column mapping dictionary
+            
+        Returns:
+            Updated item data or None if failed
+        """
+        status_column_id = column_map.get("status")
+        call_session_column_id = column_map.get("call_session_id")
+        
+        if not status_column_id:
+            raise ValueError("status column not found in board column map")
+        
+        column_values = {
+            status_column_id: {"label": status}
+        }
+        
+        if call_session_id and call_session_column_id:
+            column_values[call_session_column_id] = call_session_id
+        
+        query = """
+        mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+            change_multiple_column_values (
+                board_id: $boardId,
+                item_id: $itemId,
+                column_values: $columnValues
+            ) {
+                id
+            }
+        }
+        """
+        
+        variables = {
+            "boardId": board_id,
+            "itemId": item_id,
+            "columnValues": json.dumps(column_values),
+        }
+        
+        try:
+            return MondayService._execute(query, variables)
+        except Exception as exc:
+            print(f"⚠️ Failed to update status and call_session_id for Monday.com item {item_id}: {exc}")
+            return None
 

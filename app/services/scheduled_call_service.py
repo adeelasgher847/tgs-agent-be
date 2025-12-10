@@ -161,6 +161,10 @@ class ScheduledCallService:
         """
         board_record, column_map = ScheduledCallService.get_or_create_board_for_user(db, user_id)
         
+        # Generate unique batch_id for this CSV upload
+        batch_id = str(uuid.uuid4())
+        print(f"📦 Generated batch_id: {batch_id} for CSV upload")
+        
         # Verify agent once before processing all rows
         agent = db.query(Agent).filter(
             and_(
@@ -231,7 +235,8 @@ class ScheduledCallService:
                         agent_id=str(agent_uuid),
                         call_time_utc=scheduled_time_utc.isoformat(),
                         tenant_id=str(tenant_id),
-                        user_id=str(user_id)
+                        user_id=str(user_id),
+                        batch_id=batch_id  # Same batch_id for all items in this CSV
                     )
                     
                     if result:
@@ -258,6 +263,7 @@ class ScheduledCallService:
             errors=errors,
             board_id=board_record.monday_board_id,
             board_url=board_record.monday_board_url,
+            batch_id=batch_id  # Return batch_id so user knows which batch was created
         )
 
     @staticmethod

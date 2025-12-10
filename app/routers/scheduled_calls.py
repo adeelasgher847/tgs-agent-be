@@ -6,12 +6,15 @@ All tenants of a user share the same board, identified by tenant_id column in it
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
+from datetime import datetime, timezone
 import uuid
 from app.api.deps import get_db, require_tenant
 from app.models.user import User
 from app.models.agent import Agent
+from app.models.call_session import CallSession
 from app.schemas.scheduled_call import CSVUploadResponse, BoardInfoResponse, DeleteBoardItemsResponse, SingleCallRequest, SingleCallResponse
 from app.services.scheduled_call_service import ScheduledCallService
+from app.services.monday_service import MondayService
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
 
@@ -197,3 +200,146 @@ async def clear_board_items(user: User = Depends(require_tenant), db: Session = 
         board_url=board_record.monday_board_url,
     )
     return create_success_response(data, f"Deleted {deleted} item(s) for current tenant from the board")
+
+
+@router.get("/batch/{batch_id}/analysis", response_model=SuccessResponse[dict])
+async def get_batch_analysis(
+    batch_id: str,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get analysis data for a completed batch.
+    
+    Returns comprehensive analysis including:
+    - Total scheduled calls (from CSV)
+    - Total calls made vs pending
+    - Successfully called vs failed calls
+    - Total and average call duration
+    - Call times and details for each call
+    - Success/failure rates
+    - Total cost
+    - Current timestamp (report generation time)
+    
+    **Matching Logic:**
+    - First tries to match by call_session_id from Monday.com items (most accurate)
+    - Falls back to phone number matching if call_session_id not available
+    
+    **Note:** n8n workflow should update Monday.com items with call_session_id
+    after calling /voice/call/initiate endpoint.
+    """
+    try:
+        # Get user's board
+        board_record = scheduled_call_service.get_board_for_user(db, user.id)
+        if not board_record:
+            raise HTTPException(status_code=404, detail="Board not found for user")
+        
+        # Get column map
+        column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+        
+        # Fetch all items from Monday.com with this batch_id and tenant_id
+        items = MondayService.get_items_by_batch_id(
+            board_id=board_record.monday_board_id,
+            batch_id=batch_id,
+            tenant_id=str(user.current_tenant_id),
+            column_map=column_map
+        )
+        
+        if not items:
+            raise HTTPException(status_code=404, detail=f"No items found for batch_id: {batch_id}")
+        
+        # Total scheduled calls (from Monday.com items)
+        total_scheduled = len(items)
+        
+        # Extract call_session_ids and phone numbers from items
+        call_session_ids = []
+        phone_numbers = []
+        
+        for item in items:
+            phone_number = item.get("name", "").strip()
+            if phone_number:
+                phone_numbers.append(phone_number)
+            
+            # Extract call_session_id from column values
+            for col_val in item.get("column_values", []):
+                if col_val.get("id") == column_map.get("call_session_id"):
+                    session_id = col_val.get("text", "").strip()
+                    if session_id:
+                        try:
+                            call_session_ids.append(uuid.UUID(session_id))
+                        except ValueError:
+                            pass
+                    break
+        
+        # Fetch call sessions - prefer call_session_id, fallback to phone_number
+        if call_session_ids:
+            # Use call_session_id for accurate matching
+            call_sessions = db.query(CallSession).filter(
+                and_(
+                    CallSession.id.in_(call_session_ids),
+                    CallSession.tenant_id == user.current_tenant_id
+                )
+            ).all()
+        else:
+            # Fallback: match by phone number
+            call_sessions = db.query(CallSession).filter(
+                and_(
+                    CallSession.to_number.in_(phone_numbers),
+                    CallSession.tenant_id == user.current_tenant_id
+                )
+            ).all()
+        
+        # Calculate statistics
+        total_calls_made = len(call_sessions)  # Actually made calls
+        called_count = len([cs for cs in call_sessions if cs.status == "completed"])
+        failed_count = len([cs for cs in call_sessions if cs.status in ["failed", "busy"]])
+        pending_count = total_scheduled - total_calls_made  # Items that never got called
+        
+        total_duration = sum(cs.duration or 0 for cs in call_sessions)
+        avg_duration = total_duration / total_calls_made if total_calls_made > 0 else 0
+        
+        # Prepare call details
+        call_details = []
+        for cs in call_sessions:
+            call_details.append({
+                "call_session_id": str(cs.id),
+                "phone_number": cs.to_number,
+                "start_time": cs.start_time.isoformat() if cs.start_time else None,
+                "end_time": cs.end_time.isoformat() if cs.end_time else None,
+                "duration_seconds": cs.duration,
+                "duration_formatted": f"{(cs.duration or 0) // 60}m {(cs.duration or 0) % 60}s" if cs.duration else "0s",
+                "status": cs.status,
+                "success_evaluation": cs.success_evaluation,
+                "ended_reason": cs.ended_reason,
+                "cost": float(cs.cost) if cs.cost else 0.0
+            })
+        
+        # Analysis summary
+        analysis = {
+            "batch_id": batch_id,
+            "user_email": user.email,
+            "current_time": datetime.now(timezone.utc).isoformat(),  # Report generation time
+            "total_scheduled": total_scheduled,  # Total calls scheduled in CSV
+            "total_calls_made": total_calls_made,  # Actually made calls
+            "called": called_count,  # Successfully called
+            "failed": failed_count,  # Failed calls
+            "pending": pending_count,  # Never called (still Pending)
+            "successful_calls": called_count,  # Alias for compatibility
+            "failed_calls": failed_count,  # Alias for compatibility
+            "total_duration_seconds": total_duration,
+            "total_duration_formatted": f"{total_duration // 60}m {total_duration % 60}s",
+            "average_duration_seconds": int(avg_duration),
+            "average_duration_formatted": f"{int(avg_duration) // 60}m {int(avg_duration) % 60}s",
+            "success_rate_percent": round((called_count / total_calls_made * 100) if total_calls_made > 0 else 0, 2),
+            "failure_rate_percent": round((failed_count / total_calls_made * 100) if total_calls_made > 0 else 0, 2),
+            "total_cost": round(sum(float(cs.cost or 0) for cs in call_sessions), 2),
+            "call_details": call_details
+        }
+        
+        return create_success_response(analysis, "Batch analysis retrieved successfully")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get batch analysis: {str(e)}")
+ 
