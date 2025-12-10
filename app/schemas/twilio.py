@@ -68,6 +68,7 @@ class CallInitiateRequest(BaseModel):
     board_id: Optional[str] = None  # Optional, Monday.com board ID from n8n workflow
     monday_item_id: Optional[str] = None  # Optional, Monday.com item ID from n8n workflow
     status_column_id: Optional[str] = None  # Optional, Monday.com status column ID from n8n workflow
+    call_session_id_column_id: Optional[str] = None  # Optional, Monday.com call_session_id column ID from n8n workflow
 
 
 class CallInitiateResponse(BaseModel):
@@ -78,6 +79,7 @@ class CallInitiateResponse(BaseModel):
     board_id: Optional[str] = None  # Echo back Monday.com board ID if provided
     monday_item_id: Optional[str] = None  # Echo back Monday.com item ID if provided
     status_column_id: Optional[str] = None  # Echo back Monday.com status column ID if provided
+    call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
 
 
 # Web-based voice chat schemas (Talk to Assistant feature)
