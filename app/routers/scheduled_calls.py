@@ -639,7 +639,9 @@ async def get_batch_analysis(
             "success_rate_percent": round((called_count / total_calls_made * 100) if total_calls_made > 0 else 0, 2),
             "failure_rate_percent": round((failed_count / total_calls_made * 100) if total_calls_made > 0 else 0, 2),
             "total_cost": round(sum(float(cs.cost or 0) for cs in call_sessions), 2),
-            "call_details": call_details
+            "call_details": call_details,
+            "email_sent_column_id": column_map.get("email_sent"),  # Email Sent column ID for n8n to update status
+            "board_id": board_record.monday_board_id  # Board ID for n8n to update items
         }
         
         return create_success_response(analysis, "Batch analysis retrieved successfully")
