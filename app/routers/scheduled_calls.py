@@ -532,11 +532,17 @@ async def get_batch_analysis(
         # Total scheduled calls (from Monday.com items)
         total_scheduled = len(items)
         
-        # Extract call_session_ids and phone numbers from items
+        # Extract item IDs, call_session_ids and phone numbers from items
+        item_ids = []  # Item IDs for Monday.com update
         call_session_ids = []
         phone_numbers = []
         
         for item in items:
+            # Extract item ID
+            item_id = item.get("id")
+            if item_id:
+                item_ids.append(item_id)
+            
             phone_number = item.get("name", "").strip()
             if phone_number:
                 phone_numbers.append(phone_number)
@@ -641,7 +647,8 @@ async def get_batch_analysis(
             "total_cost": round(sum(float(cs.cost or 0) for cs in call_sessions), 2),
             "call_details": call_details,
             "email_sent_column_id": column_map.get("email_sent"),  # Email Sent column ID for n8n to update status
-            "board_id": board_record.monday_board_id  # Board ID for n8n to update items
+            "board_id": board_record.monday_board_id,  # Board ID for n8n to update items
+            "item_ids": item_ids  # Item IDs for Monday.com update
         }
         
         return create_success_response(analysis, "Batch analysis retrieved successfully")
