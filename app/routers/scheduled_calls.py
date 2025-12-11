@@ -650,4 +650,118 @@ async def get_batch_analysis(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get batch analysis: {str(e)}")
+
+
+@router.post("/batch/{batch_id}/mark-email-sent", response_model=SuccessResponse[dict])
+async def mark_batch_email_sent(
+    batch_id: str,
+    http_request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Mark Email Sent status as "Yes" for all items in a batch.
+    
+    **Authentication:** 
+    - JWT token (default) - user and tenant from token
+    - OR X-N8N-Webhook-Secret header - provide tenant_id and user_id as query params
+    
+    **Query Parameters (for n8n webhook):**
+    - `tenant_id` (str, optional): Required when using webhook secret
+    - `user_id` (str, optional): Required when using webhook secret
+    
+    **Returns:**
+    - batch_id: Batch ID that was updated
+    - items_updated: Number of items successfully updated
+    - total_items: Total items found in batch
+    
+    **Note:** This endpoint:
+    1. Fetches items by batch_id and tenant_id
+    2. Updates Email Sent column to "Yes" for all matching items
+    3. Returns count of updated items
+    """
+    try:
+        # Verify authentication: either JWT token OR webhook secret
+        is_webhook = await verify_n8n_webhook_secret_async(http_request)
+        
+        if is_webhook:
+            # Webhook authentication - get tenant_id and user_id from query params
+            if not tenant_id or not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="tenant_id and user_id are required as query parameters when using webhook secret"
+                )
+            try:
+                tenant_uuid = uuid.UUID(tenant_id)
+                user_uuid = uuid.UUID(user_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid UUID format for tenant_id or user_id"
+                )
+            
+            # Get user from database
+            user = db.query(User).filter(User.id == user_uuid).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            user.current_tenant_id = tenant_uuid
+        else:
+            # JWT authentication - get from user token
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required: JWT token or n8n webhook secret"
+                )
+        
+        # Get user's board
+        board_record = scheduled_call_service.get_board_for_user(db, user.id)
+        if not board_record:
+            raise HTTPException(status_code=404, detail="Board not found for user")
+        
+        # Get column map
+        column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+        
+        # Fetch items by batch_id and tenant_id
+        items = MondayService.get_items_by_batch_id(
+            board_id=board_record.monday_board_id,
+            batch_id=batch_id,
+            tenant_id=str(user.current_tenant_id),
+            column_map=column_map
+        )
+        
+        if not items:
+            raise HTTPException(status_code=404, detail=f"No items found for batch_id: {batch_id}")
+        
+        # Get email_sent column ID
+        email_sent_column_id = column_map.get("email_sent")
+        if not email_sent_column_id:
+            raise HTTPException(status_code=500, detail="Email Sent column not found in board")
+        
+        # Extract item IDs
+        item_ids = [item["id"] for item in items]
+        
+        # Update Email Sent status to "Yes" (index 1)
+        updated_count = MondayService.update_items_email_sent(
+            board_id=board_record.monday_board_id,
+            item_ids=item_ids,
+            email_sent_column_id=email_sent_column_id
+        )
+        
+        result = {
+            "batch_id": batch_id,
+            "items_updated": updated_count,
+            "total_items": len(item_ids)
+        }
+        
+        return create_success_response(
+            result,
+            f"Successfully marked {updated_count} item(s) as email sent"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to mark email sent: {str(e)}")
  

@@ -626,3 +626,51 @@ class MondayService:
             print(f"⚠️ Failed to update status and call_session_id for Monday.com item {item_id}: {exc}")
             return None
 
+    @staticmethod
+    def update_items_email_sent(
+        board_id: str,
+        item_ids: List[str],
+        email_sent_column_id: str
+    ) -> int:
+        """
+        Update Email Sent status to 'Yes' for multiple items.
+        
+        Args:
+            board_id: Monday.com board ID
+            item_ids: List of item IDs to update
+            email_sent_column_id: Email Sent column ID
+            
+        Returns:
+            Number of items successfully updated
+        """
+        if not item_ids:
+            return 0
+        
+        column_values = {email_sent_column_id: {"index": 1}}  # index 1 = "Yes"
+        
+        query = """
+        mutation ($boardId: ID!, $itemIds: [ID!]!, $columnValues: JSON!) {
+            change_multiple_column_values (
+                board_id: $boardId,
+                item_ids: $itemIds,
+                column_values: $columnValues
+            ) {
+                id
+            }
+        }
+        """
+        
+        variables = {
+            "boardId": board_id,
+            "itemIds": item_ids,
+            "columnValues": json.dumps(column_values)
+        }
+        
+        try:
+            data = MondayService._execute(query, variables)
+            result = data.get("change_multiple_column_values", [])
+            return len(result) if result else 0
+        except Exception as exc:
+            print(f"⚠️ Failed to update email sent status for items: {exc}")
+            return 0
+
