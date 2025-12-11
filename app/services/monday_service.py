@@ -27,6 +27,12 @@ class MondayService:
         {"key": "user_id", "title": "User ID", "type": "text"},
         {"key": "batch_id", "title": "Batch ID", "type": "text"},
         {"key": "call_session_id", "title": "Call Session ID", "type": "text"},
+        {
+            "key": "email_sent",
+            "title": "Email Sent",
+            "type": "status",
+            "defaults": {"labels": {"0": "No", "1": "Yes"}},
+        },
     ]
 
     @staticmethod
@@ -226,6 +232,10 @@ class MondayService:
         # Add batch_id if provided and column exists
         if batch_id and "batch_id" in column_map:
             column_values[column_map["batch_id"]] = batch_id
+        
+        # Set Email Sent to "No" by default if column exists
+        if "email_sent" in column_map:
+            column_values[column_map["email_sent"]] = {"label": "No"}
 
         query = """
         mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) {

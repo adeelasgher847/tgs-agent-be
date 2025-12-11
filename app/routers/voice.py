@@ -1978,7 +1978,7 @@ async def analyze_call_transcript(
         
         # Create recommendations prompt based on agent's instructions
         recommendations_prompt = f"""
-You are a friendly colleague reviewing this call. Based on the transcript and agent's instructions, provide helpful, friendly recommendations in a casual, conversational English tone.
+Analyze this call transcript and provide 2-3 brief, actionable recommendations for the agent.
 
 Call Transcript:
 {transcript_text}
@@ -1986,59 +1986,18 @@ Call Transcript:
 Agent's Instructions/Purpose:
 {agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
 
-IMPORTANT - Write recommendations in a FRIENDLY, CONVERSATIONAL English tone:
-- Use friendly, conversational language (like "I think you might want to...", "Perhaps it would be helpful to...", "You could consider...")
-- Be helpful and suggestive, not strict or commanding
-- Keep it casual and friendly - like a colleague giving friendly advice
-- Each recommendation should be 2-3 sentences
-- First sentence: Your friendly suggestion/opinion. Second/third sentence: Brief reason or context
-- Base recommendations on what happened in the call and agent's purpose
-
-Provide 2-4 friendly recommendations in this format:
-1. [Your friendly suggestion]. [Brief reason or context - 2-3 sentences total]
-2. [Next helpful suggestion]. [Brief reason - 2-3 sentences total]
-3. [Additional friendly advice]. [Brief reason - 2-3 sentences total]
-4. [Any other helpful tip]. [Brief reason - 2-3 sentences total]
-
-USE friendly, conversational English like:
-- "I think you might want to follow up with the customer by end of day. This would help maintain timely communication and keep them engaged."
-- "Perhaps updating the CRM with call details would be helpful. This way the team gets visibility into the outreach efforts."
-- "You could consider scheduling a follow-up call for next week. This gives the candidate another opportunity to connect."
-
-Tone: Friendly, casual, helpful - like a colleague sharing suggestions in a warm, conversational way, not a manager giving orders.
-Keep it conversational and warm. 2-3 sentences per recommendation in friendly English.
-"""
-        
-        # Create fit score prompt based on agent's instructions
-        fit_score_prompt = f"""
-Evaluate how well this call aligned with the agent's purpose and instructions. Provide a fit score out of 10.
-
-Call Transcript:
-{transcript_text}
-
-Agent's Instructions/Purpose:
-{agent_prompt if agent_prompt else "No specific instructions provided. General customer service call."}
-
-Evaluate the call's alignment with the agent's purpose:
-- How well did the call achieve the agent's objectives?
-- Did the conversation follow the agent's instructions?
-- Were the key goals from the agent's prompt addressed?
-- How successful was the call in meeting the intended purpose?
-
-Provide a fit score (0-10) where:
-- 9-10: Excellent alignment, all objectives met perfectly
-- 7-8: Good alignment, most objectives met
-- 5-6: Moderate alignment, some objectives met
-- 3-4: Poor alignment, few objectives met
-- 0-2: Very poor alignment, objectives not met
+IMPORTANT - Keep recommendations BRIEF and CONCISE:
+- Provide only 2-3 recommendations maximum
+- Each recommendation should be 1 sentence only (brief and to the point)
+- Be specific and actionable
+- Use friendly, conversational tone
 
 Format your response as:
-Fit Score: [number 0-10]
-Brief Explanation: [One line explaining the score - keep it concise]
+1. [Brief recommendation in 1 sentence]
+2. [Next brief recommendation in 1 sentence]
+3. [Optional third recommendation in 1 sentence]
 
-Example:
-Fit Score: 7
-Brief Explanation: The call covered most key requirements, candidate was interested, but some responses were vague and needed follow-up.
+Keep it concise - similar to summary format. Maximum 1 sentence per recommendation.
 """
         
         # Helper function to call appropriate service based on provider
@@ -2091,7 +2050,6 @@ Brief Explanation: The call covered most key requirements, candidate was interes
         summary_result = None
         sentiment_result = None
         recommendations_result = None
-        fit_score_result = None
         used_model = None
         last_error = None
         
@@ -2130,20 +2088,6 @@ Brief Explanation: The call covered most key requirements, candidate was interes
                     except Exception as e:
                         print(f"⚠️ Failed to generate recommendations: {e}")
                         # Continue even if recommendations fail
-                
-                # Generate fit score (only if agent has a prompt/instructions)
-                if agent_prompt:
-                    try:
-                        fit_score_result = generate_analysis_text(
-                            current_model, 
-                            current_api_key, 
-                            fit_score_prompt, 
-                            max_tokens=150
-                        )
-                        print(f"✅ Fit score generated")
-                    except Exception as e:
-                        print(f"⚠️ Failed to generate fit score: {e}")
-                        # Continue even if fit score fails
                 
                 used_model = current_model.model_name
                 print(f"✅ Analysis successful with {used_model}")
@@ -2212,52 +2156,6 @@ Brief Explanation: The call covered most key requirements, candidate was interes
             # If agent has prompt but recommendations failed, indicate it
             analysis_data["recommendations"] = ["Unable to generate recommendations at this time."]
             analysis_data["recommendations_text"] = "Unable to generate recommendations at this time."
-        
-        # Parse fit score if available
-        fit_score = None
-        fit_score_explanation = None
-        if fit_score_result:
-            try:
-                fit_score_text = fit_score_result["content"].strip()
-                # Extract score (look for "Fit Score: 7" pattern)
-                import re
-                score_match = re.search(r'Fit Score:\s*(\d+)', fit_score_text, re.IGNORECASE)
-                if score_match:
-                    score = int(score_match.group(1))
-                    # Ensure score is between 0-10
-                    if 0 <= score <= 10:
-                        fit_score = score
-                    elif 0 <= score <= 100:
-                        # If LLM returns 0-100, convert to 0-10
-                        fit_score = round(score / 10)
-                    
-                    # Extract explanation
-                    explanation_match = re.search(r'Brief Explanation:\s*(.+?)(?:\n|$)', fit_score_text, re.IGNORECASE | re.DOTALL)
-                    if explanation_match:
-                        fit_score_explanation = explanation_match.group(1).strip()
-                
-                # Fallback: try to extract just number if pattern doesn't match
-                if fit_score is None:
-                    numbers = re.findall(r'\b([0-9]|10)\b', fit_score_text)
-                    if numbers:
-                        # Take first number between 0-10
-                        for num in numbers:
-                            score = int(num)
-                            if 0 <= score <= 10:
-                                fit_score = score
-                                break
-            except Exception as e:
-                print(f"⚠️ Failed to parse fit score: {e}")
-        
-        # Add fit score to analysis data
-        if fit_score is not None:
-            analysis_data["fit_score"] = fit_score
-            if fit_score_explanation:
-                analysis_data["fit_score_explanation"] = fit_score_explanation
-        elif agent_prompt:
-            # If agent has prompt but fit score failed
-            analysis_data["fit_score"] = None
-            analysis_data["fit_score_explanation"] = "Unable to calculate fit score at this time."
         
         analysis_result = {
             "call_session_id": call_session_id,

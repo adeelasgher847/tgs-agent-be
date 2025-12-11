@@ -130,7 +130,7 @@ async def analyze_call_transcript_internal(
         """
         
         recommendations_prompt = f"""
-You are a friendly colleague reviewing this call. Based on the transcript and agent's instructions, provide helpful, friendly recommendations in a casual, conversational English tone.
+Analyze this call transcript and provide 2-3 brief, actionable recommendations for the agent.
 
 Call Transcript:
 {transcript_text}
@@ -138,33 +138,18 @@ Call Transcript:
 Agent's Instructions/Purpose:
 {agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
 
-IMPORTANT - Write recommendations in a FRIENDLY, CONVERSATIONAL English tone:
-- Use friendly, conversational language
-- Be helpful and suggestive, not strict or commanding
-- Keep it casual and friendly - like a colleague giving friendly advice
-- Each recommendation should be 2-3 sentences
-
-Provide 2-4 friendly recommendations in this format:
-1. [Your friendly suggestion]. [Brief reason or context - 2-3 sentences total]
-2. [Next helpful suggestion]. [Brief reason - 2-3 sentences total]
-
-Keep it conversational and warm. 2-3 sentences per recommendation in friendly English.
-"""
-        
-        fit_score_prompt = f"""
-Evaluate how well this call aligned with the agent's purpose and instructions. Provide a fit score out of 10.
-
-Call Transcript:
-{transcript_text}
-
-Agent's Instructions/Purpose:
-{agent_prompt if agent_prompt else "No specific instructions provided. General customer service call."}
-
-Evaluate the call's alignment with the agent's purpose and provide a fit score (0-10).
+IMPORTANT - Keep recommendations BRIEF and CONCISE:
+- Provide only 2-3 recommendations maximum
+- Each recommendation should be 1 sentence only (brief and to the point)
+- Be specific and actionable
+- Use friendly, conversational tone
 
 Format your response as:
-Fit Score: [number 0-10]
-Brief Explanation: [One line explaining the score - keep it concise]
+1. [Brief recommendation in 1 sentence]
+2. [Next brief recommendation in 1 sentence]
+3. [Optional third recommendation in 1 sentence]
+
+Keep it concise - similar to summary format. Maximum 1 sentence per recommendation.
 """
         
         # Helper function to generate analysis text
@@ -210,7 +195,6 @@ Brief Explanation: [One line explaining the score - keep it concise]
         summary_result = None
         sentiment_result = None
         recommendations_result = None
-        fit_score_result = None
         
         try:
             summary_result = generate_analysis_text(model, current_api_key, summary_prompt, max_tokens=200)
@@ -223,13 +207,6 @@ Brief Explanation: [One line explaining the score - keep it concise]
                     )
                 except Exception as e:
                     print(f"⚠️ Failed to generate recommendations: {e}")
-                
-                try:
-                    fit_score_result = generate_analysis_text(
-                        model, current_api_key, fit_score_prompt, max_tokens=150
-                    )
-                except Exception as e:
-                    print(f"⚠️ Failed to generate fit score: {e}")
         except Exception as e:
             print(f"⚠️ Error generating analysis: {e}")
             return None
@@ -267,39 +244,6 @@ Brief Explanation: [One line explaining the score - keep it concise]
             
             analysis_data["recommendations"] = recommendations_list
             analysis_data["recommendations_text"] = recommendations_text
-        
-        # Parse fit score
-        fit_score = None
-        fit_score_explanation = None
-        if fit_score_result:
-            try:
-                fit_score_text = fit_score_result.get("content", "").strip()
-                score_match = re.search(r'Fit Score:\s*(\d+)', fit_score_text, re.IGNORECASE)
-                if score_match:
-                    score = int(score_match.group(1))
-                    if 0 <= score <= 10:
-                        fit_score = score
-                    elif 0 <= score <= 100:
-                        fit_score = round(score / 10)
-                    
-                    explanation_match = re.search(r'Brief Explanation:\s*(.+?)(?:\n|$)', fit_score_text, re.IGNORECASE | re.DOTALL)
-                    if explanation_match:
-                        fit_score_explanation = explanation_match.group(1).strip()
-                
-                if fit_score is None:
-                    numbers = re.findall(r'\b([0-9]|10)\b', fit_score_text)
-                    for num in numbers:
-                        score = int(num)
-                        if 0 <= score <= 10:
-                            fit_score = score
-                            break
-            except Exception as e:
-                print(f"⚠️ Failed to parse fit score: {e}")
-        
-        if fit_score is not None:
-            analysis_data["fit_score"] = fit_score
-            if fit_score_explanation:
-                analysis_data["fit_score_explanation"] = fit_score_explanation
         
         return {
             "analysis": analysis_data,
