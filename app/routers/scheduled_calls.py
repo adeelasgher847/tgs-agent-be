@@ -200,13 +200,13 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             summary_result = generate_analysis_text(model, current_api_key, summary_prompt, max_tokens=200)
             sentiment_result = generate_analysis_text(model, current_api_key, sentiment_prompt, max_tokens=150)
             
-            if agent_prompt:
-                try:
-                    recommendations_result = generate_analysis_text(
-                        model, current_api_key, recommendations_prompt, max_tokens=300
-                    )
-                except Exception as e:
-                    print(f"⚠️ Failed to generate recommendations: {e}")
+            # ✅ Always generate recommendations based on transcript (not just when agent_prompt exists)
+            try:
+                recommendations_result = generate_analysis_text(
+                    model, current_api_key, recommendations_prompt, max_tokens=300
+                )
+            except Exception as e:
+                print(f"⚠️ Failed to generate recommendations: {e}")
         except Exception as e:
             print(f"⚠️ Error generating analysis: {e}")
             return None
