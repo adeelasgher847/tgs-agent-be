@@ -646,7 +646,8 @@ class MondayService:
         if not item_ids:
             return 0
         
-        column_values = {email_sent_column_id: {"index": 1}}  # index 1 = "Yes"
+        # Use label instead of index for status columns (Monday.com API requirement)
+        column_values = {email_sent_column_id: {"label": "Yes"}}
         
         query = """
         mutation ($boardId: ID!, $itemIds: [ID!]!, $columnValues: JSON!) {
@@ -669,8 +670,14 @@ class MondayService:
         try:
             data = MondayService._execute(query, variables)
             result = data.get("change_multiple_column_values", [])
+            if not result:
+                print(f"⚠️ No items returned from change_multiple_column_values mutation")
+                print(f"   Response data: {data}")
+                return 0
             return len(result) if result else 0
         except Exception as exc:
             print(f"⚠️ Failed to update email sent status for items: {exc}")
+            import traceback
+            traceback.print_exc()
             return 0
 
