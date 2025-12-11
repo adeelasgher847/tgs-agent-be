@@ -649,35 +649,42 @@ class MondayService:
         # Use label instead of index for status columns (Monday.com API requirement)
         column_values = {email_sent_column_id: {"label": "Yes"}}
         
-        query = """
-        mutation ($boardId: ID!, $itemIds: [ID!]!, $columnValues: JSON!) {
-            change_multiple_column_values (
-                board_id: $boardId,
-                item_ids: $itemIds,
-                column_values: $columnValues
-            ) {
-                id
+        # Monday.com API's change_multiple_column_values only accepts item_id (singular)
+        # So we need to update each item individually
+        updated_count = 0
+        
+        for item_id in item_ids:
+            query = """
+            mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+                change_multiple_column_values (
+                    board_id: $boardId,
+                    item_id: $itemId,
+                    column_values: $columnValues
+                ) {
+                    id
+                }
             }
-        }
-        """
+            """
+            
+            variables = {
+                "boardId": board_id,
+                "itemId": item_id,
+                "columnValues": json.dumps(column_values)
+            }
+            
+            try:
+                data = MondayService._execute(query, variables)
+                result = data.get("change_multiple_column_values")
+                if result and result.get("id"):
+                    updated_count += 1
+                    print(f"✅ Updated email sent status for item {item_id}")
+                else:
+                    print(f"⚠️ No response for item {item_id}, data: {data}")
+            except Exception as exc:
+                print(f"⚠️ Failed to update email sent status for item {item_id}: {exc}")
+                import traceback
+                traceback.print_exc()
+                continue
         
-        variables = {
-            "boardId": board_id,
-            "itemIds": item_ids,
-            "columnValues": json.dumps(column_values)
-        }
-        
-        try:
-            data = MondayService._execute(query, variables)
-            result = data.get("change_multiple_column_values", [])
-            if not result:
-                print(f"⚠️ No items returned from change_multiple_column_values mutation")
-                print(f"   Response data: {data}")
-                return 0
-            return len(result) if result else 0
-        except Exception as exc:
-            print(f"⚠️ Failed to update email sent status for items: {exc}")
-            import traceback
-            traceback.print_exc()
-            return 0
+        return updated_count
 
