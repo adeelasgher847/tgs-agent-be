@@ -29,6 +29,8 @@ async def get_phone_numbers(
         
         phone_number_responses = []
         for pn in phone_numbers:
+            # Don't return encrypted credentials in response (security)
+            account_sid_display = "***encrypted***" if pn.twilio_account_sid else None
             phone_number_responses.append(PhoneNumberResponse(
                 id=pn.id,
                 tenant_id=pn.tenant_id,
@@ -37,7 +39,7 @@ async def get_phone_numbers(
                 status=pn.status,
                 assistant_id=pn.assistant_id,
                 twilio_phone_number_sid=pn.twilio_phone_number_sid,
-                twilio_account_sid=pn.twilio_account_sid,
+                twilio_account_sid=account_sid_display,  # ✅ Don't expose encrypted value
                 created_at=pn.created_at,
                 updated_at=pn.updated_at
             ))
@@ -136,7 +138,7 @@ async def import_twilio_phone_number(
                 phone_number=phone_number.phone_number,
                 label=phone_number.label,
                 status=phone_number.status,
-                twilio_account_sid=phone_number.twilio_account_sid,
+                twilio_account_sid="***encrypted***",  # ✅ Don't expose encrypted value
                 created_at=phone_number.created_at,
                 message="Twilio phone number imported successfully"
             ),

@@ -260,6 +260,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
 async def upload_scheduled_calls_csv(
     file: UploadFile = File(..., description="CSV file with scheduled calls"),
     agent_id: str = Query(..., description="Agent ID to use for all calls in this CSV (required)"),
+    phone_number_id: Optional[str] = Query(None, description="Optional phone number ID to use for all calls in CSV"),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
@@ -275,12 +276,15 @@ async def upload_scheduled_calls_csv(
     - Select agent before upload (agent_id query parameter - required)
     - CSV with phone_number and call_time_utc only
     
+    **Optional:**
+    - phone_number_id query parameter - if provided, all calls in CSV will use this phone number
+    
     **Required Columns:**
     - `phone_number`: Phone number to call (e.g., +1234567890)
     - `call_time_utc`: Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS
     
     **Note:** `tenant_id` and `user_id` are automatically taken from your logged-in session.
-    All calls in this CSV will use the selected agent.
+    All calls in this CSV will use the selected agent and phone_number_id (if provided).
     
     **Example CSV:**
     ```csv
@@ -292,13 +296,14 @@ async def upload_scheduled_calls_csv(
     
     **Flow:**
     1. Select agent from dropdown
-    2. Upload CSV (2 columns: phone_number, call_time_utc)
-    3. Backend parses CSV and validates data
-    4. Creates items in the user's Monday.com board (status: "Pending", tenant_id stored in column)
-    5. n8n cron (every 1 min) detects new items
-    6. n8n waits until call_time_utc
-    7. n8n calls backend `/voice/call/initiate`
-    8. n8n updates Monday.com status ("Called" or "Failed")
+    2. Optionally select phone number (phone_number_id query param)
+    3. Upload CSV (2 columns: phone_number, call_time_utc)
+    4. Backend parses CSV and validates data
+    5. Creates items in the user's Monday.com board (status: "Pending", tenant_id and phone_number_id stored)
+    6. n8n cron (every 1 min) detects new items
+    7. n8n waits until call_time_utc
+    8. n8n calls backend `/voice/call/initiate` with phone_number_id from Monday.com
+    9. n8n updates Monday.com status ("Called" or "Failed")
     
     **Data storage:** CSV rows live only in Monday.com. The backend stores one board
     record per user (shared by all their tenants). Items are identified by tenant_id column.
@@ -332,7 +337,8 @@ async def upload_scheduled_calls_csv(
             tenant_id=user.current_tenant_id,
             user_id=user.id,
             csv_content=csv_content,
-            default_agent_id=agent_uuid  # Pass selected agent (required)
+            default_agent_id=agent_uuid,  # Pass selected agent (required)
+            default_phone_number_id=phone_number_id  # ✅ Pass phone_number_id (optional)
         )
 
         message = (
@@ -353,6 +359,7 @@ async def create_single_scheduled_call(
     agent_id: str = Query(..., description="Agent ID (UUID)"),
     phone_number: str = Query(..., description="Phone number to call (e.g., +1234567890)"),
     call_time_utc: str = Query(..., description="Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS"),
+    phone_number_id: Optional[str] = Query(None, description="Optional phone number ID from DB to use for call"),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
@@ -363,11 +370,12 @@ async def create_single_scheduled_call(
     - `agent_id`: Agent ID (UUID)
     - `phone_number`: Phone number to call (e.g., +1234567890)
     - `call_time_utc`: Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS
+    - `phone_number_id`: Optional phone number ID from DB to use for call
     
     **Flow:**
     1. Validates agent exists and belongs to tenant
     2. Generates unique batch_id for this single call
-    3. Creates item in user's Monday.com board (status: "Pending", batch_id stored)
+    3. Creates item in user's Monday.com board (status: "Pending", batch_id stored, phone_number_id stored)
     4. n8n cron detects new item and triggers call at scheduled time
     5. When call completes (Called/Failed), n8n will send email for this batch
     
@@ -386,7 +394,8 @@ async def create_single_scheduled_call(
             user_id=user.id,
             phone_number=phone_number,
             agent_id=agent_uuid,
-            call_time_utc=call_time_utc
+            call_time_utc=call_time_utc,
+            phone_number_id=phone_number_id  # ✅ Pass phone_number_id
         )
         
         return create_success_response(

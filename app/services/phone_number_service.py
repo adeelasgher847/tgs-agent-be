@@ -88,7 +88,7 @@ class PhoneNumberService:
             phone_number: Phone number in E.164 format
             label: Optional label
             tenant_id: Tenant ID
-            twilio_account_sid: Twilio Account SID
+            twilio_account_sid: Twilio Account SID (will be encrypted)
             twilio_auth_token: Twilio Auth Token (will be encrypted)
             
         Returns:
@@ -103,17 +103,18 @@ class PhoneNumberService:
         if existing:
             raise ValueError(f"Phone number {phone_number} already exists in this tenant")
         
-        # Encrypt auth token before storing
+        # Encrypt credentials before storing
         from app.core.security import encrypt_api_key
+        encrypted_account_sid = encrypt_api_key(twilio_account_sid)
         encrypted_auth_token = encrypt_api_key(twilio_auth_token)
         
-        # Create phone number with Twilio credentials
+        # Create phone number with encrypted Twilio credentials
         phone_number_obj = PhoneNumber(
             phone_number=phone_number,
             label=label,
             tenant_id=tenant_id,
             status="active",
-            twilio_account_sid=twilio_account_sid,
+            twilio_account_sid=encrypted_account_sid,  # ✅ Encrypted
             twilio_auth_token=encrypted_auth_token
         )
         

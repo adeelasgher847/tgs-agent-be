@@ -66,8 +66,8 @@ def get_twilio_credentials_for_call(db: Session, call_session: CallSession):
         ).first()
         
         if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
-            # ✅ Use DB credentials
-            account_sid = phone_number_obj.twilio_account_sid
+            # ✅ Use DB credentials (decrypt both)
+            account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
             auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
             print(f"✅ Using DB credentials for recording (phone: {call_session.from_number})")
             return account_sid, auth_token
@@ -436,21 +436,19 @@ async def initiate_call(
         
         # Use selected phone number with credentials if available
         if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
-            # ✅ Use DB phone number with custom credentials
+            # ✅ Use DB phone number with custom credentials (decrypt both)
             from_number = phone_number_obj.phone_number
-            account_sid = phone_number_obj.twilio_account_sid
-            # Decrypt auth token
             from app.core.security import decrypt_api_key
+            account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
             auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
             use_custom_credentials = True
             print(f"✅ Using DB phone number: {from_number} with custom credentials")
         else:
-            # ✅ Fallback to env credentials
-            from_number = twilio_service.get_phone_number()
-            account_sid = settings.TWILIO_ACCOUNT_SID
-            auth_token = settings.TWILIO_AUTH_TOKEN
-            use_custom_credentials = False
-            print(f"✅ Using env phone number: {from_number}")
+            # ✅ No fallback - user must have a phone number in DB
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No phone number found. Please create and assign a phone number in your account before making calls."
+            )
         
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL

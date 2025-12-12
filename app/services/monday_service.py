@@ -27,6 +27,7 @@ class MondayService:
         {"key": "user_id", "title": "User ID", "type": "text"},
         {"key": "batch_id", "title": "Batch ID", "type": "text"},
         {"key": "call_session_id", "title": "Call Session ID", "type": "text"},
+        {"key": "phone_number_id", "title": "Phone Number ID", "type": "text"},  # ✅ Optional phone number ID
         {
             "key": "email_sent",
             "title": "Email Sent",
@@ -214,6 +215,7 @@ class MondayService:
         tenant_id: str,
         user_id: str,
         batch_id: Optional[str] = None,
+        phone_number_id: Optional[str] = None,  # ✅ Add phone_number_id parameter
     ) -> Optional[dict]:
         """Create a scheduled call item in the tenant's Monday.com board."""
         required_keys = {"status", "agent_id", "call_time_utc", "tenant_id", "user_id"}
@@ -232,6 +234,10 @@ class MondayService:
         # Add batch_id if provided and column exists
         if batch_id and "batch_id" in column_map:
             column_values[column_map["batch_id"]] = batch_id
+        
+        # Add phone_number_id if provided and column exists
+        if phone_number_id and "phone_number_id" in column_map:
+            column_values[column_map["phone_number_id"]] = phone_number_id
         
         # Set Email Sent to "No" by default if column exists
         if "email_sent" in column_map:

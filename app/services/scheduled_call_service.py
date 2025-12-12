@@ -139,7 +139,8 @@ class ScheduledCallService:
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
         csv_content: str,
-        default_agent_id: uuid.UUID  # Required parameter - agent selected before upload
+        default_agent_id: uuid.UUID,  # Required parameter - agent selected before upload
+        default_phone_number_id: Optional[str] = None  # ✅ Optional phone number ID for all calls in CSV
     ) -> CSVUploadResponse:
         """
         Parse CSV file and create items in Monday.com board.
@@ -151,6 +152,7 @@ class ScheduledCallService:
         - phone_number: Phone number to call (required)
         - call_time_utc: Scheduled time in UTC (required) - ISO format or YYYY-MM-DD HH:MM:SS
         - agent_id: Taken from default_agent_id parameter (all calls use same agent)
+        - phone_number_id: Taken from default_phone_number_id parameter (all calls use same phone number)
         
         tenant_id and user_id are automatically taken from logged-in user.
         
@@ -236,7 +238,8 @@ class ScheduledCallService:
                         call_time_utc=scheduled_time_utc.isoformat(),
                         tenant_id=str(tenant_id),
                         user_id=str(user_id),
-                        batch_id=batch_id  # Same batch_id for all items in this CSV
+                        batch_id=batch_id,  # Same batch_id for all items in this CSV
+                        phone_number_id=default_phone_number_id  # ✅ Pass phone_number_id for all CSV calls
                     )
                     
                     if result:
@@ -273,7 +276,8 @@ class ScheduledCallService:
         user_id: uuid.UUID,
         phone_number: str,
         agent_id: uuid.UUID,
-        call_time_utc: str
+        call_time_utc: str,
+        phone_number_id: Optional[str] = None  # ✅ Add phone_number_id parameter
     ) -> dict:
         """
         Create a single scheduled call item in Monday.com board.
@@ -286,6 +290,7 @@ class ScheduledCallService:
             phone_number: Phone number to call
             agent_id: Agent UUID
             call_time_utc: Scheduled time in UTC (ISO format string)
+            phone_number_id: Optional phone number ID from DB to use for call
         
         Returns:
             Dictionary with monday_item_id, board_id, board_url, batch_id, etc.
@@ -347,7 +352,8 @@ class ScheduledCallService:
                 call_time_utc=scheduled_time_utc.isoformat(),
                 tenant_id=str(tenant_id),
                 user_id=str(user_id),
-                batch_id=batch_id  # Pass batch_id for single call
+                batch_id=batch_id,  # Pass batch_id for single call
+                phone_number_id=phone_number_id  # ✅ Pass phone_number_id
             )
             
             if not result:
