@@ -39,6 +39,7 @@ from app.services.gemini_service import gemini_service
 from app.services.credit_service import credit_service
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
+from app.services.phone_number_service import phone_number_service
 
 router = APIRouter()
 
@@ -396,7 +397,7 @@ async def initiate_call(
         
         print(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
         
-        # Get phone number and credentials - Priority: DB > Env
+        # Get phone number and credentials - Priority: User Selected > Agent Assigned > Env
         from app.models.phone_number import PhoneNumber
         
         phone_number_obj = None
@@ -405,14 +406,35 @@ async def initiate_call(
         account_sid = None
         auth_token = None
         
-        # Check if agent has assigned phone number in DB
-        if agent.id:
+        # Priority 1: Check if user explicitly selected a phone number (VAPI style)
+        if call_request.phone_number_id:
+            try:
+                phone_number_uuid = uuid.UUID(call_request.phone_number_id)
+                phone_number_obj = phone_number_service.get_phone_number_by_id(
+                    db=db,
+                    phone_number_id=phone_number_uuid,
+                    tenant_id=tenant_id_filter
+                )
+                if phone_number_obj and phone_number_obj.status == "active":
+                    print(f"✅ Using user selected phone number: {phone_number_obj.phone_number} (ID: {phone_number_uuid})")
+                else:
+                    phone_number_obj = None
+                    print(f"⚠️ Phone number {call_request.phone_number_id} not found or inactive, falling back...")
+            except (ValueError, Exception) as e:
+                print(f"⚠️ Invalid phone_number_id format: {e}, falling back...")
+                phone_number_obj = None
+        
+        # Priority 2: Check if agent has assigned phone number in DB
+        if not phone_number_obj and agent.id:
             phone_number_obj = db.query(PhoneNumber).filter(
                 PhoneNumber.assistant_id == agent.id,
                 PhoneNumber.tenant_id == tenant_id_filter,
                 PhoneNumber.status == "active"
             ).first()
+            if phone_number_obj:
+                print(f"✅ Using agent's assigned phone number: {phone_number_obj.phone_number}")
         
+        # Use selected phone number with credentials if available
         if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
             # ✅ Use DB phone number with custom credentials
             from_number = phone_number_obj.phone_number

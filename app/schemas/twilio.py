@@ -63,6 +63,7 @@ class AccountInfo(BaseModel):
 class CallInitiateRequest(BaseModel):
     agentId: str
     userPhoneNumber: str
+    phone_number_id: Optional[str] = None  # Optional, user ka selected phone number ID (VAPI style)
     tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
     user_id: Optional[str] = None  # Optional, for n8n webhook calls
     board_id: Optional[str] = None  # Optional, Monday.com board ID from n8n workflow
