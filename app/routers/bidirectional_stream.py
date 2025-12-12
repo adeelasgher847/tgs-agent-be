@@ -114,8 +114,8 @@ from app.services.google_stt_service import google_stt_service
 from app.services.google_tts_service import google_tts_service
 from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
-from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
+from app.core.security import decrypt_api_key
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
@@ -1010,6 +1010,10 @@ class BidirectionalStreamHandler:
         self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - increased for better audibility
         self._use_background_audio = False
         
+        # Conversation pause and goodbye detection
+        self._conversation_pause_task = None  # Task to detect conversation pause
+        self._goodbye_scheduled = False  # Track if goodbye has been scheduled
+        
         # Load and start background audio if available
         bg_audio_bytes, bg_audio_len = decode_background_audio_from_base64()
         if bg_audio_bytes and bg_audio_len > 0:
@@ -1037,6 +1041,229 @@ class BidirectionalStreamHandler:
         print(f"🔄 PARALLEL TTS PIPELINE: Started background worker")
         print(f"🔥 PRE-CACHING: Common phrases loading in background...")
         sys.stdout.flush()
+    
+    def _get_goodbye_phrases(self):
+        """Get list of goodbye phrases"""
+        return [
+            "goodbye",
+            "bye",
+            "bye bye",
+           "talk to you later",
+            "see you later"
+        ]
+    
+    def _check_goodbye_in_text(self, text: str) -> bool:
+        """
+        Check if text contains any goodbye phrases.
+        Used for both user transcripts and agent responses.
+        """
+        if not text:
+            return False
+        
+        text_lower = text.lower()
+        goodbye_phrases = self._get_goodbye_phrases()
+        
+        # Check if any goodbye phrase is present
+        for phrase in goodbye_phrases:
+            if phrase in text_lower:
+                # Word boundary check (exact match)
+                pattern = r'\b' + re.escape(phrase) + r'\b'
+                if re.search(pattern, text_lower):
+                    return True
+        
+        return False
+    
+    def _get_goodbye_message(self):
+        """Get a goodbye message from goodbye phrases list"""
+        goodbye_phrases = self._get_goodbye_phrases()
+        # Return a friendly goodbye message based on phrases
+        return "Thank you for calling. Have a great day!"
+    
+    async def _say_goodbye_and_end_call(self, reason: str = "conversation_complete"):
+        """
+        Say goodbye message (from goodbye phrases) and end the call.
+        After goodbye message plays, waits 2-3 seconds then ends call.
+        """
+        try:
+            if self._goodbye_scheduled:
+                return  # Already scheduled
+            
+            self._goodbye_scheduled = True
+            
+            import asyncio
+            from datetime import datetime, timezone
+            
+            # Get goodbye message from goodbye phrases
+            goodbye_message = self._get_goodbye_message()
+            
+            print(f"👋 Saying goodbye: '{goodbye_message}' (reason: {reason})")
+            sys.stdout.flush()
+            
+            # Add goodbye to transcript
+            await self._add_to_transcript("agent", goodbye_message, "call_end")
+            
+            # Generate and stream goodbye TTS
+            lang = self.agent.language if self.agent and self.agent.language else "en"
+            voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+            
+            # Generate TTS audio
+            audio_bytes = await generate_mulaw_tts(
+                text=goodbye_message,
+                lang=lang,
+                voice=voice,
+                use_chirp3_hd=True,
+                speaking_rate=1.0,
+                use_ssml=False,
+                add_office_bg=False
+            )
+            
+            # Stream goodbye audio
+            audio_duration = len(audio_bytes) / 8000.0  # Duration in seconds
+            
+            await stream_mulaw_bytes_over_twilio(
+                websocket=self.websocket,
+                stream_sid=self.stream_sid,
+                audio_bytes=audio_bytes,
+                pace_20ms=True,
+                cancel=None,
+                prime_frames=0
+            )
+            
+            print(f"✅ Goodbye message streamed ({audio_duration:.2f}s audio)")
+            sys.stdout.flush()
+            
+            # Wait for audio to finish playing + 2.5 seconds pause (2-3 seconds range)
+            total_delay = audio_duration + 2.5
+            print(f"⏳ Waiting {total_delay:.2f} seconds (audio {audio_duration:.2f}s + pause 2.5s) before ending call...")
+            sys.stdout.flush()
+            
+            await asyncio.sleep(total_delay)
+            
+            # End the call
+            print(f"🛑 Ending call now")
+            sys.stdout.flush()
+            
+            from app.services.twilio_service import twilio_service
+            from app.routers.general_websocket import broadcast_call_ended
+            
+            if self.call_sid:
+                call_ended = twilio_service.end_call(self.call_sid)
+                if call_ended:
+                    print(f"✅ Call ended successfully via Twilio API")
+                else:
+                    print(f"⚠️ Failed to end call via Twilio API, trying redirect...")
+                    redirect_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
+                    redirect_url += f"?agentId={self.agent_id}&callSessionId={self.call_session_id}&goodbye=true"
+                    twilio_service.redirect_call(self.call_sid, redirect_url)
+                sys.stdout.flush()
+                
+                # Update call session status
+                if self.call_session:
+                    self.call_session.status = "completed"
+                    self.call_session.end_time = datetime.now(timezone.utc)
+                    if self.call_session.start_time:
+                        duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
+                        self.call_session.duration = int(duration)
+                    self.call_session.ended_reason = reason
+                    
+                    from app.services.call_session_service import call_session_service
+                    call_session_service.update_call_session_status(
+                        self.db,
+                        self.call_session.id,
+                        "completed",
+                        ended_reason=reason
+                    )
+                    
+                    # Broadcast call ended event
+                    try:
+                        asyncio.create_task(broadcast_call_ended(
+                            call_session_id=str(self.call_session.id),
+                            reason=reason,
+                            final_data={
+                                "call_sid": self.call_sid,
+                                "duration": self.call_session.duration,
+                                "end_time": self.call_session.end_time.isoformat(),
+                                "transcript": self.call_session.call_transcript or []
+                            }
+                        ))
+                    except Exception as e:
+                        print(f"⚠️ Failed to broadcast call ended: {e}")
+                        sys.stdout.flush()
+                        
+        except Exception as e:
+            print(f"❌ Error in _say_goodbye_and_end_call: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+    
+    async def _handle_user_goodbye_with_pause(self):
+        """
+        Handle user saying goodbye phrases - wait 2-3 seconds pause, then say goodbye and end call.
+        """
+        try:
+            import asyncio
+            
+            print(f"⏸️ User said goodbye - waiting 2-3 seconds pause before ending...")
+            sys.stdout.flush()
+            
+            # Wait 2.5 seconds (2-3 seconds range)
+            await asyncio.sleep(2.5)
+            
+            # Check if goodbye already scheduled (in case of race condition)
+            if not self._goodbye_scheduled:
+                await self._say_goodbye_and_end_call(reason="user_said_goodbye")
+                
+        except asyncio.CancelledError:
+            print(f"⚠️ User goodbye pause cancelled")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"❌ Error in _handle_user_goodbye_with_pause: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+    
+    async def _schedule_conversation_pause_check(self):
+        """
+        Schedule a check for conversation pause after agent finishes speaking.
+        If no user activity for 2-3 seconds, say goodbye and end call.
+        """
+        try:
+            # Cancel existing pause check task
+            if self._conversation_pause_task and not self._conversation_pause_task.done():
+                self._conversation_pause_task.cancel()
+            
+            # Schedule new pause check
+            self._conversation_pause_task = asyncio.create_task(self._check_conversation_pause())
+            
+        except Exception as e:
+            print(f"⚠️ Error scheduling conversation pause check: {e}")
+            sys.stdout.flush()
+    
+    async def _check_conversation_pause(self):
+        """
+        Check if conversation has paused (no user activity for 2-3 seconds).
+        If paused, say goodbye and end call.
+        """
+        try:
+            import asyncio
+            
+            # Wait 2.5 seconds (2-3 seconds range)
+            await asyncio.sleep(2.5)
+            
+            # If task wasn't cancelled, conversation paused - end call
+            if not self._goodbye_scheduled:
+                print(f"🔕 Conversation paused - no activity for 2.5+ seconds. Ending call...")
+                sys.stdout.flush()
+                await self._say_goodbye_and_end_call(reason="conversation_paused")
+                
+        except asyncio.CancelledError:
+            print(f"⚠️ Conversation pause check cancelled (user activity detected)")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"❌ Error in _check_conversation_pause: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
     
     def _load_session_data(self):
         """Load call session and agent data"""
@@ -1334,6 +1561,24 @@ class BidirectionalStreamHandler:
                 sys.stdout.flush()
                 return
             
+            # Cancel any pending conversation pause check (user is active)
+            if self._conversation_pause_task and not self._conversation_pause_task.done():
+                self._conversation_pause_task.cancel()
+            
+            # Check if user said goodbye phrase in transcript
+            if self._check_goodbye_in_text(transcript):
+                print(f"🛑 Goodbye phrase detected in user transcript: '{transcript[:60]}...'")
+                sys.stdout.flush()
+                
+                # If user said goodbye, wait 2-3 seconds pause, then say goodbye and end call
+                # Note: Not adding user transcript to avoid duplicate goodbye in transcript
+                if not self._goodbye_scheduled:
+                    asyncio.create_task(self._handle_user_goodbye_with_pause())
+                return
+            
+            # Add to transcript (only if not goodbye)
+            await self._add_to_transcript("client", transcript, "speech", confidence)
+            
             # 🎯 Send "in-progress" status when confident word is detected (like "hello")
             # Only send once when we get a confident transcript with meaningful words
             if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
@@ -1348,9 +1593,6 @@ class BidirectionalStreamHandler:
             self._last_interim_text = ""
             print(f"✅ User finished speaking - ready to respond")
             sys.stdout.flush()
-            
-            # Add to transcript
-            await self._add_to_transcript("client", transcript, "speech", confidence)
             
             # Generate and stream response
             await self.generate_and_stream_response(transcript, confidence)
@@ -1414,6 +1656,17 @@ class BidirectionalStreamHandler:
         try:
             if not transcript:
                 return
+            
+            # Check if user said goodbye phrase in interim transcript
+            # This allows early detection during speech (before final transcript)
+            if self._check_goodbye_in_text(transcript):
+                print(f"🛑 Goodbye phrase detected in interim transcript: '{transcript[:60]}...'")
+                sys.stdout.flush()
+                
+                # If user said goodbye, wait 2-3 seconds pause, then say goodbye and end call
+                if not self._goodbye_scheduled:
+                    asyncio.create_task(self._handle_user_goodbye_with_pause())
+                return  # Don't process interim further if goodbye detected
             
             # Check for backchannel opportunity during long user speech
             await self._maybe_inject_backchannel(transcript)
@@ -1609,6 +1862,10 @@ class BidirectionalStreamHandler:
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
             
+            # Get goodbye phrases dynamically for prompt
+            goodbye_phrases_list = self._get_goodbye_phrases()
+            goodbye_phrases_text = "\n  * ".join([f'"{phrase}"' for phrase in goodbye_phrases_list])
+            
             # Base prompt for phone conversations
             base_prompt = f"""You are {agent_name}, a real person having a phone conversation.
 
@@ -1626,6 +1883,9 @@ IMPORTANT:
 - Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally.
 - If you have completed all your objectives/questions from the conversation, naturally end the conversation with a friendly closing (e.g., "Thank you for calling, have a great day!" or similar). 
 - DO NOT restart the conversation, repeat questions, or ask questions again once everything is complete. Once all objectives are finished, end the call gracefully.
+- CRITICAL: When ending the conversation, you MUST include one of these phrases in your response:
+  * {goodbye_phrases_text}
+  This signals that the call should end.
 - Example: <speak><prosody rate="100%" pitch="0st">Hello, how can I help you?</prosody><break time="150ms"/><prosody rate="98%" pitch="-1st">Let me check that for you.</prosody></speak>"""
             
             # Use agent's custom system prompt if available, otherwise use base prompt
@@ -1653,7 +1913,10 @@ Guidelines:
 IMPORTANT: 
 - Follow your custom instructions above while maintaining natural conversation flow.
 - If you have completed all objectives/questions from your custom instructions, naturally end the conversation with a friendly closing. 
-- DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete. Once everything is finished, end the call gracefully."""
+- DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete. Once everything is finished, end the call gracefully.
+- CRITICAL: When ending the conversation, you MUST include one of these phrases in your response:
+  * {goodbye_phrases_text}
+  This signals that the call should end."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
                 # Model has system prompt - use it
                 system_prompt = f"""You are {agent_name}, a real person taking phone calls.
@@ -1675,7 +1938,10 @@ Guidelines:
 IMPORTANT: 
 - Follow the model instructions above.
 - If you have completed all objectives/questions, naturally end the conversation with a friendly closing. 
-- DO NOT restart the conversation, repeat questions, or ask questions again once everything is complete. Once all objectives are finished, end the call gracefully."""
+- DO NOT restart the conversation, repeat questions, or ask questions again once everything is complete. Once all objectives are finished, end the call gracefully.
+- CRITICAL: When ending the conversation, you MUST include one of these phrases in your response:
+  * {goodbye_phrases_text}
+  This signals that the call should end."""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
@@ -1830,31 +2096,12 @@ IMPORTANT:
                 except Exception as e2:
                     print(f"⚠️ Streaming with fallback model failed: {e2}")
                     sys.stdout.flush()
-                    # Last fallback: non-streaming fast response via VoiceLoggingService
-                    try:
-                        final_text = await VoiceLoggingService.generate_agent_response(
-                            speech_text=user_text,
-                            confidence=confidence,
-                            agent=self.agent,
-                            db=self.db,
-                            call_session_id=self.call_session.id if self.call_session else None
-                        )
-                        # Queue fallback response
-                        if final_text and not self._tts_cancel.is_set():
-                            chunk_counter += 1
-                            await self.tts_queue.put({
-                                "text": final_text,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": True
-                            })
-                            print(f"🔄 Queued fallback TTS chunk {chunk_counter}")
-                            sys.stdout.flush()
-                    except Exception as e3:
-                        print(f"⚠️ All fallbacks failed: {e3}")
-                        sys.stdout.flush()
-                        # Ultimate fallback response
-                        final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
+                    # Last fallback: simple error message
+                    print(f"⚠️ All LLM services failed, using simple error response")
+                    sys.stdout.flush()
+                    final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
+                    # Queue fallback response
+                    if final_text and not self._tts_cancel.is_set():
                         chunk_counter += 1
                         await self.tts_queue.put({
                             "text": final_text,
@@ -1862,9 +2109,24 @@ IMPORTANT:
                             "use_ssml": self._use_ssml,
                             "is_final": True
                         })
+                        print(f"🔄 Queued fallback TTS chunk {chunk_counter}")
+                        sys.stdout.flush()
 
             if final_text:
                 await self._add_to_transcript("agent", final_text, "agent_response")
+                
+                # Check if agent response contains goodbye phrases
+                if self._check_goodbye_in_text(final_text):
+                    print(f"🛑 Goodbye phrases detected in agent response: '{final_text[:60]}...'")
+                    sys.stdout.flush()
+                    
+                    # If agent said goodbye, say goodbye (from goodbye phrases) and end call
+                    if not self._goodbye_scheduled:
+                        await self._say_goodbye_and_end_call(reason="conversation_complete")
+                else:
+                    # No goodbye detected - schedule conversation pause check
+                    # If no user activity for 2-3 seconds after agent response, say goodbye and end call
+                    await self._schedule_conversation_pause_check()
         
         except Exception as e:
             print(f"❌ Error generating response: {e}")
@@ -1879,6 +2141,7 @@ IMPORTANT:
         Args:
             text: Text or SSML to convert to speech
             use_ssml: Whether text contains SSML markup
+            is_final: Whether this is the final chunk
         """
         try:
             from datetime import datetime, timezone
@@ -1941,7 +2204,8 @@ IMPORTANT:
                             prime_frames=prime_frames,
                         )
                         self._twilio_buffer_primed = True
-                        print(f"✅ Streamed complete response: {len(audio_bytes)} bytes ({len(audio_bytes)/8000:.2f}s audio)")
+                        audio_duration = len(audio_bytes) / 8000.0  # Duration in seconds
+                        print(f"✅ Streamed complete response: {len(audio_bytes)} bytes ({audio_duration:.2f}s audio)")
                         sys.stdout.flush()
                 finally:
                     if self._tts_cancel.is_set():
