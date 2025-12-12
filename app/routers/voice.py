@@ -45,6 +45,39 @@ router = APIRouter()
 # Initialize services
 model_service = ModelService()
 
+def get_twilio_credentials_for_call(db: Session, call_session: CallSession):
+    """
+    Get Twilio credentials for a call session.
+    Priority: DB phone number credentials > Env credentials
+    
+    Returns:
+        tuple: (account_sid, auth_token)
+    """
+    from app.models.phone_number import PhoneNumber
+    from app.core.security import decrypt_api_key
+    
+    # Check if call was made with DB phone number
+    if call_session.from_number:
+        phone_number_obj = db.query(PhoneNumber).filter(
+            PhoneNumber.phone_number == call_session.from_number,
+            PhoneNumber.tenant_id == call_session.tenant_id,
+            PhoneNumber.status == "active"
+        ).first()
+        
+        if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
+            # ✅ Use DB credentials
+            account_sid = phone_number_obj.twilio_account_sid
+            auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
+            print(f"✅ Using DB credentials for recording (phone: {call_session.from_number})")
+            return account_sid, auth_token
+    
+    # ✅ Fallback to env credentials
+    client = twilio_service.get_client()
+    account_sid = client.username
+    auth_token = client.password
+    print(f"✅ Using env credentials for recording")
+    return account_sid, auth_token
+
 # Array of human-like "didn't catch that" response phrases
 DIDNT_CATCH_RESPONSES = [
     "Hmm, I missed that—mind saying it again?",
@@ -363,6 +396,40 @@ async def initiate_call(
         
         print(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
         
+        # Get phone number and credentials - Priority: DB > Env
+        from app.models.phone_number import PhoneNumber
+        
+        phone_number_obj = None
+        from_number = None
+        use_custom_credentials = False
+        account_sid = None
+        auth_token = None
+        
+        # Check if agent has assigned phone number in DB
+        if agent.id:
+            phone_number_obj = db.query(PhoneNumber).filter(
+                PhoneNumber.assistant_id == agent.id,
+                PhoneNumber.tenant_id == tenant_id_filter,
+                PhoneNumber.status == "active"
+            ).first()
+        
+        if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
+            # ✅ Use DB phone number with custom credentials
+            from_number = phone_number_obj.phone_number
+            account_sid = phone_number_obj.twilio_account_sid
+            # Decrypt auth token
+            from app.core.security import decrypt_api_key
+            auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
+            use_custom_credentials = True
+            print(f"✅ Using DB phone number: {from_number} with custom credentials")
+        else:
+            # ✅ Fallback to env credentials
+            from_number = twilio_service.get_phone_number()
+            account_sid = settings.TWILIO_ACCOUNT_SID
+            auth_token = settings.TWILIO_AUTH_TOKEN
+            use_custom_credentials = False
+            print(f"✅ Using env phone number: {from_number}")
+        
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL
         
@@ -373,7 +440,7 @@ async def initiate_call(
             agent_id=agent.id,
             tenant_id=tenant_id_filter,
             twilio_call_sid="",  # Will be updated after call is made
-            from_number=twilio_service.get_phone_number(),
+            from_number=from_number,  # ✅ Use selected phone number
             to_number=call_request.userPhoneNumber,
             call_type="outbound"  # Agent is initiating the call, so it's outbound
         )
@@ -395,7 +462,7 @@ async def initiate_call(
                     "agent_id": str(agent.id),
                     "agent_name": agent.name,
                     "to_number": call_request.userPhoneNumber,
-                    "from_number": twilio_service.get_phone_number(),
+                    "from_number": from_number,  # ✅ Use selected phone number
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             )
@@ -403,13 +470,25 @@ async def initiate_call(
         except Exception as e:
             print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         
-        # Make the call using Twilio
-        call = twilio_service.make_call(
-            to_number=call_request.userPhoneNumber,
-            from_number=twilio_service.get_phone_number(),
-            webhook_url=webhook_url,
-            status_callback_url=status_callback_url
-        )
+        # Make call with appropriate credentials
+        if use_custom_credentials:
+            # ✅ Use custom credentials from DB
+            call = twilio_service.make_call_with_credentials(
+                to_number=call_request.userPhoneNumber,
+                from_number=from_number,
+                webhook_url=webhook_url,
+                status_callback_url=status_callback_url,
+                account_sid=account_sid,
+                auth_token=auth_token
+            )
+        else:
+            # ✅ Use env credentials (current behavior)
+            call = twilio_service.make_call(
+                to_number=call_request.userPhoneNumber,
+                from_number=from_number,
+                webhook_url=webhook_url,
+                status_callback_url=status_callback_url
+            )
         print(f"✅ Call initiated successfully")
         
         # Update call session with Twilio SID
@@ -1142,10 +1221,8 @@ async def handle_recording_callback(
             try:
                 import requests
                 
-                # Get Twilio credentials for authenticated download
-                client = twilio_service.get_client()
-                account_sid = client.username
-                auth_token = client.password
+                # ✅ Get Twilio credentials based on call session (DB or Env)
+                account_sid, auth_token = get_twilio_credentials_for_call(db, call_session)
                 
                 # Build authenticated recording URL
                 # Twilio recordings are usually at /Recordings/{RecordingSid}
@@ -1793,10 +1870,8 @@ async def get_recording_access(
         if not call_session.recording_url:
             raise HTTPException(status_code=404, detail="No recording available for this call")
         
-        # Get Twilio credentials to download recording server-side
-        client = twilio_service.get_client()
-        account_sid = client.username
-        auth_token = client.password
+        # ✅ Get Twilio credentials based on call session (DB or Env)
+        account_sid, auth_token = get_twilio_credentials_for_call(db, call_session)
         
         # Extract recording SID from the URL
         recording_sid = call_session.recording_url.split('/')[-1].replace('.mp3', '').replace('.wav', '')

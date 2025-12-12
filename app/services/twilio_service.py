@@ -27,6 +27,10 @@ class TwilioService:
         
         return self._client
     
+    def get_client_with_credentials(self, account_sid: str, auth_token: str):
+        """Get Twilio client with custom credentials"""
+        return Client(account_sid, auth_token)
+    
     def make_call(self, to_number, from_number, webhook_url, status_callback_url, record=True):
         """Make an outbound call with improved reliability and optional recording"""
         client = self.get_client()
@@ -49,6 +53,37 @@ class TwilioService:
             
             # NO AMD - Fast webhook response prevents Twilio announcements naturally!
             # Instant TwiML (< 10ms) + Auto-greeting = No "Please hold" messages
+        )
+        
+        return call
+    
+    def make_call_with_credentials(
+        self, 
+        to_number: str, 
+        from_number: str, 
+        webhook_url: str, 
+        status_callback_url: str,
+        account_sid: str,
+        auth_token: str,
+        record: bool = True
+    ):
+        """Make call with custom Twilio credentials"""
+        client = self.get_client_with_credentials(account_sid, auth_token)
+        
+        from app.core.config import settings
+        recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
+        
+        call = client.calls.create(
+            to=to_number,
+            from_=from_number,
+            url=webhook_url,
+            status_callback=status_callback_url,
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_method='POST',
+            record=record,
+            recording_channels='dual',
+            recording_status_callback=recording_status_callback_url,
+            timeout=30,
         )
         
         return call

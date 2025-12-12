@@ -18,6 +18,8 @@ class PhoneNumber(Base):
     
     # Twilio integration
     twilio_phone_number_sid = Column(String(255), nullable=True, index=True)
+    twilio_account_sid = Column(String(255), nullable=True)  # Custom Twilio Account SID
+    twilio_auth_token = Column(String(500), nullable=True)  # Custom Twilio Auth Token (encrypted)
     
     # Assistant assignment
     assistant_id = Column(UUID(as_uuid=True), ForeignKey("agent.id"), nullable=True)

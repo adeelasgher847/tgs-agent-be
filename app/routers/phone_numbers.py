@@ -8,7 +8,8 @@ from app.models.user import User
 from app.schemas.phone_number import (
     PhoneNumberResponse, PhoneNumberList,
     CreatePhoneNumberRequest, CreatePhoneNumberResponse,
-    PhoneNumberUpdate
+    PhoneNumberUpdate,
+    ImportTwilioPhoneNumberRequest, ImportTwilioPhoneNumberResponse
 )
 from app.schemas.base import SuccessResponse
 from app.services.phone_number_service import phone_number_service
@@ -36,6 +37,7 @@ async def get_phone_numbers(
                 status=pn.status,
                 assistant_id=pn.assistant_id,
                 twilio_phone_number_sid=pn.twilio_phone_number_sid,
+                twilio_account_sid=pn.twilio_account_sid,
                 created_at=pn.created_at,
                 updated_at=pn.updated_at
             ))
@@ -101,6 +103,50 @@ async def create_phone_number(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/import", response_model=SuccessResponse[ImportTwilioPhoneNumberResponse])
+async def import_twilio_phone_number(
+    request: ImportTwilioPhoneNumberRequest,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Import a Twilio phone number with custom Account SID and Auth Token.
+    User can use their own Twilio account credentials.
+    
+    This allows users to:
+    - Use their own Twilio account for calls
+    - Keep credentials secure (encrypted in database)
+    - Assign the number to an agent for automatic use
+    """
+    try:
+        # Import phone number
+        phone_number = phone_number_service.import_twilio_phone_number(
+            db=db,
+            phone_number=request.phone_number,
+            label=request.label,
+            tenant_id=user.current_tenant_id,
+            twilio_account_sid=request.twilio_account_sid,
+            twilio_auth_token=request.twilio_auth_token
+        )
+        
+        return create_success_response(
+            ImportTwilioPhoneNumberResponse(
+                id=phone_number.id,
+                phone_number=phone_number.phone_number,
+                label=phone_number.label,
+                status=phone_number.status,
+                twilio_account_sid=phone_number.twilio_account_sid,
+                created_at=phone_number.created_at,
+                message="Twilio phone number imported successfully"
+            ),
+            "Twilio phone number imported successfully"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to import phone number: {str(e)}")
 
 # Specific routes must come before parameterized routes
 @router.get("/available-numbers", include_in_schema=False)
