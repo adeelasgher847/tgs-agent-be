@@ -1450,32 +1450,7 @@ class BidirectionalStreamHandler:
             # ✅ DETECT ACTUAL USER AUDIO (not Twilio system messages/music)
             if not self._first_media_received:
                 self._first_media_received = True
-                print(f"📡 First media packet received - Call started, starting credit deduction...")
-                sys.stdout.flush()
-                
-                # 🎯 START CREDIT MONITORING - Start billing when first media packet received (call started)
-                try:
-                    if self.call_session and str(self.call_session.id) not in credit_service._active_monitors:
-                        # Pass current DB session (credit service will create its own for async task)
-                        asyncio.create_task(credit_service.start_credit_monitoring(
-                            db=self.db,
-                            call_session_id=self.call_session.id,
-                            tenant_id=self.call_session.tenant_id,
-                            agent_id=self.call_session.agent_id
-                        ))
-                        print(f"✅ Started credit monitoring for session {self.call_session.id} (billing starts when first media packet received - call started)")
-                        print(f"🔍 DEBUG: Credits will deduct every 10s while call is active")
-                        sys.stdout.flush()
-                    else:
-                        print(f"ℹ️ Credit monitoring already active for session {self.call_session.id if self.call_session else 'unknown'}")
-                        sys.stdout.flush()
-                except Exception as e:
-                    print(f"❌ Failed to start credit monitoring: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    sys.stdout.flush()
-                
-                print(f"📡 Analyzing first media packet for actual user audio...")
+                print(f"📡 First media packet received - analyzing for actual user audio...")
                 sys.stdout.flush()
             
             # Calculate audio level (RMS) to detect actual user audio vs silence/system noise
@@ -2530,13 +2505,13 @@ IMPORTANT:
                 )
                 print(f"✅ Broadcasted 'in-progress' status (confident word: '{transcript}')")
                 
-                # Credit monitoring already started when first media packet received (call started)
+                # Credit monitoring already started in handle_start_message() (billing starts when call started - WebSocket connected)
                 # No need to start again here - just log that status is now in-progress
                 if self.call_session:
                     if str(self.call_session.id) in credit_service._active_monitors:
-                        print(f"ℹ️ Credit monitoring already active for session {self.call_session.id} (started when first media packet received)")
+                        print(f"ℹ️ Credit monitoring already active for session {self.call_session.id} (started when call started - WebSocket connected)")
                     else:
-                        print(f"⚠️ Credit monitoring not active for session {self.call_session.id} - should have started when first media packet received")
+                        print(f"⚠️ Credit monitoring not active for session {self.call_session.id} - should have started when call started")
                     
             except Exception as e:
                 print(f"❌ Failed to send in-progress status: {e}")
@@ -2592,16 +2567,35 @@ IMPORTANT:
             self.call_sid = start.get("callSid")
             
             print("=" * 80)
-            print(f"🔌 WEBSOCKET CONNECTED")
+            print(f"🔌 WEBSOCKET CONNECTED - CALL STARTED")
             print(f"Stream SID: {self.stream_sid}")
             print(f"Call SID: {self.call_sid}")
             print(f"Agent: {self.agent.name if self.agent else 'Unknown'}")
-            print(f"⏳ Waiting for first media packet (call will start when media received)...")
+            print(f"⏳ Waiting for user to pick up (first media packet)...")
             print("=" * 80)
             sys.stdout.flush()
             
-            # Credit monitoring will start when first media packet is received (call actually starts)
-            # See handle_media_message() -> first_media_received check
+            # 🎯 START CREDIT MONITORING - Start billing when call starts (WebSocket connected)
+            try:
+                if self.call_session and str(self.call_session.id) not in credit_service._active_monitors:
+                    # Pass current DB session (credit service will create its own for async task)
+                    asyncio.create_task(credit_service.start_credit_monitoring(
+                        db=self.db,
+                        call_session_id=self.call_session.id,
+                        tenant_id=self.call_session.tenant_id,
+                        agent_id=self.call_session.agent_id
+                    ))
+                    print(f"✅ Started credit monitoring for session {self.call_session.id} (billing starts when call started - WebSocket connected)")
+                    print(f"🔍 DEBUG: Credits will deduct every 10s while call is active")
+                    sys.stdout.flush()
+                else:
+                    print(f"ℹ️ Credit monitoring already active for session {self.call_session.id if self.call_session else 'unknown'}")
+                    sys.stdout.flush()
+            except Exception as e:
+                print(f"❌ Failed to start credit monitoring: {e}")
+                import traceback
+                traceback.print_exc()
+                sys.stdout.flush()
         
         except Exception as e:
             print(f"❌ Error handling start: {e}")
@@ -2626,14 +2620,14 @@ IMPORTANT:
             print("=" * 80)
             sys.stdout.flush()
             
-            # Credit monitoring already started when first media packet received (call started)
+            # Credit monitoring already started in handle_start_message() (when call started - WebSocket connected)
             # No need to start again here - billing is already in progress
             if self.call_session:
                 if str(self.call_session.id) in credit_service._active_monitors:
-                    print(f"ℹ️ Credit monitoring already active for session {self.call_session.id} (started when first media packet received)")
+                    print(f"ℹ️ Credit monitoring already active for session {self.call_session.id} (started when call started)")
                     sys.stdout.flush()
                 else:
-                    print(f"⚠️ Credit monitoring not active for session {self.call_session.id} - should have started when first media packet received")
+                    print(f"⚠️ Credit monitoring not active for session {self.call_session.id} - should have started when call started")
                     sys.stdout.flush()
             
             # Don't send in-progress status here - wait for confident word detection
