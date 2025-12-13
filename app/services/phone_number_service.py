@@ -13,7 +13,7 @@ class PhoneNumberService:
     """Simple phone number service"""
     
     def create_phone_number(self, db: Session, phone_number_data: PhoneNumberCreate) -> PhoneNumber:
-        """Create a new phone number"""
+        """Create a new phone number with env credentials if available"""
         # Check if phone number already exists within the same tenant
         existing = db.query(PhoneNumber).filter(
             PhoneNumber.phone_number == phone_number_data.phone_number,
@@ -23,8 +23,28 @@ class PhoneNumberService:
         if existing:
             raise ValueError(f"Phone number {phone_number_data.phone_number} already exists in this tenant")
         
-        # Create phone number
-        phone_number = PhoneNumber(**phone_number_data.dict())
+        # ✅ Get env credentials and encrypt them (for env-based phone numbers)
+        from app.core.config import settings
+        from app.core.security import encrypt_api_key
+        
+        encrypted_account_sid = None
+        encrypted_auth_token = None
+        
+        # If env credentials are available, encrypt and store them
+        if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
+            encrypted_account_sid = encrypt_api_key(settings.TWILIO_ACCOUNT_SID)
+            encrypted_auth_token = encrypt_api_key(settings.TWILIO_AUTH_TOKEN)
+        
+        # Create phone number with env credentials
+        phone_number = PhoneNumber(
+            phone_number=phone_number_data.phone_number,
+            label=phone_number_data.label,
+            tenant_id=phone_number_data.tenant_id,
+            assistant_id=phone_number_data.assistant_id,
+            status="active",
+            twilio_account_sid=encrypted_account_sid,  # ✅ From env (encrypted)
+            twilio_auth_token=encrypted_auth_token    # ✅ From env (encrypted)
+        )
         db.add(phone_number)
         db.commit()
         db.refresh(phone_number)
