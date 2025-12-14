@@ -417,12 +417,25 @@ async def initiate_call(
                 )
                 if phone_number_obj and phone_number_obj.status == "active":
                     print(f"✅ Using user selected phone number: {phone_number_obj.phone_number} (ID: {phone_number_uuid})")
+                elif phone_number_obj and phone_number_obj.status != "active":
+                    # ✅ Phone number exists but is inactive - raise error
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Phone number {call_request.phone_number_id} is not active."
+                    )
                 else:
-                    phone_number_obj = None
-                    print(f"⚠️ Phone number {call_request.phone_number_id} not found or inactive, falling back...")
+                    # ✅ Phone number not found or belongs to different tenant - raise error
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Phone number {call_request.phone_number_id} not found in your account."
+                    )
+            except HTTPException:
+                raise
             except (ValueError, Exception) as e:
-                print(f"⚠️ Invalid phone_number_id format: {e}, falling back...")
-                phone_number_obj = None
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid phone_number_id format: {str(e)}"
+                )
         
         # Priority 2: Check if agent has assigned phone number in DB
         if not phone_number_obj and agent.id:
