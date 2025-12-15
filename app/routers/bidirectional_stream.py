@@ -120,6 +120,7 @@ from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
 from app.services.credit_service import credit_service
+from app.services.twilio_service import twilio_service
 from app.core.config import settings
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.routers.general_websocket import broadcast_call_status_update
@@ -1002,6 +1003,9 @@ class BidirectionalStreamHandler:
         self._min_audio_level_threshold = 100  # Minimum audio level to consider as user audio (not silence/system noise)
         self._audio_samples_needed = 10  # Need 10 consecutive non-silent samples (200ms) to confirm user audio
         
+        # Goodbye detection state
+        self._call_ended = False  # Track if call has been ended due to goodbye detection
+        
         # Background audio state (embedded MP3)
         self._bg_audio_task = None
         self._bg_audio_offset = 0
@@ -1333,6 +1337,12 @@ class BidirectionalStreamHandler:
                 print(f"⚠️ Skipping low-confidence transcript (confidence: {confidence:.2f})")
                 sys.stdout.flush()
                 return
+            
+            # 🎯 Check for goodbye words FIRST - end call if detected
+            if await self._check_and_end_call_if_goodbye(transcript):
+                print(f"🛑 Call ending initiated due to goodbye detection - stopping further processing")
+                sys.stdout.flush()
+                return  # Stop processing - call is ending
             
             # 🎯 Send "in-progress" status when confident word is detected (like "hello")
             # Only send once when we get a confident transcript with meaningful words
@@ -2270,6 +2280,119 @@ IMPORTANT:
             import traceback
             traceback.print_exc()
             sys.stdout.flush()
+    
+    async def _check_and_end_call_if_goodbye(self, transcript: str):
+        """
+        Check if transcript contains goodbye words and end call if detected.
+        Returns True if call was ended, False otherwise.
+        
+        Goodbye keywords detected:
+        - thanks for calling
+        - thank you for calling
+        - bye, bye bye, goodbye
+        - see you, see ya
+        - have a great day, have a nice day
+        - take care
+        - that's all, that's it
+        - i'm done, i'm finished
+        - all done, all set
+        """
+        if self._call_ended:
+            return False  # Already ended
+        
+        # Goodbye keywords/phrases (case-insensitive)
+        goodbye_keywords = [
+            "thanks for calling",
+            "thank you for calling",
+            "bye",
+            "bye bye",
+            "goodbye",
+            "good bye",
+            "see you",
+            "see ya",
+            "have a great day",
+            "have a nice day",
+            "thanks bye",
+            "thank you bye",
+            "we're done",
+            "we're finished"
+        ]
+        
+        # Convert transcript to lowercase for case-insensitive matching
+        transcript_lower = transcript.lower().strip()
+        
+        # Check if any goodbye keyword/phrase is present in transcript
+        for keyword in goodbye_keywords:
+            if keyword in transcript_lower:
+                print("=" * 80)
+                print(f"👋 GOODBYE DETECTED: '{keyword}' found in transcript: '{transcript}'")
+                print(f"📞 Ending call gracefully...")
+                print("=" * 80)
+                sys.stdout.flush()
+                
+                try:
+                    # Mark as ended to prevent multiple calls
+                    self._call_ended = True
+                    
+                    # Update call session status to completed
+                    if self.call_session:
+                        self.call_session.status = "completed"
+                        self.call_session.end_time = datetime.now(timezone.utc)
+                        self.call_session.ended_reason = "User said goodbye"
+                        
+                        if self.call_session.start_time:
+                            duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
+                            self.call_session.duration = int(duration)
+                        
+                        self.db.commit()
+                        print(f"✅ Updated call session status to 'completed'")
+                        sys.stdout.flush()
+                    
+                    # End Twilio call
+                    if self.call_sid:
+                        call_ended = twilio_service.end_call(self.call_sid)
+                        if call_ended:
+                            print(f"✅ Twilio call ended successfully (Call SID: {self.call_sid})")
+                        else:
+                            print(f"⚠️ Failed to end Twilio call (Call SID: {self.call_sid})")
+                        sys.stdout.flush()
+                    else:
+                        print(f"⚠️ No Call SID available to end Twilio call")
+                        sys.stdout.flush()
+                    
+                    # Broadcast call ended event
+                    if self.call_session:
+                        try:
+                            await broadcast_call_status_update(
+                                call_session_id=str(self.call_session.id),
+                                status="completed",
+                                metadata={
+                                    "call_sid": self.call_sid,
+                                    "stream_sid": self.stream_sid,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "message": "call_ended",
+                                    "event": "goodbye_detected",
+                                    "detected_phrase": keyword,
+                                    "transcript": transcript,
+                                    "reason": "User said goodbye"
+                                }
+                            )
+                            print(f"✅ Broadcasted call ended event")
+                            sys.stdout.flush()
+                        except Exception as e:
+                            print(f"⚠️ Failed to broadcast call ended event: {e}")
+                            sys.stdout.flush()
+                    
+                    return True
+                    
+                except Exception as e:
+                    print(f"❌ Error ending call: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    sys.stdout.flush()
+                    return False
+        
+        return False
     
     async def _add_to_transcript(
         self,
