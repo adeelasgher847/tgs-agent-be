@@ -19,6 +19,7 @@ from app.services.voice_logging_service import VoiceLoggingService
 from app.routers.general_websocket import broadcast_transcript_update, broadcast_call_status_update
 from app.services.transcript_service import transcript_service
 from app.services.twilio_service import twilio_service
+from app.services.credit_service import credit_service
 from app.core.config import settings
 
 router = APIRouter()
@@ -424,6 +425,26 @@ class TwilioMediaStreamHandler:
                     }
                 )
                 print(f"✅ Broadcasted 'in-progress' status (confident word: '{transcript}')")
+                
+                # 🎯 START CREDIT MONITORING - Start billing when connected status is sent (first media packet + connected status)
+                try:
+                    if self.call_session and str(self.call_session.id) not in credit_service._active_monitors:
+                        # Pass current DB session (credit service will create its own for async task)
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=self.db,
+                            call_session_id=self.call_session.id,
+                            tenant_id=self.call_session.tenant_id,
+                            agent_id=self.call_session.agent_id
+                        ))
+                        print(f"✅ Started credit monitoring for session {self.call_session.id} (billing starts when connected status sent)")
+                        print(f"🔍 DEBUG: Credits will deduct every 10s while call is active")
+                    else:
+                        print(f"ℹ️ Credit monitoring already active for session {self.call_session.id if self.call_session else 'unknown'}")
+                except Exception as e:
+                    print(f"❌ Failed to start credit monitoring: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
             except Exception as e:
                 print(f"❌ Failed to send in-progress status: {e}")
                 import traceback

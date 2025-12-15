@@ -2241,13 +2241,24 @@ IMPORTANT:
                 )
                 print(f"✅ Broadcasted 'in-progress' status (confident word: '{transcript}')")
                 
-                # Credit monitoring already started in _handle_user_pickup() (Vapi-style: billing starts when call answered)
-                # No need to start again here - just log that status is now in-progress
-                if self.call_session:
-                    if str(self.call_session.id) in credit_service._active_monitors:
-                        print(f"ℹ️ Credit monitoring already active for session {self.call_session.id} (started when call answered)")
+                # 🎯 START CREDIT MONITORING - Start billing when connected status is sent (first media packet + connected status)
+                try:
+                    if self.call_session and str(self.call_session.id) not in credit_service._active_monitors:
+                        # Pass current DB session (credit service will create its own for async task)
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=self.db,
+                            call_session_id=self.call_session.id,
+                            tenant_id=self.call_session.tenant_id,
+                            agent_id=self.call_session.agent_id
+                        ))
+                        print(f"✅ Started credit monitoring for session {self.call_session.id} (billing starts when connected status sent)")
+                        print(f"🔍 DEBUG: Credits will deduct every 10s while call is active")
                     else:
-                        print(f"⚠️ Credit monitoring not active for session {self.call_session.id} - should have started on pickup")
+                        print(f"ℹ️ Credit monitoring already active for session {self.call_session.id if self.call_session else 'unknown'}")
+                except Exception as e:
+                    print(f"❌ Failed to start credit monitoring: {e}")
+                    import traceback
+                    traceback.print_exc()
                     
             except Exception as e:
                 print(f"❌ Failed to send in-progress status: {e}")
@@ -2337,24 +2348,8 @@ IMPORTANT:
             print("=" * 80)
             sys.stdout.flush()
             
-            # 🎯 START CREDIT MONITORING - Vapi-style: Start billing when call is answered (picked up)
-            try:
-                if self.call_session and str(self.call_session.id) not in credit_service._active_monitors:
-                    # Pass current DB session (credit service will create its own for async task)
-                    asyncio.create_task(credit_service.start_credit_monitoring(
-                        db=self.db,
-                        call_session_id=self.call_session.id,
-                        tenant_id=self.call_session.tenant_id,
-                        agent_id=self.call_session.agent_id
-                    ))
-                    print(f"✅ Started credit monitoring for session {self.call_session.id} (Vapi-style: billing starts when call answered)")
-                    print(f"🔍 DEBUG: Credits will deduct every 10s while call is active")
-                else:
-                    print(f"ℹ️ Credit monitoring already active for session {self.call_session.id if self.call_session else 'unknown'}")
-            except Exception as e:
-                print(f"❌ Failed to start credit monitoring: {e}")
-                import traceback
-                traceback.print_exc()
+            # ❌ Credit monitoring moved to _send_in_progress_status() 
+            # Credit deduction will start when connected status is sent (first media packet + connected status)
             
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in _process_transcript() when confident transcript is detected
