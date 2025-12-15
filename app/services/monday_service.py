@@ -459,6 +459,65 @@ class MondayService:
         return deleted
 
     @staticmethod
+    def count_pending_items_for_tenant(
+        board_id: str,
+        tenant_id: str,
+        column_map: Dict[str, str],
+        pending_label: str = "Pending",
+        batch_size: int = 100,
+    ) -> int:
+        """
+        Count items for a given tenant on a board that are still in 'Pending' status.
+
+        Args:
+            board_id: Monday.com board ID
+            tenant_id: Tenant ID to filter by (UUID string)
+            column_map: Column mapping dictionary (must include "tenant_id" and "status")
+            pending_label: The label text used for pending status (default: "Pending")
+            batch_size: Number of items to fetch per batch
+
+        Returns:
+            Number of items with Status == pending_label for the given tenant.
+        """
+        tenant_column_id = column_map.get("tenant_id")
+        status_column_id = column_map.get("status")
+        if not tenant_column_id or not status_column_id:
+            raise ValueError("tenant_id or status column not found in board column map")
+
+        pending_count = 0
+        cursor: Optional[str] = None
+
+        while True:
+            items, cursor = MondayService._fetch_items_with_columns(
+                board_id=board_id,
+                cursor=cursor,
+                limit=batch_size,
+                column_ids=[tenant_column_id, status_column_id],
+            )
+
+            if not items:
+                break
+
+            for item in items:
+                item_tenant_id = None
+                status_text = None
+                for col_val in item.get("column_values", []):
+                    col_id = col_val.get("id")
+                    if col_id == tenant_column_id:
+                        item_tenant_id = (col_val.get("text") or "").strip()
+                    elif col_id == status_column_id:
+                        status_text = (col_val.get("text") or "").strip()
+
+                if item_tail := item_tenant_id:
+                    if item_tail == tenant_id and status_text and status_text.lower() == pending_label.lower():
+                        pending_count += 1
+
+            if not cursor:
+                break
+
+        return pending_count
+
+    @staticmethod
     def get_items_by_batch_id(
         board_id: str,
         batch_id: str,

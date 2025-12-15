@@ -22,6 +22,14 @@ class DeleteBoardItemsResponse(BaseModel):
     board_url: str
 
 
+class PendingCountResponse(BaseModel):
+    board_id: str
+    board_url: str
+    tenant_id: str
+    pending_count: int
+    total_items: int
+
+
 class SingleCallRequest(BaseModel):
     phone_number: str = Field(..., description="Phone number to call (e.g., +1234567890)")
     agent_id: str = Field(..., description="Agent ID (UUID)")

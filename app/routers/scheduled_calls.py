@@ -13,7 +13,14 @@ from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.user import User
 from app.models.agent import Agent
 from app.models.call_session import CallSession
-from app.schemas.scheduled_call import CSVUploadResponse, BoardInfoResponse, DeleteBoardItemsResponse, SingleCallRequest, SingleCallResponse
+from app.schemas.scheduled_call import (
+    CSVUploadResponse,
+    BoardInfoResponse,
+    DeleteBoardItemsResponse,
+    SingleCallRequest,
+    SingleCallResponse,
+    PendingCountResponse,
+)
 from app.services.scheduled_call_service import ScheduledCallService
 from app.services.monday_service import MondayService
 from app.services.transcript_service import transcript_service
@@ -423,6 +430,80 @@ async def get_board_url(user: User = Depends(require_tenant), db: Session = Depe
         board_url=board_record.monday_board_url,
     )
     return create_success_response(data, "Scheduled calls board retrieved")
+
+
+@router.get(
+    "/board/pending-count",
+    response_model=SuccessResponse[PendingCountResponse],
+    summary="Get count of pending scheduled calls for current tenant",
+)
+async def get_pending_scheduled_calls_count(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Return how many scheduled call items on the Monday.com board are still in **Pending** status
+    for the current tenant.
+    """
+    # Get the user's board
+    board_record = scheduled_call_service.get_board_for_user(db, user.id)
+    if not board_record:
+        raise HTTPException(status_code=404, detail="Board not found for user")
+
+    # Get column map (ensures status/tenant_id columns exist)
+    try:
+        column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to prepare Monday.com board: {exc}")
+
+    # Count pending items for this tenant
+    try:
+        pending_count = MondayService.count_pending_items_for_tenant(
+            board_id=board_record.monday_board_id,
+            tenant_id=str(user.current_tenant_id),
+            column_map=column_map,
+            pending_label="Pending",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to count pending items: {exc}")
+
+    # Optionally count total items for this tenant (for reference)
+    total_items = 0
+    tenant_column_id = column_map.get("tenant_id")
+    if tenant_column_id:
+        cursor = None
+        try:
+            while True:
+                items, cursor = MondayService._fetch_items_with_columns(
+                    board_id=board_record.monday_board_id,
+                    cursor=cursor,
+                    limit=100,
+                    column_ids=[tenant_column_id],
+                )
+                if not items:
+                    break
+                for item in items:
+                    item_tenant_id = None
+                    for col_val in item.get("column_values", []):
+                        if col_val.get("id") == tenant_column_id:
+                            item_tenant_id = (col_val.get("text") or "").strip()
+                            break
+                    if item_tenant_id == str(user.current_tenant_id):
+                        total_items += 1
+                if not cursor:
+                    break
+        except Exception as exc:
+            print(f"⚠️ Failed to count total tenant items: {exc}")
+            total_items = 0
+
+    data = PendingCountResponse(
+        board_id=board_record.monday_board_id,
+        board_url=board_record.monday_board_url,
+        tenant_id=str(user.current_tenant_id),
+        pending_count=pending_count,
+        total_items=total_items,
+    )
+    return create_success_response(data, "Pending scheduled calls count retrieved successfully")
 
 
 @router.delete("/board/items", response_model=SuccessResponse[DeleteBoardItemsResponse])

@@ -391,7 +391,14 @@ def get_tenant_credits(current_user: User = Depends(get_current_user_jwt), db: S
     tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    return create_success_response({"tenant_id": tenant.id, "credits": tenant.credits, "status": tenant.status}, "Tenant credits fetched successfully")
+
+    # Ensure credits are returned as an integer (no floating/decimal value)
+    credits_int = int(tenant.credits or 0)
+
+    return create_success_response(
+        {"tenant_id": tenant.id, "credits": credits_int, "status": tenant.status},
+        "Tenant credits fetched successfully"
+    )
 
 @router.get("/verify-payment/{session_id}")
 def verify_payment(
