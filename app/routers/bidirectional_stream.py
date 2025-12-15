@@ -1344,6 +1344,12 @@ class BidirectionalStreamHandler:
                 sys.stdout.flush()
                 return  # Stop processing - call is ending
             
+            # 🎯 Check for voicemail detection - end call if detected
+            if await self._check_and_end_call_if_voicemail(transcript):
+                print(f"🛑 Call ending initiated due to voicemail detection - stopping further processing")
+                sys.stdout.flush()
+                return  # Stop processing - call is ending
+            
             # 🎯 Send "in-progress" status when confident word is detected (like "hello")
             # Only send once when we get a confident transcript with meaningful words
             if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
@@ -2387,6 +2393,118 @@ IMPORTANT:
                     
                 except Exception as e:
                     print(f"❌ Error ending call: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    sys.stdout.flush()
+                    return False
+        
+        return False
+    
+    async def _check_and_end_call_if_voicemail(self, transcript: str):
+        """
+        Check if transcript contains voicemail keywords and end call if detected.
+        Returns True if call was ended, False otherwise.
+        
+        Voicemail keywords detected:
+        - voicemail, voice mail
+        - forwarded to voicemail
+        - unavailable
+        - no one is available, no 1 is available
+        - record your message
+        - press pound, press #, pound key
+        - hang up
+        - at the tone
+        """
+        if self._call_ended:
+            return False  # Already ended
+        
+        # Voicemail keywords/phrases (case-insensitive)
+        voicemail_keywords = [
+            "voicemail",
+            "voice mail",
+            "forwarded to voicemail",
+            "forwarded to voice mail",
+            "no one is available",
+            "no 1 is available",
+            "no one available",
+            "record your message",
+            "press #",
+            "pound key",
+            "hang up",
+            "at the tone",
+            "after the tone",
+            "after the beep"
+        ]
+        
+        # Convert transcript to lowercase for case-insensitive matching
+        transcript_lower = transcript.lower().strip()
+        
+        # Check if any voicemail keyword/phrase is present in transcript
+        for keyword in voicemail_keywords:
+            if keyword in transcript_lower:
+                print("=" * 80)
+                print(f"VOICEMAIL DETECTED: '{keyword}' found in transcript: '{transcript}'")
+                print(f"Ending call immediately (voicemail detected)...")
+                print("=" * 80)
+                sys.stdout.flush()
+                
+                try:
+                    # Mark as ended to prevent multiple calls
+                    self._call_ended = True
+                    
+                    # Update call session status to completed
+                    if self.call_session:
+                        self.call_session.status = "completed"
+                        self.call_session.end_time = datetime.now(timezone.utc)
+                        self.call_session.ended_reason = "Voicemail detected"
+                        
+                        if self.call_session.start_time:
+                            duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
+                            self.call_session.duration = int(duration)
+                        
+                        self.db.commit()
+                        print(f"Updated call session status to 'completed' (voicemail)")
+                        sys.stdout.flush()
+                    
+                    # End Twilio call immediately
+                    if self.call_sid:
+                        call_ended = twilio_service.end_call(self.call_sid)
+                        if call_ended:
+                            print(f"Twilio call ended successfully (Call SID: {self.call_sid}) - Voicemail detected")
+                        else:
+                            print(f"Failed to end Twilio call (Call SID: {self.call_sid})")
+                        sys.stdout.flush()
+                    else:
+                        print(f"No Call SID available to end Twilio call")
+                        sys.stdout.flush()
+                    
+                    # Broadcast call ended event
+                    if self.call_session:
+                        try:
+                            await broadcast_call_status_update(
+                                call_session_id=str(self.call_session.id),
+                                status="completed",
+                                metadata={
+                                    "call_sid": self.call_sid,
+                                    "stream_sid": self.stream_sid,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    "message": "call_ended",
+                                    "event": "voicemail_detected",
+                                    "detected_phrase": keyword,
+                                    "transcript": transcript,
+                                    "reason": "Voicemail detected"
+                                }
+                            )
+                            print(f"Broadcasted call ended event (voicemail)")
+                            sys.stdout.flush()
+                        except Exception as e:
+                            print(f"Failed to broadcast call ended event: {e}")
+                            sys.stdout.flush()
+                    
+                    return True
+                    
+                except Exception as e:
+                    print(f"Error ending call due to voicemail: {e}")
                     import traceback
                     traceback.print_exc()
                     sys.stdout.flush()
