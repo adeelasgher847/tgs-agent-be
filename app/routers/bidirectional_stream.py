@@ -529,7 +529,7 @@ def strip_ssml_tags(text: str) -> str:
 
 
 
-def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
+def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = False, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:
     """
     Add SSML tags and natural speech elements for human-like delivery (Vapi-style).
     
@@ -2234,11 +2234,12 @@ IMPORTANT:
                     old_status = self.call_session.status
                     self.call_session.status = "in-progress"
                     
-                    # Start time already set in _handle_user_pickup() (first media packet received)
-                    # Only set if not already set (backup check)
+                    # 🎯 SET START TIME - When confident speech is detected (actual conversation start)
                     if not self.call_session.start_time:
                         self.call_session.start_time = datetime.now(timezone.utc)
-                        print(f"⚠️ Start time was not set in _handle_user_pickup() - setting now as backup")
+                        print(f"✅ Set call start_time: {self.call_session.start_time.isoformat()} (confident speech detected: '{transcript}')")
+                    else:
+                        print(f"ℹ️ Start time already set: {self.call_session.start_time.isoformat()}")
                     
                     self.db.commit()
                     print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (confident word detected)")
@@ -2584,12 +2585,8 @@ IMPORTANT:
             print("=" * 80)
             sys.stdout.flush()
             
-            # 🎯 SET START TIME - When first media packet is received (same point as credit monitoring start)
-            if self.call_session and not self.call_session.start_time:
-                self.call_session.start_time = datetime.now(timezone.utc)
-                self.db.commit()
-                print(f"✅ Set call start_time: {self.call_session.start_time.isoformat()} (first media packet received)")
-                sys.stdout.flush()
+            # ❌ REMOVED: Start time moved to _send_in_progress_status() (confident speech detected)
+            # Start time will be set when confident speech is detected (actual conversation start)
             
             # ❌ Credit monitoring moved to _send_in_progress_status() 
             # Credit deduction will start when connected status is sent (first media packet + connected status)

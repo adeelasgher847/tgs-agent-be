@@ -403,11 +403,12 @@ class TwilioMediaStreamHandler:
                     old_status = self.call_session.status
                     self.call_session.status = "in-progress"
                     
-                    # Start time already set in _handle_user_pickup() (first media packet received)
-                    # Only set if not already set (backup check)
+                    # 🎯 SET START TIME - When confident speech is detected (actual conversation start)
                     if not self.call_session.start_time:
                         self.call_session.start_time = datetime.now(timezone.utc)
-                        print(f"⚠️ Start time was not set in _handle_user_pickup() - setting now as backup")
+                        print(f"✅ Set call start_time: {self.call_session.start_time.isoformat()} (confident speech detected: '{transcript}')")
+                    else:
+                        print(f"ℹ️ Start time already set: {self.call_session.start_time.isoformat()}")
                     
                     self.db.commit()
                     print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (confident word detected)")
@@ -553,12 +554,8 @@ class TwilioMediaStreamHandler:
             import sys
             sys.stdout.flush()
             
-            # 🎯 SET START TIME - When first media packet is received (same point as credit monitoring start)
-            if self.call_session and not self.call_session.start_time:
-                self.call_session.start_time = datetime.now(timezone.utc)
-                self.db.commit()
-                print(f"✅ Set call start_time: {self.call_session.start_time.isoformat()} (first media packet received)")
-                sys.stdout.flush()
+            # ❌ REMOVED: Start time moved to _send_in_progress_status() (confident speech detected)
+            # Start time will be set when confident speech is detected (actual conversation start)
             
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in process_audio_buffer() when confident transcript is detected

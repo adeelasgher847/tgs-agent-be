@@ -166,13 +166,14 @@ def add_breath(sentence: str, emotion: str) -> str:
 # 5. SSML Generator (Google-Compatible)
 # ---------------------------------------------------------
 
-def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
+def wrap_in_ssml(text: str, add_office_bg: bool = True, add_breathing: bool = False) -> str:
     """
     Wraps text in SSML with prosody and emotion.
     
     Args:
         text: Text to wrap
         add_office_bg: (Deprecated - office background now handled at audio level in bidirectional_stream.py)
+        add_breathing: Enable breathing effect (default: False, disabled)
     """
     # Add thinking delays BEFORE wrapping
     text = add_thinking_delays(text)
@@ -202,7 +203,10 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
             continue
 
         # Add breathing at sentence boundaries (not mid-sentence - prevents clicks)
-        sentence_with_breath = add_breath(sentence, overall_emotion)
+        if add_breathing:
+            sentence_with_breath = add_breath(sentence, overall_emotion)
+        else:
+            sentence_with_breath = sentence
         
         ssml += f'    {sentence_with_breath}{punct}\n'
         ssml += '    <break time="150ms"/>\n'  # Shorter breaks (consistent prosody = smoother)
@@ -218,7 +222,7 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
 # 6. Main Preprocessing Entry
 # ---------------------------------------------------------
 
-def preprocess_for_tts(text: str, add_office_bg: bool = False) -> str:
+def preprocess_for_tts(text: str, add_office_bg: bool = False, add_breathing: bool = False) -> str:
     """
     Complete humanization pipeline with optional office background.
     
@@ -229,13 +233,14 @@ def preprocess_for_tts(text: str, add_office_bg: bool = False) -> str:
     4. Add thinking delays (400ms before "let me think")
     5. Detect emotions (happy, sad, uncertain, confident)
     6. VAPI-STYLE: No mid-sentence fillers (eliminates clicking sounds)
-    7. Add breathing (subtle, 3% on very long sentences only)
+    7. Add breathing (subtle, 3% on very long sentences only) - DISABLED by default
     8. Add office background (DISABLED by default, can enable if needed)
     9. Generate SSML with prosody
     
     Args:
         text: Raw text from LLM
         add_office_bg: Enable office background ambience (default: False, disabled)
+        add_breathing: Enable breathing effect (default: False, disabled)
     
     Returns:
         SSML-formatted text ready for Google TTS
@@ -246,7 +251,7 @@ def preprocess_for_tts(text: str, add_office_bg: bool = False) -> str:
     text = normalize_abbreviations(text)
     text = normalize_numbers(text)
     text = add_contractions(text)
-    return wrap_in_ssml(text, add_office_bg=add_office_bg)
+    return wrap_in_ssml(text, add_office_bg=add_office_bg, add_breathing=add_breathing)
 
 
 # ---------------------------------------------------------
