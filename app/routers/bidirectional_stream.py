@@ -2308,8 +2308,6 @@ IMPORTANT:
         
         # Goodbye keywords/phrases (case-insensitive)
         goodbye_keywords = [
-            "thanks for calling",
-            "thank you for calling",
             "bye",
             "bye bye",
             "goodbye",
@@ -2420,13 +2418,8 @@ IMPORTANT:
         
         # Voicemail keywords/phrases (case-insensitive)
         voicemail_keywords = [
-            "voicemail",
-            "voice mail",
             "forwarded to voicemail",
             "forwarded to voice mail",
-            "no one is available",
-            "no 1 is available",
-            "no one available",
             "record your message",
             "press #",
             "pound key",

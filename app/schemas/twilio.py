@@ -83,6 +83,15 @@ class CallInitiateResponse(BaseModel):
     call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
 
 
+class CallInitiateErrorResponse(BaseModel):
+    """Error response with Monday.com metadata for n8n workflow"""
+    detail: str
+    board_id: Optional[str] = None  # Echo back Monday.com board ID if provided
+    monday_item_id: Optional[str] = None  # Echo back Monday.com item ID if provided
+    status_column_id: Optional[str] = None  # Echo back Monday.com status column ID if provided
+    call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
+
+
 # Web-based voice chat schemas (Talk to Assistant feature)
 class VoiceChatStartRequest(BaseModel):
     agent_id: str

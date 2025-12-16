@@ -27,6 +27,7 @@ from app.services.transcript_service import transcript_service
 from app.services.agent_service import agent_service
 from app.services.model_service import ModelService
 from app.services.call_session_service import call_session_service
+from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
 from typing import Optional, Dict, Any
@@ -336,6 +337,31 @@ async def upload_scheduled_calls_csv(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid agent_id format")
         
+        # Validate phone_number_id if provided - must exist and belong to tenant
+        if phone_number_id:
+            try:
+                phone_number_uuid = uuid.UUID(phone_number_id)
+                phone_number_obj = phone_number_service.get_phone_number_by_id(
+                    db=db,
+                    phone_number_id=phone_number_uuid,
+                    tenant_id=user.current_tenant_id
+                )
+                if not phone_number_obj:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Phone number {phone_number_id} not found in your account."
+                    )
+                if phone_number_obj.status != "active":
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Phone number {phone_number_id} is not active."
+                    )
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid phone_number_id format: {phone_number_id}"
+                )
+        
         # Read file content
         content = await file.read()
         csv_content = content.decode('utf-8')
@@ -345,7 +371,7 @@ async def upload_scheduled_calls_csv(
             user_id=user.id,
             csv_content=csv_content,
             default_agent_id=agent_uuid,  # Pass selected agent (required)
-            default_phone_number_id=phone_number_id  # ✅ Pass phone_number_id (optional)
+            default_phone_number_id=phone_number_id  # ✅ Pass phone_number_id (validated)
         )
 
         message = (
@@ -395,6 +421,31 @@ async def create_single_scheduled_call(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid agent_id format")
         
+        # Validate phone_number_id if provided - must exist and belong to tenant
+        if phone_number_id:
+            try:
+                phone_number_uuid = uuid.UUID(phone_number_id)
+                phone_number_obj = phone_number_service.get_phone_number_by_id(
+                    db=db,
+                    phone_number_id=phone_number_uuid,
+                    tenant_id=user.current_tenant_id
+                )
+                if not phone_number_obj:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Phone number {phone_number_id} not found in your account."
+                    )
+                if phone_number_obj.status != "active":
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Phone number {phone_number_id} is not active."
+                    )
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid phone_number_id format: {phone_number_id}"
+                )
+        
         result = await scheduled_call_service.create_single_scheduled_call(
             db=db,
             tenant_id=user.current_tenant_id,
@@ -402,7 +453,7 @@ async def create_single_scheduled_call(
             phone_number=phone_number,
             agent_id=agent_uuid,
             call_time_utc=call_time_utc,
-            phone_number_id=phone_number_id  # ✅ Pass phone_number_id
+            phone_number_id=phone_number_id  # ✅ Pass phone_number_id (validated)
         )
         
         return create_success_response(

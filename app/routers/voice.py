@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, Query, Depends, status, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse, Start, Stream
@@ -13,7 +13,7 @@ import csv
 import io
 
 from app.api.deps import get_db, require_tenant, get_optional_tenant_user
-from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
+from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse, CallInitiateErrorResponse
 from app.schemas.base import SuccessResponse
 from app.services.twilio_service import twilio_service
 from app.services.agent_service import agent_service
@@ -564,11 +564,34 @@ async def initiate_call(
             "Call initiated successfully"
         )
         
-    except HTTPException:
-        # Re-raise HTTPException to preserve status codes (402, 404, etc.)
-        raise
+    except HTTPException as e:
+        # Return error response with Monday.com metadata (same format as success response)
+        # This allows n8n workflow to access board_id, monday_item_id, etc. even on errors
+        error_response = CallInitiateErrorResponse(
+            detail=e.detail,
+            board_id=call_request.board_id,
+            monday_item_id=call_request.monday_item_id,
+            status_column_id=call_request.status_column_id,
+            call_session_id_column_id=call_request.call_session_id_column_id
+        )
+        # Return JSONResponse with same status code as HTTPException
+        return JSONResponse(
+            status_code=e.status_code,
+            content=error_response.dict(exclude_none=True)
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Handle unexpected errors - also include metadata if available
+        error_response = CallInitiateErrorResponse(
+            detail=str(e),
+            board_id=call_request.board_id,
+            monday_item_id=call_request.monday_item_id,
+            status_column_id=call_request.status_column_id,
+            call_session_id_column_id=call_request.call_session_id_column_id
+        )
+        return JSONResponse(
+            status_code=500,
+            content=error_response.dict(exclude_none=True)
+        )
 @router.post("/webhook/call-events", response_class=HTMLResponse,include_in_schema=False)
 async def handle_call_events_webhook(
     request: Request,
