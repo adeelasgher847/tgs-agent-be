@@ -1978,7 +1978,7 @@ async def analyze_call_transcript(
     db: Session = Depends(get_db)
 ):
     """
-    Analyze call transcript using LLM for summary, sentiment, and recommendations.
+    Analyze call transcript using LLM for summary and sentiment.
     
     Args:
         call_session_id: UUID of the call session
@@ -1989,7 +1989,6 @@ async def analyze_call_transcript(
         Analysis results including:
         - summary: Brief call overview (2-3 sentences)
         - sentiment: Sentiment analysis with score
-        - recommendations: Actionable recommendations based on agent's prompt/instructions (if agent has custom prompt)
     """
     try:
         # Validate call session ID
@@ -2107,30 +2106,6 @@ async def analyze_call_transcript(
         Keep it brief and concise.
         """
         
-        # Create recommendations prompt based on agent's instructions
-        recommendations_prompt = f"""
-Analyze this call transcript and provide 2-3 brief, actionable recommendations for the agent.
-
-Call Transcript:
-{transcript_text}
-
-Agent's Instructions/Purpose:
-{agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
-
-IMPORTANT - Keep recommendations BRIEF and CONCISE:
-- Provide only 2-3 recommendations maximum
-- Each recommendation should be 1 sentence only (brief and to the point)
-- Be specific and actionable
-- Use friendly, conversational tone
-
-Format your response as:
-1. [Brief recommendation in 1 sentence]
-2. [Next brief recommendation in 1 sentence]
-3. [Optional third recommendation in 1 sentence]
-
-Keep it concise - similar to summary format. Maximum 1 sentence per recommendation.
-"""
-        
         # Helper function to call appropriate service based on provider
         def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
             """Generate text using the appropriate service based on provider"""
@@ -2180,7 +2155,6 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
         # Perform analysis with automatic fallback on quota errors
         summary_result = None
         sentiment_result = None
-        recommendations_result = None
         used_model = None
         last_error = None
         
@@ -2205,20 +2179,6 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                 
                 # Generate sentiment analysis
                 sentiment_result = generate_analysis_text(current_model, current_api_key, sentiment_prompt, max_tokens=150)
-                
-                # Generate recommendations (only if agent has a prompt/instructions)
-                if agent_prompt:
-                    try:
-                        recommendations_result = generate_analysis_text(
-                            current_model, 
-                            current_api_key, 
-                            recommendations_prompt, 
-                            max_tokens=300
-                        )
-                        print(f"✅ Recommendations generated")
-                    except Exception as e:
-                        print(f"⚠️ Failed to generate recommendations: {e}")
-                        # Continue even if recommendations fail
                 
                 used_model = current_model.model_name
                 print(f"✅ Analysis successful with {used_model}")
@@ -2249,44 +2209,6 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             "summary": summary_result["content"].strip(),
             "sentiment": sentiment_result["content"].strip()
         }
-        
-        # Add recommendations if available - parse into array format
-        if recommendations_result:
-            recommendations_text = recommendations_result["content"].strip()
-            
-            # Parse recommendations into array (extract numbered list items)
-            import re
-            recommendations_list = []
-            
-            # Split by newline and extract numbered items
-            lines = recommendations_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Match patterns like "1. ", "2. ", "1.", "2.", etc.
-                match = re.match(r'^\d+\.\s*(.+)$', line)
-                if match:
-                    recommendations_list.append(match.group(1).strip())
-                # Also handle cases without numbers but with bullet points
-                elif line.startswith('- ') or line.startswith('* '):
-                    recommendations_list.append(line[2:].strip())
-                # If no pattern matches but line is substantial, include it
-                elif len(line) > 20 and not recommendations_list:
-                    # First item might not have number
-                    recommendations_list.append(line)
-            
-            # If parsing failed, use original text as single item
-            if not recommendations_list:
-                recommendations_list = [recommendations_text]
-            
-            analysis_data["recommendations"] = recommendations_list
-            analysis_data["recommendations_text"] = recommendations_text  # Keep original for backward compatibility
-        elif agent_prompt:
-            # If agent has prompt but recommendations failed, indicate it
-            analysis_data["recommendations"] = ["Unable to generate recommendations at this time."]
-            analysis_data["recommendations_text"] = "Unable to generate recommendations at this time."
         
         analysis_result = {
             "call_session_id": call_session_id,

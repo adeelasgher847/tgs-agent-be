@@ -403,9 +403,11 @@ class TwilioMediaStreamHandler:
                     old_status = self.call_session.status
                     self.call_session.status = "in-progress"
                     
-                    # Set start time when confident speech is detected
+                    # Start time already set in _handle_user_pickup() (first media packet received)
+                    # Only set if not already set (backup check)
                     if not self.call_session.start_time:
                         self.call_session.start_time = datetime.now(timezone.utc)
+                        print(f"⚠️ Start time was not set in _handle_user_pickup() - setting now as backup")
                     
                     self.db.commit()
                     print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (confident word detected)")
@@ -550,6 +552,13 @@ class TwilioMediaStreamHandler:
             print("=" * 80)
             import sys
             sys.stdout.flush()
+            
+            # 🎯 SET START TIME - When first media packet is received (same point as credit monitoring start)
+            if self.call_session and not self.call_session.start_time:
+                self.call_session.start_time = datetime.now(timezone.utc)
+                self.db.commit()
+                print(f"✅ Set call start_time: {self.call_session.start_time.isoformat()} (first media packet received)")
+                sys.stdout.flush()
             
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in process_audio_buffer() when confident transcript is detected

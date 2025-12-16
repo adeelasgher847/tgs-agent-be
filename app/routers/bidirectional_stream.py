@@ -2234,9 +2234,11 @@ IMPORTANT:
                     old_status = self.call_session.status
                     self.call_session.status = "in-progress"
                     
-                    # Set start time when confident speech is detected
+                    # Start time already set in _handle_user_pickup() (first media packet received)
+                    # Only set if not already set (backup check)
                     if not self.call_session.start_time:
                         self.call_session.start_time = datetime.now(timezone.utc)
+                        print(f"⚠️ Start time was not set in _handle_user_pickup() - setting now as backup")
                     
                     self.db.commit()
                     print(f"✅ Updated DB status: '{old_status}' → 'in-progress' (confident word detected)")
@@ -2342,7 +2344,7 @@ IMPORTANT:
                     if self.call_session:
                         self.call_session.status = "completed"
                         self.call_session.end_time = datetime.now(timezone.utc)
-                        self.call_session.ended_reason = "User said goodbye"
+                        self.call_session.ended_reason = "Completed"
                         
                         if self.call_session.start_time:
                             duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
@@ -2378,7 +2380,7 @@ IMPORTANT:
                                     "event": "goodbye_detected",
                                     "detected_phrase": keyword,
                                     "transcript": transcript,
-                                    "reason": "User said goodbye"
+                                    "reason": "Completed"
                                 }
                             )
                             print(f"✅ Broadcasted call ended event")
@@ -2449,7 +2451,7 @@ IMPORTANT:
                     if self.call_session:
                         self.call_session.status = "completed"
                         self.call_session.end_time = datetime.now(timezone.utc)
-                        self.call_session.ended_reason = "Voicemail detected"
+                        self.call_session.ended_reason = "Busy"
                         
                         if self.call_session.start_time:
                             duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
@@ -2485,7 +2487,7 @@ IMPORTANT:
                                     "event": "voicemail_detected",
                                     "detected_phrase": keyword,
                                     "transcript": transcript,
-                                    "reason": "Voicemail detected"
+                                    "reason": "Busy"
                                 }
                             )
                             print(f"Broadcasted call ended event (voicemail)")
@@ -2581,6 +2583,13 @@ IMPORTANT:
             print(f"⏳ Waiting for confident speech (like 'hello') before sending 'in-progress' status")
             print("=" * 80)
             sys.stdout.flush()
+            
+            # 🎯 SET START TIME - When first media packet is received (same point as credit monitoring start)
+            if self.call_session and not self.call_session.start_time:
+                self.call_session.start_time = datetime.now(timezone.utc)
+                self.db.commit()
+                print(f"✅ Set call start_time: {self.call_session.start_time.isoformat()} (first media packet received)")
+                sys.stdout.flush()
             
             # ❌ Credit monitoring moved to _send_in_progress_status() 
             # Credit deduction will start when connected status is sent (first media packet + connected status)

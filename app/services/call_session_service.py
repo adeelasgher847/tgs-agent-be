@@ -184,6 +184,11 @@ class CallSessionService:
                 if call_session.start_time:
                     duration = (call_session.end_time - call_session.start_time).total_seconds()
                     call_session.duration = int(duration)
+                    
+                    # 🎯 If duration is 0 and ended_reason is not set, set to "No Answer"
+                    if call_session.duration == 0 and not ended_reason:
+                        call_session.ended_reason = "No Answer"
+                        ended_reason = "No Answer"  # Update for call log too
             
             db.commit()
             db.refresh(call_session)

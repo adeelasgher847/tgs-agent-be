@@ -137,29 +137,6 @@ async def analyze_call_transcript_internal(
         Keep it brief and concise.
         """
         
-        recommendations_prompt = f"""
-Analyze this call transcript and provide 2-3 brief, actionable recommendations for the agent.
-
-Call Transcript:
-{transcript_text}
-
-Agent's Instructions/Purpose:
-{agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
-
-IMPORTANT - Keep recommendations BRIEF and CONCISE:
-- Provide only 2-3 recommendations maximum
-- Each recommendation should be 1 sentence only (brief and to the point)
-- Be specific and actionable
-- Use friendly, conversational tone
-
-Format your response as:
-1. [Brief recommendation in 1 sentence]
-2. [Next brief recommendation in 1 sentence]
-3. [Optional third recommendation in 1 sentence]
-
-Keep it concise - similar to summary format. Maximum 1 sentence per recommendation.
-"""
-        
         # Helper function to generate analysis text
         def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
             provider_name = (current_model.provider.name or "").strip().lower()
@@ -202,19 +179,10 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
         # Generate analysis
         summary_result = None
         sentiment_result = None
-        recommendations_result = None
         
         try:
             summary_result = generate_analysis_text(model, current_api_key, summary_prompt, max_tokens=200)
             sentiment_result = generate_analysis_text(model, current_api_key, sentiment_prompt, max_tokens=150)
-            
-            # ✅ Always generate recommendations based on transcript (not just when agent_prompt exists)
-            try:
-                recommendations_result = generate_analysis_text(
-                    model, current_api_key, recommendations_prompt, max_tokens=300
-                )
-            except Exception as e:
-                print(f"⚠️ Failed to generate recommendations: {e}")
         except Exception as e:
             print(f"⚠️ Error generating analysis: {e}")
             return None
@@ -227,31 +195,6 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             "summary": summary_result.get("content", "").strip() if summary_result else "",
             "sentiment": sentiment_result.get("content", "").strip() if sentiment_result else ""
         }
-        
-        # Parse recommendations
-        if recommendations_result:
-            recommendations_text = recommendations_result.get("content", "").strip()
-            recommendations_list = []
-            
-            lines = recommendations_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                match = re.match(r'^\d+\.\s*(.+)$', line)
-                if match:
-                    recommendations_list.append(match.group(1).strip())
-                elif line.startswith('- ') or line.startswith('* '):
-                    recommendations_list.append(line[2:].strip())
-                elif len(line) > 20 and not recommendations_list:
-                    recommendations_list.append(line)
-            
-            if not recommendations_list:
-                recommendations_list = [recommendations_text]
-            
-            analysis_data["recommendations"] = recommendations_list
-            analysis_data["recommendations_text"] = recommendations_text
         
         return {
             "analysis": analysis_data,
@@ -751,15 +694,25 @@ async def get_batch_analysis(
                         user=user
                     )
                     if transcript_analysis:
-                        call_detail["transcript_analysis"] = transcript_analysis.get("analysis")
+                        analysis_data = transcript_analysis.get("analysis", {})
+                        # Add ended_reason to transcript_analysis (replacing recommendations)
+                        if cs.ended_reason:
+                            analysis_data["ended_reason"] = cs.ended_reason
+                        call_detail["transcript_analysis"] = analysis_data
                         call_detail["analysis_model_used"] = transcript_analysis.get("model_used")
                         call_detail["transcript_message_count"] = transcript_analysis.get("transcript_message_count", 0)
                     else:
-                        call_detail["transcript_analysis"] = None
+                        # Even if analysis fails, include ended_reason
+                        call_detail["transcript_analysis"] = {
+                            "ended_reason": cs.ended_reason
+                        } if cs.ended_reason else None
                         call_detail["transcript_message_count"] = 0
                 except Exception as e:
                     print(f"⚠️ Failed to analyze transcript for call {cs.id}: {e}")
-                    call_detail["transcript_analysis"] = None
+                    # Even if analysis fails, include ended_reason
+                    call_detail["transcript_analysis"] = {
+                        "ended_reason": cs.ended_reason
+                    } if cs.ended_reason else None
                     call_detail["transcript_message_count"] = 0
             else:
                 call_detail["transcript_analysis"] = None
