@@ -71,27 +71,20 @@ class ScheduledCallService:
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
             
-            # Create container if not provided in config
-            if crm_config.container_id:
-                # Use existing container
-                container_id = crm_config.container_id
-                container_url = crm_config.container_url or crm_service.build_container_url(container_id)
-            else:
-                # Create new container
-                container_name = f"Scheduled Calls - {user.email}"
-                additional_config = {}
-                if crm_config.additional_config:
-                    import json
-                    additional_config = json.loads(crm_config.additional_config)
-                
-                container = crm_service.create_container(container_name, **additional_config)
-                container_id = container["id"]
-                container_url = container["url"]
-                
-                # Update CRM config with container info
-                crm_config.container_id = container_id
-                crm_config.container_url = container_url
-                db.commit()
+            # Create new container for this user (each user gets their own container)
+            # Multiple tenants of the same user will share this container
+            container_name = f"Scheduled Calls - {user.email}"
+            additional_config = {}
+            if crm_config.additional_config:
+                import json
+                additional_config = json.loads(crm_config.additional_config)
+            
+            container = crm_service.create_container(container_name, **additional_config)
+            container_id = container["id"]
+            container_url = container["url"]
+            
+            # Don't update global CRM config - each user gets their own container
+            # Container ID is stored in ScheduledCall record (user-specific)
             
             # Create ScheduledCall record
             board_record = ScheduledCall(
