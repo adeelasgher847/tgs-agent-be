@@ -34,7 +34,7 @@ class ScheduledCall(Base):
 
     user = relationship("User", back_populates="scheduled_call")
     # Note: tenant_crm_config relationship removed to avoid FK validation issues
-    # Access TenantCRMConfig via: crm_config_service.get_crm_config_by_id(db, scheduled_call.tenant_crm_config_id)
+    # Access CRMConfig via: crm_config_service.get_crm_config_by_id(db, scheduled_call.tenant_crm_config_id)
 
     __table_args__ = (UniqueConstraint("user_id", name="uq_scheduledcall_user_id"),)
 

@@ -27,7 +27,6 @@ class TenantCRMConfigUpdate(BaseModel):
 class TenantCRMConfigOut(BaseModel):
     """Schema for CRM configuration response"""
     id: UUID
-    tenant_id: UUID
     crm_type: str
     container_id: Optional[str]
     container_url: Optional[str]

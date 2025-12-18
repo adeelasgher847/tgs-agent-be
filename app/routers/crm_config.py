@@ -30,7 +30,7 @@ async def create_crm_config(
     db: Session = Depends(get_db)
 ):
     """
-    Create a new CRM configuration for the current tenant.
+    Create a new global CRM configuration (Owner only).
     
     Supports all CRMs:
     - **Monday.com**: Requires `api_key` and optional `additional_config.workspace_id`
@@ -39,6 +39,7 @@ async def create_crm_config(
     - **Trello**: Requires `api_key`, `additional_config.api_token`
     
     **Access:** Only Owner role can create CRM configurations.
+    **Note:** CRM configs are global - all users can select any configured CRM.
     
     **Example Request (Monday.com):**
     ```json
@@ -62,12 +63,6 @@ async def create_crm_config(
     }
     ```
     """
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
-        )
-    
     # Validate CRM type
     valid_crm_types = ["monday", "clickup", "jira", "trello"]
     if crm_config_data.crm_type.lower() not in valid_crm_types:
@@ -79,7 +74,6 @@ async def create_crm_config(
     try:
         crm_config = crm_config_service.create_crm_config(
             db=db,
-            tenant_id=user.current_tenant_id,
             crm_config_data=crm_config_data,
             created_by=user.id
         )
@@ -95,7 +89,6 @@ async def create_crm_config(
         
         response_data = TenantCRMConfigOut(
             id=crm_config.id,
-            tenant_id=crm_config.tenant_id,
             crm_type=crm_config.crm_type,
             container_id=crm_config.container_id,
             container_url=crm_config.container_url,
@@ -125,7 +118,7 @@ async def update_crm_config(
     db: Session = Depends(get_db)
 ):
     """
-    Update an existing CRM configuration for the current tenant.
+    Update an existing global CRM configuration (Owner only).
     
     **Access:** Only Owner role can update CRM configurations.
     
@@ -142,12 +135,6 @@ async def update_crm_config(
     }
     ```
     """
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
-        )
-    
     try:
         crm_config_uuid = uuid.UUID(crm_config_id)
     except ValueError:
@@ -156,18 +143,12 @@ async def update_crm_config(
             detail="Invalid CRM config ID format"
         )
     
-    # Verify CRM config belongs to current tenant
+    # Verify CRM config exists
     crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
     if not crm_config:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="CRM configuration not found"
-        )
-    
-    if crm_config.tenant_id != user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="CRM configuration does not belong to this tenant"
         )
     
     try:
@@ -188,7 +169,6 @@ async def update_crm_config(
         
         response_data = TenantCRMConfigOut(
             id=updated_config.id,
-            tenant_id=updated_config.tenant_id,
             crm_type=updated_config.crm_type,
             container_id=updated_config.container_id,
             container_url=updated_config.container_url,
@@ -217,19 +197,13 @@ async def delete_crm_config(
     db: Session = Depends(get_db)
 ):
     """
-    Delete a CRM configuration for the current tenant.
+    Delete a global CRM configuration (Owner only).
     
     **Access:** Only Owner role can delete CRM configurations.
     
     **Warning:** This will permanently delete the CRM configuration.
     Any scheduled calls using this CRM config will need to be reconfigured.
     """
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
-        )
-    
     try:
         crm_config_uuid = uuid.UUID(crm_config_id)
     except ValueError:
@@ -238,18 +212,12 @@ async def delete_crm_config(
             detail="Invalid CRM config ID format"
         )
     
-    # Verify CRM config belongs to current tenant
+    # Verify CRM config exists
     crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
     if not crm_config:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="CRM configuration not found"
-        )
-    
-    if crm_config.tenant_id != user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="CRM configuration does not belong to this tenant"
         )
     
     try:
@@ -274,20 +242,13 @@ async def get_all_crm_configs(
     db: Session = Depends(get_db)
 ):
     """
-    Get all CRM configurations for the current tenant.
+    Get all global CRM configurations.
     
     Returns a list of all configured CRMs (Monday.com, ClickUp, Jira, Trello).
+    All users can see all configured CRMs.
     """
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
-        )
-    
     try:
-        crm_configs = crm_config_service.get_all_crm_configs_for_tenant(
-            db, user.current_tenant_id
-        )
+        crm_configs = crm_config_service.get_all_crm_configs(db)
         
         response_list = []
         for crm_config in crm_configs:
@@ -303,7 +264,6 @@ async def get_all_crm_configs(
             response_list.append(
                 TenantCRMConfigOut(
                     id=crm_config.id,
-                    tenant_id=crm_config.tenant_id,
                     crm_type=crm_config.crm_type,
                     container_id=crm_config.container_id,
                     container_url=crm_config.container_url,

@@ -4,36 +4,34 @@ CRM Configuration Service
 
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from typing import Optional
+from typing import Optional, List
 import uuid
 import json
 
-from app.models.tenant_crm_config import TenantCRMConfig
+from app.models.tenant_crm_config import CRMConfig
 from app.core.security import encrypt_api_key, decrypt_api_key
 from app.schemas.crm_config import TenantCRMConfigCreate, TenantCRMConfigUpdate
 
 
 class CRMConfigService:
-    """Service for managing CRM configurations"""
+    """Service for managing global CRM configurations"""
 
     @staticmethod
     def create_crm_config(
         db: Session,
-        tenant_id: uuid.UUID,
         crm_config_data: TenantCRMConfigCreate,
         created_by: uuid.UUID
-    ) -> TenantCRMConfig:
-        """Create a new CRM configuration for a tenant"""
-        # Check if CRM config already exists for this tenant and CRM type
-        existing = db.query(TenantCRMConfig).filter(
-            TenantCRMConfig.tenant_id == tenant_id,
-            TenantCRMConfig.crm_type == crm_config_data.crm_type.lower()
+    ) -> CRMConfig:
+        """Create a new global CRM configuration"""
+        # Check if CRM config already exists for this CRM type
+        existing = db.query(CRMConfig).filter(
+            CRMConfig.crm_type == crm_config_data.crm_type.lower()
         ).first()
         
         if existing:
             raise HTTPException(
                 status_code=400,
-                detail=f"CRM configuration for {crm_config_data.crm_type} already exists for this tenant"
+                detail=f"CRM configuration for {crm_config_data.crm_type} already exists"
             )
         
         # Encrypt API key
@@ -53,8 +51,7 @@ class CRMConfigService:
         else:
             additional_config_json = None
         
-        crm_config = TenantCRMConfig(
-            tenant_id=tenant_id,
+        crm_config = CRMConfig(
             crm_type=crm_config_data.crm_type.lower(),
             encrypted_api_key=encrypted_api_key,
             container_id=crm_config_data.container_id,
@@ -70,37 +67,30 @@ class CRMConfigService:
         return crm_config
 
     @staticmethod
-    def get_crm_config_by_id(db: Session, crm_config_id: uuid.UUID) -> Optional[TenantCRMConfig]:
+    def get_crm_config_by_id(db: Session, crm_config_id: uuid.UUID) -> Optional[CRMConfig]:
         """Get CRM config by ID"""
-        return db.query(TenantCRMConfig).filter(TenantCRMConfig.id == crm_config_id).first()
+        return db.query(CRMConfig).filter(CRMConfig.id == crm_config_id).first()
 
     @staticmethod
-    def get_crm_config_by_tenant_and_type(
-        db: Session,
-        tenant_id: uuid.UUID,
-        crm_type: str
-    ) -> Optional[TenantCRMConfig]:
-        """Get CRM config by tenant and CRM type"""
-        return db.query(TenantCRMConfig).filter(
-            TenantCRMConfig.tenant_id == tenant_id,
-            TenantCRMConfig.crm_type == crm_type.lower()
+    def get_crm_config_by_type(db: Session, crm_type: str) -> Optional[CRMConfig]:
+        """Get CRM config by CRM type"""
+        return db.query(CRMConfig).filter(
+            CRMConfig.crm_type == crm_type.lower()
         ).first()
 
     @staticmethod
-    def get_all_crm_configs_for_tenant(db: Session, tenant_id: uuid.UUID) -> list[TenantCRMConfig]:
-        """Get all CRM configs for a tenant"""
-        return db.query(TenantCRMConfig).filter(
-            TenantCRMConfig.tenant_id == tenant_id
-        ).all()
+    def get_all_crm_configs(db: Session) -> List[CRMConfig]:
+        """Get all global CRM configs (all 4 CRMs)"""
+        return db.query(CRMConfig).all()
 
     @staticmethod
     def update_crm_config(
         db: Session,
         crm_config_id: uuid.UUID,
         update_data: TenantCRMConfigUpdate
-    ) -> TenantCRMConfig:
+    ) -> CRMConfig:
         """Update CRM configuration"""
-        crm_config = db.query(TenantCRMConfig).filter(TenantCRMConfig.id == crm_config_id).first()
+        crm_config = db.query(CRMConfig).filter(CRMConfig.id == crm_config_id).first()
         if not crm_config:
             raise HTTPException(status_code=404, detail="CRM configuration not found")
         
@@ -131,7 +121,7 @@ class CRMConfigService:
     @staticmethod
     def delete_crm_config(db: Session, crm_config_id: uuid.UUID) -> bool:
         """Delete CRM configuration"""
-        crm_config = db.query(TenantCRMConfig).filter(TenantCRMConfig.id == crm_config_id).first()
+        crm_config = db.query(CRMConfig).filter(CRMConfig.id == crm_config_id).first()
         if not crm_config:
             raise HTTPException(status_code=404, detail="CRM configuration not found")
         

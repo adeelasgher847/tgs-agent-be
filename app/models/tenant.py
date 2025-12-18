@@ -22,4 +22,3 @@ class Tenant(Base):
     call_logs = relationship("CallLog", back_populates="tenant")
     phone_numbers = relationship("PhoneNumber", back_populates="tenant")
     subscription = relationship("Subscription", back_populates="tenant", uselist=False)
-    crm_configs = relationship("TenantCRMConfig", back_populates="tenant", cascade="all, delete-orphan")

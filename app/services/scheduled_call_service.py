@@ -60,9 +60,7 @@ class ScheduledCallService:
         if not crm_config:
             raise HTTPException(status_code=404, detail="CRM configuration not found")
         
-        # Verify tenant matches
-        if crm_config.tenant_id != tenant_id:
-            raise HTTPException(status_code=403, detail="CRM configuration does not belong to this tenant")
+        # CRM configs are global - no tenant validation needed
         
         # Get CRM service (needed for both new and existing records)
         crm_service = CRMServiceFactory.get_service(crm_config)

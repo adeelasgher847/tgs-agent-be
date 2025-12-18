@@ -8,7 +8,7 @@ from app.services.monday_service import MondayService
 from app.services.clickup_service import ClickUpService
 from app.services.jira_service import JiraService
 from app.services.trello_service import TrelloService
-from app.models.tenant_crm_config import TenantCRMConfig
+from app.models.tenant_crm_config import CRMConfig
 from app.core.security import decrypt_api_key
 import json
 
@@ -17,12 +17,12 @@ class CRMServiceFactory:
     """Factory for creating CRM service instances"""
     
     @staticmethod
-    def get_service(crm_config: TenantCRMConfig) -> BaseCRMService:
+    def get_service(crm_config: CRMConfig) -> BaseCRMService:
         """
         Get CRM service instance based on CRM config.
         
         Args:
-            crm_config: TenantCRMConfig model instance
+            crm_config: CRMConfig model instance
             
         Returns:
             BaseCRMService instance
