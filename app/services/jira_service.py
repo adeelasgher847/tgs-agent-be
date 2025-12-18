@@ -3,6 +3,7 @@ Jira API Service for Scheduled Calls Integration
 """
 
 import json
+import re
 from typing import Dict, List, Optional
 import requests
 from app.services.base_crm_service import BaseCRMService
@@ -68,10 +69,23 @@ class JiraService(BaseCRMService):
         # Generate project key if not provided
         if not project_key:
             # Generate unique project key from container name
-            # Remove special chars, uppercase, max 10 chars
-            project_key = container_name.upper().replace(" ", "").replace("-", "").replace("_", "")[:10]
-            if not project_key:
-                project_key = "SCALL"  # Default fallback
+            # Jira project keys must be: alphanumeric only (A-Z, 0-9), uppercase, max 10 chars
+            # Extract only alphanumeric characters, uppercase, max 10 chars
+            alphanumeric_only = re.sub(r'[^A-Z0-9]', '', container_name.upper())
+            if len(alphanumeric_only) >= 3:
+                project_key = alphanumeric_only[:10]
+            else:
+                # If not enough chars, use email prefix or default
+                # Try to extract from email if container_name contains email
+                if "@" in container_name:
+                    email_prefix = container_name.split("@")[0].upper()
+                    email_clean = re.sub(r'[^A-Z0-9]', '', email_prefix)
+                    if len(email_clean) >= 3:
+                        project_key = email_clean[:10]
+                    else:
+                        project_key = "SCALL"  # Default fallback
+                else:
+                    project_key = "SCALL"  # Default fallback
         
         # Check if project already exists
         check_url = f"{self.server_url}/rest/api/3/project/{project_key}"
@@ -147,19 +161,29 @@ class JiraService(BaseCRMService):
         ]
         
         last_error = None
-        for payload in payloads_to_try:
+        for idx, payload in enumerate(payloads_to_try, 1):
             try:
+                # Log payload for debugging (without sensitive data)
+                print(f"🔍 Trying Jira project creation format {idx}/4 with key: {project_key}")
                 response = requests.post(create_url, json=payload, headers=self._headers(), timeout=30)
                 response.raise_for_status()
                 project_data = response.json()
                 
                 created_key = project_data.get("key", project_key)
+                print(f"✅ Successfully created Jira project: {created_key}")
                 return {
                     "id": created_key,
                     "url": self.build_container_url(created_key),
                 }
             except requests.exceptions.HTTPError as e:
                 last_error = e
+                # Log error for debugging
+                try:
+                    error_data = e.response.json()
+                    print(f"❌ Format {idx} failed: {error_data.get('errorMessages', [])}")
+                except:
+                    print(f"❌ Format {idx} failed: {e.response.status_code}")
+                
                 # If 400 error, try next format
                 if e.response.status_code == 400:
                     continue
@@ -167,6 +191,7 @@ class JiraService(BaseCRMService):
                 break
             except Exception as e:
                 last_error = e
+                print(f"❌ Format {idx} exception: {str(e)}")
                 continue
         
         # If all formats failed, handle the last error
@@ -207,7 +232,13 @@ class JiraService(BaseCRMService):
                     if not error_msg:
                         error_msg = f"Response: {e.response.text[:500]}"
                     
-                    raise ValueError(f"Failed to create Jira project after trying all formats: {error_msg}")
+                    # Provide helpful suggestion
+                    suggestion = f"\n\n💡 Suggestion: Jira project creation via API may require admin permissions. "
+                    suggestion += f"Please create project '{project_key}' manually in Jira, or ensure your API token has 'Administer Jira' permission."
+                    suggestion += f"\nProject Key: {project_key}"
+                    suggestion += f"\nProject Name: {container_name}"
+                    
+                    raise ValueError(f"Failed to create Jira project after trying all formats: {error_msg}{suggestion}")
                 except (ValueError, KeyError):
                     # If JSON parsing fails, use raw response
                     raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
