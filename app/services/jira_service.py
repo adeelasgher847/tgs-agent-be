@@ -138,28 +138,64 @@ class JiraService(BaseCRMService):
         
         # Try to get available project templates
         project_template_key = None
-        try:
-            templates_url = f"{self.server_url}/rest/api/3/project/templates"
-            templates_response = requests.get(templates_url, headers=self._headers(), timeout=20)
-            if templates_response.status_code == 200:
-                templates = templates_response.json()
-                # Try to find a suitable template (prefer "Task management" or "Basic")
-                for template in templates:
-                    template_key = template.get("key", "")
-                    if "task" in template_key.lower() or "basic" in template_key.lower():
+        template_options = []
+        
+        # Try multiple template endpoints
+        template_endpoints = [
+            f"{self.server_url}/rest/api/3/project/templates",
+            f"{self.server_url}/rest/api/3/project/type/business/accessible",
+            f"{self.server_url}/rest/api/3/project/type/software/accessible"
+        ]
+        
+        for endpoint in template_endpoints:
+            try:
+                templates_response = requests.get(endpoint, headers=self._headers(), timeout=20)
+                if templates_response.status_code == 200:
+                    templates = templates_response.json()
+                    # Handle both array and object responses
+                    if isinstance(templates, list):
+                        template_options.extend(templates)
+                    elif isinstance(templates, dict) and "values" in templates:
+                        template_options.extend(templates["values"])
+                    elif isinstance(templates, dict):
+                        template_options.append(templates)
+                    break
+            except Exception as e:
+                print(f"⚠️ Template endpoint {endpoint} failed: {e}")
+                continue
+        
+        # Find suitable template
+        if template_options:
+            # Prefer templates with these keywords
+            preferred_keywords = ["task", "basic", "kanban", "scrum", "blank", "empty"]
+            for template in template_options:
+                template_key = template.get("key", "") or template.get("id", "")
+                template_name = template.get("name", "").lower()
+                
+                # Check if template key or name matches preferred keywords
+                for keyword in preferred_keywords:
+                    if keyword in template_key.lower() or keyword in template_name:
                         project_template_key = template_key
+                        print(f"✅ Found preferred template: {project_template_key}")
                         break
-                # If no suitable template found, use first available
-                if not project_template_key and templates:
-                    project_template_key = templates[0].get("key", "")
-        except Exception as e:
-            print(f"⚠️ Warning: Could not get project templates: {e}")
+                
+                if project_template_key:
+                    break
+            
+            # If no preferred template, use first available
+            if not project_template_key:
+                first_template = template_options[0]
+                project_template_key = first_template.get("key", "") or first_template.get("id", "")
+                print(f"✅ Using first available template: {project_template_key}")
+        
+        if not project_template_key:
+            print(f"⚠️ Warning: No project templates found. Will try without template.")
         
         # Create project payload - Jira API v3 format
         # Try multiple payload formats as Jira API can be picky
         payloads_to_try = []
         
-        # Format 1: With template (if available) and projectLead as object
+        # Format 1: With template + business type (most common for Jira Cloud)
         if project_template_key:
             payloads_to_try.append({
                 "key": project_key,
@@ -169,7 +205,17 @@ class JiraService(BaseCRMService):
                 "projectLead": {"accountId": project_lead_account_id}
             })
         
-        # Format 2: With projectLead as object and projectTypeKey
+        # Format 2: With template + software type
+        if project_template_key:
+            payloads_to_try.append({
+                "key": project_key,
+                "name": container_name,
+                "projectTypeKey": "software",
+                "projectTemplateKey": project_template_key,
+                "projectLead": {"accountId": project_lead_account_id}
+            })
+        
+        # Format 3: Business type with projectLead as object (no template)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -177,7 +223,15 @@ class JiraService(BaseCRMService):
             "projectLead": {"accountId": project_lead_account_id}
         })
         
-        # Format 3: With projectLead as string and projectTypeKey
+        # Format 4: Software type with projectLead as object (no template)
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": "software",
+            "projectLead": {"accountId": project_lead_account_id}
+        })
+        
+        # Format 5: Business type with projectLead as string
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -185,26 +239,25 @@ class JiraService(BaseCRMService):
             "projectLead": project_lead_account_id
         })
         
-        # Format 4: Minimal payload without projectTypeKey
+        # Format 6: Minimal payload with projectLead as object
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectLead": {"accountId": project_lead_account_id}
-        })
-        
-        # Format 5: Minimal with projectLead as string
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectLead": project_lead_account_id
         })
         
         last_error = None
         total_formats = len(payloads_to_try)
         for idx, payload in enumerate(payloads_to_try, 1):
             try:
-                # Log payload for debugging (without sensitive accountId)
-                payload_log = {k: v for k, v in payload.items() if k != "projectLead" or not isinstance(v, dict)}
+                # Log payload for debugging (mask accountId for security)
+                payload_log = payload.copy()
+                if "projectLead" in payload_log:
+                    if isinstance(payload_log["projectLead"], dict):
+                        payload_log["projectLead"] = {"accountId": "***masked***"}
+                    else:
+                        payload_log["projectLead"] = "***masked***"
+                
                 print(f"🔍 Trying Jira project creation format {idx}/{total_formats} with key: {project_key}")
                 print(f"   Payload: {json.dumps(payload_log, indent=2)}")
                 
