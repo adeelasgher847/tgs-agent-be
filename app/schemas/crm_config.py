@@ -7,7 +7,7 @@ from typing import Optional
 from uuid import UUID
 
 
-class TenantCRMConfigCreate(BaseModel):
+class CRMConfigCreate(BaseModel):
     """Schema for creating CRM configuration"""
     crm_type: str  # "monday" | "clickup" | "jira" | "trello"
     api_key: str  # Plain API key (will be encrypted)
@@ -16,7 +16,7 @@ class TenantCRMConfigCreate(BaseModel):
     additional_config: Optional[dict] = None  # CRM-specific config (workspace_id, email, server_url, etc.)
 
 
-class TenantCRMConfigUpdate(BaseModel):
+class CRMConfigUpdate(BaseModel):
     """Schema for updating CRM configuration"""
     api_key: Optional[str] = None
     container_id: Optional[str] = None
@@ -24,7 +24,7 @@ class TenantCRMConfigUpdate(BaseModel):
     additional_config: Optional[dict] = None
 
 
-class TenantCRMConfigOut(BaseModel):
+class CRMConfigOut(BaseModel):
     """Schema for CRM configuration response"""
     id: UUID
     crm_type: str

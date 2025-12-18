@@ -10,9 +10,9 @@ import uuid
 from app.api.deps import get_db, require_tenant, require_owner
 from app.models.user import User
 from app.schemas.crm_config import (
-    TenantCRMConfigCreate,
-    TenantCRMConfigUpdate,
-    TenantCRMConfigOut,
+    CRMConfigCreate,
+    CRMConfigUpdate,
+    CRMConfigOut,
 )
 from app.services.crm_config_service import CRMConfigService
 from app.utils.response import create_success_response
@@ -23,9 +23,9 @@ router = APIRouter()
 crm_config_service = CRMConfigService()
 
 
-@router.post("", response_model=SuccessResponse[TenantCRMConfigOut])
+@router.post("", response_model=SuccessResponse[CRMConfigOut])
 async def create_crm_config(
-    crm_config_data: TenantCRMConfigCreate,
+    crm_config_data: CRMConfigCreate,
     user: User = Depends(require_owner),
     db: Session = Depends(get_db)
 ):
@@ -87,7 +87,7 @@ async def create_crm_config(
             if "api_token" in additional_config_dict:
                 additional_config_dict["api_token"] = "***encrypted***"
         
-        response_data = TenantCRMConfigOut(
+        response_data = CRMConfigOut(
             id=crm_config.id,
             crm_type=crm_config.crm_type,
             container_id=crm_config.container_id,
@@ -110,10 +110,10 @@ async def create_crm_config(
         )
 
 
-@router.put("/{crm_config_id}", response_model=SuccessResponse[TenantCRMConfigOut])
+@router.put("/{crm_config_id}", response_model=SuccessResponse[CRMConfigOut])
 async def update_crm_config(
     crm_config_id: str,
-    update_data: TenantCRMConfigUpdate,
+    update_data: CRMConfigUpdate,
     user: User = Depends(require_owner),
     db: Session = Depends(get_db)
 ):
@@ -167,7 +167,7 @@ async def update_crm_config(
             if "api_token" in additional_config_dict:
                 additional_config_dict["api_token"] = "***encrypted***"
         
-        response_data = TenantCRMConfigOut(
+        response_data = CRMConfigOut(
             id=updated_config.id,
             crm_type=updated_config.crm_type,
             container_id=updated_config.container_id,
@@ -236,7 +236,7 @@ async def delete_crm_config(
         )
 
 
-@router.get("", response_model=SuccessResponse[list[TenantCRMConfigOut]])
+@router.get("", response_model=SuccessResponse[list[CRMConfigOut]])
 async def get_all_crm_configs(
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
@@ -262,7 +262,7 @@ async def get_all_crm_configs(
                     additional_config_dict["api_token"] = "***encrypted***"
             
             response_list.append(
-                TenantCRMConfigOut(
+                CRMConfigOut(
                     id=crm_config.id,
                     crm_type=crm_config.crm_type,
                     container_id=crm_config.container_id,

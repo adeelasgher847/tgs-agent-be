@@ -10,7 +10,7 @@ import json
 
 from app.models.tenant_crm_config import CRMConfig
 from app.core.security import encrypt_api_key, decrypt_api_key
-from app.schemas.crm_config import TenantCRMConfigCreate, TenantCRMConfigUpdate
+from app.schemas.crm_config import CRMConfigCreate, CRMConfigUpdate
 
 
 class CRMConfigService:
@@ -19,7 +19,7 @@ class CRMConfigService:
     @staticmethod
     def create_crm_config(
         db: Session,
-        crm_config_data: TenantCRMConfigCreate,
+        crm_config_data: CRMConfigCreate,
         created_by: uuid.UUID
     ) -> CRMConfig:
         """Create a new global CRM configuration"""
@@ -87,7 +87,7 @@ class CRMConfigService:
     def update_crm_config(
         db: Session,
         crm_config_id: uuid.UUID,
-        update_data: TenantCRMConfigUpdate
+        update_data: CRMConfigUpdate
     ) -> CRMConfig:
         """Update CRM configuration"""
         crm_config = db.query(CRMConfig).filter(CRMConfig.id == crm_config_id).first()
