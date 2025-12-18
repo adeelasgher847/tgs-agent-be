@@ -32,10 +32,8 @@ class ScheduledCall(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="scheduled_call")
-    tenant_crm_config = relationship(
-        "TenantCRMConfig",
-        primaryjoin="ScheduledCall.tenant_crm_config_id == TenantCRMConfig.id"
-    )
+    # Note: tenant_crm_config relationship removed to avoid FK validation issues
+    # Access TenantCRMConfig via: crm_config_service.get_crm_config_by_id(db, scheduled_call.tenant_crm_config_id)
 
     __table_args__ = (UniqueConstraint("user_id", name="uq_scheduledcall_user_id"),)
 
