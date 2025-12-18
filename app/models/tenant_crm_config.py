@@ -6,10 +6,8 @@ import uuid
 
 from app.db.base_class import Base
 
-
 class CRMConfig(Base):
-    __tablename__ = "crmconfig"
-    
+
     """Global CRM configuration - stores API keys for Monday.com, ClickUp, Jira, Trello.
     All users can select any of these 4 CRMs."""
 
