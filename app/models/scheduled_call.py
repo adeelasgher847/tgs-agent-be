@@ -16,7 +16,8 @@ class ScheduledCall(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, unique=True, index=True)
     
     # Reference to tenant's CRM configuration
-    tenant_crm_config_id = Column(UUID(as_uuid=True), ForeignKey("tenant_crm_config.id"), nullable=True, index=True)
+    # Note: ForeignKey removed - relationship uses explicit primaryjoin instead
+    tenant_crm_config_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     
     # Generic container info (works for all CRMs)
     crm_container_id = Column(String(200), nullable=False, index=True)  # board_id/list_id/project_id
