@@ -91,6 +91,30 @@ class JiraService(BaseCRMService):
         # Project doesn't exist, create it
         create_url = f"{self.server_url}/rest/api/3/project"
         
+        # Get current user's account ID for projectLead (required by Jira)
+        project_lead_account_id = None
+        try:
+            # Get current user info
+            user_url = f"{self.server_url}/rest/api/3/myself"
+            user_response = requests.get(user_url, headers=self._headers(), timeout=20)
+            if user_response.status_code == 200:
+                user_data = user_response.json()
+                project_lead_account_id = user_data.get("accountId")
+            else:
+                # Fallback: try to get account ID from email search
+                search_url = f"{self.server_url}/rest/api/3/user/search"
+                search_params = {"query": self.email}
+                search_response = requests.get(search_url, headers=self._headers(), params=search_params, timeout=20)
+                if search_response.status_code == 200:
+                    users = search_response.json()
+                    if users:
+                        project_lead_account_id = users[0].get("accountId")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not get project lead account ID: {e}")
+        
+        if not project_lead_account_id:
+            raise ValueError("Could not get project lead account ID. Please ensure your Jira API token has proper permissions.")
+        
         # Try to get available project types and templates
         try:
             # Get project types
@@ -115,7 +139,8 @@ class JiraService(BaseCRMService):
             "key": project_key,
             "name": container_name,
             "projectTypeKey": project_type_key,
-            "description": "Scheduled Calls Project - Auto-created for call management"
+            "description": "Scheduled Calls Project - Auto-created for call management",
+            "projectLead": project_lead_account_id  # Required field
         }
         
         try:
