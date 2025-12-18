@@ -41,21 +41,60 @@ class ClickUpService(BaseCRMService):
 
     def get_api_key(self) -> str:
         """Get decrypted API key"""
-        return decrypt_api_key(self.api_key) if self.api_key.startswith("eyJ") else self.api_key
+        if not self.api_key:
+            raise ValueError("ClickUp API key is not configured")
+        
+        # Check if encrypted (JWT format)
+        if self.api_key.startswith("eyJ"):
+            try:
+                decrypted = decrypt_api_key(self.api_key)
+                
+                # Debug logging
+                print(f"🔍 ClickUp API Key decrypted successfully")
+                print(f"   Encrypted (first 20 chars): {self.api_key[:20]}...")
+                print(f"   Decrypted (first 10 chars): {decrypted[:10] if decrypted else 'None'}...")
+                print(f"   Decrypted length: {len(decrypted) if decrypted else 0}")
+                
+                if not decrypted:
+                    raise ValueError("Decrypted API key is empty")
+                
+                # Validate API key format (ClickUp keys usually start with "pk_" but some formats may differ)
+                if not decrypted.startswith("pk_"):
+                    print(f"⚠️ Warning: ClickUp API key doesn't start with 'pk_'. Using provided format: {decrypted[:30]}...")
+                    # Still return it - ClickUp may have different key formats
+                
+                return decrypted
+            except Exception as e:
+                print(f"❌ ClickUp API key decryption failed: {str(e)}")
+                raise ValueError(f"Failed to decrypt ClickUp API key: {str(e)}")
+        else:
+            # Already decrypted or plain text
+            print(f"🔍 ClickUp API Key appears to be already decrypted")
+            return self.api_key
 
     def build_container_url(self, container_id: str, space_id: Optional[str] = None) -> str:
         """Build URL for ClickUp list"""
-        if space_id:
-            # Full format with space_id
-            return f"https://app.clickup.com/{space_id}/v/li/{container_id}"
-        else:
-            # Simple format (fallback)
-            return f"https://app.clickup.com/{container_id}"
+        # Use simple format - ClickUp lists can be accessed directly with list_id
+        # Format: https://app.clickup.com/{list_id}
+        return f"https://app.clickup.com/{container_id}"
 
     def _headers(self) -> Dict[str, str]:
         """Get API headers"""
+        api_key = self.get_api_key()
+        
+        if not api_key:
+            raise ValueError("ClickUp API key is missing or could not be decrypted")
+        
+        # Final validation - ClickUp API keys are usually long (40+ chars)
+        if len(api_key) < 20:
+            raise ValueError(f"ClickUp API key seems too short: {len(api_key)} chars. Minimum expected: 20 chars")
+        
+        # Log API key format for debugging (first and last few chars only)
+        print(f"🔍 Using ClickUp API key (length: {len(api_key)}, format: {api_key[:5]}...{api_key[-5:]})")
+        
+        # ClickUp API expects just the token in Authorization header (no "Bearer" prefix)
         return {
-            "Authorization": self.get_api_key(),
+            "Authorization": api_key,  # Just the token, no prefix
             "Content-Type": "application/json",
         }
 
