@@ -54,20 +54,20 @@ class ScheduledCallService:
         # Check if container already exists for this user
         board_record = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
 
+        # Get CRM config (needed for both new and existing records)
+        crm_config_service = CRMConfigService()
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
+        
+        # Verify tenant matches
+        if crm_config.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="CRM configuration does not belong to this tenant")
+        
+        # Get CRM service (needed for both new and existing records)
+        crm_service = CRMServiceFactory.get_service(crm_config)
+        
         if not board_record:
-            # Get CRM config
-            crm_config_service = CRMConfigService()
-            crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
-            if not crm_config:
-                raise HTTPException(status_code=404, detail="CRM configuration not found")
-            
-            # Verify tenant matches
-            if crm_config.tenant_id != tenant_id:
-                raise HTTPException(status_code=403, detail="CRM configuration does not belong to this tenant")
-            
-            # Get CRM service
-            crm_service = CRMServiceFactory.get_service(crm_config)
-            
             # Get user email for container name
             user = db.query(User).filter(User.id == user_id).first()
             if not user:
@@ -111,29 +111,47 @@ class ScheduledCallService:
             db.refresh(board_record)
         else:
             # Verify existing container uses the same CRM config
-            if board_record.tenant_crm_config_id != crm_config_id:
+            if board_record.tenant_crm_config_id and board_record.tenant_crm_config_id != crm_config_id:
                 raise HTTPException(
                     status_code=400, 
                     detail=f"User already has a container configured with a different CRM. Please use the existing CRM config."
                 )
             
-            # Get CRM config for service
-            crm_config_service = CRMConfigService()
-            crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
-            if not crm_config:
-                raise HTTPException(status_code=404, detail="CRM configuration not found")
-            
-            # Verify tenant matches
-            if crm_config.tenant_id != tenant_id:
-                raise HTTPException(status_code=403, detail="CRM configuration does not belong to this tenant")
-            
-            # Get CRM service
-            crm_service = CRMServiceFactory.get_service(crm_config)
+            # Update existing record if it's missing new fields (for backward compatibility)
+            if not board_record.crm_container_id or not board_record.crm_type:
+                # Use legacy fields or CRM config
+                if not board_record.crm_container_id:
+                    board_record.crm_container_id = board_record.monday_board_id or crm_config.container_id
+                if not board_record.crm_container_url:
+                    board_record.crm_container_url = board_record.monday_board_url or crm_config.container_url
+                    if not board_record.crm_container_url and board_record.crm_container_id:
+                        board_record.crm_container_url = crm_service.build_container_url(board_record.crm_container_id)
+                if not board_record.crm_type:
+                    board_record.crm_type = crm_config.crm_type
+                if not board_record.tenant_crm_config_id:
+                    board_record.tenant_crm_config_id = crm_config_id
+                db.commit()
+                db.refresh(board_record)
 
         # Ensure required fields exist
+        if not board_record.crm_container_id:
+            raise HTTPException(
+                status_code=500, 
+                detail="Container ID is missing. Please recreate the container."
+            )
+        
+        if not board_record.crm_type:
+            raise HTTPException(
+                status_code=500, 
+                detail="CRM type is missing. Please recreate the container."
+            )
+        
         try:
             field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
         except Exception as exc:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"❌ Error ensuring required fields: {error_trace}")
             raise HTTPException(
                 status_code=500, 
                 detail=f"Failed to prepare {board_record.crm_type} container: {exc}"

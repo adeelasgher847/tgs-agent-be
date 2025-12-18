@@ -399,6 +399,9 @@ async def upload_scheduled_calls_csv(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ Error in upload_scheduled_calls_csv: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
 
 

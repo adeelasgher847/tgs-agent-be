@@ -20,9 +20,10 @@ class ScheduledCall(Base):
     tenant_crm_config_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     
     # Generic container info (works for all CRMs)
-    crm_container_id = Column(String(200), nullable=False, index=True)  # board_id/list_id/project_id
-    crm_container_url = Column(String(500), nullable=False)
-    crm_type = Column(String(20), nullable=False, index=True)  # "monday" | "clickup" | "jira" | "trello"
+    # Note: nullable=True in DB for backward compatibility, but should always have values for new records
+    crm_container_id = Column(String(200), nullable=True, index=True)  # board_id/list_id/project_id
+    crm_container_url = Column(String(500), nullable=True)
+    crm_type = Column(String(20), nullable=True, index=True)  # "monday" | "clickup" | "jira" | "trello"
     
     # Legacy fields (for backward compatibility, can be removed later)
     monday_board_id = Column(String(50), nullable=True, index=True)
