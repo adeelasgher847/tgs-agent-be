@@ -115,45 +115,66 @@ class JiraService(BaseCRMService):
         if not project_lead_account_id:
             raise ValueError("Could not get project lead account ID. Please ensure your Jira API token has proper permissions.")
         
-        # Try to get available project types and templates
-        try:
-            # Get project types
-            types_url = f"{self.server_url}/rest/api/3/project/type"
-            types_response = requests.get(types_url, headers=self._headers(), timeout=20)
-            project_types = types_response.json() if types_response.status_code == 200 else []
-            
-            # Use "business" type if available, otherwise "software"
-            project_type_key = "business"
-            for ptype in project_types:
-                if ptype.get("key") == "business":
-                    project_type_key = "business"
-                    break
-                elif ptype.get("key") == "software":
-                    project_type_key = "software"
-                    break
-        except:
-            project_type_key = "business"  # Default
-        
-        # Create project payload
-        payload = {
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": project_type_key,
-            "description": "Scheduled Calls Project - Auto-created for call management",
-            "projectLead": {"accountId": project_lead_account_id}  # Required field - must be object with accountId
-        }
-        
-        try:
-            response = requests.post(create_url, json=payload, headers=self._headers(), timeout=30)
-            response.raise_for_status()
-            project_data = response.json()
-            
-            created_key = project_data.get("key", project_key)
-            return {
-                "id": created_key,
-                "url": self.build_container_url(created_key),
+        # Create project payload - Jira API v3 format
+        # Try multiple payload formats as Jira API can be picky
+        payloads_to_try = [
+            # Format 1: With projectLead as object (most common)
+            {
+                "key": project_key,
+                "name": container_name,
+                "projectTypeKey": "business",
+                "projectLead": {"accountId": project_lead_account_id}
+            },
+            # Format 2: With projectLead as string
+            {
+                "key": project_key,
+                "name": container_name,
+                "projectTypeKey": "business",
+                "projectLead": project_lead_account_id
+            },
+            # Format 3: Minimal payload without projectTypeKey
+            {
+                "key": project_key,
+                "name": container_name,
+                "projectLead": {"accountId": project_lead_account_id}
+            },
+            # Format 4: Minimal with projectLead as string
+            {
+                "key": project_key,
+                "name": container_name,
+                "projectLead": project_lead_account_id
             }
-        except requests.exceptions.HTTPError as e:
+        ]
+        
+        last_error = None
+        for payload in payloads_to_try:
+            try:
+                response = requests.post(create_url, json=payload, headers=self._headers(), timeout=30)
+                response.raise_for_status()
+                project_data = response.json()
+                
+                created_key = project_data.get("key", project_key)
+                return {
+                    "id": created_key,
+                    "url": self.build_container_url(created_key),
+                }
+            except requests.exceptions.HTTPError as e:
+                last_error = e
+                # If 400 error, try next format
+                if e.response.status_code == 400:
+                    continue
+                # For other errors (403, etc.), break and handle
+                break
+            except Exception as e:
+                last_error = e
+                continue
+        
+        # If all formats failed, handle the last error
+        if not last_error:
+            raise ValueError("Failed to create Jira project: No error information available")
+        
+        if isinstance(last_error, requests.exceptions.HTTPError):
+            e = last_error
             # If project creation fails (e.g., permissions), try to use existing project
             if e.response.status_code == 403:
                 raise ValueError(f"Permission denied: Cannot create Jira project. Please create project '{project_key}' manually or provide an existing project_key.")
@@ -186,13 +207,13 @@ class JiraService(BaseCRMService):
                     if not error_msg:
                         error_msg = f"Response: {e.response.text[:500]}"
                     
-                    raise ValueError(f"Failed to create Jira project: {error_msg}")
+                    raise ValueError(f"Failed to create Jira project after trying all formats: {error_msg}")
                 except (ValueError, KeyError):
                     # If JSON parsing fails, use raw response
                     raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
             raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
-        except Exception as e:
-            raise ValueError(f"Failed to create Jira project: {str(e)}")
+        else:
+            raise ValueError(f"Failed to create Jira project: {str(last_error)}")
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
         """
