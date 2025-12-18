@@ -43,9 +43,14 @@ class ClickUpService(BaseCRMService):
         """Get decrypted API key"""
         return decrypt_api_key(self.api_key) if self.api_key.startswith("eyJ") else self.api_key
 
-    def build_container_url(self, container_id: str) -> str:
+    def build_container_url(self, container_id: str, space_id: Optional[str] = None) -> str:
         """Build URL for ClickUp list"""
-        return f"https://app.clickup.com/{container_id}"
+        if space_id:
+            # Full format with space_id
+            return f"https://app.clickup.com/{space_id}/v/li/{container_id}"
+        else:
+            # Simple format (fallback)
+            return f"https://app.clickup.com/{container_id}"
 
     def _headers(self) -> Dict[str, str]:
         """Get API headers"""
@@ -57,15 +62,67 @@ class ClickUpService(BaseCRMService):
     def create_container(self, container_name: str, space_id: Optional[str] = None, folder_id: Optional[str] = None) -> Dict[str, str]:
         """
         Create a ClickUp list for scheduled calls.
+        Automatically gets default space if space_id not provided (like Monday.com).
         
         Args:
             container_name: Name for the list
-            space_id: ClickUp space ID (required)
+            space_id: ClickUp space ID (optional - will auto-detect if not provided)
             folder_id: ClickUp folder ID (optional)
         """
+        # If space_id not provided, auto-detect from team (like Monday.com auto-detects workspace)
         if not space_id:
-            raise ValueError("ClickUp space_id is required")
+            try:
+                print(f"🔍 Auto-detecting ClickUp space...")
+                
+                # Get team (workspace) - API key identifies the team
+                team_url = f"{self.API_URL}/team"
+                team_response = requests.get(team_url, headers=self._headers(), timeout=20)
+                team_response.raise_for_status()
+                teams_data = team_response.json()
+                teams = teams_data.get("teams", [])
+                
+                if not teams:
+                    raise ValueError("No teams found for this ClickUp API key")
+                
+                # Use first team
+                team_id = teams[0].get("id", "")
+                team_name = teams[0].get("name", "Unknown")
+                if not team_id:
+                    raise ValueError("Could not get team ID")
+                
+                print(f"✅ Found team: {team_name} (ID: {team_id})")
+                
+                # Get spaces for this team
+                spaces_url = f"{self.API_URL}/team/{team_id}/space"
+                spaces_response = requests.get(spaces_url, headers=self._headers(), timeout=20)
+                spaces_response.raise_for_status()
+                spaces_data = spaces_response.json()
+                spaces = spaces_data.get("spaces", [])
+                
+                if not spaces:
+                    raise ValueError(f"No spaces found in team {team_name}")
+                
+                # Use first space
+                space_id = spaces[0].get("id", "")
+                space_name = spaces[0].get("name", "Unknown")
+                if not space_id:
+                    raise ValueError("Could not get space ID")
+                
+                print(f"✅ Auto-detected ClickUp space: {space_name} (ID: {space_id})")
+                
+            except requests.exceptions.HTTPError as e:
+                error_msg = f"Failed to auto-detect ClickUp space. Please provide space_id in additional_config."
+                if e.response.status_code == 401:
+                    error_msg += " Authentication failed - check your API key."
+                elif e.response.status_code == 403:
+                    error_msg += " Permission denied - API key may not have access to teams/spaces."
+                else:
+                    error_msg += f" HTTP {e.response.status_code}: {e.response.text[:200]}"
+                raise ValueError(error_msg)
+            except Exception as e:
+                raise ValueError(f"Failed to auto-detect ClickUp space. Please provide space_id in additional_config. Error: {str(e)}")
         
+        # Create list in the space
         url = f"{self.API_URL}/space/{space_id}/list"
         if folder_id:
             url = f"{self.API_URL}/folder/{folder_id}/list"
@@ -82,7 +139,7 @@ class ClickUpService(BaseCRMService):
         list_id = data.get("id", "")
         return {
             "id": list_id,
-            "url": self.build_container_url(list_id),
+            "url": self.build_container_url(list_id, space_id=space_id),
         }
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
