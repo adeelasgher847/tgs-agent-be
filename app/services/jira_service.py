@@ -140,7 +140,7 @@ class JiraService(BaseCRMService):
             "name": container_name,
             "projectTypeKey": project_type_key,
             "description": "Scheduled Calls Project - Auto-created for call management",
-            "projectLead": project_lead_account_id  # Required field
+            "projectLead": {"accountId": project_lead_account_id}  # Required field - must be object with accountId
         }
         
         try:
@@ -158,22 +158,39 @@ class JiraService(BaseCRMService):
             if e.response.status_code == 403:
                 raise ValueError(f"Permission denied: Cannot create Jira project. Please create project '{project_key}' manually or provide an existing project_key.")
             elif e.response.status_code == 400:
-                error_data = e.response.json()
-                errors = error_data.get("errors", {})
-                if "projectKey" in errors:
-                    # Project key already exists or invalid, try to get it
-                    try:
-                        get_response = requests.get(check_url, headers=self._headers(), timeout=20)
-                        if get_response.status_code == 200:
-                            existing_project = get_response.json()
-                            return {
-                                "id": existing_project.get("key", project_key),
-                                "url": self.build_container_url(existing_project.get("key", project_key)),
-                            }
-                    except:
-                        pass
-                raise ValueError(f"Failed to create Jira project: {errors}")
-            raise ValueError(f"Failed to create Jira project: {e.response.text}")
+                try:
+                    error_data = e.response.json()
+                    errors = error_data.get("errors", {})
+                    error_messages = error_data.get("errorMessages", [])
+                    
+                    # Check if project key already exists
+                    if "projectKey" in errors:
+                        # Project key already exists or invalid, try to get it
+                        try:
+                            get_response = requests.get(check_url, headers=self._headers(), timeout=20)
+                            if get_response.status_code == 200:
+                                existing_project = get_response.json()
+                                return {
+                                    "id": existing_project.get("key", project_key),
+                                    "url": self.build_container_url(existing_project.get("key", project_key)),
+                                }
+                        except:
+                            pass
+                    
+                    # Build error message
+                    error_msg = ""
+                    if errors:
+                        error_msg = f"Errors: {errors}"
+                    if error_messages:
+                        error_msg += f" Messages: {', '.join(error_messages)}"
+                    if not error_msg:
+                        error_msg = f"Response: {e.response.text[:500]}"
+                    
+                    raise ValueError(f"Failed to create Jira project: {error_msg}")
+                except (ValueError, KeyError):
+                    # If JSON parsing fails, use raw response
+                    raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
+            raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
         except Exception as e:
             raise ValueError(f"Failed to create Jira project: {str(e)}")
 
