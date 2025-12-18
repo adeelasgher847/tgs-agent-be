@@ -133,7 +133,7 @@ class ScheduledCallService:
             
             # Update existing record if it's missing new fields (for backward compatibility)
             if not board_record.crm_container_id or not board_record.crm_type:
-                # Use legacy fields or CRM config
+                # Try to use legacy fields or CRM config first
                 if not board_record.crm_container_id:
                     board_record.crm_container_id = board_record.monday_board_id or crm_config.container_id
                 if not board_record.crm_container_url:
@@ -144,14 +144,54 @@ class ScheduledCallService:
                     board_record.crm_type = crm_config.crm_type
                 if not board_record.tenant_crm_config_id:
                     board_record.tenant_crm_config_id = crm_config_id
+                
+                # If still no container_id, create a new container automatically (auto-fix)
+                if not board_record.crm_container_id:
+                    print(f"⚠️ Container ID missing for user {user_id}. Auto-creating new container...")
+                    user = db.query(User).filter(User.id == user_id).first()
+                    if not user:
+                        raise HTTPException(status_code=404, detail="User not found")
+                    
+                    container_name = f"Scheduled Calls - {user.email}"
+                    additional_config = {}
+                    if crm_config.additional_config:
+                        import json
+                        additional_config = json.loads(crm_config.additional_config)
+                    
+                    # Filter additional_config based on CRM type
+                    if crm_config.crm_type == "jira":
+                        container_kwargs = {}
+                        if "project_key" in additional_config:
+                            container_kwargs["project_key"] = additional_config["project_key"]
+                    elif crm_config.crm_type == "clickup":
+                        container_kwargs = {}
+                        if "space_id" in additional_config:
+                            container_kwargs["space_id"] = additional_config["space_id"]
+                        if "folder_id" in additional_config:
+                            container_kwargs["folder_id"] = additional_config["folder_id"]
+                    elif crm_config.crm_type == "monday":
+                        container_kwargs = {}
+                        if "workspace_id" in additional_config:
+                            container_kwargs["workspace_id"] = additional_config["workspace_id"]
+                    else:
+                        # Trello and others - pass all additional_config
+                        container_kwargs = additional_config
+                    
+                    container = crm_service.create_container(container_name, **container_kwargs)
+                    board_record.crm_container_id = container["id"]
+                    board_record.crm_container_url = container["url"]
+                    board_record.crm_type = crm_config.crm_type
+                    board_record.tenant_crm_config_id = crm_config_id
+                    print(f"✅ Auto-created container: {board_record.crm_container_id}")
+                
                 db.commit()
                 db.refresh(board_record)
 
-        # Ensure required fields exist
+        # Final check - if still no container_id, raise error
         if not board_record.crm_container_id:
             raise HTTPException(
                 status_code=500, 
-                detail="Container ID is missing. Please recreate the container."
+                detail="Container ID is missing. Failed to create container automatically. Please try again."
             )
         
         if not board_record.crm_type:
