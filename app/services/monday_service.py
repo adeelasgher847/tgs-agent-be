@@ -8,9 +8,11 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 from app.core.config import settings
+from app.services.base_crm_service import BaseCRMService
+from app.core.security import decrypt_api_key
 
 
-class MondayService:
+class MondayService(BaseCRMService):
     """Service for interacting with Monday.com API"""
 
     API_URL = "https://api.monday.com/v2"
@@ -36,12 +38,41 @@ class MondayService:
         },
     ]
 
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize MondayService with optional API key.
+        If not provided, uses settings.MONDAY_API_KEY (for backward compatibility).
+        """
+        self._api_key = api_key
+
+    def get_api_key(self) -> str:
+        """Get decrypted API key"""
+        if self._api_key:
+            return decrypt_api_key(self._api_key) if self._api_key.startswith("eyJ") else self._api_key
+        return settings.MONDAY_API_KEY or ""
+
+    def build_container_url(self, container_id: str) -> str:
+        """Build URL for Monday.com board (implements BaseCRMService)"""
+        return self.build_board_url(container_id)
+
     @staticmethod
     def build_board_url(board_id: str) -> str:
         return f"https://app.monday.com/boards/{board_id}"
 
+    def _headers(self) -> Dict[str, str]:
+        """Get API headers (instance method)"""
+        api_key = self.get_api_key()
+        if not api_key:
+            raise ValueError("Monday.com API key is not configured")
+        return {
+            "Authorization": api_key,
+            "Content-Type": "application/json",
+            "API-Version": "2024-01",
+        }
+
     @staticmethod
-    def _headers() -> Dict[str, str]:
+    def _headers_static() -> Dict[str, str]:
+        """Get API headers (static method for backward compatibility)"""
         if not settings.MONDAY_API_KEY:
             raise ValueError("Monday.com API key is not configured")
         return {
@@ -50,12 +81,12 @@ class MondayService:
             "API-Version": "2024-01",
         }
 
-    @staticmethod
-    def _execute(query: str, variables: Dict) -> Dict:
+    def _execute(self, query: str, variables: Dict) -> Dict:
+        """Execute GraphQL query (instance method)"""
         response = requests.post(
-            MondayService.API_URL,
+            self.API_URL,
             json={"query": query, "variables": variables},
-            headers=MondayService._headers(),
+            headers=self._headers(),
             timeout=20,
         )
         response.raise_for_status()
@@ -65,9 +96,28 @@ class MondayService:
         return payload.get("data", {})
 
     @staticmethod
-    def create_board(board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
+    def _execute_static(query: str, variables: Dict) -> Dict:
+        """Execute GraphQL query (static method for backward compatibility)"""
+        response = requests.post(
+            MondayService.API_URL,
+            json={"query": query, "variables": variables},
+            headers=MondayService._headers_static(),
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if "errors" in payload:
+            raise ValueError(payload["errors"])
+        return payload.get("data", {})
+
+    def create_container(self, container_name: str, **kwargs) -> Dict[str, str]:
+        """Create a Monday.com board (implements BaseCRMService)"""
+        workspace_id = kwargs.get("workspace_id")
+        return self.create_board(container_name, workspace_id)
+
+    def create_board(self, board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
         """
-        Create a dedicated Monday.com board for a tenant.
+        Create a dedicated Monday.com board for a tenant (instance method).
         """
         query = """
         mutation ($boardName: String!, $workspaceId: ID) {
@@ -79,7 +129,30 @@ class MondayService:
         """
         variables: Dict[str, Optional[str]] = {"boardName": board_name, "workspaceId": workspace_id}
 
-        data = MondayService._execute(query, variables)
+        data = self._execute(query, variables)
+        board = data.get("create_board")
+        if not board:
+            raise ValueError("Failed to create Monday.com board")
+
+        board_id = str(board["id"])
+        return {"id": board_id, "url": self.build_container_url(board_id)}
+
+    @staticmethod
+    def create_board_static(board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
+        """
+        Create a dedicated Monday.com board for a tenant (static method for backward compatibility).
+        """
+        query = """
+        mutation ($boardName: String!, $workspaceId: ID) {
+            create_board (board_name: $boardName, board_kind: private, workspace_id: $workspaceId) {
+                id
+                name
+            }
+        }
+        """
+        variables: Dict[str, Optional[str]] = {"boardName": board_name, "workspaceId": workspace_id}
+
+        data = MondayService._execute_static(query, variables)
         board = data.get("create_board")
         if not board:
             raise ValueError("Failed to create Monday.com board")
@@ -87,8 +160,8 @@ class MondayService:
         board_id = str(board["id"])
         return {"id": board_id, "url": MondayService.build_board_url(board_id)}
 
-    @staticmethod
-    def get_board_columns(board_id: str) -> List[Dict]:
+    def get_board_columns(self, board_id: str) -> List[Dict]:
+        """Get board columns (instance method - uses DB API key)"""
         query = """
         query ($boardId: [ID!]) {
             boards (ids: $boardId) {
@@ -100,14 +173,34 @@ class MondayService:
             }
         }
         """
-        data = MondayService._execute(query, {"boardId": board_id})
+        data = self._execute(query, {"boardId": board_id})
+        boards = data.get("boards") or []
+        if not boards:
+            raise ValueError(f"Board {board_id} not found")
+        return boards[0].get("columns", [])
+    
+    @staticmethod
+    def get_board_columns_static(board_id: str) -> List[Dict]:
+        """Get board columns (static method for backward compatibility)"""
+        query = """
+        query ($boardId: [ID!]) {
+            boards (ids: $boardId) {
+                columns {
+                    id
+                    title
+                    type
+                }
+            }
+        }
+        """
+        data = MondayService._execute_static(query, {"boardId": board_id})
         boards = data.get("boards") or []
         if not boards:
             raise ValueError(f"Board {board_id} not found")
         return boards[0].get("columns", [])
 
-    @staticmethod
-    def create_column(board_id: str, title: str, column_type: str, defaults: Optional[Dict] = None) -> Dict:
+    def create_column(self, board_id: str, title: str, column_type: str, defaults: Optional[Dict] = None) -> Dict:
+        """Create column (instance method - uses DB API key)"""
         query = """
         mutation ($boardId: ID!, $title: String!, $type: ColumnType!, $defaults: JSON) {
             create_column (board_id: $boardId, title: $title, column_type: $type, defaults: $defaults) {
@@ -126,14 +219,41 @@ class MondayService:
             "type": column_type,
             "defaults": defaults_json,
         }
-        data = MondayService._execute(query, variables)
+        data = self._execute(query, variables)
+        column = data.get("create_column")
+        if not column:
+            raise ValueError(f"Failed to create column {title} on board {board_id}")
+        return column
+    
+    @staticmethod
+    def create_column_static(board_id: str, title: str, column_type: str, defaults: Optional[Dict] = None) -> Dict:
+        """Create column (static method for backward compatibility)"""
+        query = """
+        mutation ($boardId: ID!, $title: String!, $type: ColumnType!, $defaults: JSON) {
+            create_column (board_id: $boardId, title: $title, column_type: $type, defaults: $defaults) {
+                id
+                title
+                type
+            }
+        }
+        """
+        # Monday.com expects defaults as a JSON string, not a dict
+        defaults_json = json.dumps(defaults) if defaults else None
+        
+        variables = {
+            "boardId": board_id,
+            "title": title,
+            "type": column_type,
+            "defaults": defaults_json,
+        }
+        data = MondayService._execute_static(query, variables)
         column = data.get("create_column")
         if not column:
             raise ValueError(f"Failed to create column {title} on board {board_id}")
         return column
 
-    @staticmethod
-    def delete_column(board_id: str, column_id: str) -> None:
+    def delete_column(self, board_id: str, column_id: str) -> None:
+        """Delete column (instance method - uses DB API key)"""
         query = """
         mutation ($boardId: ID!, $columnId: String!) {
             delete_column (board_id: $boardId, column_id: $columnId) {
@@ -141,18 +261,31 @@ class MondayService:
             }
         }
         """
-        MondayService._execute(query, {"boardId": board_id, "columnId": column_id})
+        self._execute(query, {"boardId": board_id, "columnId": column_id})
+    
+    @staticmethod
+    def delete_column_static(board_id: str, column_id: str) -> None:
+        """Delete column (static method for backward compatibility)"""
+        query = """
+        mutation ($boardId: ID!, $columnId: String!) {
+            delete_column (board_id: $boardId, column_id: $columnId) {
+                id
+            }
+        }
+        """
+        MondayService._execute_static(query, {"boardId": board_id, "columnId": column_id})
 
     @staticmethod
     def ensure_required_columns(board_id: str) -> Dict[str, str]:
         """
         Ensure the scheduled-calls board has exactly the required columns.
+        Static method for backward compatibility (uses settings.MONDAY_API_KEY).
 
         Returns:
             Dict mapping required column keys to their Monday column IDs.
         """
         required_titles = {c["title"].lower() for c in MondayService.REQUIRED_COLUMNS}
-        columns = MondayService.get_board_columns(board_id)
+        columns = MondayService.get_board_columns_static(board_id)
         type_lookup = {col_def["title"].lower(): col_def["type"] for col_def in MondayService.REQUIRED_COLUMNS}
 
         # Remove required-title columns with mismatched types to avoid duplicates
@@ -160,19 +293,19 @@ class MondayService:
             title = col["title"].lower()
             if title in required_titles and col.get("type") != type_lookup.get(title):
                 try:
-                    MondayService.delete_column(board_id, col["id"])
-                except Exception as exc:  # pragma: no cover - defensive logging
+                    MondayService.delete_column_static(board_id, col["id"])
+                except Exception as exc:
                     print(f"⚠️ Failed to remove mismatched column {col['id']} on board {board_id}: {exc}")
 
         # Refresh columns after cleanup
-        columns = MondayService.get_board_columns(board_id)
+        columns = MondayService.get_board_columns_static(board_id)
         title_lookup = {col["title"].lower(): col for col in columns}
 
         # Create missing required columns
         for col_def in MondayService.REQUIRED_COLUMNS:
             current = title_lookup.get(col_def["title"].lower())
             if not current:
-                created = MondayService.create_column(
+                created = MondayService.create_column_static(
                     board_id=board_id,
                     title=col_def["title"],
                     column_type=col_def["type"],
@@ -181,7 +314,7 @@ class MondayService:
                 title_lookup[col_def["title"].lower()] = created
 
         # Refresh columns to get final IDs
-        columns = MondayService.get_board_columns(board_id)
+        columns = MondayService.get_board_columns_static(board_id)
         title_lookup = {col["title"].lower(): col for col in columns}
 
         # Remove extraneous columns (keep item name)
@@ -191,8 +324,8 @@ class MondayService:
                 continue
             if title not in required_titles:
                 try:
-                    MondayService.delete_column(board_id, col["id"])
-                except Exception as exc:  # pragma: no cover - defensive logging
+                    MondayService.delete_column_static(board_id, col["id"])
+                except Exception as exc:
                     print(f"⚠️ Failed to delete extra column {col['id']} on board {board_id}: {exc}")
 
         # Final mapping
@@ -262,7 +395,7 @@ class MondayService:
         }
 
         try:
-            data = MondayService._execute(query, variables)
+            data = MondayService._execute_static(query, variables)
             return data.get("create_item")
         except Exception as exc:
             print(f"⚠️ Failed to create Monday.com item for {phone_number}: {exc}")
@@ -402,8 +535,18 @@ class MondayService:
         next_cursor = page.get("cursor")
         return items, next_cursor
 
+    def delete_items_by_tenant(
+        self,
+        container_id: str,
+        tenant_id: str,
+        field_map: Dict[str, str],
+        batch_size: int = 50
+    ) -> int:
+        """Delete items by tenant (implements BaseCRMService)"""
+        return MondayService.delete_items_by_tenant_static(container_id, tenant_id, field_map, batch_size)
+
     @staticmethod
-    def delete_items_by_tenant(board_id: str, tenant_id: str, column_map: Dict[str, str], batch_size: int = 50) -> int:
+    def delete_items_by_tenant_static(board_id: str, tenant_id: str, column_map: Dict[str, str], batch_size: int = 50) -> int:
         """
         Delete items from board that belong to a specific tenant.
         Filters by tenant_id column.
@@ -459,7 +602,7 @@ class MondayService:
         return deleted
 
     @staticmethod
-    def count_pending_items_for_tenant(
+    def count_pending_items_for_tenant_static(
         board_id: str,
         tenant_id: str,
         column_map: Dict[str, str],
@@ -468,6 +611,7 @@ class MondayService:
     ) -> int:
         """
         Count items for a given tenant on a board that are still in 'Pending' status.
+        Static method for backward compatibility (uses settings.MONDAY_API_KEY).
 
         Args:
             board_id: Monday.com board ID
@@ -738,7 +882,7 @@ class MondayService:
             }
             
             try:
-                data = MondayService._execute(query, variables)
+                data = MondayService._execute_static(query, variables)
                 result = data.get("change_multiple_column_values")
                 if result and result.get("id"):
                     updated_count += 1
@@ -752,4 +896,239 @@ class MondayService:
                 continue
         
         return updated_count
+
+    # BaseCRMService implementation methods (instance methods)
+    
+    def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
+        """Ensure required fields (implements BaseCRMService) - uses instance API key from DB"""
+        return self._ensure_required_columns_instance(container_id)
+    
+    def _ensure_required_columns_instance(self, board_id: str) -> Dict[str, str]:
+        """
+        Ensure the scheduled-calls board has exactly the required columns.
+        Uses instance API key (from DB).
+        """
+        required_titles = {c["title"].lower() for c in MondayService.REQUIRED_COLUMNS}
+        columns = self.get_board_columns(board_id)
+        type_lookup = {col_def["title"].lower(): col_def["type"] for col_def in MondayService.REQUIRED_COLUMNS}
+
+        # Remove required-title columns with mismatched types to avoid duplicates
+        for col in columns:
+            title = col["title"].lower()
+            if title in required_titles and col.get("type") != type_lookup.get(title):
+                try:
+                    MondayService.delete_column_static(board_id, col["id"])
+                except Exception as exc:
+                    print(f"⚠️ Failed to remove mismatched column {col['id']} on board {board_id}: {exc}")
+
+        # Refresh columns after cleanup
+        columns = MondayService.get_board_columns_static(board_id)
+        title_lookup = {col["title"].lower(): col for col in columns}
+
+        # Create missing required columns
+        for col_def in MondayService.REQUIRED_COLUMNS:
+            current = title_lookup.get(col_def["title"].lower())
+            if not current:
+                created = MondayService.create_column_static(
+                    board_id=board_id,
+                    title=col_def["title"],
+                    column_type=col_def["type"],
+                    defaults=col_def.get("defaults"),
+                )
+                title_lookup[col_def["title"].lower()] = created
+
+        # Refresh columns to get final IDs
+        columns = MondayService.get_board_columns_static(board_id)
+        title_lookup = {col["title"].lower(): col for col in columns}
+
+        # Remove extraneous columns (keep item name)
+        for col in columns:
+            title = col["title"].lower()
+            if col.get("type") == "name":
+                continue
+            if title not in required_titles:
+                try:
+                    MondayService.delete_column_static(board_id, col["id"])
+                except Exception as exc:
+                    print(f"⚠️ Failed to delete extra column {col['id']} on board {board_id}: {exc}")
+
+        # Final mapping
+        required_map: Dict[str, str] = {}
+        for col_def in MondayService.REQUIRED_COLUMNS:
+            match = title_lookup.get(col_def["title"].lower())
+            if not match:
+                raise ValueError(f"Missing required column {col_def['title']} on board {board_id}")
+            required_map[col_def["key"]] = match["id"]
+
+        return required_map
+
+    def create_scheduled_call_item(
+        self,
+        container_id: str,
+        field_map: Dict[str, str],
+        phone_number: str,
+        agent_id: str,
+        call_time_utc: str,
+        tenant_id: str,
+        user_id: str,
+        batch_id: Optional[str] = None,
+        phone_number_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Create scheduled call item (implements BaseCRMService)"""
+        # Use instance _execute which uses instance API key
+        required_keys = {"status", "agent_id", "call_time_utc", "tenant_id", "user_id"}
+        missing = required_keys - set(field_map.keys())
+        if missing:
+            raise ValueError(f"Missing Monday column ids for: {', '.join(sorted(missing))}")
+
+        column_values = {
+            field_map["status"]: {"label": "Pending"},
+            field_map["agent_id"]: agent_id,
+            field_map["call_time_utc"]: call_time_utc,
+            field_map["tenant_id"]: tenant_id,
+            field_map["user_id"]: user_id,
+        }
+        
+        if batch_id and "batch_id" in field_map:
+            column_values[field_map["batch_id"]] = batch_id
+        if phone_number_id and "phone_number_id" in field_map:
+            column_values[field_map["phone_number_id"]] = phone_number_id
+        if "email_sent" in field_map:
+            column_values[field_map["email_sent"]] = {"label": "No"}
+
+        query = """
+        mutation ($boardId: ID!, $itemName: String!, $columnValues: JSON!) {
+            create_item (
+                board_id: $boardId,
+                item_name: $itemName,
+                column_values: $columnValues
+            ) {
+                id
+                name
+            }
+        }
+        """
+        variables = {
+            "boardId": container_id,
+            "itemName": phone_number,
+            "columnValues": json.dumps(column_values),
+        }
+
+        try:
+            data = self._execute(query, variables)
+            return data.get("create_item")
+        except Exception as exc:
+            print(f"⚠️ Failed to create Monday.com item for {phone_number}: {exc}")
+            return None
+
+    def update_item_status(
+        self,
+        container_id: str,
+        item_id: str,
+        status: str,
+        field_map: Dict[str, str],
+    ) -> Optional[dict]:
+        """Update item status (implements BaseCRMService)"""
+        status_column_id = field_map.get("status", "status")
+        column_values = {status_column_id: {"label": status}}
+
+        query = """
+        mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+            change_multiple_column_values (
+                board_id: $boardId,
+                item_id: $itemId,
+                column_values: $columnValues
+            ) {
+                id
+            }
+        }
+        """
+
+        variables = {
+            "boardId": container_id,
+            "itemId": item_id,
+            "columnValues": json.dumps(column_values),
+        }
+
+        try:
+            return self._execute(query, variables)
+        except Exception as exc:
+            print(f"⚠️ Failed to update Monday.com item {item_id}: {exc}")
+            return None
+
+    def update_item_call_session_id(
+        self,
+        container_id: str,
+        item_id: str,
+        call_session_id: str,
+        field_map: Dict[str, str],
+    ) -> Optional[dict]:
+        """Update call_session_id (implements BaseCRMService)"""
+        call_session_column_id = field_map.get("call_session_id")
+        if not call_session_column_id:
+            raise ValueError("call_session_id column not found in board column map")
+        
+        column_values = {call_session_column_id: call_session_id}
+        
+        query = """
+        mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+            change_multiple_column_values (
+                board_id: $boardId,
+                item_id: $itemId,
+                column_values: $columnValues
+            ) {
+                id
+            }
+        }
+        """
+        
+        variables = {
+            "boardId": container_id,
+            "itemId": item_id,
+            "columnValues": json.dumps(column_values),
+        }
+        
+        try:
+            return self._execute(query, variables)
+        except Exception as exc:
+            print(f"⚠️ Failed to update call_session_id for Monday.com item {item_id}: {exc}")
+            return None
+
+    def get_required_fields(self) -> List[Dict]:
+        """Get required fields (implements BaseCRMService)"""
+        return self.REQUIRED_COLUMNS
+
+    def delete_items_by_tenant(
+        self,
+        container_id: str,
+        tenant_id: str,
+        field_map: Dict[str, str],
+        batch_size: int = 50
+    ) -> int:
+        """Delete items by tenant (implements BaseCRMService)"""
+        return MondayService.delete_items_by_tenant_static(container_id, tenant_id, field_map, batch_size)
+
+    def count_pending_items_for_tenant(
+        self,
+        container_id: str,
+        tenant_id: str,
+        field_map: Dict[str, str],
+        pending_label: str = "Pending",
+        batch_size: int = 100
+    ) -> int:
+        """Count pending items by tenant (implements BaseCRMService)"""
+        return MondayService.count_pending_items_for_tenant_static(
+            container_id, tenant_id, field_map, pending_label, batch_size
+        )
+
+    # Static method aliases for backward compatibility
+    @staticmethod
+    def _execute(query: str, variables: Dict) -> Dict:
+        """Alias for _execute_static (backward compatibility)"""
+        return MondayService._execute_static(query, variables)
+
+    @staticmethod
+    def create_board(board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
+        """Alias for create_board_static (backward compatibility)"""
+        return MondayService.create_board_static(board_name, workspace_id)
 

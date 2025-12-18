@@ -27,46 +27,119 @@ class ScheduledCallService:
         return tenant
 
     @staticmethod
-    def get_or_create_board_for_user(db: Session, user_id: uuid.UUID) -> Tuple[ScheduledCall, dict]:
+    def get_or_create_board_for_user(
+        db: Session, 
+        user_id: uuid.UUID, 
+        tenant_id: uuid.UUID,
+        crm_config_id: uuid.UUID
+    ) -> Tuple[ScheduledCall, dict]:
         """
-        Get or create Monday.com board for a user.
-        All tenants of this user will use the same board.
-        Items are identified by tenant_id column.
+        Get or create CRM container (board/list/project) for a user.
+        All tenants of this user will use the same container.
+        Items are identified by tenant_id field/column.
+        
+        Args:
+            db: Database session
+            user_id: User ID
+            tenant_id: Tenant ID (for validation)
+            crm_config_id: CRM configuration ID to use
+            
+        Returns:
+            Tuple of (ScheduledCall record, field_map dictionary)
         """
         from app.models.user import User
+        from app.services.crm_config_service import CRMConfigService
+        from app.services.crm_service_factory import CRMServiceFactory
         
+        # Check if container already exists for this user
         board_record = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
 
         if not board_record:
-            try:
-                # Get user email for board name
-                user = db.query(User).filter(User.id == user_id).first()
-                if not user:
-                    raise HTTPException(status_code=404, detail="User not found")
+            # Get CRM config
+            crm_config_service = CRMConfigService()
+            crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
+            if not crm_config:
+                raise HTTPException(status_code=404, detail="CRM configuration not found")
+            
+            # Verify tenant matches
+            if crm_config.tenant_id != tenant_id:
+                raise HTTPException(status_code=403, detail="CRM configuration does not belong to this tenant")
+            
+            # Get CRM service
+            crm_service = CRMServiceFactory.get_service(crm_config)
+            
+            # Get user email for container name
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            # Create container if not provided in config
+            if crm_config.container_id:
+                # Use existing container
+                container_id = crm_config.container_id
+                container_url = crm_config.container_url or crm_service.build_container_url(container_id)
+            else:
+                # Create new container
+                container_name = f"Scheduled Calls - {user.email}"
+                additional_config = {}
+                if crm_config.additional_config:
+                    import json
+                    additional_config = json.loads(crm_config.additional_config)
                 
-                workspace_id = getattr(settings, "MONDAY_WORKSPACE_ID", None)
-                board = MondayService.create_board(
-                    board_name=f"Scheduled Calls - {user.email}",
-                    workspace_id=workspace_id,
-                )
-            except Exception as exc:
-                raise HTTPException(status_code=500, detail=f"Failed to create Monday.com board: {exc}")
-
+                container = crm_service.create_container(container_name, **additional_config)
+                container_id = container["id"]
+                container_url = container["url"]
+                
+                # Update CRM config with container info
+                crm_config.container_id = container_id
+                crm_config.container_url = container_url
+                db.commit()
+            
+            # Create ScheduledCall record
             board_record = ScheduledCall(
                 user_id=user_id,
-                monday_board_id=board["id"],
-                monday_board_url=board["url"],
+                tenant_crm_config_id=crm_config_id,
+                crm_container_id=container_id,
+                crm_container_url=container_url,
+                crm_type=crm_config.crm_type,
+                # Legacy fields for backward compatibility
+                monday_board_id=container_id if crm_config.crm_type == "monday" else None,
+                monday_board_url=container_url if crm_config.crm_type == "monday" else None,
             )
             db.add(board_record)
             db.commit()
             db.refresh(board_record)
+        else:
+            # Verify existing container uses the same CRM config
+            if board_record.tenant_crm_config_id != crm_config_id:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"User already has a container configured with a different CRM. Please use the existing CRM config."
+                )
+            
+            # Get CRM config for service
+            crm_config_service = CRMConfigService()
+            crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
+            if not crm_config:
+                raise HTTPException(status_code=404, detail="CRM configuration not found")
+            
+            # Verify tenant matches
+            if crm_config.tenant_id != tenant_id:
+                raise HTTPException(status_code=403, detail="CRM configuration does not belong to this tenant")
+            
+            # Get CRM service
+            crm_service = CRMServiceFactory.get_service(crm_config)
 
+        # Ensure required fields exist
         try:
-            column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+            field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to prepare Monday.com board: {exc}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to prepare {board_record.crm_type} container: {exc}"
+            )
 
-        return board_record, column_map
+        return board_record, field_map
 
     @staticmethod
     def get_board_for_user(db: Session, user_id: uuid.UUID) -> Optional[ScheduledCall]:
@@ -76,22 +149,51 @@ class ScheduledCallService:
     @staticmethod
     def clear_board_items(db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, int]:
         """
-        Delete only items belonging to this tenant from user's board.
-        Items are filtered by tenant_id column.
+        Delete only items belonging to this tenant from user's container.
+        Works with all CRMs (Monday.com, ClickUp, Jira, Trello).
+        Items are filtered by tenant_id field/column.
         """
+        from app.services.crm_config_service import CRMConfigService
+        from app.services.crm_service_factory import CRMServiceFactory
+        
         board_record = ScheduledCallService.get_board_for_user(db, user_id)
         if not board_record:
-            raise HTTPException(status_code=404, detail="Board not found for user")
+            raise HTTPException(status_code=404, detail="Container not found for user")
+
+        # Get CRM config and service
+        if not board_record.tenant_crm_config_id:
+            # Fallback to Monday.com for backward compatibility
+            try:
+                field_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+                deleted = MondayService.delete_items_by_tenant_static(
+                    board_id=board_record.monday_board_id,
+                    tenant_id=str(tenant_id),
+                    column_map=field_map
+                )
+                return board_record, deleted
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Failed to clear tenant items: {exc}")
+
+        crm_config_service = CRMConfigService()
+        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
 
         try:
-            column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
-            deleted = MondayService.delete_items_by_tenant(
-                board_id=board_record.monday_board_id,
+            # Get CRM service
+            crm_service = CRMServiceFactory.get_service(crm_config)
+            
+            # Get field map
+            field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
+            
+            # Delete items by tenant
+            deleted = crm_service.delete_items_by_tenant(
+                container_id=board_record.crm_container_id,
                 tenant_id=str(tenant_id),
-                column_map=column_map
+                field_map=field_map
             )
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to clear tenant items: {exc}")
+            raise HTTPException(status_code=500, detail=f"Failed to clear tenant items from {board_record.crm_type}: {exc}")
 
         return board_record, deleted
 
@@ -134,16 +236,17 @@ class ScheduledCallService:
             # Don't fail the entire operation if webhook fails
 
     @staticmethod
-    async def parse_csv_and_send_to_monday(
+    async def parse_csv_and_send_to_crm(
         db: Session,
         tenant_id: uuid.UUID,
         user_id: uuid.UUID,
         csv_content: str,
+        crm_config_id: uuid.UUID,
         default_agent_id: uuid.UUID,  # Required parameter - agent selected before upload
         default_phone_number_id: Optional[str] = None  # ✅ Optional phone number ID for all calls in CSV
     ) -> CSVUploadResponse:
         """
-        Parse CSV file and create items in Monday.com board.
+        Parse CSV file and create items in CRM container (Monday.com, ClickUp, Jira, Trello).
         n8n will automatically pick them up via cron trigger.
         
         Expected CSV format (2 columns only):
@@ -161,7 +264,17 @@ class ScheduledCallService:
         +1234567890,2024-12-02T14:30:00Z
         +0987654321,2024-12-02T14:31:00Z
         """
-        board_record, column_map = ScheduledCallService.get_or_create_board_for_user(db, user_id)
+        from app.services.crm_config_service import CRMConfigService
+        from app.services.crm_service_factory import CRMServiceFactory
+        
+        board_record, field_map = ScheduledCallService.get_or_create_board_for_user(
+            db, user_id, tenant_id, crm_config_id
+        )
+        
+        # Get CRM service
+        crm_config_service = CRMConfigService()
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
+        crm_service = CRMServiceFactory.get_service(crm_config)
         
         # Generate unique batch_id for this CSV upload
         batch_id = str(uuid.uuid4())
@@ -228,11 +341,11 @@ class ScheduledCallService:
                     failed_rows += 1
                     continue
                 
-                # Create Monday.com item (synchronous, but fast)
+                # Create CRM item (synchronous, but fast)
                 try:
-                    result = MondayService.create_scheduled_call_item(
-                        board_id=board_record.monday_board_id,
-                        column_map=column_map,
+                    result = crm_service.create_scheduled_call_item(
+                        container_id=board_record.crm_container_id,
+                        field_map=field_map,
                         phone_number=row['phone_number'],
                         agent_id=str(agent_uuid),
                         call_time_utc=scheduled_time_utc.isoformat(),
@@ -244,13 +357,13 @@ class ScheduledCallService:
                     
                     if result:
                         successful_rows += 1
-                        print(f"✅ Row {row_num}: Added to Monday.com - {row['phone_number']}")
+                        print(f"✅ Row {row_num}: Added to {board_record.crm_type} - {row['phone_number']}")
                     else:
-                        errors.append(f"Row {row_num}: Failed to create Monday.com item")
+                        errors.append(f"Row {row_num}: Failed to create {board_record.crm_type} item")
                         failed_rows += 1
                         
                 except Exception as e:
-                    errors.append(f"Row {row_num}: Monday.com error: {str(e)}")
+                    errors.append(f"Row {row_num}: {board_record.crm_type} error: {str(e)}")
                     failed_rows += 1
                     continue
                 
@@ -264,8 +377,8 @@ class ScheduledCallService:
             successful_rows=successful_rows,
             failed_rows=failed_rows,
             errors=errors,
-            board_id=board_record.monday_board_id,
-            board_url=board_record.monday_board_url,
+            board_id=board_record.crm_container_id,
+            board_url=board_record.crm_container_url,
             batch_id=batch_id  # Return batch_id so user knows which batch was created
         )
 
@@ -277,10 +390,11 @@ class ScheduledCallService:
         phone_number: str,
         agent_id: uuid.UUID,
         call_time_utc: str,
+        crm_config_id: uuid.UUID,
         phone_number_id: Optional[str] = None  # ✅ Add phone_number_id parameter
     ) -> dict:
         """
-        Create a single scheduled call item in Monday.com board.
+        Create a single scheduled call item in CRM container (Monday.com, ClickUp, Jira, Trello).
         Generates a unique batch_id for this single call.
         
         Args:
@@ -290,13 +404,24 @@ class ScheduledCallService:
             phone_number: Phone number to call
             agent_id: Agent UUID
             call_time_utc: Scheduled time in UTC (ISO format string)
+            crm_config_id: CRM configuration ID to use
             phone_number_id: Optional phone number ID from DB to use for call
         
         Returns:
-            Dictionary with monday_item_id, board_id, board_url, batch_id, etc.
+            Dictionary with item_id, container_id, container_url, batch_id, etc.
         """
-        # Get or create board for user
-        board_record, column_map = ScheduledCallService.get_or_create_board_for_user(db, user_id)
+        from app.services.crm_config_service import CRMConfigService
+        from app.services.crm_service_factory import CRMServiceFactory
+        
+        # Get or create container for user
+        board_record, field_map = ScheduledCallService.get_or_create_board_for_user(
+            db, user_id, tenant_id, crm_config_id
+        )
+        
+        # Get CRM service
+        crm_config_service = CRMConfigService()
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
+        crm_service = CRMServiceFactory.get_service(crm_config)
         
         # Verify agent exists and belongs to tenant
         agent = db.query(Agent).filter(
@@ -342,37 +467,40 @@ class ScheduledCallService:
         # Generate unique batch_id for this single call
         batch_id = str(uuid.uuid4())
         
-        # Create Monday.com item with batch_id
+        # Create CRM item with batch_id
         try:
-            result = MondayService.create_scheduled_call_item(
-                board_id=board_record.monday_board_id,
-                column_map=column_map,
+            result = crm_service.create_scheduled_call_item(
+                container_id=board_record.crm_container_id,
+                field_map=field_map,
                 phone_number=phone_number,
                 agent_id=str(agent_id),
                 call_time_utc=scheduled_time_utc.isoformat(),
                 tenant_id=str(tenant_id),
                 user_id=str(user_id),
-                batch_id=batch_id,  # Pass batch_id for single call
+                batch_id=batch_id,
                 phone_number_id=phone_number_id  # ✅ Pass phone_number_id
             )
             
             if not result:
-                raise HTTPException(status_code=500, detail="Failed to create Monday.com item")
+                raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item")
+            
+            item_id = result.get("id") or result.get("key") or result.get("shortLink", "")
             
             return {
-                "monday_item_id": result.get("id", ""),
-                "board_id": board_record.monday_board_id,
-                "board_url": board_record.monday_board_url,
+                "item_id": item_id,
+                "board_id": board_record.crm_container_id,
+                "board_url": board_record.crm_container_url,
                 "phone_number": phone_number,
                 "agent_id": str(agent_id),
                 "call_time_utc": scheduled_time_utc.isoformat(),
-                "batch_id": batch_id,  # Return batch_id
-                "message": f"Scheduled call created successfully. Batch ID: {batch_id}"
+                "batch_id": batch_id,
+                "crm_type": board_record.crm_type,
+                "message": f"Scheduled call created in {board_record.crm_type} container. Batch ID: {batch_id}"
             }
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create scheduled call: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item: {str(e)}")
 
     @staticmethod
     async def parse_csv_and_send_webhooks(

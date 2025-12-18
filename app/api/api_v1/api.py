@@ -12,6 +12,7 @@ from app.routers.stt_websocket import router as stt_websocket_router
 from app.routers.tts_audio import router as tts_audio_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
 from app.routers.scheduled_calls import router as scheduled_calls_router
+from app.routers.crm_config import router as crm_config_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -37,3 +38,4 @@ api_router.include_router(openai.router, prefix="/openai", tags=["openai"],inclu
 api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
 api_router.include_router(bidirectional_stream_router, prefix="/stream", tags=["Bidirectional Streaming"], include_in_schema=False)
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
+api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Configuration"])

@@ -37,11 +37,12 @@ class SingleCallRequest(BaseModel):
 
 
 class SingleCallResponse(BaseModel):
-    monday_item_id: str
+    item_id: str
     board_id: str
     board_url: str
     phone_number: str
     agent_id: str
     call_time_utc: str
     batch_id: str  # Unique batch ID for this single call
+    crm_type: str  # CRM type: "monday" | "clickup" | "jira" | "trello"
     message: str

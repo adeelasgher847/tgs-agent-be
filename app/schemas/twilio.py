@@ -66,10 +66,19 @@ class CallInitiateRequest(BaseModel):
     phone_number_id: Optional[str] = None  # Optional, user ka selected phone number ID (VAPI style)
     tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
     user_id: Optional[str] = None  # Optional, for n8n webhook calls
-    board_id: Optional[str] = None  # Optional, Monday.com board ID from n8n workflow
-    monday_item_id: Optional[str] = None  # Optional, Monday.com item ID from n8n workflow
-    status_column_id: Optional[str] = None  # Optional, Monday.com status column ID from n8n workflow
-    call_session_id_column_id: Optional[str] = None  # Optional, Monday.com call_session_id column ID from n8n workflow
+    
+    # Legacy Monday.com fields (for backward compatibility)
+    board_id: Optional[str] = None  # Optional, Monday.com board ID from n8n workflow (legacy)
+    monday_item_id: Optional[str] = None  # Optional, Monday.com item ID from n8n workflow (legacy)
+    status_column_id: Optional[str] = None  # Optional, Monday.com status column ID from n8n workflow (legacy)
+    call_session_id_column_id: Optional[str] = None  # Optional, Monday.com call_session_id column ID from n8n workflow (legacy)
+    
+    # Generic CRM fields (for multi-CRM support)
+    crm_container_id: Optional[str] = None  # Generic: board_id/list_id/project_id from n8n workflow
+    crm_item_id: Optional[str] = None  # Generic: item_id/task_id/issue_id/card_id from n8n workflow
+    status_field_id: Optional[str] = None  # Generic: status column/field ID from n8n workflow
+    call_session_id_field_id: Optional[str] = None  # Generic: call_session_id field ID from n8n workflow
+    crm_type: Optional[str] = None  # "monday" | "clickup" | "jira" | "trello" from n8n workflow
 
 
 class CallInitiateResponse(BaseModel):
@@ -77,18 +86,37 @@ class CallInitiateResponse(BaseModel):
     twilioCallSid: str
     callSessionId: str
     status: str
+    
+    # Legacy Monday.com fields (for backward compatibility)
     board_id: Optional[str] = None  # Echo back Monday.com board ID if provided
     monday_item_id: Optional[str] = None  # Echo back Monday.com item ID if provided
     status_column_id: Optional[str] = None  # Echo back Monday.com status column ID if provided
     call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
+    
+    # Generic CRM fields (for multi-CRM support)
+    crm_container_id: Optional[str] = None  # Echo back generic container ID if provided
+    crm_item_id: Optional[str] = None  # Echo back generic item ID if provided
+    status_field_id: Optional[str] = None  # Echo back generic status field ID if provided
+    call_session_id_field_id: Optional[str] = None  # Echo back generic call_session_id field ID if provided
+    crm_type: Optional[str] = None  # Echo back CRM type if provided
 
 
 class CallInitiateErrorResponse(BaseModel):
-    """Error response with Monday.com metadata for n8n workflow"""
+    """Error response with CRM metadata for n8n workflow"""
     detail: str
+    
+    # Legacy Monday.com fields (for backward compatibility)
     board_id: Optional[str] = None  # Echo back Monday.com board ID if provided
     monday_item_id: Optional[str] = None  # Echo back Monday.com item ID if provided
     status_column_id: Optional[str] = None  # Echo back Monday.com status column ID if provided
+    call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
+    
+    # Generic CRM fields (for multi-CRM support)
+    crm_container_id: Optional[str] = None  # Echo back generic container ID if provided
+    crm_item_id: Optional[str] = None  # Echo back generic item ID if provided
+    status_field_id: Optional[str] = None  # Echo back generic status field ID if provided
+    call_session_id_field_id: Optional[str] = None  # Echo back generic call_session_id field ID if provided
+    crm_type: Optional[str] = None  # Echo back CRM type if provided
     call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
 
 

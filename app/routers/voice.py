@@ -312,26 +312,46 @@ async def initiate_call(
     Authentication: Either JWT token OR n8n webhook secret (X-N8N-Webhook-Secret header).
     If using webhook secret, provide tenant_id (and optionally user_id) in request body.
     
-    Request Payload (JWT auth):
+    Request Payload (JWT auth - Normal Call):
     {
         "agentId": "agent_12345",
         "userPhoneNumber": "+1234567890"
     }
     
-    Request Payload (n8n webhook):
+    Request Payload (n8n webhook - Scheduled Call):
     {
         "agentId": "agent_12345",
         "userPhoneNumber": "+1234567890",
         "tenant_id": "tenant-uuid",
-        "user_id": "user-uuid" (optional)
+        "user_id": "user-uuid" (optional),
+        
+        // Legacy Monday.com fields (for backward compatibility)
+        "board_id": "board_123",
+        "monday_item_id": "item_456",
+        "status_column_id": "status_col_789",
+        "call_session_id_column_id": "session_col_012",
+        
+        // OR Generic CRM fields (for multi-CRM support)
+        "crm_container_id": "board_123",  // board_id/list_id/project_id
+        "crm_item_id": "item_456",  // item_id/task_id/issue_id/card_id
+        "status_field_id": "status_col_789",  // status field ID
+        "call_session_id_field_id": "session_col_012",  // call_session_id field ID
+        "crm_type": "monday"  // "monday" | "clickup" | "jira" | "trello"
     }
     
-    Response:
+    Response (includes both legacy and generic fields for n8n compatibility):
     {
         "callId": "call_abc123",
         "twilioCallSid": "CAxxxxxxx",
-        "status": "initiated"
+        "status": "initiated",
+        "board_id": "board_123",  // Legacy field (if provided)
+        "monday_item_id": "item_456",  // Legacy field (if provided)
+        "crm_container_id": "board_123",  // Generic field (if provided)
+        "crm_item_id": "item_456",  // Generic field (if provided)
+        "crm_type": "monday"  // Generic field (if provided)
     }
+    
+    Note: Normal calls (JWT auth) don't need CRM fields. Only n8n scheduled calls need them.
     """
     try:
         # Verify authentication: either JWT token OR webhook secret
@@ -550,29 +570,55 @@ async def initiate_call(
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
         
+        # Determine which fields to echo back (prioritize generic fields, fallback to legacy)
+        crm_container_id = call_request.crm_container_id or call_request.board_id
+        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
+        status_field_id = call_request.status_field_id or call_request.status_column_id
+        call_session_id_field_id = call_request.call_session_id_field_id or call_request.call_session_id_column_id
+        
         return create_success_response(
             CallInitiateResponse(
                 callId=call_id,
                 twilioCallSid=call.sid,
                 callSessionId=str(call_session.id),
                 status="initiated",
+                # Legacy Monday.com fields (for backward compatibility)
                 board_id=call_request.board_id,  # Echo back if provided by n8n
                 monday_item_id=call_request.monday_item_id,  # Echo back if provided by n8n
                 status_column_id=call_request.status_column_id,  # Echo back if provided by n8n
-                call_session_id_column_id=call_request.call_session_id_column_id  # Echo back if provided by n8n
+                call_session_id_column_id=call_request.call_session_id_column_id,  # Echo back if provided by n8n
+                # Generic CRM fields (for multi-CRM support)
+                crm_container_id=crm_container_id,  # Echo back generic container ID
+                crm_item_id=crm_item_id,  # Echo back generic item ID
+                status_field_id=status_field_id,  # Echo back generic status field ID
+                call_session_id_field_id=call_session_id_field_id,  # Echo back generic call_session_id field ID
+                crm_type=call_request.crm_type  # Echo back CRM type if provided
             ),
             "Call initiated successfully"
         )
         
     except HTTPException as e:
-        # Return error response with Monday.com metadata (same format as success response)
-        # This allows n8n workflow to access board_id, monday_item_id, etc. even on errors
+        # Return error response with CRM metadata (same format as success response)
+        # This allows n8n workflow to access CRM fields even on errors
+        # Prioritize generic fields, fallback to legacy
+        crm_container_id = call_request.crm_container_id or call_request.board_id
+        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
+        status_field_id = call_request.status_field_id or call_request.status_column_id
+        call_session_id_field_id = call_request.call_session_id_field_id or call_request.call_session_id_column_id
+        
         error_response = CallInitiateErrorResponse(
             detail=e.detail,
+            # Legacy Monday.com fields (for backward compatibility)
             board_id=call_request.board_id,
             monday_item_id=call_request.monday_item_id,
             status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id
+            call_session_id_column_id=call_request.call_session_id_column_id,
+            # Generic CRM fields (for multi-CRM support)
+            crm_container_id=crm_container_id,
+            crm_item_id=crm_item_id,
+            status_field_id=status_field_id,
+            call_session_id_field_id=call_session_id_field_id,
+            crm_type=call_request.crm_type
         )
         # Return JSONResponse with same status code as HTTPException
         return JSONResponse(
@@ -581,12 +627,24 @@ async def initiate_call(
         )
     except Exception as e:
         # Handle unexpected errors - also include metadata if available
+        crm_container_id = call_request.crm_container_id or call_request.board_id
+        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
+        status_field_id = call_request.status_field_id or call_request.status_column_id
+        call_session_id_field_id = call_request.call_session_id_field_id or call_request.call_session_id_column_id
+        
         error_response = CallInitiateErrorResponse(
             detail=str(e),
+            # Legacy Monday.com fields (for backward compatibility)
             board_id=call_request.board_id,
             monday_item_id=call_request.monday_item_id,
             status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id
+            call_session_id_column_id=call_request.call_session_id_column_id,
+            # Generic CRM fields (for multi-CRM support)
+            crm_container_id=crm_container_id,
+            crm_item_id=crm_item_id,
+            status_field_id=status_field_id,
+            call_session_id_field_id=call_session_id_field_id,
+            crm_type=call_request.crm_type
         )
         return JSONResponse(
             status_code=500,

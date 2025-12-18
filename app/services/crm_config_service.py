@@ -1,0 +1,142 @@
+"""
+CRM Configuration Service
+"""
+
+from sqlalchemy.orm import Session
+from fastapi import HTTPException
+from typing import Optional
+import uuid
+import json
+
+from app.models.tenant_crm_config import TenantCRMConfig
+from app.core.security import encrypt_api_key, decrypt_api_key
+from app.schemas.crm_config import TenantCRMConfigCreate, TenantCRMConfigUpdate
+
+
+class CRMConfigService:
+    """Service for managing CRM configurations"""
+
+    @staticmethod
+    def create_crm_config(
+        db: Session,
+        tenant_id: uuid.UUID,
+        crm_config_data: TenantCRMConfigCreate,
+        created_by: uuid.UUID
+    ) -> TenantCRMConfig:
+        """Create a new CRM configuration for a tenant"""
+        # Check if CRM config already exists for this tenant and CRM type
+        existing = db.query(TenantCRMConfig).filter(
+            TenantCRMConfig.tenant_id == tenant_id,
+            TenantCRMConfig.crm_type == crm_config_data.crm_type.lower()
+        ).first()
+        
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"CRM configuration for {crm_config_data.crm_type} already exists for this tenant"
+            )
+        
+        # Encrypt API key
+        encrypted_api_key = encrypt_api_key(crm_config_data.api_key)
+        
+        # Encrypt sensitive fields in additional_config (like api_token for Trello)
+        additional_config_encrypted = None
+        if crm_config_data.additional_config:
+            additional_config_encrypted = crm_config_data.additional_config.copy()
+            
+            # Encrypt api_token if present (for Trello)
+            if "api_token" in additional_config_encrypted and additional_config_encrypted["api_token"]:
+                additional_config_encrypted["api_token"] = encrypt_api_key(additional_config_encrypted["api_token"])
+            
+            # Serialize to JSON string
+            additional_config_json = json.dumps(additional_config_encrypted)
+        else:
+            additional_config_json = None
+        
+        crm_config = TenantCRMConfig(
+            tenant_id=tenant_id,
+            crm_type=crm_config_data.crm_type.lower(),
+            encrypted_api_key=encrypted_api_key,
+            container_id=crm_config_data.container_id,
+            container_url=crm_config_data.container_url,
+            additional_config=additional_config_json,
+            created_by=created_by
+        )
+        
+        db.add(crm_config)
+        db.commit()
+        db.refresh(crm_config)
+        
+        return crm_config
+
+    @staticmethod
+    def get_crm_config_by_id(db: Session, crm_config_id: uuid.UUID) -> Optional[TenantCRMConfig]:
+        """Get CRM config by ID"""
+        return db.query(TenantCRMConfig).filter(TenantCRMConfig.id == crm_config_id).first()
+
+    @staticmethod
+    def get_crm_config_by_tenant_and_type(
+        db: Session,
+        tenant_id: uuid.UUID,
+        crm_type: str
+    ) -> Optional[TenantCRMConfig]:
+        """Get CRM config by tenant and CRM type"""
+        return db.query(TenantCRMConfig).filter(
+            TenantCRMConfig.tenant_id == tenant_id,
+            TenantCRMConfig.crm_type == crm_type.lower()
+        ).first()
+
+    @staticmethod
+    def get_all_crm_configs_for_tenant(db: Session, tenant_id: uuid.UUID) -> list[TenantCRMConfig]:
+        """Get all CRM configs for a tenant"""
+        return db.query(TenantCRMConfig).filter(
+            TenantCRMConfig.tenant_id == tenant_id
+        ).all()
+
+    @staticmethod
+    def update_crm_config(
+        db: Session,
+        crm_config_id: uuid.UUID,
+        update_data: TenantCRMConfigUpdate
+    ) -> TenantCRMConfig:
+        """Update CRM configuration"""
+        crm_config = db.query(TenantCRMConfig).filter(TenantCRMConfig.id == crm_config_id).first()
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
+        
+        if update_data.api_key:
+            crm_config.encrypted_api_key = encrypt_api_key(update_data.api_key)
+        
+        if update_data.container_id is not None:
+            crm_config.container_id = update_data.container_id
+        
+        if update_data.container_url is not None:
+            crm_config.container_url = update_data.container_url
+        
+        if update_data.additional_config is not None:
+            # Encrypt sensitive fields in additional_config (like api_token for Trello)
+            additional_config_encrypted = update_data.additional_config.copy()
+            
+            # Encrypt api_token if present (for Trello)
+            if "api_token" in additional_config_encrypted and additional_config_encrypted["api_token"]:
+                additional_config_encrypted["api_token"] = encrypt_api_key(additional_config_encrypted["api_token"])
+            
+            crm_config.additional_config = json.dumps(additional_config_encrypted)
+        
+        db.commit()
+        db.refresh(crm_config)
+        
+        return crm_config
+
+    @staticmethod
+    def delete_crm_config(db: Session, crm_config_id: uuid.UUID) -> bool:
+        """Delete CRM configuration"""
+        crm_config = db.query(TenantCRMConfig).filter(TenantCRMConfig.id == crm_config_id).first()
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
+        
+        db.delete(crm_config)
+        db.commit()
+        
+        return True
+
