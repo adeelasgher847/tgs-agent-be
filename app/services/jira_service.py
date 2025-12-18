@@ -87,6 +87,13 @@ class JiraService(BaseCRMService):
                 else:
                     project_key = "SCALL"  # Default fallback
         
+        # Validate project key format (Jira rules: 2-10 chars, start with letter, alphanumeric only)
+        if not re.match(r'^[A-Z][A-Z0-9]{1,9}$', project_key):
+            raise ValueError(
+                f"Invalid Jira project key format: '{project_key}'. "
+                f"Project keys must be 2-10 characters, start with a letter (A-Z), and contain only uppercase letters and numbers."
+            )
+        
         # Check if project already exists
         check_url = f"{self.server_url}/rest/api/3/project/{project_key}"
         try:
@@ -129,42 +136,78 @@ class JiraService(BaseCRMService):
         if not project_lead_account_id:
             raise ValueError("Could not get project lead account ID. Please ensure your Jira API token has proper permissions.")
         
+        # Try to get available project templates
+        project_template_key = None
+        try:
+            templates_url = f"{self.server_url}/rest/api/3/project/templates"
+            templates_response = requests.get(templates_url, headers=self._headers(), timeout=20)
+            if templates_response.status_code == 200:
+                templates = templates_response.json()
+                # Try to find a suitable template (prefer "Task management" or "Basic")
+                for template in templates:
+                    template_key = template.get("key", "")
+                    if "task" in template_key.lower() or "basic" in template_key.lower():
+                        project_template_key = template_key
+                        break
+                # If no suitable template found, use first available
+                if not project_template_key and templates:
+                    project_template_key = templates[0].get("key", "")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not get project templates: {e}")
+        
         # Create project payload - Jira API v3 format
         # Try multiple payload formats as Jira API can be picky
-        payloads_to_try = [
-            # Format 1: With projectLead as object (most common)
-            {
+        payloads_to_try = []
+        
+        # Format 1: With template (if available) and projectLead as object
+        if project_template_key:
+            payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
+                "projectTemplateKey": project_template_key,
                 "projectLead": {"accountId": project_lead_account_id}
-            },
-            # Format 2: With projectLead as string
-            {
-                "key": project_key,
-                "name": container_name,
-                "projectTypeKey": "business",
-                "projectLead": project_lead_account_id
-            },
-            # Format 3: Minimal payload without projectTypeKey
-            {
-                "key": project_key,
-                "name": container_name,
-                "projectLead": {"accountId": project_lead_account_id}
-            },
-            # Format 4: Minimal with projectLead as string
-            {
-                "key": project_key,
-                "name": container_name,
-                "projectLead": project_lead_account_id
-            }
-        ]
+            })
+        
+        # Format 2: With projectLead as object and projectTypeKey
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": "business",
+            "projectLead": {"accountId": project_lead_account_id}
+        })
+        
+        # Format 3: With projectLead as string and projectTypeKey
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": "business",
+            "projectLead": project_lead_account_id
+        })
+        
+        # Format 4: Minimal payload without projectTypeKey
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectLead": {"accountId": project_lead_account_id}
+        })
+        
+        # Format 5: Minimal with projectLead as string
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectLead": project_lead_account_id
+        })
         
         last_error = None
+        total_formats = len(payloads_to_try)
         for idx, payload in enumerate(payloads_to_try, 1):
             try:
-                # Log payload for debugging (without sensitive data)
-                print(f"🔍 Trying Jira project creation format {idx}/4 with key: {project_key}")
+                # Log payload for debugging (without sensitive accountId)
+                payload_log = {k: v for k, v in payload.items() if k != "projectLead" or not isinstance(v, dict)}
+                print(f"🔍 Trying Jira project creation format {idx}/{total_formats} with key: {project_key}")
+                print(f"   Payload: {json.dumps(payload_log, indent=2)}")
+                
                 response = requests.post(create_url, json=payload, headers=self._headers(), timeout=30)
                 response.raise_for_status()
                 project_data = response.json()
@@ -180,9 +223,17 @@ class JiraService(BaseCRMService):
                 # Log error for debugging
                 try:
                     error_data = e.response.json()
-                    print(f"❌ Format {idx} failed: {error_data.get('errorMessages', [])}")
+                    error_msgs = error_data.get('errorMessages', [])
+                    errors_dict = error_data.get('errors', {})
+                    print(f"❌ Format {idx} failed: {error_msgs}")
+                    if errors_dict:
+                        print(f"   Detailed errors: {errors_dict}")
+                    # Log response for debugging
+                    print(f"   Response status: {e.response.status_code}")
+                    print(f"   Response body: {e.response.text[:300]}")
                 except:
                     print(f"❌ Format {idx} failed: {e.response.status_code}")
+                    print(f"   Response: {e.response.text[:300]}")
                 
                 # If 400 error, try next format
                 if e.response.status_code == 400:
@@ -232,13 +283,18 @@ class JiraService(BaseCRMService):
                     if not error_msg:
                         error_msg = f"Response: {e.response.text[:500]}"
                     
-                    # Provide helpful suggestion
-                    suggestion = f"\n\n💡 Suggestion: Jira project creation via API may require admin permissions. "
-                    suggestion += f"Please create project '{project_key}' manually in Jira, or ensure your API token has 'Administer Jira' permission."
-                    suggestion += f"\nProject Key: {project_key}"
-                    suggestion += f"\nProject Name: {container_name}"
+                    # Provide helpful suggestion with manual creation steps
+                    suggestion = f"\n\n💡 Jira project creation via API failed. This usually requires 'Administer Jira' permission."
+                    suggestion += f"\n\n📋 Manual Creation Steps:"
+                    suggestion += f"\n   1. Go to: {self.server_url}/secure/project/CreateProject!default.jspa"
+                    suggestion += f"\n   2. Create project with:"
+                    suggestion += f"\n      - Project Key: {project_key}"
+                    suggestion += f"\n      - Project Name: {container_name}"
+                    suggestion += f"\n   3. After creation, the system will automatically use this project."
+                    suggestion += f"\n\n🔑 Alternative: Ensure your API token has 'Administer Jira' permission."
+                    suggestion += f"\n   Token email: {self.email}"
                     
-                    raise ValueError(f"Failed to create Jira project after trying all formats: {error_msg}{suggestion}")
+                    raise ValueError(f"Failed to create Jira project after trying all {total_formats} formats: {error_msg}{suggestion}")
                 except (ValueError, KeyError):
                     # If JSON parsing fails, use raw response
                     raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
