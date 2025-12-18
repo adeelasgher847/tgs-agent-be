@@ -79,7 +79,30 @@ class ScheduledCallService:
                 import json
                 additional_config = json.loads(crm_config.additional_config)
             
-            container = crm_service.create_container(container_name, **additional_config)
+            # Filter additional_config based on CRM type
+            # Jira: Only pass project_key (not email/server_url which are for service initialization)
+            # ClickUp: Pass space_id and folder_id
+            # Trello: No additional params needed
+            # Monday.com: Pass workspace_id if provided
+            if crm_config.crm_type == "jira":
+                container_kwargs = {}
+                if "project_key" in additional_config:
+                    container_kwargs["project_key"] = additional_config["project_key"]
+            elif crm_config.crm_type == "clickup":
+                container_kwargs = {}
+                if "space_id" in additional_config:
+                    container_kwargs["space_id"] = additional_config["space_id"]
+                if "folder_id" in additional_config:
+                    container_kwargs["folder_id"] = additional_config["folder_id"]
+            elif crm_config.crm_type == "monday":
+                container_kwargs = {}
+                if "workspace_id" in additional_config:
+                    container_kwargs["workspace_id"] = additional_config["workspace_id"]
+            else:
+                # Trello and others - pass all additional_config
+                container_kwargs = additional_config
+            
+            container = crm_service.create_container(container_name, **container_kwargs)
             container_id = container["id"]
             container_url = container["url"]
             

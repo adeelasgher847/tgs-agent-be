@@ -62,21 +62,95 @@ class JiraService(BaseCRMService):
     def create_container(self, container_name: str, project_key: Optional[str] = None) -> Dict[str, str]:
         """
         Create a Jira project for scheduled calls.
-        Note: Jira projects are typically created via UI, so this may not be fully automated.
+        Automatically creates project if it doesn't exist.
+        If project_key is provided, uses that. Otherwise generates a unique key from container_name.
         """
+        # Generate project key if not provided
         if not project_key:
-            raise ValueError("Jira project_key is required")
+            # Generate unique project key from container name
+            # Remove special chars, uppercase, max 10 chars
+            project_key = container_name.upper().replace(" ", "").replace("-", "").replace("_", "")[:10]
+            if not project_key:
+                project_key = "SCALL"  # Default fallback
         
-        # Verify project exists
-        url = f"{self.server_url}/rest/api/3/project/{project_key}"
-        response = requests.get(url, headers=self._headers(), timeout=20)
-        response.raise_for_status()
-        project_data = response.json()
+        # Check if project already exists
+        check_url = f"{self.server_url}/rest/api/3/project/{project_key}"
+        try:
+            response = requests.get(check_url, headers=self._headers(), timeout=20)
+            if response.status_code == 200:
+                # Project exists, return it
+                project_data = response.json()
+                return {
+                    "id": project_data.get("key", project_key),
+                    "url": self.build_container_url(project_data.get("key", project_key)),
+                }
+        except requests.exceptions.RequestException:
+            # Project doesn't exist, will create it
+            pass
         
-        return {
-            "id": project_key,
-            "url": self.build_container_url(project_key),
+        # Project doesn't exist, create it
+        create_url = f"{self.server_url}/rest/api/3/project"
+        
+        # Try to get available project types and templates
+        try:
+            # Get project types
+            types_url = f"{self.server_url}/rest/api/3/project/type"
+            types_response = requests.get(types_url, headers=self._headers(), timeout=20)
+            project_types = types_response.json() if types_response.status_code == 200 else []
+            
+            # Use "business" type if available, otherwise "software"
+            project_type_key = "business"
+            for ptype in project_types:
+                if ptype.get("key") == "business":
+                    project_type_key = "business"
+                    break
+                elif ptype.get("key") == "software":
+                    project_type_key = "software"
+                    break
+        except:
+            project_type_key = "business"  # Default
+        
+        # Create project payload
+        payload = {
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": project_type_key,
+            "description": "Scheduled Calls Project - Auto-created for call management"
         }
+        
+        try:
+            response = requests.post(create_url, json=payload, headers=self._headers(), timeout=30)
+            response.raise_for_status()
+            project_data = response.json()
+            
+            created_key = project_data.get("key", project_key)
+            return {
+                "id": created_key,
+                "url": self.build_container_url(created_key),
+            }
+        except requests.exceptions.HTTPError as e:
+            # If project creation fails (e.g., permissions), try to use existing project
+            if e.response.status_code == 403:
+                raise ValueError(f"Permission denied: Cannot create Jira project. Please create project '{project_key}' manually or provide an existing project_key.")
+            elif e.response.status_code == 400:
+                error_data = e.response.json()
+                errors = error_data.get("errors", {})
+                if "projectKey" in errors:
+                    # Project key already exists or invalid, try to get it
+                    try:
+                        get_response = requests.get(check_url, headers=self._headers(), timeout=20)
+                        if get_response.status_code == 200:
+                            existing_project = get_response.json()
+                            return {
+                                "id": existing_project.get("key", project_key),
+                                "url": self.build_container_url(existing_project.get("key", project_key)),
+                            }
+                    except:
+                        pass
+                raise ValueError(f"Failed to create Jira project: {errors}")
+            raise ValueError(f"Failed to create Jira project: {e.response.text}")
+        except Exception as e:
+            raise ValueError(f"Failed to create Jira project: {str(e)}")
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
         """
