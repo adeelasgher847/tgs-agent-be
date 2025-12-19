@@ -235,24 +235,41 @@ class ClickUpService(BaseCRMService):
                 }
                 
                 if "defaults" in field_def:
-                    # For dropdown, type_config should have options array
+                    # For dropdown, type_config should have options array with objects
                     if field_type == "drop_down":
+                        # ClickUp requires options as array of objects with "name" key
+                        options_list = field_def["defaults"].get("options", [])
                         field_data["type_config"] = {
-                            "options": field_def["defaults"].get("options", [])
+                            "options": [{"name": opt} for opt in options_list]
                         }
                     else:
                         field_data["type_config"] = field_def["defaults"]
                 
                 create_url = f"{self.API_URL}/list/{container_id}/field"
+                print(f"🔍 Creating field {field_name} (type: {field_type})...")
+                print(f"   Field data: {json.dumps(field_data, indent=2)}")
                 create_response = requests.post(create_url, json=field_data, headers=self._headers(), timeout=20)
                 if create_response.status_code == 200:
                     created_field = create_response.json()
-                    field_map[field_key] = created_field.get("id", "")
+                    field_id = created_field.get("id", "")
+                    if field_id:
+                        field_map[field_key] = field_id
+                        print(f"✅ Created field {field_name} with ID: {field_id}")
+                    else:
+                        print(f"⚠️ Field {field_name} created but no ID returned: {create_response.text}")
                 else:
-                    print(f"⚠️ Failed to create field {field_name}: {create_response.text}")
+                    print(f"❌ Failed to create field {field_name}:")
+                    print(f"   Status: {create_response.status_code}")
+                    print(f"   Response: {create_response.text}")
+                    print(f"   Field data sent: {json.dumps(field_data, indent=2)}")
             else:
                 # Use existing field
-                field_map[field_key] = existing_names[field_name.lower()].get("id", "")
+                existing_field_id = existing_names[field_name.lower()].get("id", "")
+                if existing_field_id:
+                    field_map[field_key] = existing_field_id
+                    print(f"✅ Using existing field {field_name} with ID: {existing_field_id}")
+                else:
+                    print(f"⚠️ Existing field {field_name} found but has no ID")
         
         return field_map
 
@@ -271,9 +288,14 @@ class ClickUpService(BaseCRMService):
         """Create a scheduled call task in ClickUp list"""
         url = f"{self.API_URL}/list/{container_id}/task"
         
-        # Build custom fields
+        # Build custom fields (only if field_id exists and is not empty)
         custom_fields = []
         for key, field_id in field_map.items():
+            # Skip if field_id is empty or missing
+            if not field_id or field_id.strip() == "":
+                print(f"⚠️ Skipping field {key} - field_id is empty")
+                continue
+            
             if key == "status":
                 custom_fields.append({
                     "id": field_id,
@@ -313,6 +335,12 @@ class ClickUpService(BaseCRMService):
                 custom_fields.append({
                     "id": field_id,
                     "value": phone_number_id
+                })
+            elif key == "call_session_id":
+                # Leave blank initially (will be updated later when call is initiated)
+                custom_fields.append({
+                    "id": field_id,
+                    "value": ""  # Blank initially
                 })
         
         payload = {
