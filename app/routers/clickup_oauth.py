@@ -50,6 +50,11 @@ async def clickup_authorize(
         )
     
     additional_config = json.loads(clickup_config.additional_config)
+    
+    # Handle double nesting if present
+    if "additional_config" in additional_config and isinstance(additional_config.get("additional_config"), dict):
+        additional_config = additional_config["additional_config"]
+    
     client_id = additional_config.get("client_id")
     
     if not client_id:
@@ -112,6 +117,11 @@ async def clickup_oauth_callback(
         )
     
     additional_config = json.loads(clickup_config.additional_config)
+    
+    # Handle double nesting if present
+    if "additional_config" in additional_config and isinstance(additional_config.get("additional_config"), dict):
+        additional_config = additional_config["additional_config"]
+    
     client_id = additional_config.get("client_id")
     client_secret_encrypted = additional_config.get("client_secret")
     redirect_uri = additional_config.get("redirect_uri") or f"{settings.WEBHOOK_BASE_URL}/api/v1/auth/clickup/callback"

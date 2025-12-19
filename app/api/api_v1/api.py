@@ -40,4 +40,4 @@ api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], 
 api_router.include_router(bidirectional_stream_router, prefix="/stream", tags=["Bidirectional Streaming"], include_in_schema=False)
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
 api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Configuration"])
-api_router.include_router(clickup_oauth_router, prefix="/auth/clickup", tags=["ClickUp OAuth"], include_in_schema=False)
+api_router.include_router(clickup_oauth_router, prefix="/auth/clickup", tags=["ClickUp OAuth"])

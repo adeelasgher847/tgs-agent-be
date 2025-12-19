@@ -78,6 +78,10 @@ class ScheduledCallService:
             if crm_config.additional_config:
                 import json
                 additional_config = json.loads(crm_config.additional_config)
+                
+                # Handle double nesting if present
+                if "additional_config" in additional_config and isinstance(additional_config.get("additional_config"), dict):
+                    additional_config = additional_config["additional_config"]
             
             # Filter additional_config based on CRM type
             # Jira: Only pass project_key (not email/server_url which are for service initialization)
@@ -157,6 +161,10 @@ class ScheduledCallService:
                     if crm_config.additional_config:
                         import json
                         additional_config = json.loads(crm_config.additional_config)
+                        
+                        # Handle double nesting if present
+                        if "additional_config" in additional_config and isinstance(additional_config.get("additional_config"), dict):
+                            additional_config = additional_config["additional_config"]
                     
                     # Filter additional_config based on CRM type
                     if crm_config.crm_type == "jira":
