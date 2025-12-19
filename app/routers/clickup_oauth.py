@@ -12,7 +12,7 @@ import json
 from app.api.deps import get_db, require_owner
 from app.models.user import User
 from app.services.crm_config_service import CRMConfigService
-from app.core.security import encrypt_api_key, decrypt_api_key
+from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
 from app.core.config import settings
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
@@ -132,9 +132,13 @@ async def clickup_oauth_callback(
             detail="ClickUp client_id or client_secret not found in additional_config"
         )
     
-    # Decrypt client_secret
+    # Decrypt client_secret (check if encrypted first)
     try:
-        client_secret = decrypt_api_key(client_secret_encrypted)
+        if is_api_key_encrypted(client_secret_encrypted):
+            client_secret = decrypt_api_key(client_secret_encrypted)
+        else:
+            # Already plain text, use as is
+            client_secret = client_secret_encrypted
     except Exception as e:
         raise HTTPException(
             status_code=500,
