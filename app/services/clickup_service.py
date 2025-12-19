@@ -92,9 +92,17 @@ class ClickUpService(BaseCRMService):
         # Log API key format for debugging (first and last few chars only)
         print(f"🔍 Using ClickUp API key (length: {len(api_key)}, format: {api_key[:5]}...{api_key[-5:]})")
         
-        # ClickUp API expects just the token in Authorization header (no "Bearer" prefix)
+        # ClickUp OAuth access tokens require "Bearer" prefix
+        # Personal API tokens (pk_*) don't need Bearer prefix
+        if api_key.startswith("pk_"):
+            # Personal API token format (old format)
+            auth_header = api_key
+        else:
+            # OAuth access token - requires Bearer prefix
+            auth_header = f"Bearer {api_key}"
+        
         return {
-            "Authorization": api_key,  # Just the token, no prefix
+            "Authorization": auth_header,
             "Content-Type": "application/json",
         }
 
