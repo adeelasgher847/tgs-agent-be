@@ -224,13 +224,24 @@ class ClickUpService(BaseCRMService):
             
             if field_name.lower() not in existing_names:
                 # Create custom field
+                # Fix dropdown type - ClickUp uses "drop_down" not "dropdown"
+                field_type = field_def["type"]
+                if field_type == "dropdown":
+                    field_type = "drop_down"  # ClickUp API format
+                
                 field_data = {
                     "name": field_name,
-                    "type": field_def["type"],
+                    "type": field_type,
                 }
                 
                 if "defaults" in field_def:
-                    field_data["type_config"] = field_def["defaults"]
+                    # For dropdown, type_config should have options array
+                    if field_type == "drop_down":
+                        field_data["type_config"] = {
+                            "options": field_def["defaults"].get("options", [])
+                        }
+                    else:
+                        field_data["type_config"] = field_def["defaults"]
                 
                 create_url = f"{self.API_URL}/list/{container_id}/field"
                 create_response = requests.post(create_url, json=field_data, headers=self._headers(), timeout=20)
@@ -312,11 +323,31 @@ class ClickUpService(BaseCRMService):
         
         try:
             response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
+            
+            # Better error logging
+            if response.status_code != 200:
+                print(f"❌ ClickUp task creation failed:")
+                print(f"   URL: {url}")
+                print(f"   Status: {response.status_code}")
+                print(f"   Response: {response.text[:500]}")
+                print(f"   Payload: {json.dumps(payload, indent=2)}")
+                
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("err", "") or error_data.get("error", "") or str(error_data)
+                    print(f"   Error: {error_msg}")
+                except:
+                    pass
+            
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            print(f"❌ Failed to create ClickUp task for {phone_number}: {error_msg}")
+            raise ValueError(f"Failed to create ClickUp task: {error_msg}")
         except Exception as exc:
-            print(f"⚠️ Failed to create ClickUp task for {phone_number}: {exc}")
-            return None
+            print(f"❌ Failed to create ClickUp task for {phone_number}: {exc}")
+            raise ValueError(f"Failed to create ClickUp task: {str(exc)}")
 
     def update_item_status(
         self,
