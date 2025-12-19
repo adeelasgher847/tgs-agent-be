@@ -66,15 +66,35 @@ class TrelloService(BaseCRMService):
             "defaultLists": "false",
         })
         
-        response = requests.post(url, params=params, timeout=20)
-        response.raise_for_status()
-        board_data = response.json()
-        
-        board_id = board_data.get("shortLink", "")  # Use shortLink as ID
-        return {
-            "id": board_id,
-            "url": self.build_container_url(board_id),
-        }
+        try:
+            response = requests.post(url, params=params, timeout=20)
+            response.raise_for_status()
+            board_data = response.json()
+            
+            # Try multiple ID fields (shortLink is preferred, but id also works)
+            board_id = board_data.get("shortLink", "") or board_data.get("id", "")
+            if not board_id:
+                raise ValueError(f"Trello API did not return board ID. Response: {board_data}")
+            
+            return {
+                "id": board_id,
+                "url": self.build_container_url(board_id),
+            }
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Failed to create Trello board: "
+            if e.response.status_code == 401:
+                error_msg += "Authentication failed - check your API key and token."
+            elif e.response.status_code == 403:
+                error_msg += "Permission denied - API key/token may not have board creation access."
+            else:
+                try:
+                    error_data = e.response.json()
+                    error_msg += f"HTTP {e.response.status_code}: {error_data}"
+                except:
+                    error_msg += f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            raise ValueError(error_msg)
+        except Exception as e:
+            raise ValueError(f"Failed to create Trello board: {str(e)}")
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
         """
@@ -89,7 +109,8 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             existing_fields = response.json()
-        except:
+        except Exception as e:
+            print(f"⚠️ Failed to get Trello custom fields: {e}")
             existing_fields = []
         
         # Map fields by name
@@ -103,6 +124,7 @@ class TrelloService(BaseCRMService):
             
             if field_name.lower() in field_by_name:
                 field_map[field_key] = field_by_name[field_name.lower()].get("id", "")
+                print(f"✅ Found existing Trello field: {field_name} (ID: {field_map[field_key]})")
             else:
                 # Try to create custom field (requires Power-Ups)
                 # Note: This may fail if Power-Ups are not enabled
@@ -119,10 +141,18 @@ class TrelloService(BaseCRMService):
                     create_response = requests.post(create_url, params=create_params, timeout=20)
                     if create_response.status_code == 200:
                         created_field = create_response.json()
-                        field_map[field_key] = created_field.get("id", "")
+                        field_id = created_field.get("id", "")
+                        if field_id:
+                            field_map[field_key] = field_id
+                            print(f"✅ Created Trello field: {field_name} (ID: {field_id})")
+                        else:
+                            print(f"⚠️ Created Trello field but no ID returned: {field_name}")
+                    else:
+                        print(f"⚠️ Failed to create Trello field {field_name}: HTTP {create_response.status_code} - {create_response.text[:200]}")
                 except Exception as e:
                     print(f"⚠️ Failed to create Trello custom field {field_name}: {e}")
         
+        print(f"📊 Trello field_map: {field_map}")
         return field_map
 
     def create_scheduled_call_item(
@@ -175,31 +205,91 @@ class TrelloService(BaseCRMService):
             card_id = card_data.get("id", "")
             
             # Add custom field values
+            field_update_errors = []
             for key, field_id in field_map.items():
-                if key == "status":
-                    # Update card label or custom field
-                    update_url = f"{self.API_URL}/cards/{card_id}/customField/{field_id}/item"
-                    update_params = self._auth_params()
-                    update_params.update({
-                        "value": {"text": "Pending"}
-                    })
-                    requests.put(update_url, params=update_params, timeout=20)
-                elif key in ["agent_id", "call_time_utc", "tenant_id", "user_id"]:
-                    # Add as card description or custom field
-                    value = {
-                        "agent_id": agent_id,
-                        "call_time_utc": call_time_utc,
-                        "tenant_id": tenant_id,
-                        "user_id": user_id,
-                    }.get(key, "")
-                    
-                    if field_id:
-                        update_url = f"{self.API_URL}/cards/{card_id}/customField/{field_id}/item"
-                        update_params = self._auth_params()
+                if not field_id:
+                    continue
+                
+                update_url = f"{self.API_URL}/cards/{card_id}/customField/{field_id}/item"
+                update_params = self._auth_params()
+                
+                try:
+                    if key == "status":
+                        # Set status to "Pending"
                         update_params.update({
-                            "value": {"text": value}
+                            "value": {"text": "Pending"}
                         })
-                        requests.put(update_url, params=update_params, timeout=20)
+                    elif key == "email_sent":
+                        # Set email_sent to "No" by default
+                        update_params.update({
+                            "value": {"text": "No"}
+                        })
+                    elif key == "agent_id":
+                        update_params.update({
+                            "value": {"text": agent_id}
+                        })
+                    elif key == "call_time_utc":
+                        update_params.update({
+                            "value": {"text": call_time_utc}
+                        })
+                    elif key == "tenant_id":
+                        update_params.update({
+                            "value": {"text": tenant_id}
+                        })
+                    elif key == "user_id":
+                        update_params.update({
+                            "value": {"text": user_id}
+                        })
+                    elif key == "phone_number_id" and phone_number_id:
+                        update_params.update({
+                            "value": {"text": phone_number_id}
+                        })
+                    elif key == "batch_id" and batch_id:
+                        update_params.update({
+                            "value": {"text": batch_id}
+                        })
+                    elif key == "call_session_id":
+                        # Leave blank initially (will be updated later when call is initiated)
+                        update_params.update({
+                            "value": {"text": ""}  # Blank initially
+                        })
+                    else:
+                        continue  # Skip unknown fields
+                    
+                    response = requests.put(update_url, params=update_params, timeout=20)
+                    response.raise_for_status()
+                    print(f"✅ Updated Trello field {key} for card {card_id}")
+                except Exception as e:
+                    error_msg = f"Failed to update field {key}: {str(e)}"
+                    field_update_errors.append(error_msg)
+                    print(f"⚠️ {error_msg}")
+            
+            # If custom fields failed, add data to card description as fallback
+            if field_update_errors or not field_map:
+                print(f"⚠️ Some Trello custom fields failed or missing. Adding data to card description as fallback.")
+                desc_lines = [f"Scheduled call at {call_time_utc}"]
+                desc_lines.append(f"Agent ID: {agent_id}")
+                desc_lines.append(f"User ID: {user_id}")
+                desc_lines.append(f"Tenant ID: {tenant_id}")
+                if phone_number_id:
+                    desc_lines.append(f"Phone Number ID: {phone_number_id}")
+                if batch_id:
+                    desc_lines.append(f"Batch ID: {batch_id}")
+                desc_lines.append(f"Status: Pending")
+                desc_lines.append(f"Email Sent: No")
+                
+                # Update card description
+                try:
+                    update_desc_url = f"{self.API_URL}/cards/{card_id}"
+                    update_desc_params = self._auth_params()
+                    update_desc_params.update({
+                        "desc": "\n".join(desc_lines)
+                    })
+                    desc_response = requests.put(update_desc_url, params=update_desc_params, timeout=20)
+                    desc_response.raise_for_status()
+                    print(f"✅ Updated Trello card description with field data")
+                except Exception as e:
+                    print(f"⚠️ Failed to update card description: {e}")
             
             return card_data
         except Exception as exc:

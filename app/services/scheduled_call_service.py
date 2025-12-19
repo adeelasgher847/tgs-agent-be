@@ -177,12 +177,28 @@ class ScheduledCallService:
                         # Trello and others - pass all additional_config
                         container_kwargs = additional_config
                     
-                    container = crm_service.create_container(container_name, **container_kwargs)
-                    board_record.crm_container_id = container["id"]
-                    board_record.crm_container_url = container["url"]
-                    board_record.crm_type = crm_config.crm_type
-                    board_record.tenant_crm_config_id = crm_config_id
-                    print(f"✅ Auto-created container: {board_record.crm_container_id}")
+                    try:
+                        container = crm_service.create_container(container_name, **container_kwargs)
+                        
+                        # Validate container response
+                        if not container or not container.get("id"):
+                            raise ValueError(f"Container creation returned invalid response: {container}")
+                        
+                        board_record.crm_container_id = container["id"]
+                        board_record.crm_container_url = container.get("url", "")
+                        if not board_record.crm_container_url and board_record.crm_container_id:
+                            board_record.crm_container_url = crm_service.build_container_url(board_record.crm_container_id)
+                        board_record.crm_type = crm_config.crm_type
+                        board_record.tenant_crm_config_id = crm_config_id
+                        print(f"✅ Auto-created {crm_config.crm_type} container: {board_record.crm_container_id}")
+                    except Exception as e:
+                        error_msg = f"Failed to auto-create {crm_config.crm_type} container: {str(e)}"
+                        print(f"❌ {error_msg}")
+                        # Re-raise with more context
+                        raise HTTPException(
+                            status_code=500,
+                            detail=error_msg
+                        )
                 
                 db.commit()
                 db.refresh(board_record)

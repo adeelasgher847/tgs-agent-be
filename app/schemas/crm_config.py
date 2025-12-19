@@ -10,7 +10,7 @@ from uuid import UUID
 class CRMConfigCreate(BaseModel):
     """Schema for creating CRM configuration"""
     crm_type: str  # "monday" | "clickup" | "jira" | "trello"
-    api_key: str  # Plain API key (will be encrypted)
+    api_key: Optional[str] = None  # Plain API key (will be encrypted). Optional for ClickUp OAuth (will be set after OAuth)
     container_id: Optional[str] = None  # board_id/list_id/project_id (optional, can be created)
     container_url: Optional[str] = None
     additional_config: Optional[dict] = None  # CRM-specific config (workspace_id, email, server_url, etc.)

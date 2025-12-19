@@ -41,8 +41,8 @@ class ClickUpService(BaseCRMService):
 
     def get_api_key(self) -> str:
         """Get decrypted API key"""
-        if not self.api_key:
-            raise ValueError("ClickUp API key is not configured")
+        if not self.api_key or self.api_key.strip() == "":
+            raise ValueError("ClickUp API key is not configured. Please complete OAuth authorization first.")
         
         # Check if encrypted (JWT format)
         if self.api_key.startswith("eyJ"):

@@ -34,8 +34,19 @@ class CRMConfigService:
                 detail=f"CRM configuration for {crm_config_data.crm_type} already exists"
             )
         
-        # Encrypt API key
-        encrypted_api_key = encrypt_api_key(crm_config_data.api_key)
+        # Encrypt API key (if provided, optional for ClickUp OAuth)
+        if crm_config_data.api_key:
+            encrypted_api_key = encrypt_api_key(crm_config_data.api_key)
+        else:
+            # For ClickUp OAuth, api_key can be empty initially
+            # It will be set after OAuth callback
+            if crm_config_data.crm_type.lower() == "clickup":
+                encrypted_api_key = ""  # Will be set after OAuth
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="api_key is required for this CRM type"
+                )
         
         # Encrypt sensitive fields in additional_config (like api_token for Trello)
         additional_config_encrypted = None
@@ -45,6 +56,10 @@ class CRMConfigService:
             # Encrypt api_token if present (for Trello)
             if "api_token" in additional_config_encrypted and additional_config_encrypted["api_token"]:
                 additional_config_encrypted["api_token"] = encrypt_api_key(additional_config_encrypted["api_token"])
+            
+            # Encrypt client_secret if present (for ClickUp OAuth)
+            if "client_secret" in additional_config_encrypted and additional_config_encrypted["client_secret"]:
+                additional_config_encrypted["client_secret"] = encrypt_api_key(additional_config_encrypted["client_secret"])
             
             # Serialize to JSON string
             additional_config_json = json.dumps(additional_config_encrypted)
@@ -110,6 +125,10 @@ class CRMConfigService:
             # Encrypt api_token if present (for Trello)
             if "api_token" in additional_config_encrypted and additional_config_encrypted["api_token"]:
                 additional_config_encrypted["api_token"] = encrypt_api_key(additional_config_encrypted["api_token"])
+            
+            # Encrypt client_secret if present (for ClickUp OAuth)
+            if "client_secret" in additional_config_encrypted and additional_config_encrypted["client_secret"]:
+                additional_config_encrypted["client_secret"] = encrypt_api_key(additional_config_encrypted["client_secret"])
             
             crm_config.additional_config = json.dumps(additional_config_encrypted)
         

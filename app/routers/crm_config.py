@@ -34,7 +34,7 @@ async def create_crm_config(
     
     Supports all CRMs:
     - **Monday.com**: Requires `api_key` and optional `additional_config.workspace_id`
-    - **ClickUp**: Requires `api_key` and optional `additional_config.space_id`, `folder_id`
+    - **ClickUp**: Requires OAuth setup. First create config with `additional_config.client_id`, `additional_config.client_secret`, and `additional_config.redirect_uri`. Then use `/api/v1/auth/clickup/authorize` to get authorization URL, and after user authorizes, access token will be stored automatically. Optional: `additional_config.space_id`, `folder_id`
     - **Jira**: Requires `api_key`, `additional_config.email`, `additional_config.server_url`
     - **Trello**: Requires `api_key`, `additional_config.api_token`
     
@@ -51,6 +51,21 @@ async def create_crm_config(
         }
     }
     ```
+    
+    **Example Request (ClickUp OAuth):**
+    ```json
+    {
+        "crm_type": "clickup",
+        "api_key": null,
+        "additional_config": {
+            "client_id": "your_clickup_client_id",
+            "client_secret": "your_clickup_client_secret",
+            "redirect_uri": "https://yourdomain.com/api/v1/auth/clickup/callback",
+            "space_id": "optional_space_id"
+        }
+    }
+    ```
+    Note: `api_key` can be `null` for ClickUp OAuth. After creating this config, call `/api/v1/auth/clickup/authorize` to get authorization URL. Access token will be automatically stored after OAuth callback.
     
     **Example Request (Trello):**
     ```json
