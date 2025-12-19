@@ -72,11 +72,14 @@ async def clickup_authorize(
     # Store state in additional_config temporarily (or use session/cache)
     # For now, we'll just use it in the URL
     
-    # Build authorization URL
+    # Build authorization URL with required scopes
+    # Scopes needed: read (to read teams/spaces), write (to create lists)
+    scopes = "read write"
     auth_url = (
         f"{CLICKUP_AUTH_URL}?"
         f"client_id={client_id}&"
-        f"redirect_uri={redirect_uri}"
+        f"redirect_uri={redirect_uri}&"
+        f"scope={scopes}"
     )
     
     return create_success_response(
@@ -185,6 +188,55 @@ async def clickup_oauth_callback(
             if not additional_config:
                 additional_config = {}
             additional_config["refresh_token"] = encrypt_api_key(token_response["refresh_token"])
+        
+        # After storing access token, automatically fetch and store space_id
+        try:
+            print(f"🔍 Auto-detecting ClickUp space after OAuth...")
+            
+            # Create headers with access token
+            auth_headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            }
+            
+            # Get team first
+            team_url = "https://api.clickup.com/api/v2/team"
+            team_response = requests.get(team_url, headers=auth_headers, timeout=20)
+            if team_response.status_code == 200:
+                teams_data = team_response.json()
+                teams = teams_data.get("teams", [])
+                if teams:
+                    team_id = teams[0].get("id", "")
+                    team_name = teams[0].get("name", "Unknown")
+                    print(f"✅ Found team: {team_name} (ID: {team_id})")
+                    
+                    # Get spaces for this team
+                    spaces_url = f"https://api.clickup.com/api/v2/team/{team_id}/space"
+                    spaces_response = requests.get(spaces_url, headers=auth_headers, timeout=20)
+                    if spaces_response.status_code == 200:
+                        spaces_data = spaces_response.json()
+                        spaces = spaces_data.get("spaces", [])
+                        if spaces:
+                            space_id = spaces[0].get("id", "")
+                            space_name = spaces[0].get("name", "Unknown")
+                            
+                            # Update additional_config with space_id (only if not already set)
+                            if not additional_config:
+                                additional_config = {}
+                            if "space_id" not in additional_config or not additional_config.get("space_id"):
+                                additional_config["space_id"] = space_id
+                                print(f"✅ Auto-detected and stored ClickUp space: {space_name} (ID: {space_id})")
+                            else:
+                                print(f"ℹ️ Space ID already exists in config: {additional_config.get('space_id')}")
+                    else:
+                        print(f"⚠️ Failed to fetch spaces: HTTP {spaces_response.status_code}")
+                else:
+                    print(f"⚠️ No teams found for this access token")
+            else:
+                print(f"⚠️ Failed to fetch teams: HTTP {team_response.status_code}")
+        except Exception as e:
+            # Don't fail the OAuth flow if space detection fails
+            print(f"⚠️ Failed to auto-detect space_id: {str(e)}. You can add it manually later.")
         
         # Update additional_config
         clickup_config.additional_config = json.dumps(additional_config)

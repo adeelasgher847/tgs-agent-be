@@ -180,6 +180,19 @@ class ClickUpService(BaseCRMService):
         }
         
         response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
+        
+        # Better error logging for 401
+        if response.status_code == 401:
+            print(f"❌ ClickUp API 401 Unauthorized Error:")
+            print(f"   URL: {url}")
+            print(f"   Space ID used: {space_id}")
+            print(f"   Response status: {response.status_code}")
+            print(f"   Response body: {response.text[:500]}")
+            error_msg = "ClickUp API authentication failed. "
+            error_msg += "Possible causes: Invalid/expired token, insufficient scopes (need 'read' and 'write'), or user lacks permission to create lists in this space. "
+            error_msg += f"Response: {response.text[:200]}"
+            raise ValueError(error_msg)
+        
         response.raise_for_status()
         data = response.json()
         
