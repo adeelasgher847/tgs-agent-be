@@ -211,92 +211,80 @@ class JiraService(BaseCRMService):
         payloads_to_try = []
         
         # API v2 formats (more reliable) - use "lead" instead of "projectLead"
-        # Format 1: v2 Business type with assigneeType
+        # Remove assigneeType to avoid GDPR strict mode error
+        # Format 1: v2 Business type (without assigneeType)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "business",
-            "lead": project_lead_account_id,  # v2 uses "lead" (string)
-            "assigneeType": "PROJECT_LEAD",
-            "description": f"Scheduled calls project for {container_name}"
+            "lead": project_lead_account_id  # v2 uses "lead" (string)
         })
         
-        # Format 2: v2 Software type with assigneeType
+        # Format 2: v2 Software type (without assigneeType)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "software",
-            "lead": project_lead_account_id,
-            "assigneeType": "PROJECT_LEAD",
-            "description": f"Scheduled calls project for {container_name}"
+            "lead": project_lead_account_id
         })
         
-        # Format 3: v2 Minimal (without projectTypeKey)
+        # Format 3: v2 Minimal (without projectTypeKey and assigneeType)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
-            "lead": project_lead_account_id,
-            "assigneeType": "PROJECT_LEAD",
-            "description": f"Scheduled calls project for {container_name}"
+            "lead": project_lead_account_id
         })
         
-        # API v3 formats
-        # Format 4: v3 Minimal with description
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectLead": {"accountId": project_lead_account_id},
-            "description": f"Scheduled calls project for {container_name}"
-        })
-        
-        # Format 5: v3 Business type with description
+        # API v3 formats - projectTypeKey is required
+        # Format 4: v3 Business type (projectTypeKey required)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "business",
-            "projectLead": {"accountId": project_lead_account_id},
-            "description": f"Scheduled calls project for {container_name}"
+            "projectLead": {"accountId": project_lead_account_id}
         })
         
-        # Format 6: v3 Software type with description
+        # Format 5: v3 Software type (projectTypeKey required)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "software",
-            "projectLead": {"accountId": project_lead_account_id},
-            "description": f"Scheduled calls project for {container_name}"
+            "projectLead": {"accountId": project_lead_account_id}
+        })
+        
+        # Format 6: v3 Minimal (try without projectTypeKey as fallback)
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectLead": {"accountId": project_lead_account_id}
         })
         
         # Format 7-9: With templates (only if template exists)
         if project_template_key:
-            # Format 7: v2 with template
+            # Format 7: v2 with template (without assigneeType)
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
                 "projectTemplateKey": project_template_key,
-                "lead": project_lead_account_id,
-                "assigneeType": "PROJECT_LEAD",
-                "description": f"Scheduled calls project for {container_name}"
+                "lead": project_lead_account_id
             })
             
-            # Format 8: v3 with template
+            # Format 8: v3 with template (projectTypeKey required)
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
                 "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id},
-                "description": f"Scheduled calls project for {container_name}"
+                "projectLead": {"accountId": project_lead_account_id}
             })
             
-            # Format 9: v3 template without projectTypeKey
+            # Format 9: v3 template without projectTypeKey (fallback)
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id},
-                "description": f"Scheduled calls project for {container_name}"
+                "projectLead": {"accountId": project_lead_account_id}
             })
         
         last_error = None
