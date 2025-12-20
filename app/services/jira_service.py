@@ -210,17 +210,36 @@ class JiraService(BaseCRMService):
         # API v2 is more stable for project creation
         payloads_to_try = []
         
-        # API v2 formats (more reliable) - use "lead" instead of "projectLead"
-        # Remove assigneeType to avoid GDPR strict mode error
-        # Format 1: v2 Business type (without assigneeType)
+        # API v2 formats - Try WITHOUT lead first (GDPR strict mode issue)
+        # Format 1: v2 Business type WITHOUT lead (let Jira assign default)
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": "business"
+        })
+        
+        # Format 2: v2 Software type WITHOUT lead
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": "software"
+        })
+        
+        # Format 3: v2 Minimal WITHOUT lead and projectTypeKey
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name
+        })
+        
+        # Format 4: v2 Business WITH lead (fallback if without lead fails)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "business",
-            "lead": project_lead_account_id  # v2 uses "lead" (string)
+            "lead": project_lead_account_id
         })
         
-        # Format 2: v2 Software type (without assigneeType)
+        # Format 5: v2 Software WITH lead
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -228,15 +247,22 @@ class JiraService(BaseCRMService):
             "lead": project_lead_account_id
         })
         
-        # Format 3: v2 Minimal (without projectTypeKey and assigneeType)
+        # API v3 formats - Try WITHOUT projectLead first
+        # Format 6: v3 Business type WITHOUT projectLead
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
-            "lead": project_lead_account_id
+            "projectTypeKey": "business"
         })
         
-        # API v3 formats - projectTypeKey is required
-        # Format 4: v3 Business type (projectTypeKey required)
+        # Format 7: v3 Software type WITHOUT projectLead
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": "software"
+        })
+        
+        # Format 8: v3 Business WITH projectLead (fallback)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -244,7 +270,7 @@ class JiraService(BaseCRMService):
             "projectLead": {"accountId": project_lead_account_id}
         })
         
-        # Format 5: v3 Software type (projectTypeKey required)
+        # Format 9: v3 Software WITH projectLead
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -252,37 +278,29 @@ class JiraService(BaseCRMService):
             "projectLead": {"accountId": project_lead_account_id}
         })
         
-        # Format 6: v3 Minimal (try without projectTypeKey as fallback)
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectLead": {"accountId": project_lead_account_id}
-        })
-        
-        # Format 7-9: With templates (only if template exists)
+        # Format 10-12: With templates (only if template exists)
         if project_template_key:
-            # Format 7: v2 with template (without assigneeType)
+            # Format 10: v2 with template WITHOUT lead
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key,
-                "lead": project_lead_account_id
+                "projectTemplateKey": project_template_key
             })
             
-            # Format 8: v3 with template (projectTypeKey required)
+            # Format 11: v3 with template WITHOUT projectLead
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id}
+                "projectTemplateKey": project_template_key
             })
             
-            # Format 9: v3 template without projectTypeKey (fallback)
+            # Format 12: v3 with template WITH projectLead (fallback)
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
+                "projectTypeKey": "business",
                 "projectTemplateKey": project_template_key,
                 "projectLead": {"accountId": project_lead_account_id}
             })
