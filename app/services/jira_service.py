@@ -4,6 +4,7 @@ Jira API Service for Scheduled Calls Integration
 
 import json
 import re
+import traceback
 from typing import Dict, List, Optional
 import requests
 from app.services.base_crm_service import BaseCRMService
@@ -358,30 +359,245 @@ class JiraService(BaseCRMService):
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
         """
         Ensure Jira project has required custom fields.
-        Note: Custom fields in Jira are typically created via UI.
-        This method verifies they exist.
+        Automatically creates missing fields.
         """
-        # Get all custom fields in project
-        url = f"{self.server_url}/rest/api/3/field"
-        response = requests.get(url, headers=self._headers(), timeout=20)
-        response.raise_for_status()
-        all_fields = response.json()
-        
-        # Map fields by name
         field_map = {}
-        field_by_name = {f.get("name", "").lower(): f for f in all_fields}
+        errors = []  # Track errors for debugging
         
-        # Check for required fields
-        for field_def in self.REQUIRED_FIELDS:
-            field_name = field_def["title"]
-            field_key = field_def["key"]
+        try:
+            # Get all fields (both built-in and custom)
+            url = f"{self.server_url}/rest/api/3/field"
+            print(f"🔍 Fetching Jira fields from: {url}")
             
-            # Try to find field by name
-            if field_name.lower() in field_by_name:
-                field_map[field_key] = field_by_name[field_name.lower()].get("id", "")
-            elif field_key == "status":
-                # Status is a built-in field
-                field_map[field_key] = "status"
+            try:
+                response = requests.get(url, headers=self._headers(), timeout=20)
+                response.raise_for_status()
+                all_fields = response.json()
+                print(f"✅ Successfully fetched {len(all_fields)} Jira fields")
+            except requests.exceptions.HTTPError as e:
+                error_detail = {
+                    "operation": "fetch_fields",
+                    "url": url,
+                    "status_code": e.response.status_code if e.response else None,
+                    "response": e.response.text[:500] if e.response else str(e),
+                    "error": str(e)
+                }
+                errors.append(error_detail)
+                print(f"❌ Failed to fetch Jira fields:")
+                print(f"   Status: {error_detail['status_code']}")
+                print(f"   Response: {error_detail['response']}")
+                print(f"   Error: {error_detail['error']}")
+                # Return empty field_map if we can't fetch fields
+                return field_map
+            except requests.exceptions.RequestException as e:
+                error_detail = {
+                    "operation": "fetch_fields",
+                    "url": url,
+                    "error_type": type(e).__name__,
+                    "error": str(e)
+                }
+                errors.append(error_detail)
+                print(f"❌ Network error fetching Jira fields: {error_detail['error']}")
+                return field_map
+            except Exception as e:
+                error_detail = {
+                    "operation": "fetch_fields",
+                    "url": url,
+                    "error_type": type(e).__name__,
+                    "error": str(e)
+                }
+                errors.append(error_detail)
+                print(f"❌ Unexpected error fetching Jira fields: {error_detail['error']}")
+                return field_map
+            
+            # Map fields by name
+            field_by_name = {f.get("name", "").lower(): f for f in all_fields}
+            
+            # Jira field type and searcher mapping
+            jira_field_config = {
+                "text": {
+                    "type": "com.atlassian.jira.plugin.system.customfieldtypes:textfield",
+                    "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher"
+                },
+                "select": {
+                    "type": "com.atlassian.jira.plugin.system.customfieldtypes:select",
+                    "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:selectsearcher"
+                }
+            }
+            
+            # Check for required fields and create if missing
+            for field_def in self.REQUIRED_FIELDS:
+                field_name = field_def["title"]
+                field_key = field_def["key"]
+                field_type = field_def["type"]
+                
+                try:
+                    # Status is a built-in field
+                    if field_key == "status":
+                        field_map[field_key] = "status"
+                        print(f"✅ Using built-in Jira field: {field_name}")
+                        continue
+                    
+                    # Check if field already exists
+                    if field_name.lower() in field_by_name:
+                        field_id = field_by_name[field_name.lower()].get("id", "")
+                        if field_id:
+                            field_map[field_key] = field_id
+                            print(f"✅ Found existing Jira field: {field_name} (ID: {field_id})")
+                            continue
+                        else:
+                            print(f"⚠️ Field {field_name} found but has no ID")
+                    
+                    # Field doesn't exist, create it
+                    config = jira_field_config.get(field_type, jira_field_config["text"])
+                    
+                    # Create the custom field
+                    field_payload = {
+                        "name": field_name,
+                        "type": config["type"],
+                        "searcherKey": config["searcherKey"],
+                        "description": f"Custom field for {field_name}"
+                    }
+                    
+                    print(f"🔍 Creating Jira field {field_name} (type: {field_type})...")
+                    print(f"   Field payload: {json.dumps(field_payload, indent=2)}")
+                    
+                    create_url = f"{self.server_url}/rest/api/3/field"
+                    
+                    try:
+                        create_response = requests.post(create_url, json=field_payload, headers=self._headers(), timeout=20)
+                        
+                        if create_response.status_code in [200, 201]:
+                            try:
+                                created_field = create_response.json()
+                                field_id = created_field.get("id", "")
+                                
+                                if field_id:
+                                    field_map[field_key] = field_id
+                                    print(f"✅ Created Jira field {field_name} with ID: {field_id}")
+                                else:
+                                    error_detail = {
+                                        "operation": "create_field",
+                                        "field_name": field_name,
+                                        "field_key": field_key,
+                                        "status_code": create_response.status_code,
+                                        "response": create_response.text[:500],
+                                        "error": "Field created but no ID returned"
+                                    }
+                                    errors.append(error_detail)
+                                    print(f"⚠️ Jira field {field_name} created but no ID returned")
+                                    print(f"   Response: {create_response.text[:500]}")
+                            except (ValueError, KeyError) as e:
+                                error_detail = {
+                                    "operation": "parse_field_response",
+                                    "field_name": field_name,
+                                    "status_code": create_response.status_code,
+                                    "response": create_response.text[:500],
+                                    "error": str(e),
+                                    "error_type": type(e).__name__
+                                }
+                                errors.append(error_detail)
+                                print(f"⚠️ Failed to parse Jira field creation response for {field_name}: {str(e)}")
+                                print(f"   Response: {create_response.text[:500]}")
+                        else:
+                            # HTTP error
+                            try:
+                                error_data = create_response.json()
+                                error_messages = error_data.get("errorMessages", [])
+                                errors_dict = error_data.get("errors", {})
+                            except:
+                                error_messages = []
+                                errors_dict = {}
+                            
+                            error_detail = {
+                                "operation": "create_field",
+                                "field_name": field_name,
+                                "field_key": field_key,
+                                "field_type": field_type,
+                                "url": create_url,
+                                "status_code": create_response.status_code,
+                                "response": create_response.text[:500],
+                                "error_messages": error_messages,
+                                "errors": errors_dict,
+                                "payload": field_payload
+                            }
+                            errors.append(error_detail)
+                            print(f"❌ Failed to create Jira field {field_name}:")
+                            print(f"   Status: {create_response.status_code}")
+                            print(f"   Error Messages: {error_messages}")
+                            print(f"   Errors: {errors_dict}")
+                            print(f"   Response: {create_response.text[:500]}")
+                            print(f"   Payload: {json.dumps(field_payload, indent=2)}")
+                    except requests.exceptions.HTTPError as e:
+                        error_detail = {
+                            "operation": "create_field",
+                            "field_name": field_name,
+                            "field_key": field_key,
+                            "url": create_url,
+                            "status_code": e.response.status_code if e.response else None,
+                            "response": e.response.text[:500] if e.response else str(e),
+                            "error": str(e),
+                            "payload": field_payload
+                        }
+                        errors.append(error_detail)
+                        print(f"❌ HTTP error creating Jira field {field_name}: {str(e)}")
+                        if e.response:
+                            print(f"   Status: {e.response.status_code}")
+                            print(f"   Response: {e.response.text[:500]}")
+                    except requests.exceptions.RequestException as e:
+                        error_detail = {
+                            "operation": "create_field",
+                            "field_name": field_name,
+                            "field_key": field_key,
+                            "url": create_url,
+                            "error_type": type(e).__name__,
+                            "error": str(e),
+                            "payload": field_payload
+                        }
+                        errors.append(error_detail)
+                        print(f"❌ Network error creating Jira field {field_name}: {str(e)}")
+                    except Exception as e:
+                        error_detail = {
+                            "operation": "create_field",
+                            "field_name": field_name,
+                            "field_key": field_key,
+                            "error_type": type(e).__name__,
+                            "error": str(e),
+                            "payload": field_payload
+                        }
+                        errors.append(error_detail)
+                        print(f"❌ Unexpected error creating Jira field {field_name}: {str(e)}")
+                        import traceback
+                        print(f"   Traceback: {traceback.format_exc()}")
+                except Exception as e:
+                    error_detail = {
+                        "operation": "process_field",
+                        "field_name": field_name,
+                        "field_key": field_key,
+                        "error_type": type(e).__name__,
+                        "error": str(e)
+                    }
+                    errors.append(error_detail)
+                    print(f"❌ Error processing field {field_name}: {str(e)}")
+                    print(f"   Traceback: {traceback.format_exc()}")
+        
+        except Exception as e:
+            error_detail = {
+                "operation": "ensure_required_fields",
+                "container_id": container_id,
+                "error_type": type(e).__name__,
+                "error": str(e)
+            }
+            errors.append(error_detail)
+            print(f"❌ Critical error in ensure_required_fields: {str(e)}")
+            print(f"   Traceback: {traceback.format_exc()}")
+        finally:
+            # Log summary
+            if errors:
+                print(f"\n📋 Error Summary ({len(errors)} errors):")
+                for idx, err in enumerate(errors, 1):
+                    print(f"   {idx}. {err.get('operation', 'unknown')} - {err.get('error', 'unknown error')}")
+            print(f"📊 Jira field_map: {field_map} (Total fields: {len(field_map)})")
         
         return field_map
 
@@ -409,8 +625,15 @@ class JiraService(BaseCRMService):
         }
         
         # Add custom fields
+        # Status: Set to "Pending" by default
         if "status" in field_map:
             fields["status"] = {"name": "Pending"}
+        
+        # Email Sent: Set to "No" by default
+        if "email_sent" in field_map:
+            fields[field_map["email_sent"]] = {"value": "No"}
+        
+        # Other custom fields
         if "agent_id" in field_map:
             fields[field_map["agent_id"]] = agent_id
         if "call_time_utc" in field_map:
@@ -423,15 +646,115 @@ class JiraService(BaseCRMService):
             fields[field_map["batch_id"]] = batch_id
         if phone_number_id and "phone_number_id" in field_map:
             fields[field_map["phone_number_id"]] = phone_number_id
+        if "call_session_id" in field_map:
+            # Leave blank initially (will be updated later when call is initiated)
+            fields[field_map["call_session_id"]] = ""
         
         payload = {"fields": fields}
         
         try:
+            print(f"🔍 Creating Jira issue for {phone_number} in project {container_id}...")
+            print(f"   URL: {url}")
+            print(f"   Payload: {json.dumps(payload, indent=2)}")
+            
             response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
-            response.raise_for_status()
-            return response.json()
+            
+            if response.status_code in [200, 201]:
+                issue_data = response.json()
+                issue_key = issue_data.get("key", "")
+                issue_id = issue_data.get("id", "")
+                print(f"✅ Successfully created Jira issue {issue_key} (ID: {issue_id}) for {phone_number}")
+                return issue_data
+            else:
+                # HTTP error - detailed logging
+                try:
+                    error_data = response.json()
+                    error_messages = error_data.get("errorMessages", [])
+                    errors_dict = error_data.get("errors", {})
+                except:
+                    error_messages = []
+                    errors_dict = {}
+                
+                error_detail = {
+                    "operation": "create_issue",
+                    "phone_number": phone_number,
+                    "container_id": container_id,
+                    "url": url,
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                    "error_messages": error_messages,
+                    "errors": errors_dict,
+                    "payload": payload
+                }
+                
+                print(f"❌ Failed to create Jira issue for {phone_number}:")
+                print(f"   Status: {response.status_code}")
+                print(f"   Error Messages: {error_messages}")
+                print(f"   Errors: {errors_dict}")
+                print(f"   Response: {response.text[:500]}")
+                print(f"   Payload: {json.dumps(payload, indent=2)}")
+                
+                return None
+                
+        except requests.exceptions.HTTPError as e:
+            error_detail = {
+                "operation": "create_issue",
+                "phone_number": phone_number,
+                "container_id": container_id,
+                "url": url,
+                "status_code": e.response.status_code if e.response else None,
+                "response": e.response.text[:500] if e.response else str(e),
+                "error": str(e),
+                "payload": payload
+            }
+            
+            print(f"❌ HTTP error creating Jira issue for {phone_number}:")
+            print(f"   Status: {error_detail['status_code']}")
+            print(f"   Response: {error_detail['response']}")
+            print(f"   Error: {error_detail['error']}")
+            if e.response:
+                try:
+                    error_data = e.response.json()
+                    print(f"   Error Messages: {error_data.get('errorMessages', [])}")
+                    print(f"   Errors: {error_data.get('errors', {})}")
+                except:
+                    pass
+            
+            return None
+            
+        except requests.exceptions.RequestException as e:
+            error_detail = {
+                "operation": "create_issue",
+                "phone_number": phone_number,
+                "container_id": container_id,
+                "url": url,
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "payload": payload
+            }
+            
+            print(f"❌ Network error creating Jira issue for {phone_number}:")
+            print(f"   Error Type: {error_detail['error_type']}")
+            print(f"   Error: {error_detail['error']}")
+            
+            return None
+            
         except Exception as exc:
-            print(f"⚠️ Failed to create Jira issue for {phone_number}: {exc}")
+            error_detail = {
+                "operation": "create_issue",
+                "phone_number": phone_number,
+                "container_id": container_id,
+                "url": url,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "payload": payload
+            }
+            
+            print(f"❌ Unexpected error creating Jira issue for {phone_number}:")
+            print(f"   Error Type: {error_detail['error_type']}")
+            print(f"   Error: {error_detail['error']}")
+            print(f"   Traceback: {traceback.format_exc()}")
+            
             return None
 
     def update_item_status(
