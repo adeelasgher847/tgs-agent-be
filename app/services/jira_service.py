@@ -247,22 +247,24 @@ class JiraService(BaseCRMService):
             "lead": project_lead_account_id
         })
         
-        # API v3 formats - Try WITHOUT projectLead first
-        # Format 6: v3 Business type WITHOUT projectLead
+        # API v3 formats - projectLead is REQUIRED, try string format first
+        # Format 6: v3 Business with projectLead as accountId string
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
-            "projectTypeKey": "business"
+            "projectTypeKey": "business",
+            "projectLead": project_lead_account_id  # Try as string, not object
         })
         
-        # Format 7: v3 Software type WITHOUT projectLead
+        # Format 7: v3 Software with projectLead as accountId string
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
-            "projectTypeKey": "software"
+            "projectTypeKey": "software",
+            "projectLead": project_lead_account_id  # Try as string
         })
         
-        # Format 8: v3 Business WITH projectLead (fallback)
+        # Format 8: v3 Business with projectLead as object (fallback)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -270,7 +272,7 @@ class JiraService(BaseCRMService):
             "projectLead": {"accountId": project_lead_account_id}
         })
         
-        # Format 9: v3 Software WITH projectLead
+        # Format 9: v3 Software with projectLead as object (fallback)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -280,29 +282,31 @@ class JiraService(BaseCRMService):
         
         # Format 10-12: With templates (only if template exists)
         if project_template_key:
-            # Format 10: v2 with template WITHOUT lead
+            # Format 10: v3 with template and projectLead as string
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key
+                "projectTemplateKey": project_template_key,
+                "projectLead": project_lead_account_id  # Try as string
             })
             
-            # Format 11: v3 with template WITHOUT projectLead
-            payloads_to_try.append({
-                "key": project_key,
-                "name": container_name,
-                "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key
-            })
-            
-            # Format 12: v3 with template WITH projectLead (fallback)
+            # Format 11: v3 with template and projectLead as object
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
                 "projectTemplateKey": project_template_key,
                 "projectLead": {"accountId": project_lead_account_id}
+            })
+            
+            # Format 12: v2 with template and lead (last resort)
+            payloads_to_try.append({
+                "key": project_key,
+                "name": container_name,
+                "projectTypeKey": "business",
+                "projectTemplateKey": project_template_key,
+                "lead": project_lead_account_id
             })
         
         last_error = None
