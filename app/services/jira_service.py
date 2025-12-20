@@ -111,7 +111,9 @@ class JiraService(BaseCRMService):
             pass
         
         # Project doesn't exist, create it
-        create_url = f"{self.server_url}/rest/api/3/project"
+        # Try API v2 first (more stable for project creation)
+        create_url_v2 = f"{self.server_url}/rest/api/2/project"
+        create_url_v3 = f"{self.server_url}/rest/api/3/project"
         
         # Get current user's account ID for projectLead (required by Jira)
         project_lead_account_id = None
@@ -204,83 +206,123 @@ class JiraService(BaseCRMService):
         if not project_template_key:
             print(f"⚠️ Warning: No project templates found. Will try without template.")
         
-        # Create project payload - Jira API v3 format
-        # Try multiple payload formats as Jira API can be picky
-        # Start with simpler formats (without templates) as they're more reliable
+        # Create project payload - Try both API v2 and v3 formats
+        # API v2 is more stable for project creation
         payloads_to_try = []
         
-        # Format 1: Minimal payload (only required fields) - most reliable
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectLead": {"accountId": project_lead_account_id}
-        })
-        
-        # Format 2: Business type without template
+        # API v2 formats (more reliable) - use "lead" instead of "projectLead"
+        # Format 1: v2 Business type with assigneeType
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "business",
-            "projectLead": {"accountId": project_lead_account_id}
+            "lead": project_lead_account_id,  # v2 uses "lead" (string)
+            "assigneeType": "PROJECT_LEAD",
+            "description": f"Scheduled calls project for {container_name}"
         })
         
-        # Format 3: Software type without template
+        # Format 2: v2 Software type with assigneeType
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "software",
-            "projectLead": {"accountId": project_lead_account_id}
+            "lead": project_lead_account_id,
+            "assigneeType": "PROJECT_LEAD",
+            "description": f"Scheduled calls project for {container_name}"
         })
         
-        # Format 4: Business type with projectLead as string (fallback)
+        # Format 3: v2 Minimal (without projectTypeKey)
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "lead": project_lead_account_id,
+            "assigneeType": "PROJECT_LEAD",
+            "description": f"Scheduled calls project for {container_name}"
+        })
+        
+        # API v3 formats
+        # Format 4: v3 Minimal with description
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectLead": {"accountId": project_lead_account_id},
+            "description": f"Scheduled calls project for {container_name}"
+        })
+        
+        # Format 5: v3 Business type with description
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
             "projectTypeKey": "business",
-            "projectLead": project_lead_account_id
+            "projectLead": {"accountId": project_lead_account_id},
+            "description": f"Scheduled calls project for {container_name}"
         })
         
-        # Format 5-7: With templates (only if template exists)
+        # Format 6: v3 Software type with description
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectTypeKey": "software",
+            "projectLead": {"accountId": project_lead_account_id},
+            "description": f"Scheduled calls project for {container_name}"
+        })
+        
+        # Format 7-9: With templates (only if template exists)
         if project_template_key:
-            # Format 5: Business with template
+            # Format 7: v2 with template
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTypeKey": "business",
                 "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id}
+                "lead": project_lead_account_id,
+                "assigneeType": "PROJECT_LEAD",
+                "description": f"Scheduled calls project for {container_name}"
             })
             
-            # Format 6: Software with template
+            # Format 8: v3 with template
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
-                "projectTypeKey": "software",
+                "projectTypeKey": "business",
                 "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id}
+                "projectLead": {"accountId": project_lead_account_id},
+                "description": f"Scheduled calls project for {container_name}"
             })
             
-            # Format 7: Template without projectTypeKey
+            # Format 9: v3 template without projectTypeKey
             payloads_to_try.append({
                 "key": project_key,
                 "name": container_name,
                 "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id}
+                "projectLead": {"accountId": project_lead_account_id},
+                "description": f"Scheduled calls project for {container_name}"
             })
         
         last_error = None
         total_formats = len(payloads_to_try)
         for idx, payload in enumerate(payloads_to_try, 1):
             try:
-                # Log payload for debugging (mask accountId for security)
+                # Determine which endpoint to use based on payload format
+                # v2 uses "lead", v3 uses "projectLead"
+                if "lead" in payload:
+                    create_url = create_url_v2
+                    api_version = "v2"
+                else:
+                    create_url = create_url_v3
+                    api_version = "v3"
+                
+                # Log payload for debugging (mask accountId/lead for security)
                 payload_log = payload.copy()
-                if "projectLead" in payload_log:
+                if "lead" in payload_log:
+                    payload_log["lead"] = "***masked***"
+                elif "projectLead" in payload_log:
                     if isinstance(payload_log["projectLead"], dict):
                         payload_log["projectLead"] = {"accountId": "***masked***"}
                     else:
                         payload_log["projectLead"] = "***masked***"
                 
-                print(f"🔍 Trying Jira project creation format {idx}/{total_formats} with key: {project_key}")
+                print(f"🔍 Trying Jira project creation format {idx}/{total_formats} (API {api_version}) with key: {project_key}")
                 print(f"   Payload: {json.dumps(payload_log, indent=2)}")
                 
                 response = requests.post(create_url, json=payload, headers=self._headers(), timeout=30)
@@ -288,7 +330,7 @@ class JiraService(BaseCRMService):
                 project_data = response.json()
                 
                 created_key = project_data.get("key", project_key)
-                print(f"✅ Successfully created Jira project: {created_key}")
+                print(f"✅ Successfully created Jira project: {created_key} (using API {api_version})")
                 return {
                     "id": created_key,
                     "url": self.build_container_url(created_key),
