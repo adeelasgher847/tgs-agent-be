@@ -122,7 +122,12 @@ class JiraService(BaseCRMService):
             if user_response.status_code == 200:
                 user_data = user_response.json()
                 project_lead_account_id = user_data.get("accountId")
+                if project_lead_account_id:
+                    print(f"✅ Got project lead account ID: {project_lead_account_id[:10]}... (from /myself)")
+                else:
+                    print(f"⚠️ /myself returned user data but no accountId: {user_data}")
             else:
+                print(f"⚠️ /myself endpoint returned {user_response.status_code}: {user_response.text[:200]}")
                 # Fallback: try to get account ID from email search
                 search_url = f"{self.server_url}/rest/api/3/user/search"
                 search_params = {"query": self.email}
@@ -131,8 +136,15 @@ class JiraService(BaseCRMService):
                     users = search_response.json()
                     if users:
                         project_lead_account_id = users[0].get("accountId")
+                        if project_lead_account_id:
+                            print(f"✅ Got project lead account ID: {project_lead_account_id[:10]}... (from user search)")
+                        else:
+                            print(f"⚠️ User search returned users but no accountId in first user: {users[0] if users else 'No users'}")
+                else:
+                    print(f"⚠️ User search returned {search_response.status_code}: {search_response.text[:200]}")
         except Exception as e:
             print(f"⚠️ Warning: Could not get project lead account ID: {e}")
+            print(f"   Traceback: {traceback.format_exc()}")
         
         if not project_lead_account_id:
             raise ValueError("Could not get project lead account ID. Please ensure your Jira API token has proper permissions.")
@@ -194,29 +206,17 @@ class JiraService(BaseCRMService):
         
         # Create project payload - Jira API v3 format
         # Try multiple payload formats as Jira API can be picky
+        # Start with simpler formats (without templates) as they're more reliable
         payloads_to_try = []
         
-        # Format 1: With template + business type (most common for Jira Cloud)
-        if project_template_key:
-            payloads_to_try.append({
-                "key": project_key,
-                "name": container_name,
-                "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id}
-            })
+        # Format 1: Minimal payload (only required fields) - most reliable
+        payloads_to_try.append({
+            "key": project_key,
+            "name": container_name,
+            "projectLead": {"accountId": project_lead_account_id}
+        })
         
-        # Format 2: With template + software type
-        if project_template_key:
-            payloads_to_try.append({
-                "key": project_key,
-                "name": container_name,
-                "projectTypeKey": "software",
-                "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id}
-            })
-        
-        # Format 3: Business type with projectLead as object (no template)
+        # Format 2: Business type without template
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -224,7 +224,7 @@ class JiraService(BaseCRMService):
             "projectLead": {"accountId": project_lead_account_id}
         })
         
-        # Format 4: Software type with projectLead as object (no template)
+        # Format 3: Software type without template
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -232,7 +232,7 @@ class JiraService(BaseCRMService):
             "projectLead": {"accountId": project_lead_account_id}
         })
         
-        # Format 5: Business type with projectLead as string
+        # Format 4: Business type with projectLead as string (fallback)
         payloads_to_try.append({
             "key": project_key,
             "name": container_name,
@@ -240,12 +240,33 @@ class JiraService(BaseCRMService):
             "projectLead": project_lead_account_id
         })
         
-        # Format 6: Minimal payload with projectLead as object
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectLead": {"accountId": project_lead_account_id}
-        })
+        # Format 5-7: With templates (only if template exists)
+        if project_template_key:
+            # Format 5: Business with template
+            payloads_to_try.append({
+                "key": project_key,
+                "name": container_name,
+                "projectTypeKey": "business",
+                "projectTemplateKey": project_template_key,
+                "projectLead": {"accountId": project_lead_account_id}
+            })
+            
+            # Format 6: Software with template
+            payloads_to_try.append({
+                "key": project_key,
+                "name": container_name,
+                "projectTypeKey": "software",
+                "projectTemplateKey": project_template_key,
+                "projectLead": {"accountId": project_lead_account_id}
+            })
+            
+            # Format 7: Template without projectTypeKey
+            payloads_to_try.append({
+                "key": project_key,
+                "name": container_name,
+                "projectTemplateKey": project_template_key,
+                "projectLead": {"accountId": project_lead_account_id}
+            })
         
         last_error = None
         total_formats = len(payloads_to_try)
