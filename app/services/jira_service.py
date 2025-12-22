@@ -48,6 +48,72 @@ class JiraService(BaseCRMService):
     def build_container_url(self, container_id: str) -> str:
         """Build URL for Jira project"""
         return f"{self.server_url}/browse/{container_id}"
+    
+    @staticmethod
+    def normalize_name(name: str) -> str:
+        """
+        Normalize field name for matching:
+        - Strip leading/trailing whitespace
+        - Collapse multiple spaces to single
+        - Lower-case
+        
+        Args:
+            name: Field name to normalize
+            
+        Returns:
+            Normalized field name
+        """
+        if not name:
+            return ""
+        # Collapse multiple whitespace to single space, strip, then lower
+        normalized = re.sub(r"\s+", " ", name.strip()).lower()
+        return normalized
+    
+    def build_field_map_from_createmeta(self, container_id: str, issuetype: str = "Task") -> Dict[str, Dict[str, Any]]:
+        """
+        Build field map from createmeta endpoint (source of truth for project-specific fields).
+        
+        Args:
+            container_id: Jira project key
+            issuetype: Issue type name (default: "Task")
+            
+        Returns:
+            Dict mapping normalized_field_name -> {"id": field_id, "name": original_name, "def": field_def}
+        """
+        createmeta_map = {}
+        
+        try:
+            create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames={issuetype}&expand=projects.issuetypes.fields"
+            metadata_response = requests.get(create_metadata_url, headers=self._headers(), timeout=20)
+            
+            if metadata_response.status_code == 200:
+                metadata_data = metadata_response.json()
+                if "projects" in metadata_data and len(metadata_data["projects"]) > 0:
+                    project_data = metadata_data["projects"][0]
+                    if "issuetypes" in project_data and len(project_data["issuetypes"]) > 0:
+                        issue_type = project_data["issuetypes"][0]
+                        if "fields" in issue_type:
+                            for field_id, field_def in issue_type["fields"].items():
+                                field_name = field_def.get("name", "")
+                                normalized_name = self.normalize_name(field_name)
+                                
+                                if normalized_name:
+                                    # If multiple fields match same normalized name, prefer the one already in map
+                                    # (createmeta fields are prioritized)
+                                    if normalized_name not in createmeta_map:
+                                        createmeta_map[normalized_name] = {
+                                            "id": field_id,
+                                            "name": field_name,
+                                            "def": field_def
+                                        }
+                                    else:
+                                        # Log warning if duplicate found
+                                        existing_id = createmeta_map[normalized_name]["id"]
+                                        print(f"   ⚠️ Duplicate normalized name '{normalized_name}': {existing_id} vs {field_id}, keeping {existing_id}")
+        except Exception as e:
+            print(f"   ⚠️ Failed to fetch createmeta fields: {e}")
+        
+        return createmeta_map
 
     def _text_to_adf(self, text: str) -> Dict:
         """
@@ -435,8 +501,16 @@ class JiraService(BaseCRMService):
                                         pass
                                     
                                     print(f"📋 Found required field: {field_name} ({field_id}) - type: {field_type}")
+                                    if field_type == "option" and allowed_values:
+                                        print(f"   Available options: {[opt.get('value') or opt.get('name') for opt in allowed_values]}")
         except Exception as e:
             print(f"⚠️ Failed to fetch required fields: {e}")
+            import traceback
+            print(f"   Traceback: {traceback.format_exc()}")
+        
+        print(f"📊 Total required fields detected: {len(required_fields)}")
+        if required_fields:
+            print(f"   Required field IDs: {list(required_fields.keys())}")
         
         return required_fields
 
@@ -472,16 +546,25 @@ class JiraService(BaseCRMService):
                                 allowed_values = field_def.get("allowedValues", [])
                                 
                                 if allowed_values:
-                                    # Try to find preferred value (case-insensitive)
+                                    # Try to find preferred value (case-insensitive, check both value and name)
                                     for option in allowed_values:
                                         option_value = option.get("value", "")
+                                        option_name = option.get("name", "")
+                                        
+                                        # Check exact match first
                                         if option_value.lower() == preferred_value.lower():
                                             return option_value
+                                        if option_name.lower() == preferred_value.lower():
+                                            return option_value if option_value else option_name
+                                        
+                                        # Check partial match (e.g., "No" in "No Email")
+                                        if preferred_value.lower() in option_value.lower() or preferred_value.lower() in option_name.lower():
+                                            return option_value if option_value else option_name
                                     
                                     # If preferred not found, return first available option
                                     first_option = allowed_values[0].get("value", "")
                                     if first_option:
-                                        print(f"⚠️ Preferred value '{preferred_value}' not found in Email Sent field. Using '{first_option}' instead.")
+                                        print(f"⚠️ Preferred value '{preferred_value}' not found in Email Sent field. Available: {[opt.get('value') or opt.get('name') for opt in allowed_values]}. Using '{first_option}' instead.")
                                         return first_option
                                     
                                     # If no value in option, try name
@@ -590,14 +673,62 @@ class JiraService(BaseCRMService):
                     f"Please check your Jira server URL and API credentials."
                 )
         else:
-            # No project_key provided - auto-create new project
-            print(f"🔍 No project_key provided. Creating new Jira project for: {container_name}")
+            # No project_key provided - check if project with same name exists, otherwise create new
+            print(f"🔍 No project_key provided. Checking for existing project with name: {container_name}")
+            
+            # First, try to find existing project by name
+            try:
+                # Get all projects and search by name
+                projects_url = f"{self.server_url}/rest/api/3/project"
+                projects_response = requests.get(projects_url, headers=self._headers(), timeout=20)
+                
+                if projects_response.status_code == 200:
+                    all_projects = projects_response.json()
+                    # Search for project with matching name
+                    for project in all_projects:
+                        if project.get("name", "").strip() == container_name.strip():
+                            existing_key = project.get("key", "")
+                            print(f"✅ Found existing Jira project with same name: {existing_key}")
+                            return {
+                                "id": existing_key,
+                                "url": self.build_container_url(existing_key),
+                            }
+                    print(f"   No existing project found with name '{container_name}', creating new one...")
+            except Exception as search_error:
+                print(f"   ⚠️ Could not search for existing projects: {search_error}, proceeding with creation...")
+            
+            # No existing project found - create new one
             generated_key = self._generate_unique_project_key(container_name)
-            return self._create_jira_project(container_name, generated_key)
+            try:
+                return self._create_jira_project(container_name, generated_key)
+            except ValueError as create_error:
+                # If creation fails due to name conflict, try to find the project again
+                error_str = str(create_error)
+                if "project with that name already exists" in error_str.lower() or "projectname" in error_str.lower():
+                    print(f"   ⚠️ Project name conflict detected. Searching for existing project...")
+                    try:
+                        projects_url = f"{self.server_url}/rest/api/3/project"
+                        projects_response = requests.get(projects_url, headers=self._headers(), timeout=20)
+                        if projects_response.status_code == 200:
+                            all_projects = projects_response.json()
+                            for project in all_projects:
+                                if project.get("name", "").strip() == container_name.strip():
+                                    existing_key = project.get("key", "")
+                                    print(f"✅ Found existing Jira project: {existing_key}")
+                                    return {
+                                        "id": existing_key,
+                                        "url": self.build_container_url(existing_key),
+                                    }
+                    except Exception as retry_error:
+                        print(f"   ⚠️ Failed to find existing project: {retry_error}")
+                
+                # Re-raise the original error if we couldn't find existing project
+                raise create_error
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
         """
         Get existing custom field IDs. If fields don't exist, automatically create them.
+        Uses createmeta as source of truth, with robust name normalization to prevent duplicates.
         
         Args:
             container_id: Jira project key
@@ -609,74 +740,101 @@ class JiraService(BaseCRMService):
         missing_fields = []
         
         try:
-            # Get all fields (both built-in and custom) - Global fields
+            # Step 1: Get createmeta fields (source of truth - fields available for Task in this project)
+            print(f"🔍 Fetching createmeta fields for project {container_id}...")
+            createmeta_map = self.build_field_map_from_createmeta(container_id, "Task")
+            print(f"   ✅ Found {len(createmeta_map)} fields in createmeta")
+            
+            # Step 2: Get all global fields as fallback
+            print(f"🔍 Fetching global fields as fallback...")
             url = f"{self.server_url}/rest/api/3/field"
             response = requests.get(url, headers=self._headers(), timeout=20)
             response.raise_for_status()
             all_fields = response.json()
             
-            # Also try issue create metadata endpoint (shows fields available for creating issues in this project)
-            create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
-            try:
-                metadata_response = requests.get(create_metadata_url, headers=self._headers(), timeout=20)
-                
-                if metadata_response.status_code == 200:
-                    metadata_data = metadata_response.json()
-                    if "projects" in metadata_data and len(metadata_data["projects"]) > 0:
-                        project_data = metadata_data["projects"][0]
-                        if "issuetypes" in project_data and len(project_data["issuetypes"]) > 0:
-                            issue_type = project_data["issuetypes"][0]
-                            if "fields" in issue_type:
-                                metadata_fields = issue_type["fields"]
-                                existing_field_ids = {f.get("id", "") for f in all_fields}
-                                
-                                for field_id, field_def in metadata_fields.items():
-                                    if field_id not in existing_field_ids:
-                                        standard_field = {
-                                            "id": field_id,
-                                            "name": field_def.get("name", ""),
-                                            "type": field_def.get("schema", {}).get("type", ""),
-                                            "custom": field_def.get("custom", False)
-                                        }
-                                        all_fields.append(standard_field)
-            except Exception as e:
-                # Silently fail - use only global fields if metadata endpoint fails
-                pass
+            # Build normalized map of global fields (for fallback matching)
+            global_field_by_normalized_name = {}
+            for field in all_fields:
+                field_name = field.get("name", "")
+                normalized_name = self.normalize_name(field_name)
+                if normalized_name:
+                    # If duplicate, prefer the one already in map (first one wins)
+                    if normalized_name not in global_field_by_normalized_name:
+                        global_field_by_normalized_name[normalized_name] = field
             
-            # Map fields by name (case-insensitive)
-            field_by_name = {f.get("name", "").lower(): f for f in all_fields}
+            print(f"   ✅ Found {len(global_field_by_normalized_name)} unique global fields (normalized)")
             
-            # Check for required fields and create missing ones
+            # Step 3: Map required fields, prioritizing createmeta
             for field_def in self.REQUIRED_FIELDS:
                 field_name = field_def["title"]
                 field_key = field_def["key"]
                 field_type = field_def["type"]
+                normalized_field_name = self.normalize_name(field_name)
                 
                 # Status is a built-in field
                 if field_key == "status":
                     field_map[field_key] = "status"
+                    print(f"   ✅ Mapped {field_key} -> status (built-in)")
                     continue
                 
-                # Check if field exists
-                if field_name.lower() in field_by_name:
-                    field_id = field_by_name[field_name.lower()].get("id", "")
-                    if field_id:
-                        field_map[field_key] = field_id
-                    else:
-                        missing_fields.append({"name": field_name, "type": field_type, "key": field_key})
+                matched_field_id = None
+                matched_source = None
+                
+                # Priority 1: Check createmeta first (source of truth)
+                if normalized_field_name in createmeta_map:
+                    matched_field_id = createmeta_map[normalized_field_name]["id"]
+                    matched_source = "createmeta"
+                    original_name = createmeta_map[normalized_field_name]["name"]
+                    print(f"   ✅ Matched '{field_name}' -> {matched_field_id} (createmeta, original: '{original_name}')")
+                
+                # Priority 2: Fallback to global fields
+                elif normalized_field_name in global_field_by_normalized_name:
+                    matched_field = global_field_by_normalized_name[normalized_field_name]
+                    matched_field_id = matched_field.get("id", "")
+                    matched_source = "global"
+                    original_name = matched_field.get("name", "")
+                    print(f"   ✅ Matched '{field_name}' -> {matched_field_id} (global, original: '{original_name}')")
+                
+                # Priority 3: Check if multiple fields match (safety check)
+                if not matched_field_id:
+                    # Check for partial matches in createmeta
+                    createmeta_matches = [k for k in createmeta_map.keys() if normalized_field_name in k or k in normalized_field_name]
+                    if createmeta_matches:
+                        # Use the first match from createmeta
+                        matched_normalized = createmeta_matches[0]
+                        matched_field_id = createmeta_map[matched_normalized]["id"]
+                        matched_source = "createmeta (partial)"
+                        original_name = createmeta_map[matched_normalized]["name"]
+                        print(f"   ⚠️ Partial match '{field_name}' -> {matched_field_id} (createmeta partial, original: '{original_name}')")
+                
+                if matched_field_id:
+                    field_map[field_key] = matched_field_id
                 else:
+                    # Field not found in either source - mark for creation
                     missing_fields.append({"name": field_name, "type": field_type, "key": field_key})
+                    print(f"   ⚠️ Field '{field_name}' not found, will create new")
             
-            # Create missing fields automatically
+            # Step 4: Create missing fields only if not found in BOTH sources
             if missing_fields:
                 print(f"⚠️ {len(missing_fields)} custom fields missing. Creating them automatically...")
                 for field_info in missing_fields:
+                    # Double-check: maybe field was created between checks
+                    normalized_name = self.normalize_name(field_info["name"])
+                    
+                    # Re-check createmeta after potential creation
+                    if normalized_name in createmeta_map:
+                        field_id = createmeta_map[normalized_name]["id"]
+                        field_map[field_info["key"]] = field_id
+                        print(f"   ✅ Found existing field '{field_info['name']}' -> {field_id} (after re-check)")
+                        continue
+                    
+                    # Create new field
                     field_id = self._create_custom_field(field_info["name"], field_info["type"])
                     if field_id:
                         field_map[field_info["key"]] = field_id
-                        print(f"✅ Created and mapped field: {field_info['name']} -> {field_id}")
+                        print(f"   ✅ Created and mapped field: {field_info['name']} -> {field_id}")
                     else:
-                        print(f"❌ Failed to create field: {field_info['name']}")
+                        print(f"   ❌ Failed to create field: {field_info['name']}")
                         # Still raise error if critical field creation fails
                         raise ValueError(f"Failed to create required custom field: {field_info['name']}")
             
@@ -736,10 +894,10 @@ class JiraService(BaseCRMService):
         if missing_in_map:
             raise ValueError(f"Missing required fields in field_map: {', '.join(missing_in_map)}")
         
-        # Step 1: Create issue with required fields + basic fields
-        # First, get required fields from project configuration
+        # Step 1: Get required fields for creation (fields that MUST be set during creation)
         required_fields = self._get_required_fields_for_creation(container_id)
         
+        # Step 2: Create issue with basic fields + required fields
         basic_fields = {
             "project": {"key": container_id},
             "summary": f"Scheduled Call: {phone_number}",
@@ -747,28 +905,168 @@ class JiraService(BaseCRMService):
             "issuetype": {"name": "Task"},
         }
         
-        # Add required fields from project configuration (only if not already set)
-        # This ensures we don't overwrite our manually set fields (summary, project, issuetype, description)
-        # Also skip empty string values for text fields - they'll be set in custom fields update
-        for field_id, field_value in required_fields.items():
-            if field_id not in basic_fields:
-                # Don't add empty strings - they'll be handled in custom fields update step
-                if field_value != "" and field_value is not None:
+        # Add required fields to basic_fields (these MUST be set during creation)
+        # Map required field IDs to our field values by matching field names
+        try:
+            create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
+            metadata_resp = requests.get(create_metadata_url, headers=self._headers(), timeout=10)
+            if metadata_resp.status_code == 200:
+                metadata = metadata_resp.json()
+                if "projects" in metadata and len(metadata["projects"]) > 0:
+                    project = metadata["projects"][0]
+                    if "issuetypes" in project and len(project["issuetypes"]) > 0:
+                        issue_type = project["issuetypes"][0]
+                        if "fields" in issue_type:
+                            for req_field_id in required_fields.keys():
+                                if req_field_id in issue_type["fields"]:
+                                    field_def = issue_type["fields"][req_field_id]
+                                    field_name = field_def.get("name", "").strip().lower()
+                                    
+                                    print(f"   🔍 Processing required field: '{field_name}' ({req_field_id})")
+                                    
+                                    # Check if this is Email Sent field
+                                    if "email" in field_name and "sent" in field_name:
+                                        # This is Email Sent - set to "No"
+                                        email_sent_value = self._get_select_field_value(req_field_id, container_id, preferred_value="No")
+                                        if email_sent_value:
+                                            basic_fields[req_field_id] = {"value": email_sent_value}
+                                            print(f"   ✅ Set required Email Sent field {req_field_id} to '{email_sent_value}'")
+                                        else:
+                                            # If no value found, use first available option
+                                            allowed_values = field_def.get("allowedValues", [])
+                                            if allowed_values:
+                                                first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
+                                                basic_fields[req_field_id] = {"value": first_option}
+                                                print(f"   ⚠️ Using first available option for Email Sent: '{first_option}'")
+                                    # Check if this is Impact field (or other required select fields)
+                                    elif field_def.get("schema", {}).get("type") == "option":
+                                        # Select field - use first available option
+                                        allowed_values = field_def.get("allowedValues", [])
+                                        if allowed_values:
+                                            first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
+                                            basic_fields[req_field_id] = {"value": first_option}
+                                            print(f"   ✅ Set required select field '{field_name}' ({req_field_id}) to '{first_option}'")
+                                    # For other required fields, map to our actual values by matching field names
+                                    elif req_field_id not in basic_fields:
+                                        # Try to match required field to our field_map by name
+                                        matched = False
+                                        
+                                        # Match by field name patterns
+                                        if "agent" in field_name and "id" in field_name:
+                                            basic_fields[req_field_id] = agent_id
+                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → agent_id = {agent_id}")
+                                            matched = True
+                                        elif "call" in field_name and "time" in field_name and "utc" in field_name:
+                                            basic_fields[req_field_id] = call_time_utc
+                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → call_time_utc = {call_time_utc}")
+                                            matched = True
+                                        elif "tenant" in field_name and "id" in field_name:
+                                            basic_fields[req_field_id] = tenant_id
+                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → tenant_id = {tenant_id}")
+                                            matched = True
+                                        elif "user" in field_name and "id" in field_name and "agent" not in field_name and "tenant" not in field_name:
+                                            basic_fields[req_field_id] = user_id
+                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → user_id = {user_id}")
+                                            matched = True
+                                        elif "batch" in field_name and "id" in field_name and batch_id:
+                                            basic_fields[req_field_id] = batch_id
+                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → batch_id = {batch_id}")
+                                            matched = True
+                                        elif "phone" in field_name and "number" in field_name and "id" in field_name and phone_number_id:
+                                            basic_fields[req_field_id] = phone_number_id
+                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → phone_number_id = {phone_number_id}")
+                                            matched = True
+                                        elif "call" in field_name and "session" in field_name and "id" in field_name:
+                                            basic_fields[req_field_id] = ""  # Leave blank initially
+                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → call_session_id (blank)")
+                                            matched = True
+                                        
+                                        # If not matched, use default value
+                                        if not matched:
+                                            default_value = required_fields[req_field_id]
+                                            basic_fields[req_field_id] = default_value
+                                            print(f"   ⚠️ No match found for '{field_name}' ({req_field_id}), using default value: {default_value}")
+        except Exception as e:
+            print(f"   ⚠️ Failed to map required fields: {e}")
+            import traceback
+            print(f"   Traceback: {traceback.format_exc()}")
+            # Fallback: add required fields with default values
+            for field_id, field_value in required_fields.items():
+                if field_id not in basic_fields:
                     basic_fields[field_id] = field_value
+                    print(f"   ✅ Added required field {field_id} to creation payload (fallback)")
         
-        # Ensure summary is never overwritten (defensive check)
-        if "summary" in basic_fields and basic_fields["summary"] == "":
-            basic_fields["summary"] = f"Scheduled Call: {phone_number}"
+        # Step 3: Prepare ALL custom fields for update step (fields that are NOT required/on create screen)
+        # Get list of required field IDs to exclude from update
+        required_field_ids = set(required_fields.keys())
+        custom_fields_to_update = {}
         
-        # Also add Email Sent if it's required and we have it in field_map
-        if "email_sent" in field_map:
+        # Set all fields from field_map (except status and required fields which are handled during creation)
+        if "agent_id" in field_map and field_map["agent_id"]:
+            # Only add if not in required fields (not set during creation)
+            if field_map["agent_id"] not in required_field_ids:
+                custom_fields_to_update[field_map["agent_id"]] = agent_id
+                print(f"   📦 Added agent_id field: {field_map['agent_id']} = {agent_id}")
+            else:
+                print(f"   ⏭️ Skipped agent_id (already set in required fields: {field_map['agent_id']})")
+        
+        if "call_time_utc" in field_map and field_map["call_time_utc"]:
+            if field_map["call_time_utc"] not in required_field_ids:
+                custom_fields_to_update[field_map["call_time_utc"]] = call_time_utc
+                print(f"   📦 Added call_time_utc field: {field_map['call_time_utc']} = {call_time_utc}")
+            else:
+                print(f"   ⏭️ Skipped call_time_utc (already set in required fields: {field_map['call_time_utc']})")
+        
+        if "tenant_id" in field_map and field_map["tenant_id"]:
+            if field_map["tenant_id"] not in required_field_ids:
+                custom_fields_to_update[field_map["tenant_id"]] = tenant_id
+                print(f"   📦 Added tenant_id field: {field_map['tenant_id']} = {tenant_id}")
+            else:
+                print(f"   ⏭️ Skipped tenant_id (already set in required fields: {field_map['tenant_id']})")
+        
+        if "user_id" in field_map and field_map["user_id"]:
+            if field_map["user_id"] not in required_field_ids:
+                custom_fields_to_update[field_map["user_id"]] = user_id
+                print(f"   📦 Added user_id field: {field_map['user_id']} = {user_id}")
+            else:
+                print(f"   ⏭️ Skipped user_id (already set in required fields: {field_map['user_id']})")
+        
+        if batch_id and "batch_id" in field_map and field_map["batch_id"]:
+            if field_map["batch_id"] not in required_field_ids:
+                custom_fields_to_update[field_map["batch_id"]] = batch_id
+                print(f"   📦 Added batch_id field: {field_map['batch_id']} = {batch_id}")
+            else:
+                print(f"   ⏭️ Skipped batch_id (already set in required fields: {field_map['batch_id']})")
+        
+        if phone_number_id and "phone_number_id" in field_map and field_map["phone_number_id"]:
+            if field_map["phone_number_id"] not in required_field_ids:
+                custom_fields_to_update[field_map["phone_number_id"]] = phone_number_id
+                print(f"   📦 Added phone_number_id field: {field_map['phone_number_id']} = {phone_number_id}")
+            else:
+                print(f"   ⏭️ Skipped phone_number_id (already set in required fields: {field_map['phone_number_id']})")
+        
+        if "call_session_id" in field_map and field_map["call_session_id"]:
+            # Only add if not already in basic_fields (not required)
+            if field_map["call_session_id"] not in required_field_ids and field_map["call_session_id"] not in basic_fields:
+                custom_fields_to_update[field_map["call_session_id"]] = ""  # Leave blank initially
+                print(f"   📦 Added call_session_id field: {field_map['call_session_id']} = (blank)")
+            else:
+                print(f"   ⏭️ Skipped call_session_id (already set in required fields)")
+        
+        # Email Sent: Only add to update if it's NOT in required fields (already set in basic_fields)
+        if "email_sent" in field_map and field_map["email_sent"]:
             email_sent_field_id = field_map["email_sent"]
-            # Check if this field is already in basic_fields (from required_fields)
-            if email_sent_field_id not in basic_fields:
-                # Try to get valid value and add it
-                valid_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
-                if valid_value:
-                    basic_fields[email_sent_field_id] = {"value": valid_value}
+            # Check if this field is already in basic_fields (required field) OR in required_field_ids
+            if email_sent_field_id not in basic_fields and email_sent_field_id not in required_field_ids:
+                # Not required, add to update step
+                email_sent_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
+                if email_sent_value:
+                    custom_fields_to_update[email_sent_field_id] = {"value": email_sent_value}
+                    print(f"   📦 Added email_sent field to update: {email_sent_field_id} = {email_sent_value}")
+                else:
+                    print(f"   ⚠️ Could not set Email Sent field - no valid value found")
+            else:
+                print(f"   ✅ Email Sent field already set in required fields (skipping update step)")
         
         basic_payload = {"fields": basic_fields}
         
@@ -785,53 +1083,70 @@ class JiraService(BaseCRMService):
                 issue_id = issue_data.get("id", "")
                 print(f"✅ Successfully created Jira issue {issue_key} (ID: {issue_id}) for {phone_number}")
                 
-                # Step 2: Update issue with custom fields (using PUT /issue/{issueId})
-                custom_fields = {}
-                
-                # Add custom fields using dynamic field_map
-                custom_fields[field_map["agent_id"]] = agent_id
-                custom_fields[field_map["call_time_utc"]] = call_time_utc
-                custom_fields[field_map["tenant_id"]] = tenant_id
-                custom_fields[field_map["user_id"]] = user_id
-                
-                if batch_id and "batch_id" in field_map:
-                    custom_fields[field_map["batch_id"]] = batch_id
-                
-                if phone_number_id and "phone_number_id" in field_map:
-                    custom_fields[field_map["phone_number_id"]] = phone_number_id
-                
-                # Email Sent: Set to "No" by default (Select List field)
-                if "email_sent" in field_map:
-                    email_sent_field_id = field_map["email_sent"]
-                    valid_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
-                    if valid_value:
-                        custom_fields[email_sent_field_id] = {"value": valid_value}
-                    else:
-                        print(f"⚠️ Could not set Email Sent field - no valid option found. Omitting field.")
-                
-                # Update issue with custom fields
-                if custom_fields:
+                # Step 2: Update issue with custom fields (fields not on create screen)
+                if custom_fields_to_update:
                     update_url = f"{self.server_url}/rest/api/3/issue/{issue_id}"
-                    update_payload = {"fields": custom_fields}
+                    update_payload = {"fields": custom_fields_to_update}
                     print(f"   Step 2 - Updating custom fields: {json.dumps(update_payload, indent=2)}")
+                    print(f"   Total fields to update: {len(custom_fields_to_update)}")
                     
                     try:
                         update_response = requests.put(update_url, json=update_payload, headers=self._headers(), timeout=20)
+                        print(f"   Update response status: {update_response.status_code}")
+                        
                         if update_response.status_code in [200, 204]:
                             print(f"✅ Successfully updated custom fields for issue {issue_key}")
                         else:
                             # Log error but don't fail - issue was created successfully
                             try:
                                 update_error = update_response.json()
-                                print(f"⚠️ Failed to update custom fields for issue {issue_key}: {update_error}")
-                            except:
-                                print(f"⚠️ Failed to update custom fields for issue {issue_key}: HTTP {update_response.status_code}")
+                                error_messages = update_error.get("errorMessages", [])
+                                errors_dict = update_error.get("errors", {})
+                                print(f"⚠️ Failed to update custom fields for issue {issue_key}:")
+                                print(f"   Error Messages: {error_messages}")
+                                print(f"   Errors: {errors_dict}")
+                                print(f"   Full response: {update_response.text[:500]}")
+                                
+                                # If update fails due to screen issue, try to add fields one by one
+                                print(f"   🔄 Attempting to update fields individually...")
+                                successful_updates = 0
+                                failed_updates = 0
+                                
+                                for field_id, field_value in custom_fields_to_update.items():
+                                    try:
+                                        single_field_payload = {"fields": {field_id: field_value}}
+                                        print(f"   🔍 Updating field {field_id} with value: {field_value}")
+                                        single_update = requests.put(update_url, json=single_field_payload, headers=self._headers(), timeout=20)
+                                        if single_update.status_code in [200, 204]:
+                                            print(f"   ✅ Successfully updated field {field_id}")
+                                            successful_updates += 1
+                                        else:
+                                            try:
+                                                single_error = single_update.json()
+                                                print(f"   ⚠️ Failed to update field {field_id}: {single_error}")
+                                            except:
+                                                print(f"   ⚠️ Failed to update field {field_id}: HTTP {single_update.status_code} - {single_update.text[:200]}")
+                                            failed_updates += 1
+                                    except Exception as single_field_error:
+                                        print(f"   ❌ Error updating field {field_id}: {single_field_error}")
+                                        failed_updates += 1
+                                
+                                print(f"   📊 Update summary: {successful_updates} successful, {failed_updates} failed")
+                            except Exception as parse_error:
+                                print(f"⚠️ Failed to parse update error for issue {issue_key}: {parse_error}")
+                                print(f"   Response status: {update_response.status_code}")
+                                print(f"   Response text: {update_response.text[:500]}")
                     except Exception as update_error:
                         print(f"⚠️ Error updating custom fields for issue {issue_key}: {update_error}")
+                        import traceback
+                        print(f"   Traceback: {traceback.format_exc()}")
                         # Don't fail - issue was created successfully
+                else:
+                    print(f"⚠️ No custom fields to update for issue {issue_key}")
                 
-                # Set status to "Pending" using transition API (DO NOT set status during creation)
+                # Set status using transition API - try "Pending" first, then fallback to available status
                 try:
+                    # Try "Pending" first
                     status_result = self.update_item_status(
                         container_id=container_id,
                         item_id=issue_id,
@@ -841,9 +1156,32 @@ class JiraService(BaseCRMService):
                     if status_result:
                         print(f"✅ Set status to 'Pending' for issue {issue_key}")
                     else:
-                        print(f"⚠️ Could not set status to 'Pending' for issue {issue_key} (transition not found)")
+                        # If "Pending" not available, try to get first available status (usually "To Do" or "In Progress")
+                        print(f"⚠️ 'Pending' status not available. Trying to get available statuses...")
+                        transitions_url = f"{self.server_url}/rest/api/3/issue/{issue_id}/transitions"
+                        transitions_response = requests.get(transitions_url, headers=self._headers(), timeout=20)
+                        if transitions_response.status_code == 200:
+                            transitions = transitions_response.json().get("transitions", [])
+                            if transitions:
+                                # Use first available transition (usually "To Do" or initial status)
+                                first_transition = transitions[0]
+                                transition_id = first_transition.get("id")
+                                target_status = first_transition.get("to", {}).get("name", "Unknown")
+                                
+                                # Execute transition
+                                transition_execute_url = f"{self.server_url}/rest/api/3/issue/{issue_id}/transitions"
+                                transition_payload = {"transition": {"id": transition_id}}
+                                transition_exec_response = requests.post(transition_execute_url, json=transition_payload, headers=self._headers(), timeout=20)
+                                if transition_exec_response.status_code in [200, 204]:
+                                    print(f"✅ Set status to '{target_status}' for issue {issue_key} (Pending not available)")
+                                else:
+                                    print(f"⚠️ Could not set status for issue {issue_key}")
+                            else:
+                                print(f"⚠️ No transitions available for issue {issue_key}")
+                        else:
+                            print(f"⚠️ Could not fetch transitions for issue {issue_key}")
                 except Exception as status_error:
-                    print(f"⚠️ Error setting status to 'Pending' for issue {issue_key}: {status_error}")
+                    print(f"⚠️ Error setting status for issue {issue_key}: {status_error}")
                     # Don't fail the entire operation if status transition fails
                 
                 return issue_data
@@ -1061,6 +1399,8 @@ class JiraService(BaseCRMService):
             }
             
             try:
+                print(f"🔍 Searching Jira issues with URL: {url}")
+                print(f"   JQL: {jql}")
                 response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
                 response.raise_for_status()
                 data = response.json()
@@ -1068,6 +1408,11 @@ class JiraService(BaseCRMService):
                 total = data.get("total", 0)
             except Exception as exc:
                 print(f"⚠️ Failed to search Jira issues: {exc}")
+                print(f"   URL used: {url}")
+                print(f"   Server URL: {self.server_url}")
+                if hasattr(exc, 'response') and exc.response is not None:
+                    print(f"   Response status: {exc.response.status_code}")
+                    print(f"   Response text: {exc.response.text[:200]}")
                 break
             
             if not issues:
@@ -1108,8 +1453,13 @@ class JiraService(BaseCRMService):
             raise ValueError("tenant_id or status field not found in field map")
         
         # Search issues with tenant_id and status
+        # Note: status_field_id is "status" (built-in field), so use it directly in JQL
         url = f"{self.server_url}/rest/api/3/search"
-        jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\" AND {status_field_id} = \"{pending_label}\""
+        # For built-in status field, use "status" directly; for custom status fields, use field ID
+        if status_field_id == "status":
+            jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\" AND status = \"{pending_label}\""
+        else:
+            jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\" AND {status_field_id} = \"{pending_label}\""
         payload = {
             "jql": jql,
             "startAt": 0,
@@ -1118,11 +1468,18 @@ class JiraService(BaseCRMService):
         }
         
         try:
+            print(f"🔍 Counting Jira pending issues with URL: {url}")
+            print(f"   JQL: {jql}")
             response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
             response.raise_for_status()
             data = response.json()
             return data.get("total", 0)
         except Exception as exc:
             print(f"⚠️ Failed to count Jira pending issues: {exc}")
+            print(f"   URL used: {url}")
+            print(f"   Server URL: {self.server_url}")
+            if hasattr(exc, 'response') and exc.response is not None:
+                print(f"   Response status: {exc.response.status_code}")
+                print(f"   Response text: {exc.response.text[:200]}")
             return 0
 
