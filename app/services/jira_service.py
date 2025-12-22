@@ -5,6 +5,7 @@ Jira API Service for Scheduled Calls Integration
 import json
 import re
 import traceback
+import hashlib
 from typing import Dict, List, Optional
 import requests
 from app.services.base_crm_service import BaseCRMService
@@ -48,6 +49,32 @@ class JiraService(BaseCRMService):
         """Build URL for Jira project"""
         return f"{self.server_url}/browse/{container_id}"
 
+    def _text_to_adf(self, text: str) -> Dict:
+        """
+        Convert plain text to Atlassian Document Format (ADF) for Jira API v3.
+        
+        Args:
+            text: Plain text string
+            
+        Returns:
+            ADF document structure
+        """
+        return {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": text
+                        }
+                    ]
+                }
+            ]
+        }
+
     def _headers(self) -> Dict[str, str]:
         """Get API headers with basic auth"""
         api_token = self.get_api_key()
@@ -61,618 +88,553 @@ class JiraService(BaseCRMService):
             "Accept": "application/json",
         }
 
-    def create_container(self, container_name: str, project_key: Optional[str] = None) -> Dict[str, str]:
+    def _get_current_user_account_id(self) -> Optional[str]:
         """
-        Create a Jira project for scheduled calls.
-        Automatically creates project if it doesn't exist.
-        If project_key is provided, uses that. Otherwise generates a unique key from container_name.
+        Get current user's account ID (for project lead).
+        Uses the email from initialization to get account ID.
         """
-        # Generate project key if not provided
-        if not project_key:
-            # Generate unique project key from container name
-            # Jira project keys must be: alphanumeric only (A-Z, 0-9), uppercase, max 10 chars
-            # Extract only alphanumeric characters, uppercase, max 10 chars
-            alphanumeric_only = re.sub(r'[^A-Z0-9]', '', container_name.upper())
-            if len(alphanumeric_only) >= 3:
-                project_key = alphanumeric_only[:10]
-            else:
-                # If not enough chars, use email prefix or default
-                # Try to extract from email if container_name contains email
-                if "@" in container_name:
-                    email_prefix = container_name.split("@")[0].upper()
-                    email_clean = re.sub(r'[^A-Z0-9]', '', email_prefix)
-                    if len(email_clean) >= 3:
-                        project_key = email_clean[:10]
-                    else:
-                        project_key = "SCALL"  # Default fallback
-                else:
-                    project_key = "SCALL"  # Default fallback
-        
-        # Validate project key format (Jira rules: 2-10 chars, start with letter, alphanumeric only)
-        if not re.match(r'^[A-Z][A-Z0-9]{1,9}$', project_key):
-            raise ValueError(
-                f"Invalid Jira project key format: '{project_key}'. "
-                f"Project keys must be 2-10 characters, start with a letter (A-Z), and contain only uppercase letters and numbers."
-            )
-        
-        # Check if project already exists
-        check_url = f"{self.server_url}/rest/api/3/project/{project_key}"
-        try:
-            response = requests.get(check_url, headers=self._headers(), timeout=20)
-            if response.status_code == 200:
-                # Project exists, return it
-                project_data = response.json()
-                return {
-                    "id": project_data.get("key", project_key),
-                    "url": self.build_container_url(project_data.get("key", project_key)),
-                }
-        except requests.exceptions.RequestException:
-            # Project doesn't exist, will create it
-            pass
-        
-        # Project doesn't exist, create it
-        # Try API v2 first (more stable for project creation)
-        create_url_v2 = f"{self.server_url}/rest/api/2/project"
-        create_url_v3 = f"{self.server_url}/rest/api/3/project"
-        
-        # Get current user's account ID for projectLead (required by Jira)
-        project_lead_account_id = None
         try:
             # Get current user info
-            user_url = f"{self.server_url}/rest/api/3/myself"
-            user_response = requests.get(user_url, headers=self._headers(), timeout=20)
-            if user_response.status_code == 200:
-                user_data = user_response.json()
-                project_lead_account_id = user_data.get("accountId")
-                if project_lead_account_id:
-                    print(f"✅ Got project lead account ID: {project_lead_account_id[:10]}... (from /myself)")
-                else:
-                    print(f"⚠️ /myself returned user data but no accountId: {user_data}")
-            else:
-                print(f"⚠️ /myself endpoint returned {user_response.status_code}: {user_response.text[:200]}")
-                # Fallback: try to get account ID from email search
-                search_url = f"{self.server_url}/rest/api/3/user/search"
-                search_params = {"query": self.email}
-                search_response = requests.get(search_url, headers=self._headers(), params=search_params, timeout=20)
-                if search_response.status_code == 200:
-                    users = search_response.json()
-                    if users:
-                        project_lead_account_id = users[0].get("accountId")
-                        if project_lead_account_id:
-                            print(f"✅ Got project lead account ID: {project_lead_account_id[:10]}... (from user search)")
-                        else:
-                            print(f"⚠️ User search returned users but no accountId in first user: {users[0] if users else 'No users'}")
-                else:
-                    print(f"⚠️ User search returned {search_response.status_code}: {search_response.text[:200]}")
+            url = f"{self.server_url}/rest/api/3/myself"
+            response = requests.get(url, headers=self._headers(), timeout=20)
+            response.raise_for_status()
+            user_data = response.json()
+            account_id = user_data.get("accountId") or user_data.get("accountId")
+            if account_id:
+                return account_id
+            # Fallback: try to get from email
+            return None
         except Exception as e:
-            print(f"⚠️ Warning: Could not get project lead account ID: {e}")
-            print(f"   Traceback: {traceback.format_exc()}")
+            print(f"⚠️ Failed to get current user account ID: {e}")
+            return None
+
+    def _generate_unique_project_key(self, base_name: str, max_attempts: int = 10) -> str:
+        """
+        Generate a unique Jira project key from container name.
+        Format: SC-{INITIALS} or SC-{NUMBER} if too long.
+        Jira rules: 2-10 chars, start with letter, uppercase alphanumeric only.
         
-        if not project_lead_account_id:
-            raise ValueError("Could not get project lead account ID. Please ensure your Jira API token has proper permissions.")
-        
-        # Try to get available project templates
-        project_template_key = None
-        template_options = []
-        
-        # Try multiple template endpoints
-        template_endpoints = [
-            f"{self.server_url}/rest/api/3/project/templates",
-            f"{self.server_url}/rest/api/3/project/type/business/accessible",
-            f"{self.server_url}/rest/api/3/project/type/software/accessible"
-        ]
-        
-        for endpoint in template_endpoints:
-            try:
-                templates_response = requests.get(endpoint, headers=self._headers(), timeout=20)
-                if templates_response.status_code == 200:
-                    templates = templates_response.json()
-                    # Handle both array and object responses
-                    if isinstance(templates, list):
-                        template_options.extend(templates)
-                    elif isinstance(templates, dict) and "values" in templates:
-                        template_options.extend(templates["values"])
-                    elif isinstance(templates, dict):
-                        template_options.append(templates)
-                    break
-            except Exception as e:
-                print(f"⚠️ Template endpoint {endpoint} failed: {e}")
-                continue
-        
-        # Find suitable template
-        if template_options:
-            # Prefer templates with these keywords
-            preferred_keywords = ["task", "basic", "kanban", "scrum", "blank", "empty"]
-            for template in template_options:
-                template_key = template.get("key", "") or template.get("id", "")
-                template_name = template.get("name", "").lower()
-                
-                # Check if template key or name matches preferred keywords
-                for keyword in preferred_keywords:
-                    if keyword in template_key.lower() or keyword in template_name:
-                        project_template_key = template_key
-                        print(f"✅ Found preferred template: {project_template_key}")
-                        break
-                
-                if project_template_key:
-                    break
+        Args:
+            base_name: Container name (e.g., "Scheduled Calls - user@example.com")
+            max_attempts: Maximum attempts to find unique key
             
-            # If no preferred template, use first available
-            if not project_template_key:
-                first_template = template_options[0]
-                project_template_key = first_template.get("key", "") or first_template.get("id", "")
-                print(f"✅ Using first available template: {project_template_key}")
+        Returns:
+            Unique project key (e.g., "SC-USER1")
+        """
+        # Extract initials or use hash
+        import hashlib
         
-        if not project_template_key:
-            print(f"⚠️ Warning: No project templates found. Will try without template.")
+        # Try to get meaningful key from email/name
+        if "@" in base_name:
+            # Extract email part
+            email_part = base_name.split("@")[0] if "@" in base_name else base_name
+            # Get first few uppercase letters
+            initials = "".join([c.upper() for c in email_part if c.isalpha()])[:6]
+            if not initials:
+                # Fallback: use hash
+                hash_val = hashlib.md5(base_name.encode()).hexdigest()[:6].upper()
+                initials = "SC" + hash_val[:4]
+        else:
+            # Extract uppercase letters from name
+            initials = "".join([c.upper() for c in base_name if c.isalpha()])[:6]
+            if not initials:
+                initials = "SC"
         
-        # Create project payload - Try both API v2 and v3 formats
-        # API v2 is more stable for project creation
-        payloads_to_try = []
+        # Ensure starts with letter and is uppercase
+        if not initials or not initials[0].isalpha():
+            if not initials:
+                initials = "SC"
+            else:
+                initials = "SC" + initials
         
-        # API v2 formats - Try WITHOUT lead first (GDPR strict mode issue)
-        # Format 1: v2 Business type WITHOUT lead (let Jira assign default)
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "business"
-        })
+        # Limit to 8 chars (leave room for number suffix)
+        base_key = initials[:8].upper()
         
-        # Format 2: v2 Software type WITHOUT lead
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "software"
-        })
+        # Ensure base_key is at least 2 chars (Jira minimum)
+        if len(base_key) < 2:
+            base_key = "SC"
         
-        # Format 3: v2 Minimal WITHOUT lead and projectTypeKey
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name
-        })
-        
-        # Format 4: v2 Business WITH lead (fallback if without lead fails)
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "business",
-            "lead": project_lead_account_id
-        })
-        
-        # Format 5: v2 Software WITH lead
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "software",
-            "lead": project_lead_account_id
-        })
-        
-        # API v3 formats - projectLead is REQUIRED, try string format first
-        # Format 6: v3 Business with projectLead as accountId string
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "business",
-            "projectLead": project_lead_account_id  # Try as string, not object
-        })
-        
-        # Format 7: v3 Software with projectLead as accountId string
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "software",
-            "projectLead": project_lead_account_id  # Try as string
-        })
-        
-        # Format 8: v3 Business with projectLead as object (fallback)
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "business",
-            "projectLead": {"accountId": project_lead_account_id}
-        })
-        
-        # Format 9: v3 Software with projectLead as object (fallback)
-        payloads_to_try.append({
-            "key": project_key,
-            "name": container_name,
-            "projectTypeKey": "software",
-            "projectLead": {"accountId": project_lead_account_id}
-        })
-        
-        # Format 10-12: With templates (only if template exists)
-        if project_template_key:
-            # Format 10: v3 with template and projectLead as string
-            payloads_to_try.append({
-                "key": project_key,
-                "name": container_name,
-                "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key,
-                "projectLead": project_lead_account_id  # Try as string
-            })
+        # Try base key first
+        for attempt in range(max_attempts):
+            if attempt == 0:
+                test_key = base_key[:10]  # Jira max is 10 chars
+            else:
+                # Add number suffix if needed
+                suffix = str(attempt)[:2]  # Max 2 digits
+                test_key = (base_key[:8] + suffix)[:10]
             
-            # Format 11: v3 with template and projectLead as object
-            payloads_to_try.append({
-                "key": project_key,
-                "name": container_name,
-                "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key,
-                "projectLead": {"accountId": project_lead_account_id}
-            })
-            
-            # Format 12: v2 with template and lead (last resort)
-            payloads_to_try.append({
-                "key": project_key,
-                "name": container_name,
-                "projectTypeKey": "business",
-                "projectTemplateKey": project_template_key,
-                "lead": project_lead_account_id
-            })
+            # Validate format
+            if re.match(r'^[A-Z][A-Z0-9]{1,9}$', test_key):
+                # Check if key exists
+                check_url = f"{self.server_url}/rest/api/3/project/{test_key}"
+                try:
+                    response = requests.get(check_url, headers=self._headers(), timeout=10)
+                    if response.status_code == 404:
+                        # Key doesn't exist - we can use it
+                        return test_key
+                except:
+                    # If check fails, assume we can use it
+                    return test_key
         
-        last_error = None
-        total_formats = len(payloads_to_try)
-        for idx, payload in enumerate(payloads_to_try, 1):
-            try:
-                # Determine which endpoint to use based on payload format
-                # v2 uses "lead", v3 uses "projectLead"
-                if "lead" in payload:
-                    create_url = create_url_v2
-                    api_version = "v2"
-                else:
-                    create_url = create_url_v3
-                    api_version = "v3"
-                
-                # Log payload for debugging (mask accountId/lead for security)
-                payload_log = payload.copy()
-                if "lead" in payload_log:
-                    payload_log["lead"] = "***masked***"
-                elif "projectLead" in payload_log:
-                    if isinstance(payload_log["projectLead"], dict):
-                        payload_log["projectLead"] = {"accountId": "***masked***"}
-                    else:
-                        payload_log["projectLead"] = "***masked***"
-                
-                print(f"🔍 Trying Jira project creation format {idx}/{total_formats} (API {api_version}) with key: {project_key}")
-                print(f"   Payload: {json.dumps(payload_log, indent=2)}")
-                
-                response = requests.post(create_url, json=payload, headers=self._headers(), timeout=30)
-                response.raise_for_status()
+        # Fallback: use hash-based key
+        hash_val = hashlib.md5(base_name.encode()).hexdigest()[:8].upper()
+        return "SC" + hash_val[:8]
+
+    def _get_available_project_types(self) -> List[Dict]:
+        """Get available project types from Jira"""
+        try:
+            url = f"{self.server_url}/rest/api/3/project/type"
+            response = requests.get(url, headers=self._headers(), timeout=20)
+            response.raise_for_status()
+            project_types = response.json()
+            return project_types
+        except Exception as e:
+            print(f"⚠️ Failed to get project types: {e}")
+            # Return default types
+            return [
+                {"key": "software", "formattedKey": "Software"},
+                {"key": "business", "formattedKey": "Business"}
+            ]
+
+    def _create_jira_project(self, project_name: str, project_key: str) -> Dict[str, str]:
+        """
+        Create a new Jira project.
+        
+        Args:
+            project_name: Project name (e.g., "Scheduled Calls - user@example.com")
+            project_key: Unique project key (e.g., "SC-USER1")
+            
+        Returns:
+            Dict with project key and URL
+            
+        Raises:
+            ValueError: If project creation fails
+        """
+        # Get current user account ID for project lead
+        account_id = self._get_current_user_account_id()
+        
+        # Get available project types
+        project_types = self._get_available_project_types()
+        project_type_key = "software"  # Default to software
+        
+        # Try to find a valid project type
+        for pt in project_types:
+            if pt.get("key") in ["software", "business"]:
+                project_type_key = pt.get("key")
+                break
+        
+        # Build project creation payload
+        payload = {
+            "key": project_key,
+            "name": project_name,
+            "projectTypeKey": project_type_key,
+        }
+        
+        # Add lead account ID if available (required for GDPR strict mode)
+        if account_id:
+            payload["leadAccountId"] = account_id
+        
+        url = f"{self.server_url}/rest/api/3/project"
+        
+        try:
+            print(f"🔍 Creating Jira project: {project_name} (key: {project_key})...")
+            response = requests.post(url, json=payload, headers=self._headers(), timeout=30)
+            
+            if response.status_code in [200, 201]:
                 project_data = response.json()
-                
                 created_key = project_data.get("key", project_key)
-                print(f"✅ Successfully created Jira project: {created_key} (using API {api_version})")
+                print(f"✅ Successfully created Jira project: {created_key}")
                 return {
                     "id": created_key,
                     "url": self.build_container_url(created_key),
                 }
-            except requests.exceptions.HTTPError as e:
-                last_error = e
-                # Log error for debugging
+            else:
+                # Handle errors
                 try:
-                    error_data = e.response.json()
-                    error_msgs = error_data.get('errorMessages', [])
-                    errors_dict = error_data.get('errors', {})
-                    print(f"❌ Format {idx} failed: {error_msgs}")
-                    if errors_dict:
-                        print(f"   Detailed errors: {errors_dict}")
-                    # Log response for debugging
-                    print(f"   Response status: {e.response.status_code}")
-                    print(f"   Response body: {e.response.text[:300]}")
-                except:
-                    print(f"❌ Format {idx} failed: {e.response.status_code}")
-                    print(f"   Response: {e.response.text[:300]}")
-                
-                # If 400 error, try next format
-                if e.response.status_code == 400:
-                    continue
-                # For other errors (403, etc.), break and handle
-                break
-            except Exception as e:
-                last_error = e
-                print(f"❌ Format {idx} exception: {str(e)}")
-                continue
-        
-        # If all formats failed, handle the last error
-        if not last_error:
-            raise ValueError("Failed to create Jira project: No error information available")
-        
-        if isinstance(last_error, requests.exceptions.HTTPError):
-            e = last_error
-            # If project creation fails (e.g., permissions), try to use existing project
-            if e.response.status_code == 403:
-                raise ValueError(f"Permission denied: Cannot create Jira project. Please create project '{project_key}' manually or provide an existing project_key.")
-            elif e.response.status_code == 400:
-                try:
-                    error_data = e.response.json()
-                    errors = error_data.get("errors", {})
+                    error_data = response.json()
                     error_messages = error_data.get("errorMessages", [])
-                    
-                    # Check if project key already exists
-                    if "projectKey" in errors:
-                        # Project key already exists or invalid, try to get it
-                        try:
-                            get_response = requests.get(check_url, headers=self._headers(), timeout=20)
-                            if get_response.status_code == 200:
-                                existing_project = get_response.json()
-                                return {
-                                    "id": existing_project.get("key", project_key),
-                                    "url": self.build_container_url(existing_project.get("key", project_key)),
-                                }
-                        except:
-                            pass
-                    
-                    # Build error message
-                    error_msg = ""
-                    if errors:
-                        error_msg = f"Errors: {errors}"
-                    if error_messages:
-                        error_msg += f" Messages: {', '.join(error_messages)}"
-                    if not error_msg:
-                        error_msg = f"Response: {e.response.text[:500]}"
-                    
-                    # Provide helpful suggestion with manual creation steps
-                    suggestion = f"\n\n💡 Jira project creation via API failed. This usually requires 'Administer Jira' permission."
-                    suggestion += f"\n\n📋 Manual Creation Steps:"
-                    suggestion += f"\n   1. Go to: {self.server_url}/secure/project/CreateProject!default.jspa"
-                    suggestion += f"\n   2. Create project with:"
-                    suggestion += f"\n      - Project Key: {project_key}"
-                    suggestion += f"\n      - Project Name: {container_name}"
-                    suggestion += f"\n   3. After creation, the system will automatically use this project."
-                    suggestion += f"\n\n🔑 Alternative: Ensure your API token has 'Administer Jira' permission."
-                    suggestion += f"\n   Token email: {self.email}"
-                    
-                    raise ValueError(f"Failed to create Jira project after trying all {total_formats} formats: {error_msg}{suggestion}")
-                except (ValueError, KeyError):
-                    # If JSON parsing fails, use raw response
-                    raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
-            raise ValueError(f"Failed to create Jira project: {e.response.text[:500]}")
+                    errors = error_data.get("errors", {})
+                    error_msg = ', '.join(error_messages) if error_messages else str(errors)
+                except:
+                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                
+                raise ValueError(f"Failed to create Jira project: {error_msg}")
+                
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP {e.response.status_code}"
+            try:
+                error_data = e.response.json()
+                error_messages = error_data.get("errorMessages", [])
+                errors = error_data.get("errors", {})
+                if error_messages:
+                    error_msg += f": {', '.join(error_messages)}"
+                if errors:
+                    error_msg += f" Errors: {errors}"
+            except:
+                error_msg += f": {e.response.text[:200]}"
+            raise ValueError(f"Failed to create Jira project: {error_msg}")
+        except Exception as e:
+            raise ValueError(f"Failed to create Jira project: {str(e)}")
+
+    def _create_custom_field(self, field_name: str, field_type: str) -> Optional[str]:
+        """
+        Create a custom field in Jira.
+        
+        Args:
+            field_name: Name of the field (e.g., "Agent ID")
+            field_type: Type of field ("text" or "select")
+            
+        Returns:
+            Field ID if created successfully, None otherwise
+        """
+        # Map field types to Jira field types
+        jira_field_type_map = {
+            "text": "com.atlassian.jira.plugin.system.customfieldtypes:textfield",
+            "select": "com.atlassian.jira.plugin.system.customfieldtypes:select"
+        }
+        
+        jira_type = jira_field_type_map.get(field_type, jira_field_type_map["text"])
+        
+        # For select fields, we need to create with options
+        if field_type == "select":
+            # Create select field with options
+            payload = {
+                "name": field_name,
+                "type": jira_type,
+                "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:selectsearcher"
+            }
         else:
-            raise ValueError(f"Failed to create Jira project: {str(last_error)}")
+            # Text field
+            payload = {
+                "name": field_name,
+                "type": jira_type,
+                "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher"
+            }
+        
+        url = f"{self.server_url}/rest/api/3/field"
+        
+        try:
+            print(f"🔍 Creating custom field: {field_name} (type: {field_type})...")
+            response = requests.post(url, json=payload, headers=self._headers(), timeout=30)
+            
+            if response.status_code in [200, 201]:
+                field_data = response.json()
+                field_id = field_data.get("id", "")
+                print(f"✅ Successfully created custom field: {field_name} (ID: {field_id})")
+                
+                # For select fields, add options
+                if field_type == "select" and field_id:
+                    self._add_select_field_options(field_id, ["Yes", "No"])
+                
+                return field_id
+            else:
+                try:
+                    error_data = response.json()
+                    error_messages = error_data.get("errorMessages", [])
+                    errors = error_data.get("errors", {})
+                    error_msg = ', '.join(error_messages) if error_messages else str(errors)
+                except:
+                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                
+                print(f"⚠️ Failed to create custom field {field_name}: {error_msg}")
+                return None
+                
+        except Exception as e:
+            print(f"⚠️ Failed to create custom field {field_name}: {e}")
+            return None
+
+    def _add_select_field_options(self, field_id: str, options: List[str]):
+        """Add options to a select field"""
+        try:
+            # Get field configuration
+            url = f"{self.server_url}/rest/api/3/field/{field_id}/context"
+            response = requests.get(url, headers=self._headers(), timeout=20)
+            
+            if response.status_code == 200:
+                contexts = response.json()
+                if contexts:
+                    context_id = contexts[0].get("id")
+                    # Add options to context
+                    options_url = f"{self.server_url}/rest/api/3/field/{field_id}/context/{context_id}/option"
+                    for option in options:
+                        option_payload = {"value": option}
+                        opt_response = requests.post(options_url, json=option_payload, headers=self._headers(), timeout=20)
+                        if opt_response.status_code in [200, 201]:
+                            print(f"✅ Added option '{option}' to select field")
+        except Exception as e:
+            print(f"⚠️ Failed to add options to select field: {e}")
+            # Non-critical, continue
+
+    def _get_select_field_value(self, field_id: str, project_key: str, preferred_value: str = "No") -> Optional[str]:
+        """
+        Get a valid value for a select field.
+        Tries to use preferred_value, otherwise returns first available option.
+        
+        Args:
+            field_id: Custom field ID
+            project_key: Project key
+            preferred_value: Preferred value to use (e.g., "No")
+            
+        Returns:
+            Valid field value or None if field has no options
+        """
+        try:
+            # Get field metadata from issue create metadata (shows available options)
+            create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={project_key}&issuetypeNames=Task&expand=projects.issuetypes.fields"
+            response = requests.get(create_metadata_url, headers=self._headers(), timeout=20)
+            
+            if response.status_code == 200:
+                metadata_data = response.json()
+                if "projects" in metadata_data and len(metadata_data["projects"]) > 0:
+                    project_data = metadata_data["projects"][0]
+                    if "issuetypes" in project_data and len(project_data["issuetypes"]) > 0:
+                        issue_type = project_data["issuetypes"][0]
+                        if "fields" in issue_type:
+                            fields = issue_type["fields"]
+                            if field_id in fields:
+                                field_def = fields[field_id]
+                                # Get allowed values
+                                allowed_values = field_def.get("allowedValues", [])
+                                
+                                if allowed_values:
+                                    # Try to find preferred value (case-insensitive)
+                                    for option in allowed_values:
+                                        option_value = option.get("value", "")
+                                        if option_value.lower() == preferred_value.lower():
+                                            return option_value
+                                    
+                                    # If preferred not found, return first available option
+                                    first_option = allowed_values[0].get("value", "")
+                                    if first_option:
+                                        print(f"⚠️ Preferred value '{preferred_value}' not found in Email Sent field. Using '{first_option}' instead.")
+                                        return first_option
+                                    
+                                    # If no value in option, try name
+                                    first_name = allowed_values[0].get("name", "")
+                                    if first_name:
+                                        print(f"⚠️ Using option name '{first_name}' for Email Sent field.")
+                                        return first_name
+                                
+                                # If no allowed values, field might be empty/optional
+                                print(f"⚠️ Email Sent field has no allowed values. Field may be optional.")
+                                return None
+            
+            # Fallback: try to get from field context
+            try:
+                context_url = f"{self.server_url}/rest/api/3/field/{field_id}/context"
+                context_response = requests.get(context_url, headers=self._headers(), timeout=20)
+                if context_response.status_code == 200:
+                    contexts = context_response.json()
+                    if contexts:
+                        context_id = contexts[0].get("id")
+                        options_url = f"{self.server_url}/rest/api/3/field/{field_id}/context/{context_id}/option"
+                        options_response = requests.get(options_url, headers=self._headers(), timeout=20)
+                        if options_response.status_code == 200:
+                            options_data = options_response.json()
+                            options = options_data.get("values", [])
+                            
+                            if options:
+                                # Try preferred value
+                                for opt in options:
+                                    opt_value = opt.get("value", "")
+                                    if opt_value.lower() == preferred_value.lower():
+                                        return opt_value
+                                
+                                # Return first option
+                                first_opt = options[0].get("value", "")
+                                if first_opt:
+                                    return first_opt
+            except:
+                pass
+            
+            return None
+        except Exception as e:
+            print(f"⚠️ Failed to get select field options: {e}")
+            return None
+
+    def create_container(self, container_name: str, project_key: Optional[str] = None) -> Dict[str, str]:
+        """
+        Create or verify Jira project exists.
+        If project_key is provided, verifies it exists.
+        If project_key is not provided, automatically creates a new project with unique key.
+        
+        Args:
+            container_name: Project name (e.g., "Scheduled Calls - user@example.com")
+            project_key: Optional - existing Jira project key. If not provided, will auto-create.
+            
+        Returns:
+            Dict with project id (key) and url
+            
+        Raises:
+            ValueError: If project creation/verification fails
+        """
+        # If project_key provided, verify it exists
+        if project_key:
+            # Validate project key format (Jira rules: 2-10 chars, start with letter, alphanumeric only)
+            if not re.match(r'^[A-Z][A-Z0-9]{1,9}$', project_key):
+                raise ValueError(
+                    f"Invalid Jira project key format: '{project_key}'. "
+                    f"Project keys must be 2-10 characters, start with a letter (A-Z), and contain only uppercase letters and numbers."
+                )
+            
+            # Verify project exists
+            check_url = f"{self.server_url}/rest/api/3/project/{project_key}"
+            try:
+                response = requests.get(check_url, headers=self._headers(), timeout=20)
+                
+                if response.status_code == 200:
+                    # Project exists, return it
+                    project_data = response.json()
+                    print(f"✅ Verified Jira project exists: {project_key}")
+                    return {
+                        "id": project_data.get("key", project_key),
+                        "url": self.build_container_url(project_data.get("key", project_key)),
+                    }
+                elif response.status_code == 404:
+                    # Project doesn't exist - create it
+                    print(f"⚠️ Project '{project_key}' not found. Creating new project...")
+                    return self._create_jira_project(container_name, project_key)
+                else:
+                    # Other error (403, 500, etc.)
+                    try:
+                        error_data = response.json()
+                        error_messages = error_data.get("errorMessages", [])
+                        errors = error_data.get("errors", {})
+                        error_msg = f"Error checking Jira project: {', '.join(error_messages) if error_messages else str(errors)}"
+                    except:
+                        error_msg = f"Error checking Jira project: HTTP {response.status_code} - {response.text[:200]}"
+                    
+                    raise ValueError(
+                        f"{error_msg}. "
+                        f"Please ensure the project '{project_key}' exists and your API token has proper permissions."
+                    )
+                    
+            except requests.exceptions.RequestException as e:
+                raise ValueError(
+                    f"Failed to verify Jira project '{project_key}': {str(e)}. "
+                    f"Please check your Jira server URL and API credentials."
+                )
+        else:
+            # No project_key provided - auto-create new project
+            print(f"🔍 No project_key provided. Creating new Jira project for: {container_name}")
+            generated_key = self._generate_unique_project_key(container_name)
+            return self._create_jira_project(container_name, generated_key)
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
         """
-        Ensure Jira project has required custom fields.
-        Automatically creates missing fields.
+        Get existing custom field IDs. If fields don't exist, automatically create them.
+        
+        Args:
+            container_id: Jira project key
+            
+        Returns:
+            Dict mapping field keys to field IDs
         """
         field_map = {}
-        errors = []  # Track errors for debugging
+        missing_fields = []
         
         try:
-            # Get all fields (both built-in and custom)
+            # Get all fields (both built-in and custom) - Global fields
             url = f"{self.server_url}/rest/api/3/field"
-            print(f"🔍 Fetching Jira fields from: {url}")
+            response = requests.get(url, headers=self._headers(), timeout=20)
+            response.raise_for_status()
+            all_fields = response.json()
             
+            # Also try issue create metadata endpoint (shows fields available for creating issues in this project)
+            create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
             try:
-                response = requests.get(url, headers=self._headers(), timeout=20)
-                response.raise_for_status()
-                all_fields = response.json()
-                print(f"✅ Successfully fetched {len(all_fields)} Jira fields")
-            except requests.exceptions.HTTPError as e:
-                error_detail = {
-                    "operation": "fetch_fields",
-                    "url": url,
-                    "status_code": e.response.status_code if e.response else None,
-                    "response": e.response.text[:500] if e.response else str(e),
-                    "error": str(e)
-                }
-                errors.append(error_detail)
-                print(f"❌ Failed to fetch Jira fields:")
-                print(f"   Status: {error_detail['status_code']}")
-                print(f"   Response: {error_detail['response']}")
-                print(f"   Error: {error_detail['error']}")
-                # Return empty field_map if we can't fetch fields
-                return field_map
-            except requests.exceptions.RequestException as e:
-                error_detail = {
-                    "operation": "fetch_fields",
-                    "url": url,
-                    "error_type": type(e).__name__,
-                    "error": str(e)
-                }
-                errors.append(error_detail)
-                print(f"❌ Network error fetching Jira fields: {error_detail['error']}")
-                return field_map
+                metadata_response = requests.get(create_metadata_url, headers=self._headers(), timeout=20)
+                
+                if metadata_response.status_code == 200:
+                    metadata_data = metadata_response.json()
+                    if "projects" in metadata_data and len(metadata_data["projects"]) > 0:
+                        project_data = metadata_data["projects"][0]
+                        if "issuetypes" in project_data and len(project_data["issuetypes"]) > 0:
+                            issue_type = project_data["issuetypes"][0]
+                            if "fields" in issue_type:
+                                metadata_fields = issue_type["fields"]
+                                existing_field_ids = {f.get("id", "") for f in all_fields}
+                                
+                                for field_id, field_def in metadata_fields.items():
+                                    if field_id not in existing_field_ids:
+                                        standard_field = {
+                                            "id": field_id,
+                                            "name": field_def.get("name", ""),
+                                            "type": field_def.get("schema", {}).get("type", ""),
+                                            "custom": field_def.get("custom", False)
+                                        }
+                                        all_fields.append(standard_field)
             except Exception as e:
-                error_detail = {
-                    "operation": "fetch_fields",
-                    "url": url,
-                    "error_type": type(e).__name__,
-                    "error": str(e)
-                }
-                errors.append(error_detail)
-                print(f"❌ Unexpected error fetching Jira fields: {error_detail['error']}")
-                return field_map
+                # Silently fail - use only global fields if metadata endpoint fails
+                pass
             
-            # Map fields by name
+            # Map fields by name (case-insensitive)
             field_by_name = {f.get("name", "").lower(): f for f in all_fields}
             
-            # Jira field type and searcher mapping
-            jira_field_config = {
-                "text": {
-                    "type": "com.atlassian.jira.plugin.system.customfieldtypes:textfield",
-                    "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:textsearcher"
-                },
-                "select": {
-                    "type": "com.atlassian.jira.plugin.system.customfieldtypes:select",
-                    "searcherKey": "com.atlassian.jira.plugin.system.customfieldtypes:selectsearcher"
-                }
-            }
-            
-            # Check for required fields and create if missing
+            # Check for required fields and create missing ones
             for field_def in self.REQUIRED_FIELDS:
                 field_name = field_def["title"]
                 field_key = field_def["key"]
                 field_type = field_def["type"]
                 
-                try:
-                    # Status is a built-in field
-                    if field_key == "status":
-                        field_map[field_key] = "status"
-                        print(f"✅ Using built-in Jira field: {field_name}")
-                        continue
-                    
-                    # Check if field already exists
-                    if field_name.lower() in field_by_name:
-                        field_id = field_by_name[field_name.lower()].get("id", "")
-                        if field_id:
-                            field_map[field_key] = field_id
-                            print(f"✅ Found existing Jira field: {field_name} (ID: {field_id})")
-                            continue
-                        else:
-                            print(f"⚠️ Field {field_name} found but has no ID")
-                    
-                    # Field doesn't exist, create it
-                    config = jira_field_config.get(field_type, jira_field_config["text"])
-                    
-                    # Create the custom field
-                    field_payload = {
-                        "name": field_name,
-                        "type": config["type"],
-                        "searcherKey": config["searcherKey"],
-                        "description": f"Custom field for {field_name}"
-                    }
-                    
-                    print(f"🔍 Creating Jira field {field_name} (type: {field_type})...")
-                    print(f"   Field payload: {json.dumps(field_payload, indent=2)}")
-                    
-                    create_url = f"{self.server_url}/rest/api/3/field"
-                    
-                    try:
-                        create_response = requests.post(create_url, json=field_payload, headers=self._headers(), timeout=20)
-                        
-                        if create_response.status_code in [200, 201]:
-                            try:
-                                created_field = create_response.json()
-                                field_id = created_field.get("id", "")
-                                
-                                if field_id:
-                                    field_map[field_key] = field_id
-                                    print(f"✅ Created Jira field {field_name} with ID: {field_id}")
-                                else:
-                                    error_detail = {
-                                        "operation": "create_field",
-                                        "field_name": field_name,
-                                        "field_key": field_key,
-                                        "status_code": create_response.status_code,
-                                        "response": create_response.text[:500],
-                                        "error": "Field created but no ID returned"
-                                    }
-                                    errors.append(error_detail)
-                                    print(f"⚠️ Jira field {field_name} created but no ID returned")
-                                    print(f"   Response: {create_response.text[:500]}")
-                            except (ValueError, KeyError) as e:
-                                error_detail = {
-                                    "operation": "parse_field_response",
-                                    "field_name": field_name,
-                                    "status_code": create_response.status_code,
-                                    "response": create_response.text[:500],
-                                    "error": str(e),
-                                    "error_type": type(e).__name__
-                                }
-                                errors.append(error_detail)
-                                print(f"⚠️ Failed to parse Jira field creation response for {field_name}: {str(e)}")
-                                print(f"   Response: {create_response.text[:500]}")
-                        else:
-                            # HTTP error
-                            try:
-                                error_data = create_response.json()
-                                error_messages = error_data.get("errorMessages", [])
-                                errors_dict = error_data.get("errors", {})
-                            except:
-                                error_messages = []
-                                errors_dict = {}
-                            
-                            error_detail = {
-                                "operation": "create_field",
-                                "field_name": field_name,
-                                "field_key": field_key,
-                                "field_type": field_type,
-                                "url": create_url,
-                                "status_code": create_response.status_code,
-                                "response": create_response.text[:500],
-                                "error_messages": error_messages,
-                                "errors": errors_dict,
-                                "payload": field_payload
-                            }
-                            errors.append(error_detail)
-                            print(f"❌ Failed to create Jira field {field_name}:")
-                            print(f"   Status: {create_response.status_code}")
-                            print(f"   Error Messages: {error_messages}")
-                            print(f"   Errors: {errors_dict}")
-                            print(f"   Response: {create_response.text[:500]}")
-                            print(f"   Payload: {json.dumps(field_payload, indent=2)}")
-                    except requests.exceptions.HTTPError as e:
-                        error_detail = {
-                            "operation": "create_field",
-                            "field_name": field_name,
-                            "field_key": field_key,
-                            "url": create_url,
-                            "status_code": e.response.status_code if e.response else None,
-                            "response": e.response.text[:500] if e.response else str(e),
-                            "error": str(e),
-                            "payload": field_payload
-                        }
-                        errors.append(error_detail)
-                        print(f"❌ HTTP error creating Jira field {field_name}: {str(e)}")
-                        if e.response:
-                            print(f"   Status: {e.response.status_code}")
-                            print(f"   Response: {e.response.text[:500]}")
-                    except requests.exceptions.RequestException as e:
-                        error_detail = {
-                            "operation": "create_field",
-                            "field_name": field_name,
-                            "field_key": field_key,
-                            "url": create_url,
-                            "error_type": type(e).__name__,
-                            "error": str(e),
-                            "payload": field_payload
-                        }
-                        errors.append(error_detail)
-                        print(f"❌ Network error creating Jira field {field_name}: {str(e)}")
-                    except Exception as e:
-                        error_detail = {
-                            "operation": "create_field",
-                            "field_name": field_name,
-                            "field_key": field_key,
-                            "error_type": type(e).__name__,
-                            "error": str(e),
-                            "payload": field_payload
-                        }
-                        errors.append(error_detail)
-                        print(f"❌ Unexpected error creating Jira field {field_name}: {str(e)}")
-                        import traceback
-                        print(f"   Traceback: {traceback.format_exc()}")
-                except Exception as e:
-                    error_detail = {
-                        "operation": "process_field",
-                        "field_name": field_name,
-                        "field_key": field_key,
-                        "error_type": type(e).__name__,
-                        "error": str(e)
-                    }
-                    errors.append(error_detail)
-                    print(f"❌ Error processing field {field_name}: {str(e)}")
-                    print(f"   Traceback: {traceback.format_exc()}")
-        
-        except Exception as e:
-            error_detail = {
-                "operation": "ensure_required_fields",
-                "container_id": container_id,
-                "error_type": type(e).__name__,
-                "error": str(e)
-            }
-            errors.append(error_detail)
-            print(f"❌ Critical error in ensure_required_fields: {str(e)}")
-            print(f"   Traceback: {traceback.format_exc()}")
-        finally:
-            # Log summary
-            if errors:
-                print(f"\n📋 Error Summary ({len(errors)} errors):")
-                for idx, err in enumerate(errors, 1):
-                    print(f"   {idx}. {err.get('operation', 'unknown')} - {err.get('error', 'unknown error')}")
+                # Status is a built-in field
+                if field_key == "status":
+                    field_map[field_key] = "status"
+                    continue
+                
+                # Check if field exists
+                if field_name.lower() in field_by_name:
+                    field_id = field_by_name[field_name.lower()].get("id", "")
+                    if field_id:
+                        field_map[field_key] = field_id
+                    else:
+                        missing_fields.append({"name": field_name, "type": field_type, "key": field_key})
+                else:
+                    missing_fields.append({"name": field_name, "type": field_type, "key": field_key})
+            
+            # Create missing fields automatically
+            if missing_fields:
+                print(f"⚠️ {len(missing_fields)} custom fields missing. Creating them automatically...")
+                for field_info in missing_fields:
+                    field_id = self._create_custom_field(field_info["name"], field_info["type"])
+                    if field_id:
+                        field_map[field_info["key"]] = field_id
+                        print(f"✅ Created and mapped field: {field_info['name']} -> {field_id}")
+                    else:
+                        print(f"❌ Failed to create field: {field_info['name']}")
+                        # Still raise error if critical field creation fails
+                        raise ValueError(f"Failed to create required custom field: {field_info['name']}")
+            
             print(f"📊 Jira field_map: {field_map} (Total fields: {len(field_map)})")
-        
-        return field_map
+            return field_map
+            
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"Failed to fetch Jira fields: HTTP {e.response.status_code}"
+            try:
+                error_data = e.response.json()
+                error_messages = error_data.get("errorMessages", [])
+                if error_messages:
+                    error_msg += f" - {', '.join(error_messages)}"
+            except:
+                error_msg += f" - {e.response.text[:200]}"
+            
+            raise ValueError(f"{error_msg}. Please check your Jira API credentials and permissions.")
+            
+        except requests.exceptions.RequestException as e:
+            raise ValueError(
+                f"Network error fetching Jira fields: {str(e)}. "
+                f"Please check your Jira server URL and network connection."
+            )
+            
+        except ValueError:
+            # Re-raise ValueError (missing fields or creation failures)
+            raise
+            
+        except Exception as e:
+            raise ValueError(
+                f"Unexpected error fetching Jira fields: {str(e)}. "
+                f"Please ensure your Jira instance is accessible and API credentials are correct."
+            )
 
     def create_scheduled_call_item(
         self,
@@ -686,42 +648,53 @@ class JiraService(BaseCRMService):
         batch_id: Optional[str] = None,
         phone_number_id: Optional[str] = None,
     ) -> Optional[dict]:
-        """Create a scheduled call issue in Jira project"""
+        """
+        Create a scheduled call issue in Jira project.
+        Uses dynamic field_map (from ensure_required_fields) instead of hardcoded IDs.
+        Does NOT set status during creation - will use transition API after creation.
+        """
         url = f"{self.server_url}/rest/api/3/issue"
         
-        # Build fields
+        # Validate field_map has all required fields (email_sent is optional)
+        required_field_keys = ["agent_id", "call_time_utc", "tenant_id", "user_id"]
+        missing_in_map = [key for key in required_field_keys if key not in field_map]
+        if missing_in_map:
+            raise ValueError(f"Missing required fields in field_map: {', '.join(missing_in_map)}")
+        
+        # Build fields - DO NOT set status during creation
         fields = {
             "project": {"key": container_id},
             "summary": f"Scheduled Call: {phone_number}",
-            "description": f"Scheduled call for {phone_number} at {call_time_utc}",
+            "description": self._text_to_adf(f"Scheduled call at {call_time_utc}"),  # Convert to ADF format
             "issuetype": {"name": "Task"},
         }
         
-        # Add custom fields
-        # Status: Set to "Pending" by default
-        if "status" in field_map:
-            fields["status"] = {"name": "Pending"}
+        # Add custom fields using dynamic field_map
+        fields[field_map["agent_id"]] = agent_id
+        fields[field_map["call_time_utc"]] = call_time_utc
+        fields[field_map["tenant_id"]] = tenant_id
+        fields[field_map["user_id"]] = user_id
         
-        # Email Sent: Set to "No" by default
-        if "email_sent" in field_map:
-            fields[field_map["email_sent"]] = {"value": "No"}
-        
-        # Other custom fields
-        if "agent_id" in field_map:
-            fields[field_map["agent_id"]] = agent_id
-        if "call_time_utc" in field_map:
-            fields[field_map["call_time_utc"]] = call_time_utc
-        if "tenant_id" in field_map:
-            fields[field_map["tenant_id"]] = tenant_id
-        if "user_id" in field_map:
-            fields[field_map["user_id"]] = user_id
         if batch_id and "batch_id" in field_map:
             fields[field_map["batch_id"]] = batch_id
+        
         if phone_number_id and "phone_number_id" in field_map:
             fields[field_map["phone_number_id"]] = phone_number_id
-        if "call_session_id" in field_map:
-            # Leave blank initially (will be updated later when call is initiated)
-            fields[field_map["call_session_id"]] = ""
+        
+        # Call Session ID: Leave blank initially (will be updated later when call is initiated)
+        # Omit empty field - don't set it if empty
+        
+        # Email Sent: Set to "No" by default (Select List field)
+        # First try to get valid options and use appropriate value
+        if "email_sent" in field_map:
+            email_sent_field_id = field_map["email_sent"]
+            # Try to get valid options for this field
+            valid_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
+            if valid_value:
+                fields[email_sent_field_id] = {"value": valid_value}
+            else:
+                # If we can't find a valid value, omit the field (non-critical)
+                print(f"⚠️ Could not set Email Sent field - no valid option found. Omitting field.")
         
         payload = {"fields": fields}
         
@@ -737,6 +710,23 @@ class JiraService(BaseCRMService):
                 issue_key = issue_data.get("key", "")
                 issue_id = issue_data.get("id", "")
                 print(f"✅ Successfully created Jira issue {issue_key} (ID: {issue_id}) for {phone_number}")
+                
+                # Set status to "Pending" using transition API (DO NOT set status during creation)
+                try:
+                    status_result = self.update_item_status(
+                        container_id=container_id,
+                        item_id=issue_id,
+                        status="Pending",
+                        field_map={}  # Not needed for transitions
+                    )
+                    if status_result:
+                        print(f"✅ Set status to 'Pending' for issue {issue_key}")
+                    else:
+                        print(f"⚠️ Could not set status to 'Pending' for issue {issue_key} (transition not found)")
+                except Exception as status_error:
+                    print(f"⚠️ Error setting status to 'Pending' for issue {issue_key}: {status_error}")
+                    # Don't fail the entire operation if status transition fails
+                
                 return issue_data
             else:
                 # HTTP error - detailed logging
@@ -837,34 +827,61 @@ class JiraService(BaseCRMService):
         status: str,
         field_map: Dict[str, str],
     ) -> Optional[dict]:
-        """Update issue status in Jira"""
+        """
+        Update issue status in Jira using transition API.
+        Fetches available transitions, finds the one that moves to target status, and executes it.
+        """
         # Get available transitions
-        url = f"{self.server_url}/rest/api/3/issue/{item_id}/transitions"
-        response = requests.get(url, headers=self._headers(), timeout=20)
-        response.raise_for_status()
-        transitions = response.json().get("transitions", [])
+        transitions_url = f"{self.server_url}/rest/api/3/issue/{item_id}/transitions"
+        try:
+            response = requests.get(transitions_url, headers=self._headers(), timeout=20)
+            response.raise_for_status()
+            transitions = response.json().get("transitions", [])
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP {e.response.status_code}"
+            try:
+                error_data = e.response.json()
+                error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
+            except:
+                error_msg += f": {e.response.text[:200]}"
+            print(f"⚠️ Failed to fetch transitions for issue {item_id}: {error_msg}")
+            return None
+        except Exception as e:
+            print(f"⚠️ Failed to fetch transitions for issue {item_id}: {e}")
+            return None
         
-        # Find transition for status
+        # Find transition for status (case-insensitive match)
         transition_id = None
         for transition in transitions:
-            if transition.get("to", {}).get("name", "").lower() == status.lower():
+            target_status = transition.get("to", {}).get("name", "")
+            if target_status.lower() == status.lower():
                 transition_id = transition.get("id")
                 break
         
         if not transition_id:
-            print(f"⚠️ No transition found for status: {status}")
+            available_statuses = [t.get("to", {}).get("name", "") for t in transitions]
+            print(f"⚠️ No transition found for status '{status}'. Available: {', '.join(available_statuses)}")
             return None
         
         # Execute transition
-        transition_url = f"{self.server_url}/rest/api/3/issue/{item_id}/transitions"
+        transition_execute_url = f"{self.server_url}/rest/api/3/issue/{item_id}/transitions"
         payload = {"transition": {"id": transition_id}}
         
         try:
-            response = requests.post(transition_url, json=payload, headers=self._headers(), timeout=20)
+            response = requests.post(transition_execute_url, json=payload, headers=self._headers(), timeout=20)
             response.raise_for_status()
             return {"id": item_id, "status": status}
-        except Exception as exc:
-            print(f"⚠️ Failed to update Jira issue {item_id} status: {exc}")
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP {e.response.status_code}"
+            try:
+                error_data = e.response.json()
+                error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
+            except:
+                error_msg += f": {e.response.text[:200]}"
+            print(f"⚠️ Failed to execute transition for issue {item_id}: {error_msg}")
+            return None
+        except Exception as e:
+            print(f"⚠️ Failed to update Jira issue {item_id} status: {e}")
             return None
 
     def update_item_call_session_id(
