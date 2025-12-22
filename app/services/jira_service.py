@@ -6,7 +6,7 @@ import json
 import re
 import traceback
 import hashlib
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
@@ -365,6 +365,81 @@ class JiraService(BaseCRMService):
             print(f"⚠️ Failed to add options to select field: {e}")
             # Non-critical, continue
 
+    def _get_required_fields_for_creation(self, container_id: str) -> Dict[str, Any]:
+        """
+        Get required fields for creating a Task issue in the project.
+        Returns dict of field_id -> default_value
+        """
+        required_fields = {}
+        
+        try:
+            create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
+            response = requests.get(create_metadata_url, headers=self._headers(), timeout=20)
+            
+            if response.status_code == 200:
+                metadata_data = response.json()
+                if "projects" in metadata_data and len(metadata_data["projects"]) > 0:
+                    project_data = metadata_data["projects"][0]
+                    if "issuetypes" in project_data and len(project_data["issuetypes"]) > 0:
+                        issue_type = project_data["issuetypes"][0]
+                        if "fields" in issue_type:
+                            for field_id, field_def in issue_type["fields"].items():
+                                # Skip standard fields that we set manually (summary, project, issuetype, description)
+                                # These should never be in required_fields as we set them explicitly
+                                standard_fields = ["summary", "project", "issuetype", "description"]
+                                if field_id in standard_fields or field_id.lower() in [f.lower() for f in standard_fields]:
+                                    continue
+                                
+                                # Check if field is required
+                                if field_def.get("required", False):
+                                    field_name = field_def.get("name", "")
+                                    field_schema = field_def.get("schema", {})
+                                    field_type = field_schema.get("type", "")
+                                    
+                                    # Get default value or first allowed value
+                                    allowed_values = field_def.get("allowedValues", [])
+                                    
+                                    if field_type == "option":
+                                        # Select field - use first option if available
+                                        if allowed_values:
+                                            required_fields[field_id] = {"value": allowed_values[0].get("value", allowed_values[0].get("name", ""))}
+                                        else:
+                                            # Try to get options from field context
+                                            try:
+                                                context_url = f"{self.server_url}/rest/api/3/field/{field_id}/context"
+                                                context_resp = requests.get(context_url, headers=self._headers(), timeout=10)
+                                                if context_resp.status_code == 200:
+                                                    contexts = context_resp.json()
+                                                    if contexts:
+                                                        context_id = contexts[0].get("id")
+                                                        options_url = f"{self.server_url}/rest/api/3/field/{field_id}/context/{context_id}/option"
+                                                        options_resp = requests.get(options_url, headers=self._headers(), timeout=10)
+                                                        if options_resp.status_code == 200:
+                                                            options = options_resp.json().get("values", [])
+                                                            if options:
+                                                                required_fields[field_id] = {"value": options[0].get("value", options[0].get("name", ""))}
+                                            except:
+                                                pass
+                                    elif field_type in ["string", "text"]:
+                                        # Text field - only set if there's a default value
+                                        # Don't set empty string for required text fields - they'll be set in custom fields update step
+                                        default_value = field_def.get("defaultValue")
+                                        if default_value and default_value != "":
+                                            required_fields[field_id] = default_value
+                                        # If no default, skip it - we'll handle it in custom fields update step
+                                        # This prevents overwriting our manually set fields with empty strings
+                                    elif field_type == "number":
+                                        required_fields[field_id] = 0
+                                    elif field_type == "date":
+                                        # Can be omitted or set to current date
+                                        pass
+                                    
+                                    print(f"📋 Found required field: {field_name} ({field_id}) - type: {field_type}")
+        except Exception as e:
+            print(f"⚠️ Failed to fetch required fields: {e}")
+        
+        return required_fields
+
     def _get_select_field_value(self, field_id: str, project_key: str, preferred_value: str = "No") -> Optional[str]:
         """
         Get a valid value for a select field.
@@ -661,55 +736,99 @@ class JiraService(BaseCRMService):
         if missing_in_map:
             raise ValueError(f"Missing required fields in field_map: {', '.join(missing_in_map)}")
         
-        # Build fields - DO NOT set status during creation
-        fields = {
+        # Step 1: Create issue with required fields + basic fields
+        # First, get required fields from project configuration
+        required_fields = self._get_required_fields_for_creation(container_id)
+        
+        basic_fields = {
             "project": {"key": container_id},
             "summary": f"Scheduled Call: {phone_number}",
             "description": self._text_to_adf(f"Scheduled call at {call_time_utc}"),  # Convert to ADF format
             "issuetype": {"name": "Task"},
         }
         
-        # Add custom fields using dynamic field_map
-        fields[field_map["agent_id"]] = agent_id
-        fields[field_map["call_time_utc"]] = call_time_utc
-        fields[field_map["tenant_id"]] = tenant_id
-        fields[field_map["user_id"]] = user_id
+        # Add required fields from project configuration (only if not already set)
+        # This ensures we don't overwrite our manually set fields (summary, project, issuetype, description)
+        # Also skip empty string values for text fields - they'll be set in custom fields update
+        for field_id, field_value in required_fields.items():
+            if field_id not in basic_fields:
+                # Don't add empty strings - they'll be handled in custom fields update step
+                if field_value != "" and field_value is not None:
+                    basic_fields[field_id] = field_value
         
-        if batch_id and "batch_id" in field_map:
-            fields[field_map["batch_id"]] = batch_id
+        # Ensure summary is never overwritten (defensive check)
+        if "summary" in basic_fields and basic_fields["summary"] == "":
+            basic_fields["summary"] = f"Scheduled Call: {phone_number}"
         
-        if phone_number_id and "phone_number_id" in field_map:
-            fields[field_map["phone_number_id"]] = phone_number_id
-        
-        # Call Session ID: Leave blank initially (will be updated later when call is initiated)
-        # Omit empty field - don't set it if empty
-        
-        # Email Sent: Set to "No" by default (Select List field)
-        # First try to get valid options and use appropriate value
+        # Also add Email Sent if it's required and we have it in field_map
         if "email_sent" in field_map:
             email_sent_field_id = field_map["email_sent"]
-            # Try to get valid options for this field
-            valid_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
-            if valid_value:
-                fields[email_sent_field_id] = {"value": valid_value}
-            else:
-                # If we can't find a valid value, omit the field (non-critical)
-                print(f"⚠️ Could not set Email Sent field - no valid option found. Omitting field.")
+            # Check if this field is already in basic_fields (from required_fields)
+            if email_sent_field_id not in basic_fields:
+                # Try to get valid value and add it
+                valid_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
+                if valid_value:
+                    basic_fields[email_sent_field_id] = {"value": valid_value}
         
-        payload = {"fields": fields}
+        basic_payload = {"fields": basic_fields}
         
         try:
             print(f"🔍 Creating Jira issue for {phone_number} in project {container_id}...")
             print(f"   URL: {url}")
-            print(f"   Payload: {json.dumps(payload, indent=2)}")
+            print(f"   Step 1 - Basic payload: {json.dumps(basic_payload, indent=2)}")
             
-            response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
+            response = requests.post(url, json=basic_payload, headers=self._headers(), timeout=20)
             
             if response.status_code in [200, 201]:
                 issue_data = response.json()
                 issue_key = issue_data.get("key", "")
                 issue_id = issue_data.get("id", "")
                 print(f"✅ Successfully created Jira issue {issue_key} (ID: {issue_id}) for {phone_number}")
+                
+                # Step 2: Update issue with custom fields (using PUT /issue/{issueId})
+                custom_fields = {}
+                
+                # Add custom fields using dynamic field_map
+                custom_fields[field_map["agent_id"]] = agent_id
+                custom_fields[field_map["call_time_utc"]] = call_time_utc
+                custom_fields[field_map["tenant_id"]] = tenant_id
+                custom_fields[field_map["user_id"]] = user_id
+                
+                if batch_id and "batch_id" in field_map:
+                    custom_fields[field_map["batch_id"]] = batch_id
+                
+                if phone_number_id and "phone_number_id" in field_map:
+                    custom_fields[field_map["phone_number_id"]] = phone_number_id
+                
+                # Email Sent: Set to "No" by default (Select List field)
+                if "email_sent" in field_map:
+                    email_sent_field_id = field_map["email_sent"]
+                    valid_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
+                    if valid_value:
+                        custom_fields[email_sent_field_id] = {"value": valid_value}
+                    else:
+                        print(f"⚠️ Could not set Email Sent field - no valid option found. Omitting field.")
+                
+                # Update issue with custom fields
+                if custom_fields:
+                    update_url = f"{self.server_url}/rest/api/3/issue/{issue_id}"
+                    update_payload = {"fields": custom_fields}
+                    print(f"   Step 2 - Updating custom fields: {json.dumps(update_payload, indent=2)}")
+                    
+                    try:
+                        update_response = requests.put(update_url, json=update_payload, headers=self._headers(), timeout=20)
+                        if update_response.status_code in [200, 204]:
+                            print(f"✅ Successfully updated custom fields for issue {issue_key}")
+                        else:
+                            # Log error but don't fail - issue was created successfully
+                            try:
+                                update_error = update_response.json()
+                                print(f"⚠️ Failed to update custom fields for issue {issue_key}: {update_error}")
+                            except:
+                                print(f"⚠️ Failed to update custom fields for issue {issue_key}: HTTP {update_response.status_code}")
+                    except Exception as update_error:
+                        print(f"⚠️ Error updating custom fields for issue {issue_key}: {update_error}")
+                        # Don't fail - issue was created successfully
                 
                 # Set status to "Pending" using transition API (DO NOT set status during creation)
                 try:
@@ -747,7 +866,7 @@ class JiraService(BaseCRMService):
                     "response": response.text[:500],
                     "error_messages": error_messages,
                     "errors": errors_dict,
-                    "payload": payload
+                    "payload": basic_payload
                 }
                 
                 print(f"❌ Failed to create Jira issue for {phone_number}:")
@@ -755,7 +874,7 @@ class JiraService(BaseCRMService):
                 print(f"   Error Messages: {error_messages}")
                 print(f"   Errors: {errors_dict}")
                 print(f"   Response: {response.text[:500]}")
-                print(f"   Payload: {json.dumps(payload, indent=2)}")
+                print(f"   Payload: {json.dumps(basic_payload, indent=2)}")
                 
                 return None
                 
@@ -768,7 +887,7 @@ class JiraService(BaseCRMService):
                 "status_code": e.response.status_code if e.response else None,
                 "response": e.response.text[:500] if e.response else str(e),
                 "error": str(e),
-                "payload": payload
+                "payload": basic_payload
             }
             
             print(f"❌ HTTP error creating Jira issue for {phone_number}:")
@@ -793,7 +912,7 @@ class JiraService(BaseCRMService):
                 "url": url,
                 "error_type": type(e).__name__,
                 "error": str(e),
-                "payload": payload
+                "payload": basic_payload
             }
             
             print(f"❌ Network error creating Jira issue for {phone_number}:")
@@ -810,7 +929,7 @@ class JiraService(BaseCRMService):
                 "url": url,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
-                "payload": payload
+                "payload": basic_payload
             }
             
             print(f"❌ Unexpected error creating Jira issue for {phone_number}:")

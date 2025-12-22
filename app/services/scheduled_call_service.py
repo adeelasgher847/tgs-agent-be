@@ -84,16 +84,15 @@ class ScheduledCallService:
                     additional_config = additional_config["additional_config"]
             
             # Filter additional_config based on CRM type
-            # Jira: project_key is optional - if not provided, will auto-create project
+            # Jira: Each user gets their own auto-generated project (don't use project_key from config)
             # ClickUp: Pass space_id and folder_id
             # Trello: No additional params needed
             # Monday.com: Pass workspace_id if provided
             if crm_config.crm_type == "jira":
                 container_kwargs = {}
-                # project_key is optional - if provided, will use existing project, else auto-create
-                if "project_key" in additional_config:
-                    container_kwargs["project_key"] = additional_config["project_key"]
-                # If not provided, create_container will auto-generate project_key
+                # Don't use project_key from additional_config for per-user projects
+                # Each user should get their own auto-generated project
+                # project_key in additional_config is ignored - always auto-create per-user projects
             elif crm_config.crm_type == "clickup":
                 container_kwargs = {}
                 if "space_id" in additional_config:
@@ -171,10 +170,9 @@ class ScheduledCallService:
                     # Filter additional_config based on CRM type
                     if crm_config.crm_type == "jira":
                         container_kwargs = {}
-                        # project_key is optional - if provided, will use existing project, else auto-create
-                        if "project_key" in additional_config:
-                            container_kwargs["project_key"] = additional_config["project_key"]
-                        # If not provided, create_container will auto-generate project_key
+                        # Don't use project_key from additional_config for per-user projects
+                        # Each user should get their own auto-generated project
+                        # project_key in additional_config is ignored - always auto-create per-user projects
                     elif crm_config.crm_type == "clickup":
                         container_kwargs = {}
                         if "space_id" in additional_config:
