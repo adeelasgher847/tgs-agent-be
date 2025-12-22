@@ -273,6 +273,63 @@ class ClickUpService(BaseCRMService):
         
         return field_map
 
+    def _get_dropdown_option_uuid(self, container_id: str, field_id: str, option_name: str) -> Optional[str]:
+        """
+        Get the UUID of a dropdown option by its name.
+        ClickUp dropdown fields require option UUID, not the option name string.
+        """
+        try:
+            # Fetch all fields from the list (ClickUp doesn't have individual field endpoint)
+            url = f"{self.API_URL}/list/{container_id}/field"
+            response = requests.get(url, headers=self._headers(), timeout=20)
+            response.raise_for_status()
+            all_fields = response.json().get("fields", [])
+            
+            # Find the specific field by ID
+            field_data = None
+            for field in all_fields:
+                if field.get("id", "") == field_id:
+                    field_data = field
+                    break
+            
+            if not field_data:
+                print(f"   ⚠️ Field with ID {field_id} not found in list")
+                return None
+            
+            # Get options from type_config
+            type_config = field_data.get("type_config", {})
+            options = type_config.get("options", [])
+            
+            if not options:
+                print(f"   ⚠️ No options found in dropdown field {field_data.get('name', field_id)}")
+                return None
+            
+            # Find matching option by name (case-insensitive)
+            for option in options:
+                option_label = option.get("label", "") or option.get("name", "")
+                if option_label.lower() == option_name.lower():
+                    # Return the option ID (UUID)
+                    option_id = option.get("id", "") or option.get("uuid", "")
+                    if option_id:
+                        print(f"   ✅ Found dropdown option '{option_name}' with UUID: {option_id}")
+                        return option_id
+                    else:
+                        # Sometimes option might have index instead of UUID
+                        option_index = option.get("orderindex", None)
+                        if option_index is not None:
+                            print(f"   ✅ Found dropdown option '{option_name}' with index: {option_index}")
+                            return str(option_index)
+            
+            print(f"   ⚠️ Dropdown option '{option_name}' not found in field options")
+            print(f"   Field name: {field_data.get('name', 'Unknown')}")
+            print(f"   Available options: {[opt.get('label', opt.get('name', '')) for opt in options]}")
+            return None
+        except Exception as exc:
+            print(f"   ⚠️ Failed to get dropdown option UUID for '{option_name}': {exc}")
+            import traceback
+            print(f"   Traceback: {traceback.format_exc()}")
+            return None
+
     def create_scheduled_call_item(
         self,
         container_id: str,
@@ -297,15 +354,27 @@ class ClickUpService(BaseCRMService):
                 continue
             
             if key == "status":
-                custom_fields.append({
-                    "id": field_id,
-                    "value": "Pending"
-                })
+                # For dropdown fields, we need to get the option UUID
+                option_uuid = self._get_dropdown_option_uuid(container_id, field_id, "Pending")
+                if option_uuid:
+                    custom_fields.append({
+                        "id": field_id,
+                        "value": option_uuid
+                    })
+                else:
+                    print(f"❌ ERROR: Could not find 'Pending' option for Status field. Skipping this field.")
+                    # Don't add the field if UUID not found - it will cause 400 error
             elif key == "email_sent":
-                custom_fields.append({
-                    "id": field_id,
-                    "value": "No"
-                })
+                # For dropdown fields, we need to get the option UUID
+                option_uuid = self._get_dropdown_option_uuid(container_id, field_id, "No")
+                if option_uuid:
+                    custom_fields.append({
+                        "id": field_id,
+                        "value": option_uuid
+                    })
+                else:
+                    print(f"❌ ERROR: Could not find 'No' option for Email Sent field. Skipping this field.")
+                    # Don't add the field if UUID not found - it will cause 400 error
             elif key == "agent_id":
                 custom_fields.append({
                     "id": field_id,
@@ -349,6 +418,16 @@ class ClickUpService(BaseCRMService):
             "custom_fields": custom_fields,
         }
         
+        # Debug: Log the payload to verify tenant_id is being sent
+        print(f"🔍 Creating ClickUp task with payload:")
+        print(f"   Task name: {phone_number}")
+        print(f"   Custom fields count: {len(custom_fields)}")
+        tenant_field_in_payload = next((f for f in custom_fields if f.get("id") == field_map.get("tenant_id")), None)
+        if tenant_field_in_payload:
+            print(f"   ✅ Tenant ID field in payload: {tenant_field_in_payload}")
+        else:
+            print(f"   ⚠️ WARNING: Tenant ID field NOT in payload!")
+        
         try:
             response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
             
@@ -368,7 +447,30 @@ class ClickUpService(BaseCRMService):
                     pass
             
             response.raise_for_status()
-            return response.json()
+            created_task = response.json()
+            
+            # Verify tenant_id was saved by fetching the task immediately
+            task_id = created_task.get("id", "")
+            if task_id:
+                try:
+                    verify_url = f"{self.API_URL}/task/{task_id}"
+                    verify_response = requests.get(verify_url, headers=self._headers(), timeout=20)
+                    verify_response.raise_for_status()
+                    verified_task = verify_response.json()
+                    verified_fields = verified_task.get("custom_fields", [])
+                    tenant_field_verified = next((f for f in verified_fields if f.get("id") == field_map.get("tenant_id")), None)
+                    if tenant_field_verified:
+                        verified_value = tenant_field_verified.get("value")
+                        if verified_value == tenant_id:
+                            print(f"   ✅ Verified: tenant_id was saved correctly: {verified_value}")
+                        else:
+                            print(f"   ⚠️ WARNING: tenant_id mismatch! Expected: {tenant_id}, Got: {verified_value}")
+                    else:
+                        print(f"   ⚠️ WARNING: tenant_id field not found in created task!")
+                except Exception as verify_exc:
+                    print(f"   ⚠️ Could not verify tenant_id after creation: {verify_exc}")
+            
+            return created_task
         except requests.exceptions.HTTPError as e:
             error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
             print(f"❌ Failed to create ClickUp task for {phone_number}: {error_msg}")
@@ -439,40 +541,118 @@ class ClickUpService(BaseCRMService):
         if not tenant_field_id:
             raise ValueError("tenant_id field not found in field map")
         
+        print(f"🔍 Starting ClickUp delete operation:")
+        print(f"   Container ID (list): {container_id}")
+        print(f"   Tenant ID to delete: {tenant_id}")
+        print(f"   Tenant ID field ID: {tenant_field_id}")
+        print(f"   Field map: {field_map}")
+        
         deleted = 0
         page = 0
         
         while True:
             # Fetch tasks from list
+            # Note: ClickUp API may not return full custom field data in list endpoint
+            # We'll fetch basic task info first, then get detailed custom fields per task if needed
             url = f"{self.API_URL}/list/{container_id}/task"
             params = {
                 "page": page,
                 "limit": batch_size,
-                "archived": "false"
+                "archived": "false",
+                "include_closed": "false"
             }
             
             try:
                 response = requests.get(url, headers=self._headers(), params=params, timeout=20)
                 response.raise_for_status()
                 tasks = response.json().get("tasks", [])
+                print(f"📋 Fetched {len(tasks)} tasks from page {page}")
             except Exception as exc:
                 print(f"⚠️ Failed to fetch ClickUp tasks: {exc}")
                 break
             
             if not tasks:
+                print(f"✅ No more tasks to process. Total deleted: {deleted}")
                 break
             
             for task in tasks:
-                # Get custom fields
+                # Get task basic info
                 task_id = task.get("id", "")
+                task_name = task.get("name", "")
                 custom_fields = task.get("custom_fields", [])
+                
+                # ClickUp list endpoint doesn't return custom field values properly
+                # Always fetch individual task details to get actual custom field values
+                print(f"🔍 Checking task {task_id} ({task_name}):")
+                print(f"   Fetching individual task details to get custom field values...")
+                
+                try:
+                    task_detail_url = f"{self.API_URL}/task/{task_id}"
+                    task_detail_response = requests.get(task_detail_url, headers=self._headers(), timeout=20)
+                    task_detail_response.raise_for_status()
+                    task_detail = task_detail_response.json()
+                    custom_fields = task_detail.get("custom_fields", [])
+                    print(f"   ✅ Fetched task details, found {len(custom_fields)} custom fields")
+                    
+                    # Debug: Print the complete task response to see actual structure
+                    print(f"   🔍 Complete task response structure:")
+                    print(f"   Task ID: {task_detail.get('id', 'N/A')}")
+                    print(f"   Task Name: {task_detail.get('name', 'N/A')}")
+                    print(f"   Custom Fields Count: {len(custom_fields)}")
+                    # Print first custom field as example to see structure
+                    if custom_fields:
+                        print(f"   First custom field example: {json.dumps(custom_fields[0], indent=2)}")
+                except Exception as exc:
+                    print(f"   ⚠️ Failed to fetch task details: {exc}")
+                    custom_fields = []
+                
+                print(f"   Looking for field ID: {tenant_field_id}")
+                
+                # Print all field IDs for debugging
+                field_ids_found = [f.get("id", "NO_ID") for f in custom_fields]
+                print(f"   Field IDs in task: {field_ids_found}")
                 
                 # Check tenant_id field
                 item_tenant_id = None
+                tenant_field_found = False
                 for field in custom_fields:
-                    if field.get("id") == tenant_field_id:
-                        item_tenant_id = field.get("value", "").strip()
+                    field_id = field.get("id", "")
+                    if field_id == tenant_field_id:
+                        tenant_field_found = True
+                        # ClickUp custom field value can be in different formats
+                        # For short_text fields, value is directly in "value" field
+                        # But sometimes it might be empty string or None if not set
+                        field_value = field.get("value")
+                        
+                        # Debug: Print the raw field structure
+                        print(f"   ✅ Found tenant_id field!")
+                        print(f"   Complete field structure: {json.dumps(field, indent=2)}")
+                        print(f"   Raw field value: {field_value} (type: {type(field_value).__name__})")
+                        
+                        # Handle different value formats
+                        # ClickUp short_text fields: value is a string or None
+                        if field_value is None:
+                            print(f"   ⚠️ WARNING: tenant_id field value is None - task may have been created without tenant_id!")
+                            # Value is None, meaning it wasn't set when task was created
+                            item_tenant_id = None
+                        elif isinstance(field_value, str):
+                            item_tenant_id = field_value.strip() if field_value.strip() else None
+                        elif isinstance(field_value, dict):
+                            # Sometimes value is nested in a dict (for other field types)
+                            item_tenant_id = field_value.get("value", "") or field_value.get("text", "")
+                            if item_tenant_id:
+                                item_tenant_id = str(item_tenant_id).strip()
+                        else:
+                            item_tenant_id = str(field_value).strip() if field_value else None
                         break
+                
+                if not tenant_field_found:
+                    print(f"   ⚠️ Tenant ID field ({tenant_field_id}) NOT FOUND in task's custom fields!")
+                
+                # Debug logging
+                print(f"   Looking for tenant_id: {tenant_id}")
+                print(f"   Found tenant_id in field: {item_tenant_id}")
+                print(f"   Match: {item_tenant_id == tenant_id}")
                 
                 # Delete if tenant_id matches
                 if item_tenant_id == tenant_id:
@@ -484,12 +664,15 @@ class ClickUpService(BaseCRMService):
                         print(f"✅ Deleted ClickUp task {task_id} (tenant: {tenant_id})")
                     except Exception as exc:
                         print(f"⚠️ Failed to delete ClickUp task {task_id}: {exc}")
+                else:
+                    print(f"⏭️ Skipping task {task_id} - tenant_id mismatch (expected: {tenant_id}, found: {item_tenant_id})")
             
             # Check if more pages
             if len(tasks) < batch_size:
                 break
             page += 1
         
+        print(f"📊 ClickUp delete operation completed: {deleted} task(s) deleted for tenant {tenant_id}")
         return deleted
 
     def count_pending_items_for_tenant(
