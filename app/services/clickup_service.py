@@ -251,12 +251,15 @@ class ClickUpService(BaseCRMService):
                 create_response = requests.post(create_url, json=field_data, headers=self._headers(), timeout=20)
                 if create_response.status_code == 200:
                     created_field = create_response.json()
-                    field_id = created_field.get("id", "")
+                    # ClickUp returns field object under "field" key, not top-level
+                    field_obj = created_field.get("field") or created_field
+                    field_id = field_obj.get("id", "")
                     if field_id:
                         field_map[field_key] = field_id
                         print(f"✅ Created field {field_name} with ID: {field_id}")
                     else:
                         print(f"⚠️ Field {field_name} created but no ID returned: {create_response.text}")
+                        print(f"   Response structure: {json.dumps(created_field, indent=2)[:500]}")
                 else:
                     print(f"❌ Failed to create field {field_name}:")
                     print(f"   Status: {create_response.status_code}")
