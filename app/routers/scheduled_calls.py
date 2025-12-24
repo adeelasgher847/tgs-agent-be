@@ -1183,4 +1183,156 @@ async def mark_batch_email_sent_clickup(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to mark email sent: {str(e)}")
+
+
+@router.post("/select-crm-config", response_model=SuccessResponse[dict])
+async def select_crm_config(
+    crm_config_id: str = Query(..., description="CRM Config ID to select"),
+    user: User = Depends(require_owner),  # Only owner can select
+    db: Session = Depends(get_db)
+):
+    """
+    Owner tenant selects a CRM config for the user.
+    This CRM will be available for all tenants of this user.
+    
+    **Authentication:** JWT token required (owner role only)
+    
+    **Query Parameters:**
+    - `crm_config_id` (str, required): ID of the CRM config to select
+    
+    **Returns:**
+    - crm_config_id: Selected CRM config ID
+    - crm_type: Type of CRM (monday, clickup, jira, trello)
+    - container_id: User's container ID (if exists)
+    - container_url: User's container URL (if exists)
+    - message: Success message
+    """
+    try:
+        # Validate UUID format
+        try:
+            crm_config_uuid = uuid.UUID(crm_config_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid CRM config ID format")
+        
+        # Verify CRM config exists
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM config not found")
+        
+        # Get or create board record for user
+        board_record = scheduled_call_service.get_board_for_user(db, user.id)
+        
+        if board_record:
+            # Update existing board record with new CRM config
+            board_record.tenant_crm_config_id = crm_config_uuid
+            board_record.crm_type = crm_config.crm_type
+            db.commit()
+            db.refresh(board_record)
+        else:
+            # No board record exists yet (will be created on first CSV upload)
+            # For now, we can create a minimal record or just return success
+            # The board will be created when user uploads CSV
+            pass
+        
+        result = {
+            "crm_config_id": str(crm_config_uuid),
+            "crm_type": crm_config.crm_type,
+            "container_id": board_record.crm_container_id if board_record else None,
+            "container_url": board_record.crm_container_url if board_record else None
+        }
+        
+        return create_success_response(
+            result,
+            f"CRM config '{crm_config.crm_type}' selected successfully for user. Container will be created on first CSV upload."
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to select CRM config: {str(e)}")
+
+
+@router.get("/selected-crm-config", response_model=SuccessResponse[dict])
+async def get_selected_crm_config(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the CRM config selected by owner tenant for this user.
+    All tenants of the user can see this.
+    
+    **Authentication:** JWT token required
+    
+    **Returns:**
+    - crm_config_id: Selected CRM config ID (if any)
+    - crm_type: Type of CRM (monday, clickup, jira, trello)
+    - crm_config: Full CRM config details (without sensitive data)
+    - container_id: User's container ID (if exists)
+    - container_url: User's container URL (if exists)
+    - message: Status message
+    """
+    try:
+        # Get board record for user
+        board_record = scheduled_call_service.get_board_for_user(db, user.id)
+        
+        if not board_record or not board_record.tenant_crm_config_id:
+            # No CRM selected yet
+            return create_success_response(
+                {
+                    "crm_config_id": None,
+                    "crm_type": None,
+                    "crm_config": None,
+                    "container_id": None,
+                    "container_url": None,
+                    "message": "No CRM config selected yet"
+                },
+                "No CRM config selected for this user"
+            )
+        
+        # Get CRM config details
+        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+        
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="Selected CRM config not found")
+        
+        # Prepare CRM config response (without sensitive API keys)
+        crm_config_data = {
+            "id": str(crm_config.id),
+            "crm_type": crm_config.crm_type,
+            "container_id": crm_config.container_id,
+            "container_url": crm_config.container_url,
+            "created_at": crm_config.created_at.isoformat() if crm_config.created_at else None,
+            "updated_at": crm_config.updated_at.isoformat() if crm_config.updated_at else None
+        }
+        
+        # Add additional_config if present (but exclude sensitive data)
+        if crm_config.additional_config:
+            import json
+            try:
+                additional_config = json.loads(crm_config.additional_config)
+                # Remove sensitive fields
+                if isinstance(additional_config, dict):
+                    safe_additional_config = {k: v for k, v in additional_config.items() 
+                                            if k not in ['client_secret', 'refresh_token', 'access_token']}
+                    crm_config_data["additional_config"] = safe_additional_config
+            except:
+                pass
+        
+        result = {
+            "crm_config_id": str(crm_config.id),
+            "crm_type": crm_config.crm_type,
+            "crm_config": crm_config_data,
+            "container_id": board_record.crm_container_id,
+            "container_url": board_record.crm_container_url
+        }
+        
+        return create_success_response(
+            result,
+            f"Selected CRM config: {crm_config.crm_type}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get selected CRM config: {str(e)}")
  
