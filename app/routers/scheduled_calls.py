@@ -24,6 +24,7 @@ from app.schemas.scheduled_call import (
 from app.schemas.crm_config import CRMConfigResponse, CRMConfigListResponse, CRMConfigListItem
 from app.services.scheduled_call_service import ScheduledCallService
 from app.services.monday_service import MondayService
+from app.services.clickup_service import ClickUpService
 from app.services.crm_config_service import CRMConfigService
 from app.services.crm_service_factory import CRMServiceFactory
 from app.models.scheduled_call import ScheduledCall
@@ -680,6 +681,7 @@ async def get_batch_analysis(
 ):
     """
     Get analysis data for a completed batch.
+    Supports Monday.com and ClickUp.
     
     **Authentication:** 
     - JWT token (default) - user and tenant from token
@@ -700,13 +702,16 @@ async def get_batch_analysis(
     - LLM transcript analysis for each call
     - Current timestamp (report generation time)
     - user_email (for n8n to send email)
+    - container_id: Container ID (board/list) for n8n to update items
+    - crm_type: CRM type ("monday" or "clickup")
+    - email_sent_field_id: Field ID for Email Sent status update
     
     **Matching Logic:**
-    - First tries to match by call_session_id from Monday.com items (most accurate)
+    - First tries to match by call_session_id from CRM items (most accurate)
     - Falls back to phone number matching if call_session_id not available
     
     **Note:** n8n workflow should:
-    1. Check batch completion on Monday.com
+    1. Check batch completion on CRM (Monday.com/ClickUp)
     2. Wait 10 minutes
     3. Call this endpoint with webhook secret + tenant_id + user_id
     4. Use returned data to send email
@@ -749,25 +754,58 @@ async def get_batch_analysis(
         if not board_record:
             raise HTTPException(status_code=404, detail="Board not found for user")
         
-        # Get column map
-        column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+        # Get CRM type and container ID
+        crm_type = board_record.crm_type or "monday"  # Default to monday for backward compatibility
+        container_id = board_record.crm_container_id or board_record.monday_board_id
         
-        # Fetch all items from Monday.com with this batch_id and tenant_id
-        items = MondayService.get_items_by_batch_id(
-            board_id=board_record.monday_board_id,
-            batch_id=batch_id,
-            tenant_id=str(user.current_tenant_id),
-            column_map=column_map
-        )
+        if not container_id:
+            raise HTTPException(status_code=404, detail="Container ID not found for user")
+        
+        # Get CRM config and service
+        crm_config = None
+        if board_record.tenant_crm_config_id:
+            crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+        
+        if not crm_config:
+            raise HTTPException(status_code=404, detail=f"CRM configuration not found for {crm_type}")
+        
+        # Get CRM service
+        crm_service = CRMServiceFactory.get_service(crm_config)
+        
+        # Get field map
+        field_map = crm_service.ensure_required_fields(container_id)
+        
+        # Fetch all items from CRM with this batch_id and tenant_id
+        if crm_type.lower() == "monday":
+            # Monday.com specific method
+            items = MondayService.get_items_by_batch_id(
+                board_id=container_id,
+                batch_id=batch_id,
+                tenant_id=str(user.current_tenant_id),
+                column_map=field_map
+            )
+        elif crm_type.lower() == "clickup":
+            # ClickUp specific method
+            items = crm_service.get_items_by_batch_id(
+                container_id=container_id,
+                batch_id=batch_id,
+                tenant_id=str(user.current_tenant_id),
+                field_map=field_map
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Batch analysis not yet supported for CRM type: {crm_type}"
+            )
         
         if not items:
             raise HTTPException(status_code=404, detail=f"No items found for batch_id: {batch_id}")
         
-        # Total scheduled calls (from Monday.com items)
+        # Total scheduled calls (from CRM items)
         total_scheduled = len(items)
         
         # Extract item IDs, call_session_ids and phone numbers from items
-        item_ids = []  # Item IDs for Monday.com update
+        item_ids = []  # Item IDs for CRM update
         call_session_ids = []
         phone_numbers = []
         
@@ -781,9 +819,10 @@ async def get_batch_analysis(
             if phone_number:
                 phone_numbers.append(phone_number)
             
-            # Extract call_session_id from column values
+            # Extract call_session_id - both Monday.com and ClickUp use column_values format
+            # (ClickUp service formats items with column_values for compatibility)
             for col_val in item.get("column_values", []):
-                if col_val.get("id") == column_map.get("call_session_id"):
+                if col_val.get("id") == field_map.get("call_session_id"):
                     session_id = col_val.get("text", "").strip()
                     if session_id:
                         try:
@@ -880,9 +919,10 @@ async def get_batch_analysis(
             "failure_rate_percent": round((failed_count / total_calls_made * 100) if total_calls_made > 0 else 0, 2),
             "total_cost": round(sum(float(cs.cost or 0) for cs in call_sessions), 2),
             "call_details": call_details,
-            "email_sent_column_id": column_map.get("email_sent"),  # Email Sent column ID for n8n to update status
-            "board_id": board_record.monday_board_id,  # Board ID for n8n to update items
-            "item_ids": item_ids  # Item IDs for Monday.com update
+            "email_sent_field_id": field_map.get("email_sent"),  # Email Sent field ID for n8n to update status
+            "container_id": container_id,  # Container ID (board/list/project) for n8n to update items
+            "crm_type": crm_type,  # CRM type for n8n workflow
+            "item_ids": item_ids  # Item IDs for CRM update
         }
         
         return create_success_response(analysis, "Batch analysis retrieved successfully")

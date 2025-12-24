@@ -739,3 +739,125 @@ class ClickUpService(BaseCRMService):
         
         return pending_count
 
+    def get_items_by_batch_id(
+        self,
+        container_id: str,
+        batch_id: str,
+        tenant_id: str,
+        field_map: Dict[str, str],
+        batch_size: int = 100
+    ) -> List[Dict]:
+        """
+        Fetch all tasks from a list with specific batch_id and tenant_id.
+        
+        Args:
+            container_id: ClickUp list ID
+            batch_id: Batch ID to filter by
+            tenant_id: Tenant ID to filter by (UUID string)
+            field_map: Field mapping dictionary (must include "batch_id" and "tenant_id")
+            batch_size: Number of tasks to fetch per batch
+            
+        Returns:
+            List of tasks matching the batch_id and tenant_id
+            Each task dict includes: id, name, custom_fields (with values)
+        """
+        batch_field_id = field_map.get("batch_id")
+        tenant_field_id = field_map.get("tenant_id")
+        call_session_field_id = field_map.get("call_session_id")
+        
+        if not batch_field_id or not tenant_field_id:
+            raise ValueError("batch_id or tenant_id field not found in field map")
+        
+        print(f"🔍 Fetching ClickUp tasks by batch_id:")
+        print(f"   List ID: {container_id}")
+        print(f"   Batch ID: {batch_id}")
+        print(f"   Tenant ID: {tenant_id}")
+        print(f"   Batch field ID: {batch_field_id}")
+        print(f"   Tenant field ID: {tenant_field_id}")
+        
+        items = []
+        page = 0
+        
+        while True:
+            # Fetch tasks from list
+            url = f"{self.API_URL}/list/{container_id}/task"
+            params = {
+                "page": page,
+                "limit": batch_size,
+                "archived": "false",
+                "include_closed": "false"
+            }
+            
+            try:
+                response = requests.get(url, headers=self._headers(), params=params, timeout=20)
+                response.raise_for_status()
+                tasks = response.json().get("tasks", [])
+                print(f"📋 Fetched {len(tasks)} tasks from page {page}")
+            except Exception as exc:
+                print(f"⚠️ Failed to fetch ClickUp tasks: {exc}")
+                break
+            
+            if not tasks:
+                print(f"✅ No more tasks to process. Total matching items: {len(items)}")
+                break
+            
+            for task in tasks:
+                task_id = task.get("id", "")
+                task_name = task.get("name", "")
+                
+                # ClickUp list endpoint doesn't return full custom field values
+                # Fetch individual task details to get actual custom field values
+                try:
+                    task_detail_url = f"{self.API_URL}/task/{task_id}"
+                    task_detail_response = requests.get(task_detail_url, headers=self._headers(), timeout=20)
+                    task_detail_response.raise_for_status()
+                    task_detail = task_detail_response.json()
+                    custom_fields = task_detail.get("custom_fields", [])
+                except Exception as exc:
+                    print(f"⚠️ Failed to fetch task {task_id} details: {exc}")
+                    custom_fields = task.get("custom_fields", [])
+                
+                # Check if task belongs to this batch and tenant
+                item_batch_id = None
+                item_tenant_id = None
+                item_call_session_id = None
+                
+                for field in custom_fields:
+                    field_id = field.get("id", "")
+                    field_value = field.get("value", "")
+                    
+                    if field_id == batch_field_id:
+                        item_batch_id = str(field_value).strip() if field_value else None
+                    elif field_id == tenant_field_id:
+                        item_tenant_id = str(field_value).strip() if field_value else None
+                    elif field_id == call_session_field_id and call_session_field_id:
+                        item_call_session_id = str(field_value).strip() if field_value else None
+                
+                # Match by batch_id and tenant_id
+                if item_batch_id == batch_id and item_tenant_id == tenant_id:
+                    # Format task similar to Monday.com item format for consistency
+                    item = {
+                        "id": task_id,
+                        "name": task_name,
+                        "custom_fields": custom_fields,
+                        # Add column_values format for compatibility
+                        "column_values": [
+                            {
+                                "id": field.get("id"),
+                                "text": str(field.get("value", "")),
+                                "value": field.get("value")
+                            }
+                            for field in custom_fields
+                        ]
+                    }
+                    items.append(item)
+                    print(f"✅ Matched task {task_id} ({task_name}) - Batch: {item_batch_id}, Tenant: {item_tenant_id}")
+            
+            # Check if more pages
+            if len(tasks) < batch_size:
+                break
+            page += 1
+        
+        print(f"✅ Found {len(items)} tasks matching batch_id={batch_id} and tenant_id={tenant_id}")
+        return items
+
