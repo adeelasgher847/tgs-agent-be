@@ -35,6 +35,7 @@ from app.services.call_session_service import call_session_service
 from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
+from app.core.security import decrypt_api_key
 from typing import Optional, Dict, Any
 import re
 
@@ -1229,10 +1230,18 @@ async def select_crm_config(
             db.commit()
             db.refresh(board_record)
         else:
-            # No board record exists yet (will be created on first CSV upload)
-            # For now, we can create a minimal record or just return success
-            # The board will be created when user uploads CSV
-            pass
+            # Create a minimal board record to save the CRM config selection
+            # Container will be created on first CSV upload
+            board_record = ScheduledCall(
+                user_id=user.id,
+                tenant_crm_config_id=crm_config_uuid,
+                crm_type=crm_config.crm_type,
+                crm_container_id=None,  # Will be created on first CSV upload
+                crm_container_url=None  # Will be created on first CSV upload
+            )
+            db.add(board_record)
+            db.commit()
+            db.refresh(board_record)
         
         result = {
             "crm_config_id": str(crm_config_uuid),
@@ -1241,9 +1250,15 @@ async def select_crm_config(
             "container_url": board_record.crm_container_url if board_record else None
         }
         
+        # Set message based on whether container exists
+        if board_record and board_record.crm_container_id:
+            message = f"CRM config '{crm_config.crm_type}' selected successfully for user."
+        else:
+            message = f"CRM config '{crm_config.crm_type}' selected successfully for user. Container will be created on first CSV upload."
+        
         return create_success_response(
             result,
-            f"CRM config '{crm_config.crm_type}' selected successfully for user. Container will be created on first CSV upload."
+            message
         )
         
     except HTTPException:
@@ -1295,28 +1310,11 @@ async def get_selected_crm_config(
         if not crm_config:
             raise HTTPException(status_code=404, detail="Selected CRM config not found")
         
-        # Prepare CRM config response (without sensitive API keys)
+        # Prepare CRM config response (only id and crm_type)
         crm_config_data = {
             "id": str(crm_config.id),
-            "crm_type": crm_config.crm_type,
-            "container_id": crm_config.container_id,
-            "container_url": crm_config.container_url,
-            "created_at": crm_config.created_at.isoformat() if crm_config.created_at else None,
-            "updated_at": crm_config.updated_at.isoformat() if crm_config.updated_at else None
+            "crm_type": crm_config.crm_type
         }
-        
-        # Add additional_config if present (but exclude sensitive data)
-        if crm_config.additional_config:
-            import json
-            try:
-                additional_config = json.loads(crm_config.additional_config)
-                # Remove sensitive fields
-                if isinstance(additional_config, dict):
-                    safe_additional_config = {k: v for k, v in additional_config.items() 
-                                            if k not in ['client_secret', 'refresh_token', 'access_token']}
-                    crm_config_data["additional_config"] = safe_additional_config
-            except:
-                pass
         
         result = {
             "crm_config_id": str(crm_config.id),
@@ -1335,4 +1333,95 @@ async def get_selected_crm_config(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get selected CRM config: {str(e)}")
+
+
+@router.get("/trello-credentials", response_model=SuccessResponse[dict])
+async def get_trello_credentials(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Get decrypted Trello API key and token for n8n automation.
+    Only works if user has selected Trello as their CRM.
+    
+    **Authentication:** JWT token required
+    
+    **Returns:**
+    - api_key: Decrypted Trello API key
+    - api_token: Decrypted Trello API token
+    - board_id: User's Trello board ID
+    - container_id: User's container ID (same as board_id)
+    
+    **Note:** This endpoint is specifically for n8n automation workflows.
+    Only returns credentials if Trello is the selected CRM.
+    """
+    try:
+        import json
+        
+        # Get board record for user
+        board_record = scheduled_call_service.get_board_for_user(db, user.id)
+        
+        if not board_record or not board_record.tenant_crm_config_id:
+            raise HTTPException(
+                status_code=404, 
+                detail="No CRM config selected. Please select a CRM config first."
+            )
+        
+        # Get CRM config details
+        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+        
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="Selected CRM config not found")
+        
+        # Check if CRM type is Trello
+        if crm_config.crm_type.lower() != "trello":
+            raise HTTPException(
+                status_code=400, 
+                detail=f"This endpoint is only for Trello CRM. Current CRM type: {crm_config.crm_type}"
+            )
+        
+        # Decrypt API key
+        api_key = decrypt_api_key(crm_config.encrypted_api_key)
+        
+        # Decrypt API token from additional_config
+        api_token = None
+        if crm_config.additional_config:
+            try:
+                additional_config = json.loads(crm_config.additional_config)
+                if isinstance(additional_config, dict) and "api_token" in additional_config:
+                    encrypted_token = additional_config["api_token"]
+                    if encrypted_token:
+                        api_token = decrypt_api_key(encrypted_token)
+            except Exception as e:
+                print(f"⚠️ Failed to parse additional_config: {e}")
+        
+        if not api_key:
+            raise HTTPException(
+                status_code=404, 
+                detail="Trello API key not found in CRM config"
+            )
+        
+        if not api_token:
+            raise HTTPException(
+                status_code=404, 
+                detail="Trello API token not found in CRM config"
+            )
+        
+        result = {
+            "api_key": api_key,
+            "api_token": api_token,
+            "board_id": board_record.crm_container_id,
+            "container_id": board_record.crm_container_id,  # Same as board_id for Trello
+            "container_url": board_record.crm_container_url
+        }
+        
+        return create_success_response(
+            result,
+            "Trello credentials retrieved successfully for n8n automation"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get Trello credentials: {str(e)}")
  
