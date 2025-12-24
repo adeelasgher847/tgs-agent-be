@@ -3,6 +3,7 @@ Trello API Service for Scheduled Calls Integration
 """
 
 import json
+import re
 from typing import Dict, List, Optional
 import requests
 from app.services.base_crm_service import BaseCRMService
@@ -485,4 +486,152 @@ class TrelloService(BaseCRMService):
                 pending_count += 1
         
         return pending_count
+
+    def get_items_by_batch_id(
+        self,
+        container_id: str,
+        batch_id: str,
+        tenant_id: str,
+        field_map: Dict[str, str],
+        batch_size: int = 100
+    ) -> List[Dict]:
+        """
+        Get all Trello cards with a specific batch_id and tenant_id.
+        
+        According to Trello API documentation:
+        - Cards are fetched from board using GET /boards/{id}/cards
+        - Custom fields are fetched per card using GET /cards/{id}/customFields
+        - Falls back to description parsing if custom fields are not available
+        
+        Args:
+            container_id: Trello board ID
+            batch_id: Batch ID to filter by
+            tenant_id: Tenant ID to filter by
+            field_map: Field mapping dictionary (must include "batch_id" and "tenant_id")
+            batch_size: Batch size for processing (not used for Trello, kept for compatibility)
+            
+        Returns:
+            List of card dictionaries formatted with column_values for compatibility
+            Each card dict includes: id, name, column_values (with call_session_id if available)
+        """
+        batch_field_id = field_map.get("batch_id")
+        tenant_field_id = field_map.get("tenant_id")
+        call_session_field_id = field_map.get("call_session_id")
+        
+        # If custom fields are missing, we'll use description parsing as fallback
+        # This is common when Trello Power-Ups are not enabled
+        if not batch_field_id or not tenant_field_id:
+            print(f"⚠️ Warning: batch_id or tenant_id custom fields not found in field_map")
+            print(f"   Field map: {field_map}")
+            print(f"   Will use description parsing as fallback for batch_id and tenant_id")
+            # Don't raise error - we'll parse from description instead
+        
+        print(f"🔍 Fetching Trello cards by batch_id:")
+        print(f"   Board ID: {container_id}")
+        print(f"   Batch ID: {batch_id}")
+        print(f"   Tenant ID: {tenant_id}")
+        print(f"   Batch field ID: {batch_field_id}")
+        print(f"   Tenant field ID: {tenant_field_id}")
+        
+        items = []
+        
+        # Get all cards from board
+        # Trello API: GET /boards/{id}/cards
+        url = f"{self.API_URL}/boards/{container_id}/cards"
+        params = self._auth_params()
+        params.update({"filter": "all"})  # Get all cards including archived
+        
+        try:
+            response = requests.get(url, params=params, timeout=20)
+            response.raise_for_status()
+            cards = response.json()
+            print(f"📋 Fetched {len(cards)} cards from board")
+        except Exception as exc:
+            print(f"⚠️ Failed to fetch Trello cards: {exc}")
+            return []
+        
+        for card in cards:
+            card_id = card.get("id", "")
+            card_name = card.get("name", "")
+            card_desc = card.get("desc", "")
+            
+            # Get custom fields for this card
+            # Trello API: GET /cards/{id}/customFields
+            custom_fields_url = f"{self.API_URL}/card/{card_id}/customFields"
+            custom_fields_params = self._auth_params()
+            
+            try:
+                custom_fields_response = requests.get(custom_fields_url, params=custom_fields_params, timeout=20)
+                custom_fields_response.raise_for_status()
+                custom_fields = custom_fields_response.json()
+            except Exception as exc:
+                print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
+                custom_fields = []
+            
+            # Extract batch_id, tenant_id, and call_session_id
+            item_batch_id = None
+            item_tenant_id = None
+            item_call_session_id = None
+            
+            # First try custom fields (preferred method) - only if field IDs are available
+            if batch_field_id or tenant_field_id or call_session_field_id:
+                for field in custom_fields:
+                    field_id = field.get("id", "")
+                    field_value = field.get("value", {})
+                    
+                    if batch_field_id and field_id == batch_field_id:
+                        # Trello custom field values are objects with "text" property for text fields
+                        if isinstance(field_value, dict):
+                            item_batch_id = field_value.get("text", "").strip()
+                        else:
+                            item_batch_id = str(field_value).strip() if field_value else None
+                    elif tenant_field_id and field_id == tenant_field_id:
+                        if isinstance(field_value, dict):
+                            item_tenant_id = field_value.get("text", "").strip()
+                        else:
+                            item_tenant_id = str(field_value).strip() if field_value else None
+                    elif call_session_field_id and field_id == call_session_field_id:
+                        if isinstance(field_value, dict):
+                            item_call_session_id = field_value.get("text", "").strip()
+                        else:
+                            item_call_session_id = str(field_value).strip() if field_value else None
+            
+            # Fallback to description parsing if custom fields not found
+            if not item_batch_id and card_desc:
+                batch_match = re.search(r'Batch ID:\s*([^\n]+)', card_desc, re.IGNORECASE)
+                if batch_match:
+                    item_batch_id = batch_match.group(1).strip()
+            
+            if not item_tenant_id and card_desc:
+                tenant_match = re.search(r'Tenant ID:\s*([^\n]+)', card_desc, re.IGNORECASE)
+                if tenant_match:
+                    item_tenant_id = tenant_match.group(1).strip()
+            
+            if not item_call_session_id and card_desc:
+                session_match = re.search(r'Call Session ID:\s*([^\n]+)', card_desc, re.IGNORECASE)
+                if session_match:
+                    item_call_session_id = session_match.group(1).strip()
+            
+            # Match by batch_id and tenant_id
+            if item_batch_id == batch_id and item_tenant_id == tenant_id:
+                # Format item similar to Monday.com/ClickUp format for compatibility
+                # This ensures the batch analysis endpoint can process Trello items the same way
+                formatted_item = {
+                    "id": card_id,
+                    "name": card_name,
+                    "column_values": []  # Format for compatibility with existing code
+                }
+                
+                # Add call_session_id to column_values format (required by batch analysis endpoint)
+                if item_call_session_id and call_session_field_id:
+                    formatted_item["column_values"].append({
+                        "id": call_session_field_id,
+                        "text": item_call_session_id
+                    })
+                
+                items.append(formatted_item)
+                print(f"✅ Matched card {card_id} ({card_name}) - Batch: {item_batch_id}, Tenant: {item_tenant_id}")
+        
+        print(f"✅ Found {len(items)} cards matching batch_id={batch_id} and tenant_id={tenant_id}")
+        return items
 

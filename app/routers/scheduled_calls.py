@@ -35,7 +35,6 @@ from app.services.call_session_service import call_session_service
 from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
-from app.core.security import decrypt_api_key
 from typing import Optional, Dict, Any
 import re
 
@@ -682,7 +681,7 @@ async def get_batch_analysis(
 ):
     """
     Get analysis data for a completed batch.
-    Supports Monday.com and ClickUp.
+    Supports Monday.com, ClickUp, and Trello.
     
     **Authentication:** 
     - JWT token (default) - user and tenant from token
@@ -704,15 +703,16 @@ async def get_batch_analysis(
     - Current timestamp (report generation time)
     - user_email (for n8n to send email)
     - container_id: Container ID (board/list) for n8n to update items
-    - crm_type: CRM type ("monday" or "clickup")
+    - crm_type: CRM type ("monday", "clickup", or "trello")
     - email_sent_field_id: Field ID for Email Sent status update
     
     **Matching Logic:**
     - First tries to match by call_session_id from CRM items (most accurate)
     - Falls back to phone number matching if call_session_id not available
+    - For Trello: Supports both custom fields and description parsing
     
     **Note:** n8n workflow should:
-    1. Check batch completion on CRM (Monday.com/ClickUp)
+    1. Check batch completion on CRM (Monday.com/ClickUp/Trello)
     2. Wait 10 minutes
     3. Call this endpoint with webhook secret + tenant_id + user_id
     4. Use returned data to send email
@@ -787,6 +787,14 @@ async def get_batch_analysis(
             )
         elif crm_type.lower() == "clickup":
             # ClickUp specific method
+            items = crm_service.get_items_by_batch_id(
+                container_id=container_id,
+                batch_id=batch_id,
+                tenant_id=str(user.current_tenant_id),
+                field_map=field_map
+            )
+        elif crm_type.lower() == "trello":
+            # Trello specific method
             items = crm_service.get_items_by_batch_id(
                 container_id=container_id,
                 batch_id=batch_id,
@@ -1333,95 +1341,4 @@ async def get_selected_crm_config(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get selected CRM config: {str(e)}")
-
-
-@router.get("/trello-credentials", response_model=SuccessResponse[dict])
-async def get_trello_credentials(
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
-):
-    """
-    Get decrypted Trello API key and token for n8n automation.
-    Only works if user has selected Trello as their CRM.
-    
-    **Authentication:** JWT token required
-    
-    **Returns:**
-    - api_key: Decrypted Trello API key
-    - api_token: Decrypted Trello API token
-    - board_id: User's Trello board ID
-    - container_id: User's container ID (same as board_id)
-    
-    **Note:** This endpoint is specifically for n8n automation workflows.
-    Only returns credentials if Trello is the selected CRM.
-    """
-    try:
-        import json
-        
-        # Get board record for user
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        
-        if not board_record or not board_record.tenant_crm_config_id:
-            raise HTTPException(
-                status_code=404, 
-                detail="No CRM config selected. Please select a CRM config first."
-            )
-        
-        # Get CRM config details
-        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
-        
-        if not crm_config:
-            raise HTTPException(status_code=404, detail="Selected CRM config not found")
-        
-        # Check if CRM type is Trello
-        if crm_config.crm_type.lower() != "trello":
-            raise HTTPException(
-                status_code=400, 
-                detail=f"This endpoint is only for Trello CRM. Current CRM type: {crm_config.crm_type}"
-            )
-        
-        # Decrypt API key
-        api_key = decrypt_api_key(crm_config.encrypted_api_key)
-        
-        # Decrypt API token from additional_config
-        api_token = None
-        if crm_config.additional_config:
-            try:
-                additional_config = json.loads(crm_config.additional_config)
-                if isinstance(additional_config, dict) and "api_token" in additional_config:
-                    encrypted_token = additional_config["api_token"]
-                    if encrypted_token:
-                        api_token = decrypt_api_key(encrypted_token)
-            except Exception as e:
-                print(f"⚠️ Failed to parse additional_config: {e}")
-        
-        if not api_key:
-            raise HTTPException(
-                status_code=404, 
-                detail="Trello API key not found in CRM config"
-            )
-        
-        if not api_token:
-            raise HTTPException(
-                status_code=404, 
-                detail="Trello API token not found in CRM config"
-            )
-        
-        result = {
-            "api_key": api_key,
-            "api_token": api_token,
-            "board_id": board_record.crm_container_id,
-            "container_id": board_record.crm_container_id,  # Same as board_id for Trello
-            "container_url": board_record.crm_container_url
-        }
-        
-        return create_success_response(
-            result,
-            "Trello credentials retrieved successfully for n8n automation"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get Trello credentials: {str(e)}")
  
