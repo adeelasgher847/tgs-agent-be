@@ -528,6 +528,56 @@ class ClickUpService(BaseCRMService):
             print(f"⚠️ Failed to update call_session_id for ClickUp task {item_id}: {exc}")
             return None
 
+    def update_item_email_sent(
+        self,
+        container_id: str,
+        item_id: str,
+        field_map: Dict[str, str],
+    ) -> Optional[dict]:
+        """Update Email Sent field to 'Yes' for a ClickUp task"""
+        email_sent_field_id = field_map.get("email_sent")
+        if not email_sent_field_id:
+            print(f"⚠️ Email Sent field ID not found in field map")
+            return None
+        
+        # Get UUID for "Yes" option
+        yes_uuid = self._get_dropdown_option_uuid(container_id, email_sent_field_id, "Yes")
+        if not yes_uuid:
+            print(f"⚠️ Could not find 'Yes' option UUID for Email Sent field")
+            return None
+        
+        url = f"{self.API_URL}/task/{item_id}/field/{email_sent_field_id}"
+        payload = {"value": yes_uuid}
+        
+        try:
+            response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
+            response.raise_for_status()
+            print(f"✅ Updated Email Sent to 'Yes' for task {item_id}")
+            return response.json()
+        except Exception as exc:
+            print(f"⚠️ Failed to update Email Sent for ClickUp task {item_id}: {exc}")
+            import traceback
+            print(f"   Traceback: {traceback.format_exc()}")
+            return None
+
+    def update_items_email_sent(
+        self,
+        container_id: str,
+        item_ids: List[str],
+        field_map: Dict[str, str],
+    ) -> int:
+        """Update Email Sent field to 'Yes' for multiple ClickUp tasks"""
+        if not item_ids:
+            return 0
+        
+        updated_count = 0
+        for item_id in item_ids:
+            result = self.update_item_email_sent(container_id, item_id, field_map)
+            if result:
+                updated_count += 1
+        
+        return updated_count
+
     def get_required_fields(self) -> List[Dict]:
         """Get list of required fields"""
         return self.REQUIRED_FIELDS
