@@ -635,3 +635,109 @@ class TrelloService(BaseCRMService):
         print(f"✅ Found {len(items)} cards matching batch_id={batch_id} and tenant_id={tenant_id}")
         return items
 
+    def update_item_email_sent(
+        self,
+        container_id: str,
+        item_id: str,
+        field_map: Dict[str, str],
+    ) -> Optional[dict]:
+        """
+        Update Email Sent status to "Yes" for a Trello card.
+        Tries custom field first, falls back to description update.
+        
+        Args:
+            container_id: Trello board ID
+            item_id: Trello card ID
+            field_map: Field mapping dictionary
+            
+        Returns:
+            Updated card data if successful, None otherwise
+        """
+        email_sent_field_id = field_map.get("email_sent")
+        updated = False
+        
+        # Try custom field update first (if available)
+        if email_sent_field_id:
+            url = f"{self.API_URL}/cards/{item_id}/customField/{email_sent_field_id}/item"
+            params = self._auth_params()
+            params.update({
+                "value": {"text": "Yes"}
+            })
+            
+            try:
+                response = requests.put(url, params=params, timeout=20)
+                response.raise_for_status()
+                print(f"✅ Updated Email Sent custom field to 'Yes' for card {item_id}")
+                updated = True
+            except Exception as exc:
+                print(f"⚠️ Failed to update Email Sent custom field for card {item_id}: {exc}")
+        
+        # Fallback to description update (always try, even if custom field succeeded)
+        # This ensures description is also updated for consistency
+        try:
+            # Get current card description
+            get_url = f"{self.API_URL}/cards/{item_id}"
+            get_params = self._auth_params()
+            get_response = requests.get(get_url, params=get_params, timeout=20)
+            get_response.raise_for_status()
+            card_data = get_response.json()
+            description = card_data.get("desc", "")
+            
+            # Update description
+            if description:
+                # Replace Email Sent: No with Email Sent: Yes
+                if 'Email Sent: No' in description:
+                    description = description.replace('Email Sent: No', 'Email Sent: Yes')
+                elif re.search(r'Email Sent:\s*(Yes|No)', description, re.IGNORECASE):
+                    description = re.sub(r'Email Sent:\s*(Yes|No)', 'Email Sent: Yes', description, flags=re.IGNORECASE)
+                else:
+                    description = description + ('\n' if not description.endswith('\n') else '') + 'Email Sent: Yes'
+            else:
+                description = 'Email Sent: Yes'
+            
+            # Update card description
+            update_url = f"{self.API_URL}/cards/{item_id}"
+            update_params = self._auth_params()
+            update_params.update({
+                "desc": description
+            })
+            update_response = requests.put(update_url, params=update_params, timeout=20)
+            update_response.raise_for_status()
+            print(f"✅ Updated Email Sent in description to 'Yes' for card {item_id}")
+            updated = True
+            return update_response.json()
+        except Exception as exc:
+            print(f"⚠️ Failed to update Email Sent in description for card {item_id}: {exc}")
+            if updated:
+                # Custom field was updated, so return success
+                return {"id": item_id}
+            return None
+
+    def update_items_email_sent(
+        self,
+        container_id: str,
+        item_ids: List[str],
+        field_map: Dict[str, str],
+    ) -> int:
+        """
+        Update Email Sent status to "Yes" for multiple Trello cards.
+        
+        Args:
+            container_id: Trello board ID
+            item_ids: List of Trello card IDs
+            field_map: Field mapping dictionary
+            
+        Returns:
+            Number of successfully updated cards
+        """
+        if not item_ids:
+            return 0
+        
+        updated_count = 0
+        for item_id in item_ids:
+            result = self.update_item_email_sent(container_id, item_id, field_map)
+            if result:
+                updated_count += 1
+        
+        return updated_count
+
