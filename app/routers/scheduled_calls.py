@@ -1482,103 +1482,65 @@ async def get_selected_crm_config(
 @router.get("/jira-credentials", response_model=SuccessResponse[dict], include_in_schema=False)
 async def get_jira_credentials(
     http_request: Request,
-    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
-    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (optional - if not provided, returns all Jira users)"),
+    user_id: Optional[str] = Query(None, description="User ID (optional - if not provided, returns all Jira users)"),
     user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
-    Get Jira credentials (decrypted API token, email, server_url, project_key) for n8n automation.
-    This endpoint is hidden from Swagger documentation.
+    Get Jira credentials for n8n automation.
+    
+    **Two modes:**
+    1. **Single User Mode:** If tenant_id and user_id provided, returns credentials for that user
+    2. **All Users Mode:** If tenant_id and user_id NOT provided, returns list of all users with Jira configured
     
     **Authentication:** 
     - JWT token (default) - user and tenant from token
-    - OR X-N8N-Webhook-Secret header - provide tenant_id and user_id as query params
+    - OR X-N8N-Webhook-Secret header - provide tenant_id and user_id as query params (optional)
     
     **Query Parameters (for n8n webhook):**
-    - `tenant_id` (str, optional): Required when using webhook secret
-    - `user_id` (str, optional): Required when using webhook secret
+    - `tenant_id` (str, optional): If provided, returns single user credentials
+    - `user_id` (str, optional): If provided, returns single user credentials
     
-    **Returns:**
+    **Returns (Single User Mode):**
     - api_token: Decrypted Jira API token
     - email: Jira account email
     - server_url: Jira server URL
-    - project_key: User's Jira project key (dynamically fetched from crm_container_id)
+    - project_key: User's Jira project key
+    - user_id: User ID
+    - tenant_id: Tenant ID
     
-    **Note:** 
-    - Each user has their own dynamically created Jira project
-    - Project key is stored in ScheduledCall.crm_container_id
-    - This endpoint fetches the project key for the current user
+    **Returns (All Users Mode):**
+    - api_token: Decrypted Jira API token (global)
+    - email: Jira account email (global)
+    - server_url: Jira server URL (global)
+    - users: Array of users with Jira configured
+      - user_id: User ID
+      - tenant_id: Tenant ID
+      - project_key: User's project key
     """
     try:
         # Verify authentication: either JWT token OR webhook secret
         is_webhook = await verify_n8n_webhook_secret_async(http_request)
         
-        if is_webhook:
-            # Webhook authentication - get tenant_id and user_id from query params
-            if not tenant_id or not user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="tenant_id and user_id are required as query parameters when using webhook secret"
-                )
-            try:
-                tenant_uuid = uuid.UUID(tenant_id)
-                user_uuid = uuid.UUID(user_id)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid UUID format for tenant_id or user_id"
-                )
-            
-            # Get user from database
-            user = db.query(User).filter(User.id == user_uuid).first()
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="User not found"
-                )
-        else:
-            # JWT authentication - user already available from Depends
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required"
-                )
+        # Get Jira CRM config (global config, same for all users)
+        jira_config = crm_config_service.get_crm_config_by_type(db, "jira")
         
-        # Get board record for user (contains crm_container_id = project_key)
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        
-        if not board_record or not board_record.tenant_crm_config_id:
+        if not jira_config:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No Jira CRM config selected for this user. Please select a Jira CRM config first."
-            )
-        
-        # Get CRM config
-        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
-        
-        if not crm_config:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="CRM config not found"
-            )
-        
-        # Verify it's Jira
-        if crm_config.crm_type != "jira":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Selected CRM is {crm_config.crm_type}, not Jira"
+                detail="Jira CRM config not found. Please configure Jira first."
             )
         
         # Decrypt API token
         from app.core.security import decrypt_api_key
-        api_token = decrypt_api_key(crm_config.encrypted_api_key)
+        api_token = decrypt_api_key(jira_config.encrypted_api_key)
         
         # Parse additional_config for email and server_url
         import json
         additional_config = {}
-        if crm_config.additional_config:
-            additional_config = json.loads(crm_config.additional_config)
+        if jira_config.additional_config:
+            additional_config = json.loads(jira_config.additional_config)
         
         email = additional_config.get("email", "")
         server_url = additional_config.get("server_url", "")
@@ -1589,26 +1551,119 @@ async def get_jira_credentials(
                 detail="Jira email or server_url not configured in additional_config"
             )
         
-        # Get project key from crm_container_id (dynamically created per user)
-        project_key = board_record.crm_container_id
-        
-        if not project_key:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Jira project key not found. Please upload a CSV first to create the project."
+        # If tenant_id and user_id provided, return single user credentials
+        if tenant_id and user_id:
+            if is_webhook:
+                try:
+                    tenant_uuid = uuid.UUID(tenant_id)
+                    user_uuid = uuid.UUID(user_id)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid UUID format for tenant_id or user_id"
+                    )
+                
+                # Get user from database
+                user = db.query(User).filter(User.id == user_uuid).first()
+                if not user:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="User not found"
+                    )
+            else:
+                # JWT authentication - user already available from Depends
+                if not user:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Authentication required"
+                    )
+            
+            # Get board record for user (contains crm_container_id = project_key)
+            board_record = scheduled_call_service.get_board_for_user(db, user.id)
+            
+            if not board_record or not board_record.tenant_crm_config_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No Jira CRM config selected for this user. Please select a Jira CRM config first."
+                )
+            
+            # Verify it's Jira
+            if board_record.crm_type != "jira":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Selected CRM is {board_record.crm_type}, not Jira"
+                )
+            
+            # Get project key from crm_container_id (dynamically created per user)
+            project_key = board_record.crm_container_id
+            
+            if not project_key:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Jira project key not found. Please upload a CSV first to create the project."
+                )
+            
+            # Get tenant_id (use current_tenant_id or first tenant)
+            tenant_id_value = str(user.current_tenant_id) if user.current_tenant_id else None
+            if not tenant_id_value and user.tenants:
+                tenant_id_value = str(user.tenants[0].id)
+            
+            result = {
+                "api_token": api_token,
+                "email": email,
+                "server_url": server_url,
+                "project_key": project_key,
+                "user_id": str(user.id),
+                "tenant_id": tenant_id_value
+            }
+            
+            return create_success_response(
+                result,
+                "Jira credentials retrieved successfully"
             )
         
-        result = {
-            "api_token": api_token,
-            "email": email,
-            "server_url": server_url,
-            "project_key": project_key  # Dynamically fetched from crm_container_id
-        }
-        
-        return create_success_response(
-            result,
-            "Jira credentials retrieved successfully"
-        )
+        # If tenant_id and user_id NOT provided, return all users with Jira configured
+        else:
+            # Get all ScheduledCall records with Jira CRM type
+            from app.models.scheduled_call import ScheduledCall
+            jira_boards = db.query(ScheduledCall).filter(
+                ScheduledCall.crm_type == "jira",
+                ScheduledCall.tenant_crm_config_id.isnot(None),
+                ScheduledCall.crm_container_id.isnot(None)
+            ).all()
+            
+            users_list = []
+            for board_record in jira_boards:
+                # Get user
+                user = db.query(User).filter(User.id == board_record.user_id).first()
+                if not user:
+                    continue
+                
+                # Get all tenants for this user
+                user_tenants = user.tenants
+                if not user_tenants:
+                    continue
+                
+                # For each tenant, add an entry
+                for tenant in user_tenants:
+                    users_list.append({
+                        "user_id": str(user.id),
+                        "tenant_id": str(tenant.id),
+                        "project_key": board_record.crm_container_id
+                    })
+            
+            result = {
+                "api_token": api_token,
+                "email": email,
+                "server_url": server_url,
+                "users": users_list,
+                "total": len(users_list)
+            }
+            
+            return create_success_response(
+                result,
+                f"Retrieved {len(users_list)} user(s) with Jira configured"
+            )
         
     except HTTPException:
         raise
