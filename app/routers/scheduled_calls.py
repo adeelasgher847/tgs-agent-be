@@ -943,7 +943,7 @@ async def get_batch_analysis(
         raise HTTPException(status_code=500, detail=f"Failed to get batch analysis: {str(e)}")
 
 
-@router.post("/batch/{batch_id}/mark-email-sent", response_model=SuccessResponse[dict], include_in_schema=False)
+@router.post("/batch/{batch_id}/mark-email-sent", response_model=SuccessResponse[dict], include_in_schema=True)
 async def mark_batch_email_sent(
     batch_id: str,
     http_request: Request,
@@ -1012,34 +1012,95 @@ async def mark_batch_email_sent(
         if not board_record:
             raise HTTPException(status_code=404, detail="Board not found for user")
         
-        # Get column map
-        column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
+        # Get CRM config and service (uses database API key)
+        crm_config = None
+        if board_record.tenant_crm_config_id:
+            crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
         
-        # Fetch items by batch_id and tenant_id
-        items = MondayService.get_items_by_batch_id(
-            board_id=board_record.monday_board_id,
-            batch_id=batch_id,
-            tenant_id=str(user.current_tenant_id),
-            column_map=column_map
-        )
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found for user's board")
+        
+        # Get CRM service instance (uses database API key)
+        print(f"🔍 Creating CRM service for type: {crm_config.crm_type}")
+        print(f"   CRM Config ID: {crm_config.id}")
+        print(f"   Has encrypted_api_key: {bool(crm_config.encrypted_api_key)}")
+        if crm_config.encrypted_api_key:
+            print(f"   API key first 20 chars: {crm_config.encrypted_api_key[:20]}...")
+        
+        try:
+            crm_service = CRMServiceFactory.get_service(crm_config)
+            print(f"✅ CRM service created: {type(crm_service).__name__}")
+        except Exception as service_exc:
+            print(f"❌ Error creating CRM service: {service_exc}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        # Verify it's Monday.com service
+        if not isinstance(crm_service, MondayService):
+            raise HTTPException(status_code=400, detail=f"This endpoint is for Monday.com only. Current CRM type: {crm_config.crm_type}")
+        
+        # Get container ID
+        container_id = board_record.crm_container_id or board_record.monday_board_id
+        if not container_id:
+            raise HTTPException(status_code=404, detail="Container ID not found for user")
+        
+        # Get field map using instance method (uses database API key)
+        print(f"🔍 Getting field map for container: {container_id}")
+        try:
+            field_map = crm_service.ensure_required_fields(container_id)
+            print(f"✅ Field map retrieved: {list(field_map.keys())}")
+        except Exception as field_exc:
+            print(f"❌ Error getting field map: {field_exc}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        # Fetch items by batch_id and tenant_id using instance method
+        print(f"🔍 Fetching items for batch_id: {batch_id}, tenant_id: {user.current_tenant_id}")
+        try:
+            items = crm_service.get_items_by_batch_id(
+                container_id=container_id,
+                batch_id=batch_id,
+                tenant_id=str(user.current_tenant_id),
+                field_map=field_map
+            )
+            print(f"✅ Found {len(items)} items")
+        except Exception as fetch_exc:
+            print(f"❌ Error fetching items: {fetch_exc}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         if not items:
             raise HTTPException(status_code=404, detail=f"No items found for batch_id: {batch_id}")
         
         # Get email_sent column ID
-        email_sent_column_id = column_map.get("email_sent")
+        email_sent_column_id = field_map.get("email_sent")
         if not email_sent_column_id:
             raise HTTPException(status_code=500, detail="Email Sent column not found in board")
         
         # Extract item IDs
         item_ids = [item["id"] for item in items]
         
-        # Update Email Sent status to "Yes" (index 1)
-        updated_count = MondayService.update_items_email_sent(
-            board_id=board_record.monday_board_id,
-            item_ids=item_ids,
-            email_sent_column_id=email_sent_column_id
-        )
+        # Update Email Sent status to "Yes" using instance method (uses database API key)
+        print(f"🔍 About to update {len(item_ids)} items with email_sent status")
+        print(f"   Container ID: {container_id}")
+        print(f"   Item IDs: {item_ids[:3]}..." if len(item_ids) > 3 else f"   Item IDs: {item_ids}")
+        print(f"   Email Sent Column ID: {field_map.get('email_sent')}")
+        
+        try:
+            updated_count = crm_service.update_items_email_sent(
+                container_id=container_id,
+                item_ids=item_ids,
+                field_map=field_map
+            )
+            print(f"✅ Successfully updated {updated_count} items")
+        except Exception as update_exc:
+            print(f"❌ Error in update_items_email_sent: {update_exc}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         result = {
             "batch_id": batch_id,
@@ -1055,6 +1116,10 @@ async def mark_batch_email_sent(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"❌ Exception in mark_batch_email_sent endpoint: {str(e)}")
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"   Full traceback:\n{error_trace}")
         raise HTTPException(status_code=500, detail=f"Failed to mark email sent: {str(e)}")
 
 

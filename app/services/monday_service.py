@@ -47,9 +47,36 @@ class MondayService(BaseCRMService):
 
     def get_api_key(self) -> str:
         """Get decrypted API key"""
-        if self._api_key:
-            return decrypt_api_key(self._api_key) if self._api_key.startswith("eyJ") else self._api_key
-        return settings.MONDAY_API_KEY or ""
+        if not self._api_key or self._api_key.strip() == "":
+            # Fallback to ENV key if instance key not provided
+            env_key = settings.MONDAY_API_KEY or ""
+            if env_key:
+                print(f"⚠️ Using ENV Monday.com API key (instance key not provided)")
+            return env_key
+        
+        # Check if encrypted (JWT format)
+        if self._api_key.startswith("eyJ"):
+            try:
+                decrypted = decrypt_api_key(self._api_key)
+                
+                # Debug logging
+                print(f"🔍 Monday.com API Key decrypted successfully")
+                print(f"   Encrypted (first 20 chars): {self._api_key[:20]}...")
+                print(f"   Decrypted (first 10 chars): {decrypted[:10] if decrypted else 'None'}...")
+                print(f"   Decrypted length: {len(decrypted) if decrypted else 0}")
+                
+                if not decrypted or decrypted.strip() == "":
+                    raise ValueError("Decrypted API key is empty")
+                return decrypted
+            except Exception as exc:
+                print(f"❌ Monday.com API key decryption failed: {str(exc)}")
+                import traceback
+                traceback.print_exc()
+                raise ValueError(f"Failed to decrypt Monday.com API key: {str(exc)}")
+        
+        # Already decrypted or plain text
+        print(f"🔍 Monday.com API Key appears to be already decrypted")
+        return self._api_key
 
     def build_container_url(self, container_id: str) -> str:
         """Build URL for Monday.com board (implements BaseCRMService)"""
@@ -62,8 +89,13 @@ class MondayService(BaseCRMService):
     def _headers(self) -> Dict[str, str]:
         """Get API headers (instance method)"""
         api_key = self.get_api_key()
-        if not api_key:
-            raise ValueError("Monday.com API key is not configured")
+        if not api_key or api_key.strip() == "":
+            raise ValueError("Monday.com API key is not configured or is empty")
+        
+        # Validate API key format (Monday.com keys are usually long)
+        if len(api_key) < 10:
+            raise ValueError(f"Monday.com API key seems too short: {len(api_key)} chars. Minimum expected: 10 chars")
+        
         return {
             "Authorization": api_key,
             "Content-Type": "application/json",
@@ -83,17 +115,53 @@ class MondayService(BaseCRMService):
 
     def _execute(self, query: str, variables: Dict) -> Dict:
         """Execute GraphQL query (instance method)"""
-        response = requests.post(
-            self.API_URL,
-            json={"query": query, "variables": variables},
-            headers=self._headers(),
-            timeout=20,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if "errors" in payload:
-            raise ValueError(payload["errors"])
-        return payload.get("data", {})
+        print(f"🔍 MondayService._execute called")
+        print(f"   API URL: {self.API_URL}")
+        
+        try:
+            headers = self._headers()
+            print(f"   Headers prepared (API key length: {len(headers.get('Authorization', ''))})")
+            print(f"   API key first 10 chars: {headers.get('Authorization', '')[:10]}...")
+        except Exception as header_exc:
+            print(f"❌ Failed to get headers: {header_exc}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        try:
+            print(f"   Making request to Monday.com API...")
+            response = requests.post(
+                self.API_URL,
+                json={"query": query, "variables": variables},
+                headers=headers,
+                timeout=20,
+            )
+            print(f"   Response status: {response.status_code}")
+            
+            response.raise_for_status()
+            payload = response.json()
+            
+            if "errors" in payload:
+                print(f"❌ Monday.com API returned errors: {payload['errors']}")
+                raise ValueError(payload["errors"])
+            
+            print(f"✅ Monday.com API request successful")
+            return payload.get("data", {})
+        except requests.exceptions.HTTPError as http_exc:
+            print(f"❌ HTTP Error: {http_exc}")
+            print(f"   Status code: {http_exc.response.status_code if hasattr(http_exc, 'response') else 'unknown'}")
+            if hasattr(http_exc, 'response') and http_exc.response is not None:
+                try:
+                    error_body = http_exc.response.text
+                    print(f"   Error response: {error_body[:500]}")
+                except:
+                    pass
+            raise
+        except Exception as exc:
+            print(f"❌ Unexpected error in _execute: {exc}")
+            import traceback
+            traceback.print_exc()
+            raise
 
     @staticmethod
     def _execute_static(query: str, variables: Dict) -> Dict:
@@ -438,7 +506,7 @@ class MondayService(BaseCRMService):
         }
 
         try:
-            return MondayService._execute(query, variables)
+            return MondayService._execute_static(query, variables)
         except Exception as exc:
             print(f"⚠️ Failed to update Monday.com item {item_id}: {exc}")
             return None
@@ -471,7 +539,7 @@ class MondayService(BaseCRMService):
             delete_item (item_id: $itemId) { id }
         }
         """
-        MondayService._execute(query, {"itemId": item_id})
+        MondayService._execute_static(query, {"itemId": item_id})
 
     @staticmethod
     def delete_all_items(board_id: str, batch_size: int = 50) -> int:
@@ -521,7 +589,7 @@ class MondayService(BaseCRMService):
             }
         }
         """
-        data = MondayService._execute(query, {
+        data = MondayService._execute_static(query, {
             "boardId": board_id,
             "cursor": cursor,
             "limit": limit,
@@ -772,7 +840,7 @@ class MondayService(BaseCRMService):
         }
         
         try:
-            return MondayService._execute(query, variables)
+            return MondayService._execute_static(query, variables)
         except Exception as exc:
             print(f"⚠️ Failed to update call_session_id for Monday.com item {item_id}: {exc}")
             return None
@@ -830,7 +898,7 @@ class MondayService(BaseCRMService):
         }
         
         try:
-            return MondayService._execute(query, variables)
+            return MondayService._execute_static(query, variables)
         except Exception as exc:
             print(f"⚠️ Failed to update status and call_session_id for Monday.com item {item_id}: {exc}")
             return None
@@ -917,19 +985,19 @@ class MondayService(BaseCRMService):
             title = col["title"].lower()
             if title in required_titles and col.get("type") != type_lookup.get(title):
                 try:
-                    MondayService.delete_column_static(board_id, col["id"])
+                    self.delete_column(board_id, col["id"])
                 except Exception as exc:
                     print(f"⚠️ Failed to remove mismatched column {col['id']} on board {board_id}: {exc}")
 
         # Refresh columns after cleanup
-        columns = MondayService.get_board_columns_static(board_id)
+        columns = self.get_board_columns(board_id)
         title_lookup = {col["title"].lower(): col for col in columns}
 
         # Create missing required columns
         for col_def in MondayService.REQUIRED_COLUMNS:
             current = title_lookup.get(col_def["title"].lower())
             if not current:
-                created = MondayService.create_column_static(
+                created = self.create_column(
                     board_id=board_id,
                     title=col_def["title"],
                     column_type=col_def["type"],
@@ -938,7 +1006,7 @@ class MondayService(BaseCRMService):
                 title_lookup[col_def["title"].lower()] = created
 
         # Refresh columns to get final IDs
-        columns = MondayService.get_board_columns_static(board_id)
+        columns = self.get_board_columns(board_id)
         title_lookup = {col["title"].lower(): col for col in columns}
 
         # Remove extraneous columns (keep item name)
@@ -948,7 +1016,7 @@ class MondayService(BaseCRMService):
                 continue
             if title not in required_titles:
                 try:
-                    MondayService.delete_column_static(board_id, col["id"])
+                    self.delete_column(board_id, col["id"])
                 except Exception as exc:
                     print(f"⚠️ Failed to delete extra column {col['id']} on board {board_id}: {exc}")
 
@@ -1121,11 +1189,183 @@ class MondayService(BaseCRMService):
             container_id, tenant_id, field_map, pending_label, batch_size
         )
 
-    # Static method aliases for backward compatibility
-    @staticmethod
-    def _execute(query: str, variables: Dict) -> Dict:
-        """Alias for _execute_static (backward compatibility)"""
-        return MondayService._execute_static(query, variables)
+    def get_items_by_batch_id(
+        self,
+        container_id: str,
+        batch_id: str,
+        tenant_id: str,
+        field_map: Dict[str, str],
+        batch_size: int = 100
+    ) -> List[Dict]:
+        """
+        Fetch all items from a board with specific batch_id and tenant_id (instance method).
+        Uses instance API key from database.
+        
+        Args:
+            container_id: Monday.com board ID
+            batch_id: Batch ID to filter by
+            tenant_id: Tenant ID to filter by (UUID string)
+            field_map: Field mapping dictionary (must include "batch_id" and "tenant_id")
+            batch_size: Number of items to fetch per batch
+            
+        Returns:
+            List of items matching the batch_id and tenant_id
+        """
+        batch_column_id = field_map.get("batch_id")
+        tenant_column_id = field_map.get("tenant_id")
+        
+        if not batch_column_id or not tenant_column_id:
+            raise ValueError("batch_id or tenant_id column not found in board column map")
+        
+        items = []
+        cursor: Optional[str] = None
+        
+        # Also fetch call_session_id column if available
+        call_session_column_id = field_map.get("call_session_id")
+        column_ids = [batch_column_id, tenant_column_id]
+        if call_session_column_id:
+            column_ids.append(call_session_column_id)
+        
+        while True:
+            # Fetch items with batch_id, tenant_id, and call_session_id columns
+            page_items, cursor = self._fetch_items_with_columns_instance(
+                board_id=container_id,
+                cursor=cursor,
+                limit=batch_size,
+                column_ids=column_ids
+            )
+            
+            if not page_items:
+                break
+            
+            for item in page_items:
+                # Check if item belongs to this batch and tenant
+                item_batch_id = None
+                item_tenant_id = None
+                
+                for col_val in item.get("column_values", []):
+                    if col_val.get("id") == batch_column_id:
+                        item_batch_id = col_val.get("text", "").strip()
+                    elif col_val.get("id") == tenant_column_id:
+                        item_tenant_id = col_val.get("text", "").strip()
+                
+                if item_batch_id == batch_id and item_tenant_id == tenant_id:
+                    items.append(item)
+            
+            if not cursor:
+                break
+        
+        return items
+
+    def _fetch_items_with_columns_instance(
+        self, 
+        board_id: str, 
+        cursor: Optional[str], 
+        limit: int, 
+        column_ids: List[str]
+    ) -> Tuple[List[Dict], Optional[str]]:
+        """Fetch items with specific column values for filtering (instance method)."""
+        query = """
+        query ($boardId: [ID!], $cursor: String, $limit: Int!, $columnIds: [String!]) {
+            boards (ids: $boardId) {
+                items_page (cursor: $cursor, limit: $limit) {
+                    cursor
+                    items {
+                        id
+                        name
+                        column_values(ids: $columnIds) {
+                            id
+                            text
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data = self._execute(query, {
+            "boardId": board_id,
+            "cursor": cursor,
+            "limit": limit,
+            "columnIds": column_ids
+        })
+        boards = data.get("boards") or []
+        if not boards:
+            return [], None
+        page = boards[0].get("items_page") or {}
+        items = page.get("items") or []
+        next_cursor = page.get("cursor")
+        return items, next_cursor
+
+    def update_items_email_sent(
+        self,
+        container_id: str,
+        item_ids: List[str],
+        field_map: Dict[str, str],
+    ) -> int:
+        """
+        Update Email Sent status to 'Yes' for multiple items (instance method).
+        Uses instance API key from database.
+        
+        Args:
+            container_id: Monday.com board ID
+            item_ids: List of item IDs to update
+            field_map: Field mapping dictionary (must include "email_sent")
+            
+        Returns:
+            Number of items successfully updated
+        """
+        if not item_ids:
+            return 0
+        
+        email_sent_column_id = field_map.get("email_sent")
+        if not email_sent_column_id:
+            print(f"⚠️ Email Sent column ID not found in field map")
+            return 0
+        
+        # Use label instead of index for status columns (Monday.com API requirement)
+        column_values = {email_sent_column_id: {"label": "Yes"}}
+        
+        # Monday.com API's change_multiple_column_values only accepts item_id (singular)
+        # So we need to update each item individually
+        updated_count = 0
+        
+        for item_id in item_ids:
+            query = """
+            mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) {
+                change_multiple_column_values (
+                    board_id: $boardId,
+                    item_id: $itemId,
+                    column_values: $columnValues
+                ) {
+                    id
+                }
+            }
+            """
+            
+            variables = {
+                "boardId": container_id,
+                "itemId": item_id,
+                "columnValues": json.dumps(column_values)
+            }
+            
+            try:
+                data = self._execute(query, variables)
+                result = data.get("change_multiple_column_values")
+                if result and result.get("id"):
+                    updated_count += 1
+                    print(f"✅ Updated email sent status for item {item_id}")
+                else:
+                    print(f"⚠️ No response for item {item_id}, data: {data}")
+            except Exception as exc:
+                print(f"⚠️ Failed to update email sent status for item {item_id}: {exc}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        return updated_count
+
+    # Note: Instance method _execute is defined above (line 116)
+    # Static method _execute_static is for backward compatibility only
 
     @staticmethod
     def create_board(board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
