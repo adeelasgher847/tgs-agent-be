@@ -943,7 +943,7 @@ async def get_batch_analysis(
         raise HTTPException(status_code=500, detail=f"Failed to get batch analysis: {str(e)}")
 
 
-@router.post("/batch/{batch_id}/mark-email-sent", response_model=SuccessResponse[dict], include_in_schema=True)
+@router.post("/batch/{batch_id}/mark-email-sent", response_model=SuccessResponse[dict], include_in_schema=False)
 async def mark_batch_email_sent(
     batch_id: str,
     http_request: Request,
