@@ -2041,15 +2041,6 @@ async def get_jira_credentials(
                 ScheduledCall.crm_container_id.isnot(None)
             ).all()
             
-            # Create JiraService instance to check for pending issues
-            crm_service = CRMServiceFactory.get_service(jira_config)
-            from app.services.jira_service import JiraService
-            if not isinstance(crm_service, JiraService):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Jira service not available"
-                )
-            
             users_list = []
             for board_record in jira_boards:
                 # Get user
@@ -2062,24 +2053,13 @@ async def get_jira_credentials(
                 if not user_tenants:
                     continue
                 
-                # For each tenant, check if there are pending issues
+                # For each tenant, add an entry (no filtering - return all projects)
                 for tenant in user_tenants:
-                    project_key = board_record.crm_container_id
-                    tenant_id_str = str(tenant.id)
-                    
-                    # Check if this project has any issues with "Email Sent: No" for this tenant
-                    has_email_not_sent = crm_service.has_pending_issues_in_description(
-                        container_id=project_key,
-                        tenant_id=tenant_id_str
-                    )
-                    
-                    # Only include if there are issues with "Email Sent: No"
-                    if has_email_not_sent:
-                        users_list.append({
-                            "user_id": str(user.id),
-                            "tenant_id": tenant_id_str,
-                            "project_key": project_key
-                        })
+                    users_list.append({
+                        "user_id": str(user.id),
+                        "tenant_id": str(tenant.id),
+                        "project_key": board_record.crm_container_id
+                    })
             
             result = {
                 "email": email,
@@ -2090,7 +2070,7 @@ async def get_jira_credentials(
             
             return create_success_response(
                 result,
-                f"Retrieved {len(users_list)} user(s) with Jira configured and email not sent issues"
+                f"Retrieved {len(users_list)} user(s) with Jira configured"
             )
         
     except HTTPException:
