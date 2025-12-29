@@ -38,7 +38,7 @@ from app.services.call_session_service import call_session_service
 from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import re
 
 router = APIRouter()
@@ -1618,10 +1618,11 @@ async def mark_batch_email_sent_jira(
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
     user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
     user: Optional[User] = Depends(get_optional_tenant_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    issue_keys: List[str] = Body(..., description="List of Jira issue keys to update")
 ):
     """
-    Mark Email Sent status as "Yes" for all items in a batch (Jira only).
+    Mark Email Sent status as "Yes" for specific Jira issues in a batch.
     
     **Authentication:** 
     - JWT token (default) - user and tenant from token
@@ -1631,13 +1632,16 @@ async def mark_batch_email_sent_jira(
     - `tenant_id` (str, optional): Required when using webhook secret
     - `user_id` (str, optional): Required when using webhook secret
     
+    **Request Body:**
+    - `issue_keys` (List[str]): List of Jira issue keys (e.g., ["SCHEDU7-1", "SCHEDU7-2"])
+    
     **Returns:**
     - batch_id: Batch ID that was updated
     - items_updated: Number of items successfully updated
     - total_items: Total items found in batch
     
     **Note:** This endpoint:
-    1. Fetches issues by batch_id and tenant_id from Jira
+    1. Accepts issue_keys directly in request body (no need to fetch by batch_id)
     2. Updates Email Sent status to "Yes" in description for all matching issues
     3. Returns count of updated issues
     """
@@ -1705,36 +1709,29 @@ async def mark_batch_email_sent_jira(
         # Get field map
         field_map = crm_service.ensure_required_fields(container_id)
         
-        # Fetch items by batch_id and tenant_id
-        items = crm_service.get_items_by_batch_id(
-            container_id=container_id,
-            batch_id=batch_id,
-            tenant_id=str(user.current_tenant_id),
-            field_map=field_map
-        )
-        
-        if not items:
-            raise HTTPException(status_code=404, detail=f"No items found for batch_id: {batch_id}")
-        
-        # Extract item IDs (issue keys)
-        item_ids = [item["id"] for item in items]
+        # Use issue_keys directly from request body (no need to fetch by batch_id)
+        if not issue_keys:
+            raise HTTPException(
+                status_code=400,
+                detail="issue_keys is required in request body"
+            )
         
         # Update Email Sent status to "Yes" for all items
         updated_count = crm_service.update_items_email_sent(
             container_id=container_id,
-            item_ids=item_ids,
+            item_ids=issue_keys,  # Use issue_keys directly
             field_map=field_map
         )
         
         result = {
             "batch_id": batch_id,
             "items_updated": updated_count,
-            "total_items": len(item_ids)
+            "total_items": len(issue_keys)
         }
         
         return create_success_response(
             result,
-            f"Successfully marked {updated_count} item(s) as email sent in Jira"
+            f"Successfully marked {updated_count} Jira issue(s) as email sent"
         )
         
     except HTTPException:
@@ -2022,7 +2019,6 @@ async def get_jira_credentials(
                 tenant_id_value = str(user.tenants[0].id)
             
             result = {
-                "api_token": api_token,
                 "email": email,
                 "server_url": server_url,
                 "project_key": project_key,
@@ -2045,6 +2041,15 @@ async def get_jira_credentials(
                 ScheduledCall.crm_container_id.isnot(None)
             ).all()
             
+            # Create JiraService instance to check for pending issues
+            crm_service = CRMServiceFactory.get_service(jira_config)
+            from app.services.jira_service import JiraService
+            if not isinstance(crm_service, JiraService):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Jira service not available"
+                )
+            
             users_list = []
             for board_record in jira_boards:
                 # Get user
@@ -2057,16 +2062,26 @@ async def get_jira_credentials(
                 if not user_tenants:
                     continue
                 
-                # For each tenant, add an entry
+                # For each tenant, check if there are pending issues
                 for tenant in user_tenants:
-                    users_list.append({
-                        "user_id": str(user.id),
-                        "tenant_id": str(tenant.id),
-                        "project_key": board_record.crm_container_id
-                    })
+                    project_key = board_record.crm_container_id
+                    tenant_id_str = str(tenant.id)
+                    
+                    # Check if this project has any pending issues for this tenant
+                    has_pending = crm_service.has_pending_issues_in_description(
+                        container_id=project_key,
+                        tenant_id=tenant_id_str
+                    )
+                    
+                    # Only include if there are pending issues
+                    if has_pending:
+                        users_list.append({
+                            "user_id": str(user.id),
+                            "tenant_id": tenant_id_str,
+                            "project_key": project_key
+                        })
             
             result = {
-                "api_token": api_token,
                 "email": email,
                 "server_url": server_url,
                 "users": users_list,
@@ -2075,7 +2090,7 @@ async def get_jira_credentials(
             
             return create_success_response(
                 result,
-                f"Retrieved {len(users_list)} user(s) with Jira configured"
+                f"Retrieved {len(users_list)} user(s) with Jira configured and pending issues"
             )
         
     except HTTPException:

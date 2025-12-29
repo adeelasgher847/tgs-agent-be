@@ -1514,6 +1514,67 @@ class JiraService(BaseCRMService):
                 print(f"   Response text: {exc.response.text[:200]}")
             return 0
 
+    def has_pending_issues_in_description(
+        self,
+        container_id: str,
+        tenant_id: str,
+        batch_size: int = 50
+    ) -> bool:
+        """
+        Check if a Jira project has any issues with "Status: Pending" in description.
+        
+        Args:
+            container_id: Jira project key
+            tenant_id: Tenant ID to filter issues
+            batch_size: Number of issues to fetch per batch
+            
+        Returns:
+            True if any issue has "Status: Pending" in description, False otherwise
+        """
+        try:
+            # Fetch issues for the project (limited batch to check quickly)
+            url = f"{self.server_url}/rest/api/3/search/jql"
+            jql = f"project = {container_id}"
+            payload = {"jql": jql}
+            params = {
+                "startAt": 0,
+                "maxResults": batch_size,
+                "fields": "id,key,description"
+            }
+            
+            response = requests.post(
+                url,
+                json=payload,
+                params=params,
+                headers=self._headers(),
+                timeout=20
+            )
+            response.raise_for_status()
+            data = response.json()
+            issues = data.get("issues", [])
+            
+            # Check each issue's description for "Status: Pending" and matching tenant_id
+            for issue in issues:
+                description = issue.get("fields", {}).get("description")
+                if not description:
+                    continue
+                
+                # Convert ADF to text if needed
+                description_text = self._adf_to_text(description) if isinstance(description, dict) else str(description)
+                
+                # Check for "Status: Pending" and tenant_id in description
+                if "Status: Pending" in description_text:
+                    # Also check if tenant_id matches (using UUID pattern)
+                    tenant_pattern = rf"Tenant ID:\s*({tenant_id})"
+                    if re.search(tenant_pattern, description_text, re.IGNORECASE):
+                        return True
+            
+            return False
+            
+        except Exception as exc:
+            print(f"⚠️ Failed to check pending issues for project {container_id}: {exc}")
+            return False
+    
     def _adf_to_text(self, adf: Dict) -> str:
         """
         Convert ADF (Atlassian Document Format) to plain text.
