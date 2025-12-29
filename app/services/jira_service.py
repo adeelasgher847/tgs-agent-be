@@ -1667,7 +1667,18 @@ class JiraService(BaseCRMService):
             update_response.raise_for_status()
             
             print(f"✅ Updated Email Sent to 'Yes' for issue {item_id}")
-            return update_response.json()
+            
+            # Jira PUT requests may return empty body (204 No Content or 200 with empty body)
+            # Check if response has content before parsing JSON
+            if update_response.text and update_response.text.strip():
+                try:
+                    return update_response.json()
+                except (ValueError, json.JSONDecodeError):
+                    # If JSON parsing fails, return empty dict to indicate success
+                    return {}
+            else:
+                # Empty response is normal for PUT requests - return empty dict to indicate success
+                return {}
             
         except Exception as exc:
             print(f"⚠️ Failed to update Email Sent for issue {item_id}: {exc}")
