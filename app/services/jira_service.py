@@ -1709,7 +1709,8 @@ class JiraService(BaseCRMService):
                 item_id=item_id,
                 field_map=field_map
             )
-            if result:
+            # Check if result is not None (None means failure, {} or dict means success)
+            if result is not None:
                 updated_count += 1
         
         return updated_count
