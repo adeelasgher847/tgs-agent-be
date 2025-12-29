@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 
 class CSVUploadResponse(BaseModel):
     total_rows: int
@@ -46,3 +46,12 @@ class SingleCallResponse(BaseModel):
     batch_id: str  # Unique batch ID for this single call
     crm_type: str  # CRM type: "monday" | "clickup" | "jira" | "trello"
     message: str
+
+
+class JiraBatchAnalysisRequest(BaseModel):
+    """Request body for Jira batch analysis endpoint"""
+    call_session_ids: List[str] = Field(..., description="List of call session IDs (UUIDs)")
+    phone_numbers: List[str] = Field(default_factory=list, description="List of phone numbers (optional, fallback)")
+    total_scheduled: int = Field(..., description="Total scheduled calls")
+    item_ids: List[str] = Field(default_factory=list, description="Item IDs for CRM update (e.g., issue_keys for Jira)")
+    container_id: Optional[str] = Field(None, description="Container ID (project_key for Jira, optional)")

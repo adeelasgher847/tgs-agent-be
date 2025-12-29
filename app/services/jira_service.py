@@ -898,10 +898,24 @@ class JiraService(BaseCRMService):
         required_fields = self._get_required_fields_for_creation(container_id)
         
         # Step 2: Create issue with basic fields + required fields
+        # Build description with all fields including status (similar to Trello/ClickUp)
+        desc_lines = [f"Scheduled call at {call_time_utc}"]
+        desc_lines.append(f"Agent ID: {agent_id}")
+        desc_lines.append(f"User ID: {user_id}")
+        desc_lines.append(f"Tenant ID: {tenant_id}")
+        if phone_number_id:
+            desc_lines.append(f"Phone Number ID: {phone_number_id}")
+        if batch_id:
+            desc_lines.append(f"Batch ID: {batch_id}")
+        desc_lines.append(f"Status: Pending")
+        desc_lines.append(f"Email Sent: No")
+        
+        description_text = "\n".join(desc_lines)
+        
         basic_fields = {
             "project": {"key": container_id},
             "summary": f"Scheduled Call: {phone_number}",
-            "description": self._text_to_adf(f"Scheduled call at {call_time_utc}"),  # Convert to ADF format
+            "description": self._text_to_adf(description_text),  # Convert to ADF format with all fields
             "issuetype": {"name": "Task"},
         }
         
@@ -1388,20 +1402,28 @@ class JiraService(BaseCRMService):
         start_at = 0
         
         while True:
-            # Search issues with tenant_id
-            url = f"{self.server_url}/rest/api/3/search"
+            # Search issues with tenant_id - Use /rest/api/3/search/jql
+            url = f"{self.server_url}/rest/api/3/search/jql"
             jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\""
-            payload = {
-                "jql": jql,
+            # For /search/jql endpoint: body has jql field, other params in query string
+            payload = {"jql": jql}
+            params = {
                 "startAt": start_at,
                 "maxResults": batch_size,
-                "fields": ["id", "key"]
+                "fields": "id,key"
             }
             
             try:
                 print(f"🔍 Searching Jira issues with URL: {url}")
                 print(f"   JQL: {jql}")
-                response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
+                print(f"   Server URL: {self.server_url}")
+                response = requests.post(
+                    url, 
+                    json=payload,  # JSON body with jql field
+                    params=params,  # Other params in query string
+                    headers=self._headers(),
+                    timeout=20
+                )
                 response.raise_for_status()
                 data = response.json()
                 issues = data.get("issues", [])
@@ -1454,23 +1476,32 @@ class JiraService(BaseCRMService):
         
         # Search issues with tenant_id and status
         # Note: status_field_id is "status" (built-in field), so use it directly in JQL
-        url = f"{self.server_url}/rest/api/3/search"
+        # Use /rest/api/3/search/jql
+        url = f"{self.server_url}/rest/api/3/search/jql"
         # For built-in status field, use "status" directly; for custom status fields, use field ID
         if status_field_id == "status":
             jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\" AND status = \"{pending_label}\""
         else:
             jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\" AND {status_field_id} = \"{pending_label}\""
-        payload = {
-            "jql": jql,
+        # For /search/jql endpoint: body has jql field, other params in query string
+        payload = {"jql": jql}
+        params = {
             "startAt": 0,
             "maxResults": 0,  # Only get count
-            "fields": []
+            "fields": ""
         }
         
         try:
             print(f"🔍 Counting Jira pending issues with URL: {url}")
             print(f"   JQL: {jql}")
-            response = requests.post(url, json=payload, headers=self._headers(), timeout=20)
+            print(f"   Server URL: {self.server_url}")
+            response = requests.post(
+                url,
+                json=payload,  # JSON body with jql field
+                params=params,  # Other params in query string
+                headers=self._headers(),
+                timeout=20
+            )
             response.raise_for_status()
             data = response.json()
             return data.get("total", 0)
@@ -1482,4 +1513,131 @@ class JiraService(BaseCRMService):
                 print(f"   Response status: {exc.response.status_code}")
                 print(f"   Response text: {exc.response.text[:200]}")
             return 0
+
+    def _adf_to_text(self, adf: Dict) -> str:
+        """
+        Convert ADF (Atlassian Document Format) to plain text.
+        
+        Args:
+            adf: ADF document structure
+            
+        Returns:
+            Plain text string
+        """
+        text = ""
+        if isinstance(adf, dict):
+            if adf.get("type") == "doc" and adf.get("content"):
+                for node in adf["content"]:
+                    if node.get("type") == "paragraph" and node.get("content"):
+                        for content_node in node["content"]:
+                            if content_node.get("type") == "text":
+                                text += content_node.get("text", "")
+                        text += "\n"
+                    elif node.get("type") == "text":
+                        text += node.get("text", "")
+                    elif node.get("content"):
+                        # Recursive for nested structures
+                        text += self._adf_to_text(node)
+        return text.strip()
+
+    def update_item_email_sent(
+        self,
+        container_id: str,
+        item_id: str,
+        field_map: Dict[str, str],
+    ) -> Optional[dict]:
+        """
+        Update Email Sent status to "Yes" for a Jira issue.
+        Updates the description field.
+        
+        Args:
+            container_id: Jira project key
+            item_id: Jira issue key (e.g., "PROJ-1")
+            field_map: Field mapping dictionary
+            
+        Returns:
+            Updated issue data if successful, None otherwise
+        """
+        try:
+            # Get current issue to read description
+            get_url = f"{self.server_url}/rest/api/3/issue/{item_id}"
+            get_response = requests.get(get_url, headers=self._headers(), timeout=20)
+            get_response.raise_for_status()
+            issue_data = get_response.json()
+            
+            description = issue_data.get("fields", {}).get("description")
+            
+            # Convert ADF to text if needed
+            description_text = ""
+            if description:
+                if isinstance(description, dict) and description.get("type") == "doc":
+                    description_text = self._adf_to_text(description)
+                elif isinstance(description, str):
+                    description_text = description
+            
+            # Update Email Sent status in description
+            # Replace "Email Sent: No" with "Email Sent: Yes"
+            updated_description = re.sub(
+                r'Email Sent:\s*(No|Yes)',
+                'Email Sent: Yes',
+                description_text,
+                flags=re.IGNORECASE
+            )
+            
+            # If Email Sent field not found, append it
+            if not re.search(r'Email Sent:', updated_description, re.IGNORECASE):
+                if updated_description and not updated_description.endswith('\n'):
+                    updated_description += '\n'
+                updated_description += 'Email Sent: Yes'
+            
+            # Convert back to ADF format
+            adf_description = self._text_to_adf(updated_description)
+            
+            # Update issue description
+            update_url = f"{self.server_url}/rest/api/3/issue/{item_id}"
+            update_payload = {
+                "fields": {
+                    "description": adf_description
+                }
+            }
+            
+            update_response = requests.put(update_url, json=update_payload, headers=self._headers(), timeout=20)
+            update_response.raise_for_status()
+            
+            print(f"✅ Updated Email Sent to 'Yes' for issue {item_id}")
+            return update_response.json()
+            
+        except Exception as exc:
+            print(f"⚠️ Failed to update Email Sent for issue {item_id}: {exc}")
+            return None
+
+    def update_items_email_sent(
+        self,
+        container_id: str,
+        item_ids: List[str],
+        field_map: Dict[str, str],
+    ) -> int:
+        """
+        Update Email Sent status to "Yes" for multiple Jira issues.
+        
+        Args:
+            container_id: Jira project key
+            item_ids: List of Jira issue keys (e.g., ["PROJ-1", "PROJ-2"])
+            field_map: Field mapping dictionary
+            
+        Returns:
+            Number of successfully updated issues
+        """
+        updated_count = 0
+        
+        for item_id in item_ids:
+            result = self.update_item_email_sent(
+                container_id=container_id,
+                item_id=item_id,
+                field_map=field_map
+            )
+            if result:
+                updated_count += 1
+        
+        return updated_count
 

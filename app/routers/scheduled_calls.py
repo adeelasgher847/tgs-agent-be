@@ -3,7 +3,7 @@ Scheduled Calls API endpoints with Monday.com integration (per-user boards).
 All tenants of a user share the same board, identified by tenant_id column in items.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request, status, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone
@@ -20,12 +20,14 @@ from app.schemas.scheduled_call import (
     SingleCallRequest,
     SingleCallResponse,
     PendingCountResponse,
+    JiraBatchAnalysisRequest,
 )
 from app.schemas.crm_config import CRMConfigResponse, CRMConfigListResponse, CRMConfigListItem
 from app.services.scheduled_call_service import ScheduledCallService
 from app.services.monday_service import MondayService
 from app.services.clickup_service import ClickUpService
 from app.services.trello_service import TrelloService
+from app.services.jira_service import JiraService
 from app.services.crm_config_service import CRMConfigService
 from app.services.crm_service_factory import CRMServiceFactory
 from app.models.scheduled_call import ScheduledCall
@@ -671,7 +673,7 @@ async def clear_board_items(user: User = Depends(require_tenant), db: Session = 
     return create_success_response(data, f"Deleted {deleted} item(s) for current tenant from the {board_record.crm_type} container")
 
 
-@router.get("/batch/{batch_id}/analysis", response_model=SuccessResponse[dict])
+@router.get("/batch/{batch_id}/analysis", response_model=SuccessResponse[dict], include_in_schema=False)
 async def get_batch_analysis(
     batch_id: str,
     http_request: Request,
@@ -936,6 +938,220 @@ async def get_batch_analysis(
         }
         
         return create_success_response(analysis, "Batch analysis retrieved successfully")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get batch analysis: {str(e)}")
+
+
+@router.post("/batch/{batch_id}/analysis/jira", response_model=SuccessResponse[dict], include_in_schema=False)
+async def get_batch_analysis_jira(
+    batch_id: str,
+    http_request: Request,
+    tenant_id: Optional[str] = Query(..., description="Tenant ID (required)"),
+    user_id: Optional[str] = Query(..., description="User ID (required)"),
+    db: Session = Depends(get_db),
+    request_body: JiraBatchAnalysisRequest = Body(..., description="Request body with call_session_ids and other data")
+):
+    """
+    Get analysis data for a completed batch (Jira only).
+    This endpoint accepts call_session_ids directly in the request body.
+    
+    **Authentication:** 
+    - X-N8N-Webhook-Secret header required
+    
+    **Query Parameters:**
+    - `tenant_id` (str, required): Tenant ID
+    - `user_id` (str, required): User ID
+    
+    **Request Body:**
+    - `call_session_ids` (List[str]): List of call session IDs
+    - `phone_numbers` (List[str], optional): List of phone numbers (fallback)
+    - `total_scheduled` (int): Total scheduled calls
+    - `item_ids` (List[str]): Item IDs for CRM update (e.g., issue_keys for Jira)
+    - `container_id` (str, optional): Container ID (project_key for Jira)
+    
+    **Returns comprehensive analysis including:**
+    - Total scheduled calls
+    - Total calls made vs pending
+    - Successfully called vs failed calls
+    - Total and average call duration
+    - Call times and details for each call
+    - Success/failure rates
+    - Total cost
+    - LLM transcript analysis for each call
+    - Current timestamp (report generation time)
+    - user_email (for n8n to send email)
+    - container_id: Container ID for n8n to update items
+    - crm_type: "jira"
+    - item_ids: Item IDs for CRM update
+    """
+    try:
+        # Verify authentication: webhook secret required
+        is_webhook = await verify_n8n_webhook_secret_async(http_request)
+        
+        if not is_webhook:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="X-N8N-Webhook-Secret header required"
+            )
+        
+        # Validate tenant_id and user_id
+        if not tenant_id or not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="tenant_id and user_id are required as query parameters"
+            )
+        
+        try:
+            tenant_uuid = uuid.UUID(tenant_id)
+            user_uuid = uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid UUID format for tenant_id or user_id"
+            )
+        
+        # Get user from database
+        user = db.query(User).filter(User.id == user_uuid).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        user.current_tenant_id = tenant_uuid
+        
+        # Extract data from request body (Pydantic model)
+        call_session_ids = request_body.call_session_ids
+        phone_numbers = request_body.phone_numbers or []
+        total_scheduled = request_body.total_scheduled
+        item_ids = request_body.item_ids or []
+        container_id = request_body.container_id
+        
+        if not call_session_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="call_session_ids is required in request body"
+            )
+        
+        if total_scheduled is None:
+            raise HTTPException(
+                status_code=400,
+                detail="total_scheduled is required in request body"
+            )
+        
+        # Convert call_session_ids to UUIDs
+        try:
+            call_session_uuids = [uuid.UUID(cs_id) for cs_id in call_session_ids if cs_id]
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid call_session_id format: {str(e)}"
+            )
+        
+        # Fetch call sessions directly
+        call_sessions = db.query(CallSession).filter(
+            and_(
+                CallSession.id.in_(call_session_uuids),
+                CallSession.tenant_id == user.current_tenant_id
+            )
+        ).all()
+        
+        # If phone_numbers not provided, extract from call_sessions
+        if not phone_numbers:
+            phone_numbers = [cs.to_number for cs in call_sessions if cs.to_number]
+        
+        # Get field_map if container_id provided (optional, for email_sent_field_id)
+        field_map = {}
+        if container_id:
+            try:
+                # Get user's board to find CRM config
+                board_record = scheduled_call_service.get_board_for_user(db, user.id)
+                if board_record and board_record.tenant_crm_config_id:
+                    crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+                    if crm_config and crm_config.crm_type.lower() == "jira":
+                        crm_service = CRMServiceFactory.get_service(crm_config)
+                        if isinstance(crm_service, JiraService):
+                            field_map = crm_service.ensure_required_fields(container_id)
+            except Exception as e:
+                print(f"⚠️ Failed to get field_map: {e}")
+                field_map = {}
+        
+        # Calculate statistics
+        total_calls_made = len(call_sessions)
+        called_count = len([cs for cs in call_sessions if cs.status == "completed"])
+        failed_count = len([cs for cs in call_sessions if cs.status in ["failed", "busy"]])
+        pending_count = total_scheduled - total_calls_made
+        
+        total_duration = sum(cs.duration or 0 for cs in call_sessions)
+        avg_duration = total_duration / total_calls_made if total_calls_made > 0 else 0
+        
+        # Prepare call details with transcript analysis
+        call_details = []
+        for cs in call_sessions:
+            call_detail = {
+                "call_session_id": str(cs.id),
+                "phone_number": cs.to_number,
+                "start_time": cs.start_time.isoformat() if cs.start_time else None,
+                "end_time": cs.end_time.isoformat() if cs.end_time else None,
+                "duration_seconds": cs.duration,
+                "duration_formatted": f"{(cs.duration or 0) // 60}m {(cs.duration or 0) % 60}s" if cs.duration else "0s",
+                "status": cs.status,
+                "success_evaluation": cs.success_evaluation,
+                "ended_reason": cs.ended_reason,
+                "cost": float(cs.cost) if cs.cost else 0.0
+            }
+            
+            # Add transcript analysis if call is completed and has transcript
+            if cs.status == "completed":
+                try:
+                    transcript_analysis = await analyze_call_transcript_internal(
+                        db=db,
+                        call_session=cs,
+                        user=user
+                    )
+                    if transcript_analysis:
+                        call_detail["transcript_analysis"] = transcript_analysis.get("analysis")
+                        call_detail["analysis_model_used"] = transcript_analysis.get("model_used")
+                        call_detail["transcript_message_count"] = transcript_analysis.get("transcript_message_count", 0)
+                    else:
+                        call_detail["transcript_analysis"] = None
+                        call_detail["transcript_message_count"] = 0
+                except Exception as e:
+                    print(f"⚠️ Failed to analyze transcript for call {cs.id}: {e}")
+                    call_detail["transcript_analysis"] = None
+                    call_detail["transcript_message_count"] = 0
+            else:
+                call_detail["transcript_analysis"] = None
+                call_detail["transcript_message_count"] = 0
+            
+            call_details.append(call_detail)
+        
+        # Analysis summary
+        analysis = {
+            "batch_id": batch_id,
+            "user_email": user.email,
+            "current_time": datetime.now(timezone.utc).isoformat(),
+            "total_scheduled": total_scheduled,
+            "total_calls_made": total_calls_made,
+            "called": called_count,
+            "failed": failed_count,
+            "pending": pending_count,
+            "successful_calls": called_count,
+            "failed_calls": failed_count,
+            "total_duration_seconds": total_duration,
+            "total_duration_formatted": f"{total_duration // 60}m {total_duration % 60}s",
+            "average_duration_seconds": int(avg_duration),
+            "average_duration_formatted": f"{int(avg_duration) // 60}m {int(avg_duration) % 60}s",
+            "success_rate_percent": round((called_count / total_calls_made * 100) if total_calls_made > 0 else 0, 2),
+            "failure_rate_percent": round((failed_count / total_calls_made * 100) if total_calls_made > 0 else 0, 2),
+            "total_cost": round(sum(float(cs.cost or 0) for cs in call_sessions), 2),
+            "call_details": call_details,
+            "email_sent_field_id": field_map.get("email_sent") if field_map else None,
+            "container_id": container_id or "N/A",
+            "crm_type": "jira",
+            "item_ids": item_ids or []
+        }
+        
+        return create_success_response(analysis, "Batch analysis retrieved successfully for Jira")
         
     except HTTPException:
         raise
@@ -1387,6 +1603,138 @@ async def mark_batch_email_sent_trello(
         return create_success_response(
             result,
             f"Successfully marked {updated_count} item(s) as email sent in Trello"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to mark email sent: {str(e)}")
+
+
+@router.post("/batch/{batch_id}/mark-email-sent/jira", response_model=SuccessResponse[dict], include_in_schema=True)
+async def mark_batch_email_sent_jira(
+    batch_id: str,
+    http_request: Request,
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Mark Email Sent status as "Yes" for all items in a batch (Jira only).
+    
+    **Authentication:** 
+    - JWT token (default) - user and tenant from token
+    - OR X-N8N-Webhook-Secret header - provide tenant_id and user_id as query params
+    
+    **Query Parameters (for n8n webhook):**
+    - `tenant_id` (str, optional): Required when using webhook secret
+    - `user_id` (str, optional): Required when using webhook secret
+    
+    **Returns:**
+    - batch_id: Batch ID that was updated
+    - items_updated: Number of items successfully updated
+    - total_items: Total items found in batch
+    
+    **Note:** This endpoint:
+    1. Fetches issues by batch_id and tenant_id from Jira
+    2. Updates Email Sent status to "Yes" in description for all matching issues
+    3. Returns count of updated issues
+    """
+    try:
+        # Verify authentication: either JWT token OR webhook secret
+        is_webhook = await verify_n8n_webhook_secret_async(http_request)
+        
+        if is_webhook:
+            # Webhook authentication - get tenant_id and user_id from query params
+            if not tenant_id or not user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="tenant_id and user_id are required as query parameters when using webhook secret"
+                )
+            try:
+                tenant_uuid = uuid.UUID(tenant_id)
+                user_uuid = uuid.UUID(user_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid UUID format for tenant_id or user_id"
+                )
+            
+            # Get user from database
+            user = db.query(User).filter(User.id == user_uuid).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            user.current_tenant_id = tenant_uuid
+        else:
+            # JWT authentication - get from user token
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required: JWT token or n8n webhook secret"
+                )
+        
+        # Get user's board
+        board_record = scheduled_call_service.get_board_for_user(db, user.id)
+        if not board_record:
+            raise HTTPException(status_code=404, detail="Board not found for user")
+        
+        # Verify CRM type is Jira
+        crm_type = board_record.crm_type or "monday"
+        if crm_type.lower() != "jira":
+            raise HTTPException(
+                status_code=400,
+                detail=f"This endpoint is for Jira only. Current CRM type: {crm_type}"
+            )
+        
+        # Get CRM config
+        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found for user's board")
+        
+        # Get Jira service
+        crm_service = CRMServiceFactory.get_service(crm_config)
+        if not isinstance(crm_service, JiraService):
+            raise HTTPException(status_code=500, detail="Jira service not available")
+        
+        # Get container ID
+        container_id = board_record.crm_container_id
+        if not container_id:
+            raise HTTPException(status_code=404, detail="Container ID not found for user")
+        
+        # Get field map
+        field_map = crm_service.ensure_required_fields(container_id)
+        
+        # Fetch items by batch_id and tenant_id
+        items = crm_service.get_items_by_batch_id(
+            container_id=container_id,
+            batch_id=batch_id,
+            tenant_id=str(user.current_tenant_id),
+            field_map=field_map
+        )
+        
+        if not items:
+            raise HTTPException(status_code=404, detail=f"No items found for batch_id: {batch_id}")
+        
+        # Extract item IDs (issue keys)
+        item_ids = [item["id"] for item in items]
+        
+        # Update Email Sent status to "Yes" for all items
+        updated_count = crm_service.update_items_email_sent(
+            container_id=container_id,
+            item_ids=item_ids,
+            field_map=field_map
+        )
+        
+        result = {
+            "batch_id": batch_id,
+            "items_updated": updated_count,
+            "total_items": len(item_ids)
+        }
+        
+        return create_success_response(
+            result,
+            f"Successfully marked {updated_count} item(s) as email sent in Jira"
         )
         
     except HTTPException:
