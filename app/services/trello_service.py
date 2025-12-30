@@ -49,6 +49,49 @@ class TrelloService(BaseCRMService):
         """Build URL for Trello board"""
         return f"https://trello.com/b/{container_id}"
 
+    def get_board_url(self, board_id: str) -> str:
+        """
+        Get proper Trello board URL with short ID and board name.
+        Fetches board details from Trello API to get shortLink and name.
+        """
+        try:
+            # Fetch board details from Trello API
+            url = f"{self.API_URL}/boards/{board_id}"
+            params = self._auth_params()
+            params.update({
+                "fields": "shortLink,shortUrl,name,url"
+            })
+            
+            response = requests.get(url, params=params, timeout=20)
+            response.raise_for_status()
+            board_data = response.json()
+            
+            # Try to get shortUrl first (most reliable)
+            if board_data.get("shortUrl"):
+                return board_data["shortUrl"]
+            
+            # Fallback: Build URL from shortLink and name
+            short_link = board_data.get("shortLink", "")
+            board_name = board_data.get("name", "")
+            
+            if short_link:
+                # Build proper URL: https://trello.com/b/{shortLink}/{board-name}
+                if board_name:
+                    # Sanitize board name for URL (lowercase, replace spaces with hyphens)
+                    sanitized_name = board_name.lower().replace(" ", "-")
+                    sanitized_name = re.sub(r'[^a-z0-9-]', '', sanitized_name)
+                    return f"https://trello.com/b/{short_link}/{sanitized_name}"
+                else:
+                    return f"https://trello.com/b/{short_link}"
+            
+            # Final fallback: Use stored URL or build from board_id
+            return board_data.get("url", self.build_container_url(board_id))
+            
+        except Exception as e:
+            # If API call fails, fallback to basic URL
+            print(f"⚠️ Failed to fetch Trello board URL: {e}")
+            return self.build_container_url(board_id)
+
     def _auth_params(self) -> Dict[str, str]:
         """Get authentication parameters"""
         return {
@@ -59,12 +102,15 @@ class TrelloService(BaseCRMService):
     def create_container(self, container_name: str, **kwargs) -> Dict[str, str]:
         """
         Create a Trello board for scheduled calls.
+        Board is automatically set to public visibility for view-only access.
         """
         url = f"{self.API_URL}/boards"
         params = self._auth_params()
         params.update({
             "name": container_name,
             "defaultLists": "false",
+            "prefs_permissionLevel": "public",  # Set board to public
+            "prefs_visibility": "public",  # Set visibility to public
         })
         
         try:
@@ -76,6 +122,19 @@ class TrelloService(BaseCRMService):
             board_id = board_data.get("shortLink", "") or board_data.get("id", "")
             if not board_id:
                 raise ValueError(f"Trello API did not return board ID. Response: {board_data}")
+            
+            # After creation, ensure board is public (in case creation params didn't work)
+            try:
+                update_url = f"{self.API_URL}/boards/{board_id}"
+                update_params = self._auth_params()
+                update_params.update({
+                    "prefs/permissionLevel": "public",
+                    "prefs/visibility": "public"
+                })
+                update_response = requests.put(update_url, params=update_params, timeout=20)
+                update_response.raise_for_status()
+            except Exception as update_error:
+                print(f"⚠️ Failed to set board visibility to public: {update_error}")
             
             return {
                 "id": board_id,
@@ -96,6 +155,32 @@ class TrelloService(BaseCRMService):
             raise ValueError(error_msg)
         except Exception as e:
             raise ValueError(f"Failed to create Trello board: {str(e)}")
+
+    def set_board_public(self, board_id: str) -> bool:
+        """
+        Set Trello board to public visibility.
+        Useful for making existing boards public without manual intervention.
+        
+        Args:
+            board_id: Trello board ID (shortLink or long ID)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            url = f"{self.API_URL}/boards/{board_id}"
+            params = self._auth_params()
+            params.update({
+                "prefs/permissionLevel": "public",
+                "prefs/visibility": "public"
+            })
+            
+            response = requests.put(url, params=params, timeout=20)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"⚠️ Failed to set board {board_id} to public: {e}")
+            return False
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
         """

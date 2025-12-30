@@ -78,6 +78,30 @@ class ClickUpService(BaseCRMService):
         # Format: https://app.clickup.com/{list_id}
         return f"https://app.clickup.com/{container_id}"
 
+    def get_list_url(self, list_id: str) -> str:
+        """
+        Get proper ClickUp list URL by fetching list details from API.
+        Fetches list details from ClickUp API to get proper URL.
+        """
+        try:
+            # Fetch list details from ClickUp API
+            url = f"{self.API_URL}/list/{list_id}"
+            response = requests.get(url, headers=self._headers(), timeout=20)
+            response.raise_for_status()
+            list_data = response.json()
+            
+            # ClickUp API returns 'url' field in list response
+            if list_data.get("url"):
+                return list_data["url"]
+            
+            # Fallback: Build URL from list_id
+            return self.build_container_url(list_id)
+            
+        except Exception as e:
+            # If API call fails, fallback to basic URL
+            print(f"⚠️ Failed to fetch ClickUp list URL: {e}")
+            return self.build_container_url(list_id)
+
     def _headers(self) -> Dict[str, str]:
         """Get API headers"""
         api_key = self.get_api_key()

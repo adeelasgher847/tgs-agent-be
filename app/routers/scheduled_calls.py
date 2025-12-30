@@ -546,22 +546,81 @@ async def get_crm_config(
 @router.get("/board", response_model=SuccessResponse[BoardInfoResponse])
 async def get_board_url(user: User = Depends(require_tenant), db: Session = Depends(get_db)):
     """
-    Retrieve the CRM container (board/list/project) URL for the current user.
-    All tenants of this user share the same container.
+    Retrieve the CRM container (board/list/project) URL for the current tenant.
+    Returns view-only URL that redirects user to their CRM platform.
+    Each tenant can only see their own data (filtered by tenant_id).
     """
     board_record = scheduled_call_service.get_board_for_user(db, user.id)
     if not board_record:
         raise HTTPException(status_code=404, detail="No scheduled calls board found for this user")
 
-    # Use new fields if available, fallback to legacy fields
+    # Get container ID
     board_id = board_record.crm_container_id or board_record.monday_board_id
-    board_url = board_record.crm_container_url or board_record.monday_board_url
+    if not board_id:
+        raise HTTPException(status_code=404, detail="No container ID found for this user")
+
+    # Get CRM type
+    crm_type = board_record.crm_type
+    if not crm_type:
+        raise HTTPException(status_code=404, detail="No CRM type configured for this user")
+
+    # Get CRM config to build proper URL using API credentials
+    if not board_record.tenant_crm_config_id:
+        raise HTTPException(status_code=404, detail="No CRM configuration found")
+    
+    crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+    if not crm_config:
+        raise HTTPException(status_code=404, detail="CRM configuration not found")
+    
+    # Get CRM service using API credentials
+    crm_service = CRMServiceFactory.get_service(crm_config)
+    
+    # CRM-specific URL fetching using API credentials
+    board_url = None
+    
+    if crm_type.lower() == "trello":
+        # Trello: Always fetch proper URL from Trello API using credentials
+        # This ensures we get the correct URL with short ID and board name
+        if hasattr(crm_service, 'get_board_url'):
+            try:
+                board_url = crm_service.get_board_url(board_id)
+            except Exception as e:
+                print(f"⚠️ Failed to fetch Trello board URL from API: {e}")
+                # Fallback to stored URL or basic URL
+                board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
+        else:
+            board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
+        # Board permissions must be set to "Observer" for view-only access
+    elif crm_type.lower() == "jira":
+        # Jira: Use stored URL or build from service
+        board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
+        # Jira: URL already points to project, view-only depends on project permissions
+    elif crm_type.lower() == "monday":
+        # Monday.com: Use stored URL or build from service
+        board_url = board_record.crm_container_url or board_record.monday_board_url or crm_service.build_container_url(board_id)
+        # Board permissions must be set to "Viewer" for view-only access
+    elif crm_type.lower() == "clickup":
+        # ClickUp: Always fetch proper URL from ClickUp API using credentials
+        # This ensures we get the correct URL with proper format
+        if hasattr(crm_service, 'get_list_url'):
+            try:
+                board_url = crm_service.get_list_url(board_id)
+            except Exception as e:
+                print(f"⚠️ Failed to fetch ClickUp list URL from API: {e}")
+                # Fallback to stored URL or basic URL
+                board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
+        else:
+            board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
+        # List permissions must be set to "Viewer" for view-only access
+    else:
+        # Fallback for other CRM types
+        board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
 
     data = BoardInfoResponse(
         board_id=board_id,
         board_url=board_url,
     )
-    return create_success_response(data, "Scheduled calls board retrieved")
+    return create_success_response(data, f"Scheduled calls board URL retrieved for {crm_type}")
 
 
 @router.get(
