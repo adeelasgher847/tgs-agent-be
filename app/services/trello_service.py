@@ -362,8 +362,6 @@ class TrelloService(BaseCRMService):
     ) -> int:
         """Delete cards from Trello board that belong to a specific tenant"""
         tenant_field_id = field_map.get("tenant_id")
-        if not tenant_field_id:
-            raise ValueError("tenant_id field not found in field map")
         
         deleted = 0
         
@@ -382,29 +380,41 @@ class TrelloService(BaseCRMService):
         
         for card in cards:
             card_id = card.get("id", "")
-            
-            # Get custom fields for this card
-            custom_fields_url = f"{self.API_URL}/card/{card_id}/customFields"
-            custom_fields_params = self._auth_params()
-            
-            try:
-                custom_fields_response = requests.get(custom_fields_url, params=custom_fields_params, timeout=20)
-                custom_fields_response.raise_for_status()
-                custom_fields = custom_fields_response.json()
-            except Exception as exc:
-                print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
-                continue
-            
-            # Check tenant_id field
             item_tenant_id = None
-            for field in custom_fields:
-                if field.get("id") == tenant_field_id:
-                    field_value = field.get("value", {})
-                    if isinstance(field_value, dict):
-                        item_tenant_id = field_value.get("text", "").strip()
-                    else:
-                        item_tenant_id = str(field_value).strip()
-                    break
+            
+            # Try to get tenant_id from custom fields first (if available)
+            if tenant_field_id:
+                custom_fields_url = f"{self.API_URL}/card/{card_id}/customFields"
+                custom_fields_params = self._auth_params()
+                
+                try:
+                    custom_fields_response = requests.get(custom_fields_url, params=custom_fields_params, timeout=20)
+                    custom_fields_response.raise_for_status()
+                    custom_fields = custom_fields_response.json()
+                    
+                    # Check tenant_id field
+                    for field in custom_fields:
+                        if field.get("id") == tenant_field_id:
+                            field_value = field.get("value", {})
+                            if isinstance(field_value, dict):
+                                item_tenant_id = field_value.get("text", "").strip()
+                            else:
+                                item_tenant_id = str(field_value).strip()
+                            break
+                except Exception as exc:
+                    print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
+                    # Continue to description parsing fallback
+            
+            # Fallback: Parse tenant_id from card description if custom fields not available
+            if not item_tenant_id:
+                card_desc = card.get("desc", "")
+                if card_desc:
+                    # Use UUID pattern to extract tenant_id from description
+                    # Format: "Tenant ID: {uuid}"
+                    tenant_pattern = rf"Tenant ID:\s*([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}})"
+                    match = re.search(tenant_pattern, card_desc, re.IGNORECASE)
+                    if match:
+                        item_tenant_id = match.group(1).strip()
             
             # Delete if tenant_id matches
             if item_tenant_id == tenant_id:

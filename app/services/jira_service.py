@@ -1395,9 +1395,31 @@ class JiraService(BaseCRMService):
     ) -> int:
         """Delete issues from Jira project that belong to a specific tenant"""
         tenant_field_id = field_map.get("tenant_id")
-        if not tenant_field_id:
-            raise ValueError("tenant_id field not found in field map")
         
+        deleted = 0
+        
+        # Try JQL query first if custom field is available
+        if tenant_field_id:
+            try:
+                deleted = self._delete_by_jql(container_id, tenant_id, tenant_field_id, batch_size)
+                if deleted > 0:
+                    return deleted
+            except Exception as exc:
+                print(f"⚠️ JQL query failed, falling back to description parsing: {exc}")
+        
+        # Fallback: Fetch all issues and parse descriptions
+        deleted = self._delete_by_description_parsing(container_id, tenant_id, batch_size)
+        
+        return deleted
+    
+    def _delete_by_jql(
+        self,
+        container_id: str,
+        tenant_id: str,
+        tenant_field_id: str,
+        batch_size: int = 50
+    ) -> int:
+        """Delete issues using JQL query with custom field"""
         deleted = 0
         start_at = 0
         
@@ -1414,9 +1436,6 @@ class JiraService(BaseCRMService):
             }
             
             try:
-                print(f"🔍 Searching Jira issues with URL: {url}")
-                print(f"   JQL: {jql}")
-                print(f"   Server URL: {self.server_url}")
                 response = requests.post(
                     url, 
                     json=payload,  # JSON body with jql field
@@ -1430,12 +1449,7 @@ class JiraService(BaseCRMService):
                 total = data.get("total", 0)
             except Exception as exc:
                 print(f"⚠️ Failed to search Jira issues: {exc}")
-                print(f"   URL used: {url}")
-                print(f"   Server URL: {self.server_url}")
-                if hasattr(exc, 'response') and exc.response is not None:
-                    print(f"   Response status: {exc.response.status_code}")
-                    print(f"   Response text: {exc.response.text[:200]}")
-                break
+                raise
             
             if not issues:
                 break
@@ -1449,9 +1463,90 @@ class JiraService(BaseCRMService):
                     delete_response = requests.delete(delete_url, headers=self._headers(), timeout=20)
                     delete_response.raise_for_status()
                     deleted += 1
-                    print(f"✅ Deleted Jira issue {issue_key} (tenant: {tenant_id})")
                 except Exception as exc:
                     print(f"⚠️ Failed to delete Jira issue {issue_key}: {exc}")
+            
+            # Check if more results
+            start_at += len(issues)
+            if start_at >= total:
+                break
+        
+        return deleted
+    
+    def _delete_by_description_parsing(
+        self,
+        container_id: str,
+        tenant_id: str,
+        batch_size: int = 50
+    ) -> int:
+        """Delete issues by parsing description (fallback when custom fields not available)"""
+        deleted = 0
+        start_at = 0
+        
+        while True:
+            # Fetch all issues from project
+            # Use /rest/api/3/search/jql endpoint (410 Gone error for /rest/api/3/search)
+            url = f"{self.server_url}/rest/api/3/search/jql"
+            jql = f"project = {container_id}"
+            # For /rest/api/3/search/jql: fields parameter goes in body as array
+            payload = {
+                "jql": jql,
+                "fields": ["id", "key", "description"]  # fields as array in body
+            }
+            params = {
+                "startAt": start_at,
+                "maxResults": batch_size
+            }
+            
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    params=params,
+                    headers=self._headers(),
+                    timeout=20
+                )
+                response.raise_for_status()
+                data = response.json()
+                issues = data.get("issues", [])
+                total = data.get("total", 0)
+            except Exception as exc:
+                print(f"⚠️ Failed to fetch Jira issues: {exc}")
+                break
+            
+            if not issues:
+                break
+            
+            # Check each issue's description for matching tenant_id
+            for issue in issues:
+                issue_id = issue.get("id", "")
+                issue_key = issue.get("key", "")
+                fields = issue.get("fields", {})
+                description = fields.get("description")
+                
+                if not description:
+                    continue
+                
+                # Convert ADF to text if needed
+                description_text = self._adf_to_text(description) if isinstance(description, dict) else str(description)
+                
+                # Check if tenant_id matches in description (using UUID pattern)
+                tenant_pattern = rf"Tenant ID:\s*({tenant_id})"
+                match = re.search(tenant_pattern, description_text, re.IGNORECASE)
+                if match:
+                    # Delete this issue
+                    try:
+                        delete_url = f"{self.server_url}/rest/api/3/issue/{issue_id}?deleteSubtasks=true"
+                        delete_response = requests.delete(delete_url, headers=self._headers(), timeout=20)
+                        delete_response.raise_for_status()
+                        deleted += 1
+                    except requests.exceptions.HTTPError as exc:
+                        if exc.response.status_code == 403:
+                            print(f"⚠️ Permission denied: Cannot delete Jira issue {issue_key}. Please check API token has 'Delete Issues' permission.")
+                        else:
+                            print(f"⚠️ Failed to delete Jira issue {issue_key}: {exc}")
+                    except Exception as exc:
+                        print(f"⚠️ Failed to delete Jira issue {issue_key}: {exc}")
             
             # Check if more results
             start_at += len(issues)
@@ -1533,13 +1628,17 @@ class JiraService(BaseCRMService):
         """
         try:
             # Fetch issues for the project (limited batch to check quickly)
+            # Use /rest/api/3/search/jql endpoint (410 Gone error for /rest/api/3/search)
             url = f"{self.server_url}/rest/api/3/search/jql"
             jql = f"project = {container_id}"
-            payload = {"jql": jql}
+            # For /rest/api/3/search/jql: fields parameter goes in body as array
+            payload = {
+                "jql": jql,
+                "fields": ["id", "key", "description"]  # fields as array in body
+            }
             params = {
                 "startAt": 0,
-                "maxResults": batch_size,
-                "fields": "id,key,description"
+                "maxResults": batch_size
             }
             
             response = requests.post(
