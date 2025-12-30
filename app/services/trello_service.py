@@ -523,11 +523,20 @@ class TrelloService(BaseCRMService):
         pending_label: str = "Pending",
         batch_size: int = 100
     ) -> int:
-        """Count pending cards from Trello board that belong to a specific tenant"""
+        """
+        Count pending cards from Trello board that belong to a specific tenant.
+        Supports both custom fields (if Power-Ups enabled) and description parsing (fallback).
+        """
         tenant_field_id = field_map.get("tenant_id")
         status_field_id = field_map.get("status")
+        
+        # If custom fields are missing, we'll use description parsing as fallback
+        # This is common when Trello Power-Ups are not enabled
         if not tenant_field_id or not status_field_id:
-            raise ValueError("tenant_id or status field not found in field map")
+            print(f"⚠️ Warning: tenant_id or status custom fields not found in field_map")
+            print(f"   Field map: {field_map}")
+            print(f"   Will use description parsing as fallback for tenant_id and status")
+            # Don't raise error - we'll parse from description instead
         
         pending_count = 0
         
@@ -546,35 +555,56 @@ class TrelloService(BaseCRMService):
         
         for card in cards:
             card_id = card.get("id", "")
+            card_desc = card.get("desc", "")
             
-            # Get custom fields for this card
-            custom_fields_url = f"{self.API_URL}/card/{card_id}/customFields"
-            custom_fields_params = self._auth_params()
-            
-            try:
-                custom_fields_response = requests.get(custom_fields_url, params=custom_fields_params, timeout=20)
-                custom_fields_response.raise_for_status()
-                custom_fields = custom_fields_response.json()
-            except Exception as exc:
-                print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
-                continue
-            
-            # Check tenant_id and status fields
             item_tenant_id = None
             item_status = None
-            for field in custom_fields:
-                if field.get("id") == tenant_field_id:
-                    field_value = field.get("value", {})
-                    if isinstance(field_value, dict):
-                        item_tenant_id = field_value.get("text", "").strip()
-                    else:
-                        item_tenant_id = str(field_value).strip()
-                elif field.get("id") == status_field_id:
-                    field_value = field.get("value", {})
-                    if isinstance(field_value, dict):
-                        item_status = field_value.get("text", "").strip()
-                    else:
-                        item_status = str(field_value).strip()
+            
+            # First try custom fields (preferred method) - only if field IDs are available
+            if tenant_field_id or status_field_id:
+                custom_fields_url = f"{self.API_URL}/card/{card_id}/customFields"
+                custom_fields_params = self._auth_params()
+                
+                try:
+                    custom_fields_response = requests.get(custom_fields_url, params=custom_fields_params, timeout=20)
+                    custom_fields_response.raise_for_status()
+                    custom_fields = custom_fields_response.json()
+                    
+                    # Check tenant_id and status fields
+                    for field in custom_fields:
+                        field_id = field.get("id", "")
+                        field_value = field.get("value", {})
+                        
+                        if tenant_field_id and field_id == tenant_field_id:
+                            if isinstance(field_value, dict):
+                                item_tenant_id = field_value.get("text", "").strip()
+                            else:
+                                item_tenant_id = str(field_value).strip() if field_value else None
+                        elif status_field_id and field_id == status_field_id:
+                            if isinstance(field_value, dict):
+                                item_status = field_value.get("text", "").strip()
+                            else:
+                                item_status = str(field_value).strip() if field_value else None
+                except Exception as exc:
+                    print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
+                    # Continue to description parsing fallback
+            
+            # Fallback to description parsing if custom fields not found or failed
+            if not item_tenant_id and card_desc:
+                # Parse tenant_id from description
+                # Format: "Tenant ID: {uuid}" or "Tenant ID: {value}"
+                tenant_pattern = rf"Tenant ID:\s*([^\n]+)"
+                tenant_match = re.search(tenant_pattern, card_desc, re.IGNORECASE)
+                if tenant_match:
+                    item_tenant_id = tenant_match.group(1).strip()
+            
+            if not item_status and card_desc:
+                # Parse status from description
+                # Format: "Status: {status}" or "Status: Pending"
+                status_pattern = rf"Status:\s*([^\n]+)"
+                status_match = re.search(status_pattern, card_desc, re.IGNORECASE)
+                if status_match:
+                    item_status = status_match.group(1).strip()
             
             # Count if tenant_id matches and status is pending
             if item_tenant_id == tenant_id and item_status and item_status.lower() == pending_label.lower():

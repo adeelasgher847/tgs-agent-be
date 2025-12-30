@@ -644,36 +644,50 @@ async def get_pending_scheduled_calls_count(
     if not board_record:
         raise HTTPException(status_code=404, detail="Container not found for user")
 
-    # Get CRM config and service
+    # Get CRM type
+    crm_type = board_record.crm_type or "monday"  # Default to monday for backward compatibility
+    
+    # Check if CRM config exists
     if not board_record.tenant_crm_config_id:
-        # Fallback to Monday.com for backward compatibility
-        try:
-            column_map = MondayService.ensure_required_columns(board_record.monday_board_id)
-            pending_count = MondayService.count_pending_items_for_tenant_static(
-                board_id=board_record.monday_board_id,
+        # Fallback to Monday.com for backward compatibility (legacy implementation)
+        if crm_type.lower() == "monday":
+            board_id = board_record.monday_board_id
+            if not board_id:
+                raise HTTPException(status_code=404, detail="No board ID found for Monday.com")
+            
+            try:
+                column_map = MondayService.ensure_required_columns(board_id)
+                pending_count = MondayService.count_pending_items_for_tenant_static(
+                    board_id=board_id,
+                    tenant_id=str(user.current_tenant_id),
+                    column_map=column_map,
+                    pending_label="Pending",
+                )
+                # Count total items (simplified for backward compatibility)
+                total_items = pending_count  # Approximate
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Failed to count pending items from Monday.com: {exc}")
+            
+            board_url = board_record.monday_board_url or MondayService.build_board_url(board_id)
+            
+            data = PendingCountResponse(
+                board_id=board_id,
+                board_url=board_url,
                 tenant_id=str(user.current_tenant_id),
-                column_map=column_map,
-                pending_label="Pending",
+                pending_count=pending_count,
+                total_items=total_items,
             )
-            # Count total items (simplified for backward compatibility)
-            total_items = pending_count  # Approximate
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to count pending items: {exc}")
-        
-        data = PendingCountResponse(
-            board_id=board_record.monday_board_id,
-            board_url=board_record.monday_board_url,
-            tenant_id=str(user.current_tenant_id),
-            pending_count=pending_count,
-            total_items=total_items,
-        )
-        return create_success_response(data, "Pending scheduled calls count retrieved successfully")
+            return create_success_response(data, "Pending scheduled calls count retrieved from Monday.com")
+        else:
+            raise HTTPException(status_code=404, detail=f"CRM configuration not found for {crm_type}")
 
+    # Get CRM config and service
     crm_config_service = CRMConfigService()
     crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
     if not crm_config:
         raise HTTPException(status_code=404, detail="CRM configuration not found")
 
+    # For all CRMs (Monday.com with config, ClickUp, Jira, Trello), use generic approach
     try:
         # Get CRM service
         crm_service = CRMServiceFactory.get_service(crm_config)
@@ -694,7 +708,7 @@ async def get_pending_scheduled_calls_count(
     except Exception as exc:
         raise HTTPException(
             status_code=500, 
-            detail=f"Failed to count pending items from {board_record.crm_type}: {exc}"
+            detail=f"Failed to count pending items from {crm_type}: {exc}"
         )
 
     data = PendingCountResponse(
@@ -704,7 +718,7 @@ async def get_pending_scheduled_calls_count(
         pending_count=pending_count,
         total_items=total_items,
     )
-    return create_success_response(data, f"Pending scheduled calls count retrieved from {board_record.crm_type}")
+    return create_success_response(data, f"Pending scheduled calls count retrieved from {crm_type}")
 
 
 @router.delete("/board/items", response_model=SuccessResponse[DeleteBoardItemsResponse])
@@ -1336,8 +1350,8 @@ async def mark_batch_email_sent(
         try:
             items = crm_service.get_items_by_batch_id(
                 container_id=container_id,
-                batch_id=batch_id,
-                tenant_id=str(user.current_tenant_id),
+            batch_id=batch_id,
+            tenant_id=str(user.current_tenant_id),
                 field_map=field_map
             )
             print(f"✅ Found {len(items)} items")
@@ -1367,7 +1381,7 @@ async def mark_batch_email_sent(
         try:
             updated_count = crm_service.update_items_email_sent(
                 container_id=container_id,
-                item_ids=item_ids,
+            item_ids=item_ids,
                 field_map=field_map
             )
             print(f"✅ Successfully updated {updated_count} items")
@@ -2130,7 +2144,7 @@ async def get_jira_credentials(
             return create_success_response(
                 result,
                 f"Retrieved {len(users_list)} user(s) with Jira configured"
-            )
+        )
         
     except HTTPException:
         raise

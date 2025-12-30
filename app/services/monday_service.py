@@ -1176,6 +1176,39 @@ class MondayService(BaseCRMService):
         """Delete items by tenant (implements BaseCRMService)"""
         return MondayService.delete_items_by_tenant_static(container_id, tenant_id, field_map, batch_size)
 
+    def _fetch_items_with_columns_instance(self, board_id: str, cursor: Optional[str], limit: int, column_ids: List[str]) -> Tuple[List[Dict], Optional[str]]:
+        """Fetch items with specific column values for filtering (instance method - uses instance API key)."""
+        query = """
+        query ($boardId: [ID!], $cursor: String, $limit: Int!, $columnIds: [String!]) {
+            boards (ids: $boardId) {
+                items_page (cursor: $cursor, limit: $limit) {
+                    cursor
+                    items {
+                        id
+                        name
+                        column_values(ids: $columnIds) {
+                            id
+                            text
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data = self._execute(query, {
+            "boardId": board_id,
+            "cursor": cursor,
+            "limit": limit,
+            "columnIds": column_ids
+        })
+        boards = data.get("boards") or []
+        if not boards:
+            return [], None
+        page = boards[0].get("items_page") or {}
+        items = page.get("items") or []
+        cursor = page.get("cursor")
+        return items, cursor
+
     def count_pending_items_for_tenant(
         self,
         container_id: str,
@@ -1184,10 +1217,43 @@ class MondayService(BaseCRMService):
         pending_label: str = "Pending",
         batch_size: int = 100
     ) -> int:
-        """Count pending items by tenant (implements BaseCRMService)"""
-        return MondayService.count_pending_items_for_tenant_static(
-            container_id, tenant_id, field_map, pending_label, batch_size
-        )
+        """Count pending items by tenant (implements BaseCRMService - uses instance API key)"""
+        tenant_column_id = field_map.get("tenant_id")
+        status_column_id = field_map.get("status")
+        if not tenant_column_id or not status_column_id:
+            raise ValueError("tenant_id or status column not found in field map")
+
+        pending_count = 0
+        cursor: Optional[str] = None
+
+        while True:
+            items, cursor = self._fetch_items_with_columns_instance(
+                board_id=container_id,
+                cursor=cursor,
+                limit=batch_size,
+                column_ids=[tenant_column_id, status_column_id],
+            )
+
+            if not items:
+                break
+
+            for item in items:
+                item_tenant_id = None
+                status_text = None
+                for col_val in item.get("column_values", []):
+                    col_id = col_val.get("id")
+                    if col_id == tenant_column_id:
+                        item_tenant_id = (col_val.get("text") or "").strip()
+                    elif col_id == status_column_id:
+                        status_text = (col_val.get("text") or "").strip()
+
+                if item_tenant_id == tenant_id and status_text and status_text.lower() == pending_label.lower():
+                    pending_count += 1
+
+            if not cursor:
+                break
+
+        return pending_count
 
     def get_items_by_batch_id(
         self,

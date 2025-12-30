@@ -760,7 +760,11 @@ class ClickUpService(BaseCRMService):
         pending_label: str = "Pending",
         batch_size: int = 100
     ) -> int:
-        """Count pending tasks from ClickUp list that belong to a specific tenant"""
+        """
+        Count pending tasks from ClickUp list that belong to a specific tenant.
+        Fetches individual task details to get actual custom field values since
+        the list endpoint doesn't return full custom field data.
+        """
         tenant_field_id = field_map.get("tenant_id")
         status_field_id = field_map.get("status")
         if not tenant_field_id or not status_field_id:
@@ -769,13 +773,22 @@ class ClickUpService(BaseCRMService):
         pending_count = 0
         page = 0
         
+        # Get the UUID for "Pending" option (status is a dropdown field)
+        pending_option_uuid = None
+        try:
+            pending_option_uuid = self._get_dropdown_option_uuid(container_id, status_field_id, pending_label)
+        except Exception as exc:
+            print(f"⚠️ Could not get Pending option UUID: {exc}")
+            # Continue anyway - we'll try to match by name if UUID not found
+        
         while True:
             # Fetch tasks from list
             url = f"{self.API_URL}/list/{container_id}/task"
             params = {
                 "page": page,
                 "limit": batch_size,
-                "archived": "false"
+                "archived": "false",
+                "include_closed": "false"
             }
             
             try:
@@ -790,21 +803,151 @@ class ClickUpService(BaseCRMService):
                 break
             
             for task in tasks:
-                # Get custom fields
-                custom_fields = task.get("custom_fields", [])
+                task_id = task.get("id", "")
+                task_name = task.get("name", "")
+                
+                # ClickUp list endpoint doesn't return full custom field values
+                # Fetch individual task details to get actual custom field values
+                try:
+                    task_detail_url = f"{self.API_URL}/task/{task_id}"
+                    task_detail_response = requests.get(task_detail_url, headers=self._headers(), timeout=20)
+                    task_detail_response.raise_for_status()
+                    task_detail = task_detail_response.json()
+                    custom_fields = task_detail.get("custom_fields", [])
+                except Exception as exc:
+                    print(f"⚠️ Failed to fetch task {task_id} details: {exc}")
+                    # Fallback to list endpoint custom fields (may not have values)
+                    custom_fields = task.get("custom_fields", [])
+                
+                # Debug: Print all custom fields to see structure
+                print(f"   🔍 All custom fields for task {task_id}:")
+                for idx, f in enumerate(custom_fields):
+                    print(f"      Field {idx}: id={f.get('id')}, type={f.get('type')}, value={f.get('value')}")
                 
                 # Check tenant_id and status fields
                 item_tenant_id = None
                 item_status = None
-                for field in custom_fields:
-                    if field.get("id") == tenant_field_id:
-                        item_tenant_id = field.get("value", "").strip()
-                    elif field.get("id") == status_field_id:
-                        item_status = field.get("value", "").strip()
+                item_status_name = None
+                item_status_uuid = None
                 
-                # Count if tenant_id matches and status is pending
-                if item_tenant_id == tenant_id and item_status and item_status.lower() == pending_label.lower():
+                # Check if status field exists in custom_fields
+                status_field_found = False
+                for field in custom_fields:
+                    if field.get("id") == status_field_id:
+                        status_field_found = True
+                        break
+                
+                if not status_field_found:
+                    print(f"   ⚠️ WARNING: Status field {status_field_id} not found in custom_fields!")
+                
+                for field in custom_fields:
+                    field_id = field.get("id", "")
+                    field_value = field.get("value")
+                    field_type = field.get("type", "")
+                    
+                    if field_id == tenant_field_id:
+                        # Handle different value formats for tenant_id (short_text field)
+                        if field_value is None:
+                            item_tenant_id = None
+                        elif isinstance(field_value, str):
+                            item_tenant_id = field_value.strip() if field_value.strip() else None
+                        elif isinstance(field_value, dict):
+                            item_tenant_id = str(field_value.get("value", "") or field_value.get("text", "")).strip()
+                        else:
+                            item_tenant_id = str(field_value).strip() if field_value else None
+                    elif field_id == status_field_id:
+                        # Status is a dropdown field
+                        # ClickUp dropdown fields return value as INTEGER (orderindex), not UUID!
+                        # value: 0 = orderindex 0 = "Pending"
+                        # value: 1 = orderindex 1 = "Called"
+                        # value: 2 = orderindex 2 = "Failed"
+                        
+                        if field_value is None:
+                            item_status = None
+                            item_status_uuid = None
+                            item_status_name = None
+                        elif isinstance(field_value, (int, float)):
+                            # Value is orderindex (integer)
+                            orderindex = int(field_value)
+                            
+                            # Get the option from type_config.options by orderindex
+                            type_config = field.get("type_config", {})
+                            options = type_config.get("options", [])
+                            
+                            # Find option with matching orderindex
+                            for option in options:
+                                if option.get("orderindex") == orderindex:
+                                    item_status_uuid = option.get("id", "")
+                                    item_status_name = option.get("name", "") or option.get("label", "")
+                                    item_status = item_status_uuid or item_status_name
+                                    print(f"   ✅ Status from orderindex {orderindex}: UUID={item_status_uuid}, Name={item_status_name}")
+                                    break
+                            
+                            if not item_status:
+                                print(f"   ⚠️ Could not find option with orderindex {orderindex}")
+                        elif isinstance(field_value, str):
+                            # Could be UUID string (legacy format)
+                            item_status = field_value.strip()
+                            item_status_uuid = item_status
+                            print(f"   ✅ Status is string (UUID): {item_status}")
+                        elif isinstance(field_value, dict):
+                            # Dropdown value is an object (alternative format)
+                            item_status_uuid = field_value.get("id", "") or field_value.get("uuid", "")
+                            item_status_name = field_value.get("name", "") or field_value.get("label", "")
+                            item_status = item_status_uuid or item_status_name
+                            print(f"   ✅ Status from dict: UUID={item_status_uuid}, Name={item_status_name}")
+                        else:
+                            item_status = str(field_value).strip() if field_value else None
+                            item_status_uuid = item_status
+                            print(f"   ⚠️ Status is unexpected type: {type(field_value)} = {item_status}")
+                
+                # Debug logging for troubleshooting
+                print(f"🔍 Task {task_id} ({task_name}):")
+                print(f"   Tenant ID field: {tenant_field_id}")
+                print(f"   Found tenant_id: {item_tenant_id}")
+                print(f"   Expected tenant_id: {tenant_id}")
+                print(f"   Status field: {status_field_id}")
+                print(f"   Found status UUID: {item_status_uuid}")
+                print(f"   Found status name: {item_status_name}")
+                print(f"   Expected Pending UUID: {pending_option_uuid}")
+                
+                # Check if tenant_id matches
+                if item_tenant_id != tenant_id:
+                    print(f"   ⏭️ Skipping - tenant_id mismatch")
+                    continue
+                
+                # Check if status is pending
+                # Try multiple ways to match:
+                # 1. Match by UUID (if we got it)
+                # 2. Match by option name/label
+                # 3. Match by string comparison (fallback)
+                is_pending = False
+                if pending_option_uuid:
+                    # Try UUID match first (most reliable)
+                    if item_status_uuid and str(item_status_uuid).strip() == str(pending_option_uuid).strip():
+                        is_pending = True
+                        print(f"   ✅ Matched by UUID")
+                    elif item_status and str(item_status).strip() == str(pending_option_uuid).strip():
+                        is_pending = True
+                        print(f"   ✅ Matched by status value UUID")
+                
+                if not is_pending and item_status_name:
+                    # Try name match
+                    if item_status_name.lower() == pending_label.lower():
+                        is_pending = True
+                        print(f"   ✅ Matched by name: {item_status_name}")
+                
+                if not is_pending and item_status:
+                    # Try string comparison (fallback)
+                    if isinstance(item_status, str) and item_status.lower() == pending_label.lower():
+                        is_pending = True
+                        print(f"   ✅ Matched by string comparison")
+                
+                if is_pending:
                     pending_count += 1
+                    print(f"   ✅ Counted as pending! Total so far: {pending_count}")
+                else:
+                    print(f"   ❌ Not pending - status: {item_status} (UUID: {item_status_uuid}, Name: {item_status_name})")
             
             # Check if more pages
             if len(tasks) < batch_size:

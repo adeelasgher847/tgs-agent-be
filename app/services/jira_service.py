@@ -1563,51 +1563,123 @@ class JiraService(BaseCRMService):
         pending_label: str = "Pending",
         batch_size: int = 100
     ) -> int:
-        """Count pending issues from Jira project that belong to a specific tenant"""
+        """
+        Count pending issues from Jira project that belong to a specific tenant.
+        In Jira, status is stored in description as "Status: Pending", not in the built-in status field.
+        So we need to:
+        1. Fetch issues by tenant_id
+        2. Parse description to check for "Status: Pending"
+        """
         tenant_field_id = field_map.get("tenant_id")
-        status_field_id = field_map.get("status")
-        if not tenant_field_id or not status_field_id:
-            raise ValueError("tenant_id or status field not found in field map")
+        if not tenant_field_id:
+            raise ValueError("tenant_id field not found in field map")
         
-        # Search issues with tenant_id and status
-        # Note: status_field_id is "status" (built-in field), so use it directly in JQL
-        # Use /rest/api/3/search/jql
+        pending_count = 0
+        start_at = 0
+        
+        # Use /rest/api/3/search/jql endpoint
         url = f"{self.server_url}/rest/api/3/search/jql"
-        # For built-in status field, use "status" directly; for custom status fields, use field ID
-        if status_field_id == "status":
-            jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\" AND status = \"{pending_label}\""
-        else:
-            jql = f"project = {container_id} AND {tenant_field_id} = \"{tenant_id}\" AND {status_field_id} = \"{pending_label}\""
-        # For /search/jql endpoint: body has jql field, other params in query string
-        payload = {"jql": jql}
-        params = {
-            "startAt": 0,
-            "maxResults": 0,  # Only get count
-            "fields": ""
-        }
         
-        try:
-            print(f"🔍 Counting Jira pending issues with URL: {url}")
-            print(f"   JQL: {jql}")
-            print(f"   Server URL: {self.server_url}")
-            response = requests.post(
-                url,
-                json=payload,  # JSON body with jql field
-                params=params,  # Other params in query string
-                headers=self._headers(),
-                timeout=20
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("total", 0)
-        except Exception as exc:
-            print(f"⚠️ Failed to count Jira pending issues: {exc}")
-            print(f"   URL used: {url}")
-            print(f"   Server URL: {self.server_url}")
-            if hasattr(exc, 'response') and exc.response is not None:
-                print(f"   Response status: {exc.response.status_code}")
-                print(f"   Response text: {exc.response.text[:200]}")
-            return 0
+        while True:
+            # Search issues with tenant_id (status is in description, not in JQL)
+            jql = f"project = {container_id} AND {tenant_field_id} ~ \"{tenant_id}\""
+            
+            # For /search/jql endpoint: body has jql and fields, params in query string
+            payload = {
+                "jql": jql,
+                "fields": ["id", "key", "description", tenant_field_id]  # Get description and tenant_id field
+            }
+            params = {
+                "startAt": start_at,
+                "maxResults": batch_size
+            }
+            
+            try:
+                print(f"🔍 Fetching Jira issues (batch {start_at // batch_size + 1}):")
+                print(f"   JQL: {jql}")
+                print(f"   Start at: {start_at}, Max results: {batch_size}")
+                
+                response = requests.post(
+                    url,
+                    json=payload,  # JSON body with jql and fields
+                    params=params,  # Other params in query string
+                    headers=self._headers(),
+                    timeout=20
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                issues = data.get("issues", [])
+                total = data.get("total", 0)
+                
+                print(f"   ✅ Fetched {len(issues)} issues (total: {total})")
+                
+                if not issues:
+                    break
+                
+                # Check each issue
+                for issue in issues:
+                    issue_key = issue.get("key", "")
+                    fields = issue.get("fields", {})
+                    
+                    # Get tenant_id from custom field
+                    issue_tenant_id = None
+                    tenant_field_value = fields.get(tenant_field_id)
+                    if tenant_field_value:
+                        # Custom field value can be string or object
+                        if isinstance(tenant_field_value, str):
+                            issue_tenant_id = tenant_field_value.strip()
+                        elif isinstance(tenant_field_value, dict):
+                            issue_tenant_id = str(tenant_field_value.get("value", "")).strip()
+                        else:
+                            issue_tenant_id = str(tenant_field_value).strip() if tenant_field_value else None
+                    
+                    # Check if tenant_id matches
+                    if issue_tenant_id != tenant_id:
+                        continue
+                    
+                    # Get description and parse status
+                    description = fields.get("description")
+                    description_text = ""
+                    
+                    # Convert ADF to text if needed
+                    if description:
+                        if isinstance(description, dict) and description.get("type") == "doc":
+                            description_text = self._adf_to_text(description)
+                        elif isinstance(description, str):
+                            description_text = description
+                    
+                    # Parse status from description
+                    # Format: "Status: Pending" or "Status:Pending"
+                    status_match = re.search(r'Status:\s*([^\n]+)', description_text, re.IGNORECASE)
+                    if status_match:
+                        issue_status = status_match.group(1).strip()
+                        print(f"   🔍 Issue {issue_key}: tenant_id={issue_tenant_id}, status={issue_status}")
+                        
+                        # Check if status is pending
+                        if issue_status.lower() == pending_label.lower():
+                            pending_count += 1
+                            print(f"   ✅ Counted as pending! Total so far: {pending_count}")
+                    else:
+                        print(f"   ⚠️ Issue {issue_key}: No status found in description")
+                
+                # Check if more pages
+                if start_at + len(issues) >= total:
+                    break
+                start_at += len(issues)
+                
+            except Exception as exc:
+                print(f"⚠️ Failed to count Jira pending issues: {exc}")
+                print(f"   URL used: {url}")
+                print(f"   Server URL: {self.server_url}")
+                if hasattr(exc, 'response') and exc.response is not None:
+                    print(f"   Response status: {exc.response.status_code}")
+                    print(f"   Response text: {exc.response.text[:200]}")
+                # Return count so far instead of 0
+                break
+        
+        print(f"📊 Total pending issues for tenant {tenant_id}: {pending_count}")
+        return pending_count
 
     def has_pending_issues_in_description(
         self,
