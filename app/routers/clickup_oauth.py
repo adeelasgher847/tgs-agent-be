@@ -2,7 +2,7 @@
 ClickUp OAuth 2.0 Integration Router
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 from typing import Optional
 import requests
@@ -15,6 +15,7 @@ from app.services.crm_config_service import CRMConfigService
 from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
 from app.core.config import settings
 from app.utils.response import create_success_response
+from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.schemas.base import SuccessResponse
 
 router = APIRouter()
@@ -262,5 +263,64 @@ async def clickup_oauth_callback(
         raise HTTPException(
             status_code=500,
             detail=f"Error processing OAuth callback: {str(e)}"
+        )
+
+
+@router.get("/token", include_in_schema=False)
+async def get_clickup_token(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Get decrypted ClickUp OAuth token for n8n workflows.
+    
+    Authentication: X-N8N-Webhook-Secret header required
+    
+    Returns:
+        {
+            "success": true,
+            "data": {
+                "access_token": "decrypted_clickup_token"
+            },
+            "message": "ClickUp token retrieved successfully"
+        }
+    """
+    # Verify webhook secret
+    is_webhook = await verify_n8n_webhook_secret_async(request)
+    
+    if not is_webhook:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required: X-N8N-Webhook-Secret header"
+        )
+    
+    # Get ClickUp config from DB
+    crm_config_service = CRMConfigService()
+    clickup_config = crm_config_service.get_crm_config_by_type(db, "clickup")
+    
+    if not clickup_config or not clickup_config.encrypted_api_key:
+        raise HTTPException(
+            status_code=404,
+            detail="ClickUp OAuth token not found. Please complete OAuth authorization first."
+        )
+    
+    # Decrypt token
+    try:
+        decrypted_token = decrypt_api_key(clickup_config.encrypted_api_key)
+        
+        if not decrypted_token:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to decrypt ClickUp token"
+            )
+        
+        return create_success_response(
+            data={"access_token": decrypted_token},
+            message="ClickUp token retrieved successfully"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to decrypt ClickUp token: {str(e)}"
         )
 
