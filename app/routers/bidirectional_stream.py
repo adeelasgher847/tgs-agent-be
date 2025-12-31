@@ -1071,14 +1071,10 @@ class BidirectionalStreamHandler:
         self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - increased for better audibility
         self._use_background_audio = False
         
-        # Load and start background audio if available
-        bg_audio_bytes, bg_audio_len = decode_background_audio_from_base64()
-        if bg_audio_bytes and bg_audio_len > 0:
-            self._bg_audio_mulaw = bg_audio_bytes
-            self._bg_audio_length = bg_audio_len
-            self._use_background_audio = True
-            print(f"✅ Background audio loaded: {bg_audio_len} bytes ({bg_audio_len/8000:.2f}s)")
-            sys.stdout.flush()
+        # Load background audio in background (non-blocking for fast initialization)
+        # This prevents cold start delays on first call after deploy/sleep
+        # FFmpeg conversion can take 2-5 seconds on cold start, so we do it async
+        asyncio.create_task(self._load_background_audio_async())
         
         # Pre-warm Google TTS client to avoid first-call penalty
         try:
@@ -1117,6 +1113,36 @@ class BidirectionalStreamHandler:
         except Exception as e:
             print(f"⚠️ Error loading session data: {e}")
             sys.stdout.flush()
+    
+    async def _load_background_audio_async(self):
+        """
+        Load background audio asynchronously to avoid blocking initialization.
+        This prevents cold start delays on first call after deploy/sleep.
+        FFmpeg conversion can take 2-5 seconds on cold start.
+        """
+        try:
+            # Run FFmpeg conversion in thread pool to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            bg_audio_bytes, bg_audio_len = await loop.run_in_executor(
+                None, 
+                decode_background_audio_from_base64
+            )
+            
+            if bg_audio_bytes and bg_audio_len > 0:
+                self._bg_audio_mulaw = bg_audio_bytes
+                self._bg_audio_length = bg_audio_len
+                self._use_background_audio = True
+                print(f"✅ Background audio loaded (async): {bg_audio_len} bytes ({bg_audio_len/8000:.2f}s)")
+                sys.stdout.flush()
+            else:
+                print("⚠️ Background audio not available or empty")
+                sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ Background audio loading failed (non-critical, call will continue): {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+            # Continue without background audio - call won't crash
     
     async def _precache_common_phrases(self):
         """
@@ -2645,10 +2671,11 @@ IMPORTANT:
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in _process_transcript() when confident transcript is detected
             
-            # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start streaming
+            # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
+            # Delay prevents cold start issues and gives call time to establish
             if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
-                self._bg_audio_task = asyncio.create_task(self._stream_background_audio_loop())
-                print(f"🔄 Started background audio streaming loop")
+                asyncio.create_task(self._start_background_audio_with_delay())
+                print(f"⏳ Background audio will start in 3 seconds...")
                 sys.stdout.flush()
             
             # ⚠️ AUTO-GREETING DISABLED - Agent waits for user to speak first
@@ -2658,6 +2685,34 @@ IMPORTANT:
         
         except Exception as e:
             print(f"❌ Error handling user pickup: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.stdout.flush()
+    
+    async def _start_background_audio_with_delay(self):
+        """
+        Start background audio after 3 second delay to allow call to establish.
+        This prevents cold start issues and ensures call is fully connected before background audio starts.
+        """
+        try:
+            # Wait 3 seconds for call to fully establish
+            await asyncio.sleep(3.0)
+            
+            # Check again if background audio is ready and not already started
+            if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
+                self._bg_audio_task = asyncio.create_task(self._stream_background_audio_loop())
+                print(f"🔄 Started background audio streaming loop (after 3s delay)")
+                sys.stdout.flush()
+            else:
+                if not self._use_background_audio:
+                    print(f"⚠️ Background audio disabled or not loaded yet")
+                elif not self._bg_audio_mulaw:
+                    print(f"⚠️ Background audio not decoded yet")
+                elif self._bg_audio_task:
+                    print(f"⚠️ Background audio already started")
+                sys.stdout.flush()
+        except Exception as e:
+            print(f"⚠️ Error starting background audio with delay: {e}")
             import traceback
             traceback.print_exc()
             sys.stdout.flush()
