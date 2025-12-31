@@ -266,13 +266,14 @@ async def clickup_oauth_callback(
         )
 
 
-@router.get("/token", include_in_schema=False)
-async def get_clickup_token(
+@router.get("/teams", include_in_schema=False)
+async def get_clickup_teams(
     request: Request,
     db: Session = Depends(get_db)
 ):
     """
-    Get decrypted ClickUp OAuth token for n8n workflows.
+    Get all ClickUp teams for n8n workflows.
+    Fetches teams directly from ClickUp API using stored OAuth token.
     
     Authentication: X-N8N-Webhook-Secret header required
     
@@ -280,9 +281,9 @@ async def get_clickup_token(
         {
             "success": true,
             "data": {
-                "access_token": "decrypted_clickup_token"
+                "teams": [...]
             },
-            "message": "ClickUp token retrieved successfully"
+            "message": "ClickUp teams retrieved successfully"
         }
     """
     # Verify webhook secret
@@ -313,14 +314,54 @@ async def get_clickup_token(
                 status_code=500,
                 detail="Failed to decrypt ClickUp token"
             )
-        
-        return create_success_response(
-            data={"access_token": decrypted_token},
-            message="ClickUp token retrieved successfully"
-        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to decrypt ClickUp token: {str(e)}"
+        )
+    
+    # Fetch teams from ClickUp API
+    try:
+        # Determine auth header format
+        if decrypted_token.startswith("pk_"):
+            # Personal API token format (old format)
+            auth_header = decrypted_token
+        else:
+            # OAuth access token - requires Bearer prefix
+            auth_header = f"Bearer {decrypted_token}"
+        
+        headers = {
+            "Authorization": auth_header,
+            "Content-Type": "application/json",
+        }
+        
+        # Get teams from ClickUp API
+        team_url = "https://api.clickup.com/api/v2/team"
+        team_response = requests.get(team_url, headers=headers, timeout=20)
+        
+        if team_response.status_code != 200:
+            error_text = team_response.text[:500]
+            raise HTTPException(
+                status_code=team_response.status_code,
+                detail=f"Failed to fetch teams from ClickUp API: {error_text}"
+            )
+        
+        teams_data = team_response.json()
+        teams = teams_data.get("teams", [])
+        
+        return create_success_response(
+            data={"teams": teams},
+            message=f"ClickUp teams retrieved successfully ({len(teams)} team(s) found)"
+        )
+        
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch teams from ClickUp API: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching ClickUp teams: {str(e)}"
         )
 
