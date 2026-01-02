@@ -151,14 +151,12 @@ def insert_fillers(sentence: str, emotion: str) -> str:
 def add_breath(sentence: str, emotion: str) -> str:
     """
     Adds subtle breath between very long thoughts.
-    Reduced frequency - very minimal! Only for very long sentences.
+    DISABLED: Google Cloud TTS doesn't support <audio> tags properly.
+    The URL gets read as text instead of playing audio, causing issues.
     """
-    if len(sentence.split()) < 15:  # Only for very long sentences (was 12)
-        return sentence
-
-    if emotion in ["sad", "neutral", "uncertain"]:
-        if random.random() < 0.03:  # Reduced to 3% (was 7%) - very minimal!
-            sentence += ' <audio src="https://actions.google.com/sounds/v1/human_voices/breath.ogg" soundLevel="-36dB"/>'  # Quieter (-36dB, was -34dB)
+    # DISABLED: Google Cloud TTS API doesn't support <audio> tags - they get read as text
+    # Since breathing sound wasn't working anyway, just return sentence unchanged
+    # This ensures calling functionality and flow remain unaffected
     return sentence
 
 

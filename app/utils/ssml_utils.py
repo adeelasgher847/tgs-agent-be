@@ -96,10 +96,11 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
             ssml += f'<break time="{break_time}"/>'
             
             # Add breath audio file for natural pauses (low volume, subtle)
-            # Only after major sentence endings, not too frequently
-            if random.random() < 0.15:  # 15% chance - very subtle
-                BREATH_AUDIO = "https://actions.google.com/sounds/v1/human_voices/breath.ogg"
-                ssml += f'<audio src="{BREATH_AUDIO}" soundLevel="-10dB"/>'  # Quieter breath
+            # DISABLED: Google Cloud TTS doesn't support <audio> tags properly.
+            # The URL gets read as text instead of playing audio, causing issues.
+            # if random.random() < 0.15:  # 15% chance - very subtle
+            #     BREATH_AUDIO = "https://actions.google.com/sounds/v1/human_voices/breath.ogg"
+            #     ssml += f'<audio src="{BREATH_AUDIO}" soundLevel="-10dB"/>'  # Quieter breath
     
     # Add remaining text (if any)
     if len(sentences) % 2 == 1 and sentences[-1].strip():
