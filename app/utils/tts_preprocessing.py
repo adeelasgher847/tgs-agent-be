@@ -1,5 +1,5 @@
 """
-Google TTS-Compatible Humanized Preprocessing Middleware
+Google TTS-Compatible Humanized Preprocessing Utilities
 
 --------------------------------------------------------
 ✅ Natural fillers: uhh, umm, hmm, etc.
@@ -261,3 +261,4 @@ def quick_clean(text: str) -> str:
     text = re.sub(r'([.!?;,]){2,}', r'\1', text)
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
+

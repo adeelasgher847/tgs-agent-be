@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
-from app.routers.voice_processing import router as voice_processing_router
 # Removed old call_session_websocket import - now using general_websocket via api_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response

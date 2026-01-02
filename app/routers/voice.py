@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, HTTPException, Query, Depends, status, U
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from typing import Optional
-from twilio.twiml.voice_response import VoiceResponse, Start, Stream
+from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
 import random
 import uuid
@@ -260,44 +260,6 @@ def get_agent_voice(agent) -> str:
     print(f"🎤 Agent voice selection: language={language}, voice_type={voice_type}, selected_voice={selected_voice}")
     
     return selected_voice
-
-
-def add_media_stream_to_response(
-    response: VoiceResponse,
-    agent_id: str,
-    call_session_id: str,
-    track: str = "inbound_track"
-) -> VoiceResponse:
-    """
-    Add media streaming to TwiML response for Google Cloud STT
-    
-    Args:
-        response: VoiceResponse object
-        agent_id: Agent ID
-        call_session_id: Call session ID
-        track: Which audio track to stream (inbound_track, outbound_track, both_tracks)
-    
-    Returns:
-        Modified VoiceResponse with streaming enabled
-    """
-    # Build WebSocket URL for media streaming
-    # Use wss:// for secure WebSocket connection
-    ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
-    ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
-    
-    # Pass parameters as path segments instead of query params to avoid XML encoding issues
-    ws_url = f"{ws_protocol}://{ws_base}/api/v1/stt/ws/media-stream/{call_session_id}/{agent_id}"
-    
-    print(f"🎙️ Adding media stream to TwiML: {ws_url}")
-    
-    # Start media streaming
-    start = Start()
-    stream = Stream(url=ws_url, track=track)
-    start.append(stream)
-    response.append(start)
-    
-    return response
-
 
 @router.post("/call/initiate", response_model=SuccessResponse[CallInitiateResponse])
 async def initiate_call(

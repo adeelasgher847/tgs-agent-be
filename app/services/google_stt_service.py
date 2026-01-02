@@ -261,23 +261,6 @@ class GoogleSTTService:
             single_utterance=single_utterance,
         )
     
-    async def transcribe_stream(
-        self,
-        audio_generator,
-        language_code: str = None,
-        on_interim_result: Optional[Callable] = None,
-        on_final_result: Optional[Callable] = None,
-        on_error: Optional[Callable] = None
-    ):
-        """
-        Simple chunk-based transcription (not used in current implementation)
-        This method is kept for compatibility but not actively used.
-        The bidirectional stream now uses transcribe_audio_chunk_streaming instead.
-        """
-        print("⚠️ transcribe_stream is deprecated - use transcribe_audio_chunk_streaming instead")
-        if on_error:
-            await on_error("transcribe_stream is deprecated")
-    
     def create_streaming_request_generator(self, audio_queue):
         """
         Create a generator for streaming requests (Vapi-style)

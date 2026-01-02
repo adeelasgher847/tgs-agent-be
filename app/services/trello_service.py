@@ -89,7 +89,6 @@ class TrelloService(BaseCRMService):
             
         except Exception as e:
             # If API call fails, fallback to basic URL
-            print(f"⚠️ Failed to fetch Trello board URL: {e}")
             return self.build_container_url(board_id)
 
     def _auth_params(self) -> Dict[str, str]:
@@ -133,8 +132,8 @@ class TrelloService(BaseCRMService):
                 })
                 update_response = requests.put(update_url, params=update_params, timeout=20)
                 update_response.raise_for_status()
-            except Exception as update_error:
-                print(f"⚠️ Failed to set board visibility to public: {update_error}")
+            except Exception:
+                pass
             
             return {
                 "id": board_id,
@@ -179,7 +178,6 @@ class TrelloService(BaseCRMService):
             response.raise_for_status()
             return True
         except Exception as e:
-            print(f"⚠️ Failed to set board {board_id} to public: {e}")
             return False
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
@@ -196,7 +194,6 @@ class TrelloService(BaseCRMService):
             response.raise_for_status()
             existing_fields = response.json()
         except Exception as e:
-            print(f"⚠️ Failed to get Trello custom fields: {e}")
             existing_fields = []
         
         # Map fields by name
@@ -210,7 +207,6 @@ class TrelloService(BaseCRMService):
             
             if field_name.lower() in field_by_name:
                 field_map[field_key] = field_by_name[field_name.lower()].get("id", "")
-                print(f"✅ Found existing Trello field: {field_name} (ID: {field_map[field_key]})")
             else:
                 # Try to create custom field (requires Power-Ups)
                 # Note: This may fail if Power-Ups are not enabled
@@ -230,15 +226,9 @@ class TrelloService(BaseCRMService):
                         field_id = created_field.get("id", "")
                         if field_id:
                             field_map[field_key] = field_id
-                            print(f"✅ Created Trello field: {field_name} (ID: {field_id})")
-                        else:
-                            print(f"⚠️ Created Trello field but no ID returned: {field_name}")
-                    else:
-                        print(f"⚠️ Failed to create Trello field {field_name}: HTTP {create_response.status_code} - {create_response.text[:200]}")
-                except Exception as e:
-                    print(f"⚠️ Failed to create Trello custom field {field_name}: {e}")
+                except Exception:
+                    pass
         
-        print(f"📊 Trello field_map: {field_map}")
         return field_map
 
     def create_scheduled_call_item(
@@ -344,15 +334,12 @@ class TrelloService(BaseCRMService):
                     
                     response = requests.put(update_url, params=update_params, timeout=20)
                     response.raise_for_status()
-                    print(f"✅ Updated Trello field {key} for card {card_id}")
                 except Exception as e:
                     error_msg = f"Failed to update field {key}: {str(e)}"
                     field_update_errors.append(error_msg)
-                    print(f"⚠️ {error_msg}")
             
             # If custom fields failed, add data to card description as fallback
             if field_update_errors or not field_map:
-                print(f"⚠️ Some Trello custom fields failed or missing. Adding data to card description as fallback.")
                 desc_lines = [f"Scheduled call at {call_time_utc}"]
                 desc_lines.append(f"Agent ID: {agent_id}")
                 desc_lines.append(f"User ID: {user_id}")
@@ -373,13 +360,11 @@ class TrelloService(BaseCRMService):
                     })
                     desc_response = requests.put(update_desc_url, params=update_desc_params, timeout=20)
                     desc_response.raise_for_status()
-                    print(f"✅ Updated Trello card description with field data")
-                except Exception as e:
-                    print(f"⚠️ Failed to update card description: {e}")
+                except Exception:
+                    pass
             
             return card_data
         except Exception as exc:
-            print(f"⚠️ Failed to create Trello card for {phone_number}: {exc}")
             return None
 
     def update_item_status(
@@ -405,7 +390,6 @@ class TrelloService(BaseCRMService):
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            print(f"⚠️ Failed to update Trello card {item_id} status: {exc}")
             return None
 
     def update_item_call_session_id(
@@ -431,7 +415,6 @@ class TrelloService(BaseCRMService):
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            print(f"⚠️ Failed to update call_session_id for Trello card {item_id}: {exc}")
             return None
 
     def get_required_fields(self) -> List[Dict]:
@@ -460,7 +443,6 @@ class TrelloService(BaseCRMService):
             response.raise_for_status()
             cards = response.json()
         except Exception as exc:
-            print(f"⚠️ Failed to fetch Trello cards: {exc}")
             return 0
         
         for card in cards:
@@ -486,9 +468,9 @@ class TrelloService(BaseCRMService):
                             else:
                                 item_tenant_id = str(field_value).strip()
                             break
-                except Exception as exc:
-                    print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
+                except Exception:
                     # Continue to description parsing fallback
+                    pass
             
             # Fallback: Parse tenant_id from card description if custom fields not available
             if not item_tenant_id:
@@ -509,9 +491,8 @@ class TrelloService(BaseCRMService):
                     delete_response = requests.delete(delete_url, params=delete_params, timeout=20)
                     delete_response.raise_for_status()
                     deleted += 1
-                    print(f"✅ Deleted Trello card {card_id} (tenant: {tenant_id})")
-                except Exception as exc:
-                    print(f"⚠️ Failed to delete Trello card {card_id}: {exc}")
+                except Exception:
+                    pass
         
         return deleted
 
@@ -533,10 +514,8 @@ class TrelloService(BaseCRMService):
         # If custom fields are missing, we'll use description parsing as fallback
         # This is common when Trello Power-Ups are not enabled
         if not tenant_field_id or not status_field_id:
-            print(f"⚠️ Warning: tenant_id or status custom fields not found in field_map")
-            print(f"   Field map: {field_map}")
-            print(f"   Will use description parsing as fallback for tenant_id and status")
             # Don't raise error - we'll parse from description instead
+            pass
         
         pending_count = 0
         
@@ -550,7 +529,6 @@ class TrelloService(BaseCRMService):
             response.raise_for_status()
             cards = response.json()
         except Exception as exc:
-            print(f"⚠️ Failed to fetch Trello cards: {exc}")
             return 0
         
         for card in cards:
@@ -585,9 +563,9 @@ class TrelloService(BaseCRMService):
                                 item_status = field_value.get("text", "").strip()
                             else:
                                 item_status = str(field_value).strip() if field_value else None
-                except Exception as exc:
-                    print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
+                except Exception:
                     # Continue to description parsing fallback
+                    pass
             
             # Fallback to description parsing if custom fields not found or failed
             if not item_tenant_id and card_desc:
@@ -646,17 +624,8 @@ class TrelloService(BaseCRMService):
         # If custom fields are missing, we'll use description parsing as fallback
         # This is common when Trello Power-Ups are not enabled
         if not batch_field_id or not tenant_field_id:
-            print(f"⚠️ Warning: batch_id or tenant_id custom fields not found in field_map")
-            print(f"   Field map: {field_map}")
-            print(f"   Will use description parsing as fallback for batch_id and tenant_id")
             # Don't raise error - we'll parse from description instead
-        
-        print(f"🔍 Fetching Trello cards by batch_id:")
-        print(f"   Board ID: {container_id}")
-        print(f"   Batch ID: {batch_id}")
-        print(f"   Tenant ID: {tenant_id}")
-        print(f"   Batch field ID: {batch_field_id}")
-        print(f"   Tenant field ID: {tenant_field_id}")
+            pass
         
         items = []
         
@@ -670,9 +639,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             cards = response.json()
-            print(f"📋 Fetched {len(cards)} cards from board")
         except Exception as exc:
-            print(f"⚠️ Failed to fetch Trello cards: {exc}")
             return []
         
         for card in cards:
@@ -690,7 +657,6 @@ class TrelloService(BaseCRMService):
                 custom_fields_response.raise_for_status()
                 custom_fields = custom_fields_response.json()
             except Exception as exc:
-                print(f"⚠️ Failed to get custom fields for card {card_id}: {exc}")
                 custom_fields = []
             
             # Extract batch_id, tenant_id, and call_session_id
@@ -755,9 +721,7 @@ class TrelloService(BaseCRMService):
                     })
                 
                 items.append(formatted_item)
-                print(f"✅ Matched card {card_id} ({card_name}) - Batch: {item_batch_id}, Tenant: {item_tenant_id}")
         
-        print(f"✅ Found {len(items)} cards matching batch_id={batch_id} and tenant_id={tenant_id}")
         return items
 
     def update_item_email_sent(
@@ -792,10 +756,9 @@ class TrelloService(BaseCRMService):
             try:
                 response = requests.put(url, params=params, timeout=20)
                 response.raise_for_status()
-                print(f"✅ Updated Email Sent custom field to 'Yes' for card {item_id}")
                 updated = True
-            except Exception as exc:
-                print(f"⚠️ Failed to update Email Sent custom field for card {item_id}: {exc}")
+            except Exception:
+                pass
         
         # Fallback to description update (always try, even if custom field succeeded)
         # This ensures description is also updated for consistency
@@ -828,11 +791,9 @@ class TrelloService(BaseCRMService):
             })
             update_response = requests.put(update_url, params=update_params, timeout=20)
             update_response.raise_for_status()
-            print(f"✅ Updated Email Sent in description to 'Yes' for card {item_id}")
             updated = True
             return update_response.json()
         except Exception as exc:
-            print(f"⚠️ Failed to update Email Sent in description for card {item_id}: {exc}")
             if updated:
                 # Custom field was updated, so return success
                 return {"id": item_id}

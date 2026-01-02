@@ -3,6 +3,7 @@ Monday.com API Service for Scheduled Calls Integration
 """
 
 import json
+import sys
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -51,31 +52,31 @@ class MondayService(BaseCRMService):
             # Fallback to ENV key if instance key not provided
             env_key = settings.MONDAY_API_KEY or ""
             if env_key:
-                print(f"⚠️ Using ENV Monday.com API key (instance key not provided)")
-            return env_key
+                return env_key
+            raise ValueError("Monday.com API key is not configured (both instance and ENV keys are empty)")
         
-        # Check if encrypted (JWT format)
+        # Check if encrypted (JWT format - starts with "eyJ")
         if self._api_key.startswith("eyJ"):
             try:
                 decrypted = decrypt_api_key(self._api_key)
                 
-                # Debug logging
-                print(f"🔍 Monday.com API Key decrypted successfully")
-                print(f"   Encrypted (first 20 chars): {self._api_key[:20]}...")
-                print(f"   Decrypted (first 10 chars): {decrypted[:10] if decrypted else 'None'}...")
-                print(f"   Decrypted length: {len(decrypted) if decrypted else 0}")
-                
                 if not decrypted or decrypted.strip() == "":
-                    raise ValueError("Decrypted API key is empty")
+                    raise ValueError("Decrypted API key is empty - the encryption may have failed or the key is corrupted")
+                
+                # Validate decrypted key format (Monday.com keys are usually long strings)
+                if len(decrypted) < 10:
+                    raise ValueError(f"Decrypted API key seems invalid (too short: {len(decrypted)} chars). Monday.com API keys are usually longer.")
+                
                 return decrypted
-            except Exception as exc:
-                print(f"❌ Monday.com API key decryption failed: {str(exc)}")
-                import traceback
-                traceback.print_exc()
+            except ValueError as exc:
                 raise ValueError(f"Failed to decrypt Monday.com API key: {str(exc)}")
+            except Exception as exc:
+                raise ValueError(f"Unexpected error decrypting Monday.com API key: {str(exc)}")
         
         # Already decrypted or plain text
-        print(f"🔍 Monday.com API Key appears to be already decrypted")
+        if not self._api_key or self._api_key.strip() == "":
+            raise ValueError("Monday.com API key is empty")
+        
         return self._api_key
 
     def build_container_url(self, container_id: str) -> str:
@@ -115,53 +116,38 @@ class MondayService(BaseCRMService):
 
     def _execute(self, query: str, variables: Dict) -> Dict:
         """Execute GraphQL query (instance method)"""
-        print(f"🔍 MondayService._execute called")
-        print(f"   API URL: {self.API_URL}")
-        
         try:
             headers = self._headers()
-            print(f"   Headers prepared (API key length: {len(headers.get('Authorization', ''))})")
-            print(f"   API key first 10 chars: {headers.get('Authorization', '')[:10]}...")
-        except Exception as header_exc:
-            print(f"❌ Failed to get headers: {header_exc}")
-            import traceback
-            traceback.print_exc()
-            raise
+        except Exception as e:
+            raise ValueError(f"Failed to prepare API headers: {str(e)}")
         
         try:
-            print(f"   Making request to Monday.com API...")
             response = requests.post(
                 self.API_URL,
                 json={"query": query, "variables": variables},
                 headers=headers,
                 timeout=20,
             )
-            print(f"   Response status: {response.status_code}")
             
             response.raise_for_status()
             payload = response.json()
             
             if "errors" in payload:
-                print(f"❌ Monday.com API returned errors: {payload['errors']}")
-                raise ValueError(payload["errors"])
+                error_messages = [err.get("message", str(err)) for err in payload["errors"]]
+                raise ValueError(f"Monday.com API errors: {', '.join(error_messages)}")
             
-            print(f"✅ Monday.com API request successful")
             return payload.get("data", {})
-        except requests.exceptions.HTTPError as http_exc:
-            print(f"❌ HTTP Error: {http_exc}")
-            print(f"   Status code: {http_exc.response.status_code if hasattr(http_exc, 'response') else 'unknown'}")
-            if hasattr(http_exc, 'response') and http_exc.response is not None:
-                try:
-                    error_body = http_exc.response.text
-                    print(f"   Error response: {error_body[:500]}")
-                except:
-                    pass
-            raise
-        except Exception as exc:
-            print(f"❌ Unexpected error in _execute: {exc}")
-            import traceback
-            traceback.print_exc()
-            raise
+        except requests.exceptions.HTTPError as e:
+            # Provide more detailed error message for 401
+            if e.response and e.response.status_code == 401:
+                raise ValueError(
+                    f"Monday.com API authentication failed (401 Unauthorized). "
+                    f"Please verify that the API key in your CRM configuration is valid and has not expired. "
+                    f"Error: {str(e)}"
+                )
+            raise ValueError(f"Monday.com API request failed: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Unexpected error calling Monday.com API: {str(e)}")
 
     @staticmethod
     def _execute_static(query: str, variables: Dict) -> Dict:
@@ -198,6 +184,7 @@ class MondayService(BaseCRMService):
         variables: Dict[str, Optional[str]] = {"boardName": board_name, "workspaceId": workspace_id}
 
         data = self._execute(query, variables)
+        
         board = data.get("create_board")
         if not board:
             raise ValueError("Failed to create Monday.com board")
@@ -362,8 +349,8 @@ class MondayService(BaseCRMService):
             if title in required_titles and col.get("type") != type_lookup.get(title):
                 try:
                     MondayService.delete_column_static(board_id, col["id"])
-                except Exception as exc:
-                    print(f"⚠️ Failed to remove mismatched column {col['id']} on board {board_id}: {exc}")
+                except Exception:
+                    pass
 
         # Refresh columns after cleanup
         columns = MondayService.get_board_columns_static(board_id)
@@ -393,8 +380,8 @@ class MondayService(BaseCRMService):
             if title not in required_titles:
                 try:
                     MondayService.delete_column_static(board_id, col["id"])
-                except Exception as exc:
-                    print(f"⚠️ Failed to delete extra column {col['id']} on board {board_id}: {exc}")
+                except Exception:
+                    pass
 
         # Final mapping
         required_map: Dict[str, str] = {}
@@ -466,7 +453,6 @@ class MondayService(BaseCRMService):
             data = MondayService._execute_static(query, variables)
             return data.get("create_item")
         except Exception as exc:
-            print(f"⚠️ Failed to create Monday.com item for {phone_number}: {exc}")
             return None
 
     @staticmethod
@@ -508,7 +494,6 @@ class MondayService(BaseCRMService):
         try:
             return MondayService._execute_static(query, variables)
         except Exception as exc:
-            print(f"⚠️ Failed to update Monday.com item {item_id}: {exc}")
             return None
 
     @staticmethod
@@ -561,8 +546,8 @@ class MondayService(BaseCRMService):
                 try:
                     MondayService.delete_item(item_id)
                     deleted += 1
-                except Exception as exc:
-                    print(f"⚠️ Failed to delete Monday.com item {item_id}: {exc}")
+                except Exception:
+                    pass
 
             if not cursor:
                 break
@@ -660,9 +645,8 @@ class MondayService(BaseCRMService):
                     try:
                         MondayService.delete_item(item["id"])
                         deleted += 1
-                        print(f"✅ Deleted item {item['id']} (tenant: {tenant_id})")
-                    except Exception as exc:
-                        print(f"⚠️ Failed to delete Monday.com item {item['id']}: {exc}")
+                    except Exception:
+                        pass
 
             if not cursor:
                 break
@@ -842,7 +826,6 @@ class MondayService(BaseCRMService):
         try:
             return MondayService._execute_static(query, variables)
         except Exception as exc:
-            print(f"⚠️ Failed to update call_session_id for Monday.com item {item_id}: {exc}")
             return None
 
     @staticmethod
@@ -900,7 +883,6 @@ class MondayService(BaseCRMService):
         try:
             return MondayService._execute_static(query, variables)
         except Exception as exc:
-            print(f"⚠️ Failed to update status and call_session_id for Monday.com item {item_id}: {exc}")
             return None
 
     @staticmethod
@@ -954,11 +936,7 @@ class MondayService(BaseCRMService):
                 result = data.get("change_multiple_column_values")
                 if result and result.get("id"):
                     updated_count += 1
-                    print(f"✅ Updated email sent status for item {item_id}")
-                else:
-                    print(f"⚠️ No response for item {item_id}, data: {data}")
             except Exception as exc:
-                print(f"⚠️ Failed to update email sent status for item {item_id}: {exc}")
                 import traceback
                 traceback.print_exc()
                 continue
@@ -986,8 +964,8 @@ class MondayService(BaseCRMService):
             if title in required_titles and col.get("type") != type_lookup.get(title):
                 try:
                     self.delete_column(board_id, col["id"])
-                except Exception as exc:
-                    print(f"⚠️ Failed to remove mismatched column {col['id']} on board {board_id}: {exc}")
+                except Exception:
+                    pass
 
         # Refresh columns after cleanup
         columns = self.get_board_columns(board_id)
@@ -1017,8 +995,8 @@ class MondayService(BaseCRMService):
             if title not in required_titles:
                 try:
                     self.delete_column(board_id, col["id"])
-                except Exception as exc:
-                    print(f"⚠️ Failed to delete extra column {col['id']} on board {board_id}: {exc}")
+                except Exception:
+                    pass
 
         # Final mapping
         required_map: Dict[str, str] = {}
@@ -1086,7 +1064,6 @@ class MondayService(BaseCRMService):
             data = self._execute(query, variables)
             return data.get("create_item")
         except Exception as exc:
-            print(f"⚠️ Failed to create Monday.com item for {phone_number}: {exc}")
             return None
 
     def update_item_status(
@@ -1121,7 +1098,6 @@ class MondayService(BaseCRMService):
         try:
             return self._execute(query, variables)
         except Exception as exc:
-            print(f"⚠️ Failed to update Monday.com item {item_id}: {exc}")
             return None
 
     def update_item_call_session_id(
@@ -1159,7 +1135,6 @@ class MondayService(BaseCRMService):
         try:
             return self._execute(query, variables)
         except Exception as exc:
-            print(f"⚠️ Failed to update call_session_id for Monday.com item {item_id}: {exc}")
             return None
 
     def get_required_fields(self) -> List[Dict]:
@@ -1385,7 +1360,6 @@ class MondayService(BaseCRMService):
         
         email_sent_column_id = field_map.get("email_sent")
         if not email_sent_column_id:
-            print(f"⚠️ Email Sent column ID not found in field map")
             return 0
         
         # Use label instead of index for status columns (Monday.com API requirement)
@@ -1419,11 +1393,7 @@ class MondayService(BaseCRMService):
                 result = data.get("change_multiple_column_values")
                 if result and result.get("id"):
                     updated_count += 1
-                    print(f"✅ Updated email sent status for item {item_id}")
-                else:
-                    print(f"⚠️ No response for item {item_id}, data: {data}")
             except Exception as exc:
-                print(f"⚠️ Failed to update email sent status for item {item_id}: {exc}")
                 import traceback
                 traceback.print_exc()
                 continue
@@ -1433,8 +1403,6 @@ class MondayService(BaseCRMService):
     # Note: Instance method _execute is defined above (line 116)
     # Static method _execute_static is for backward compatibility only
 
-    @staticmethod
-    def create_board(board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
-        """Alias for create_board_static (backward compatibility)"""
-        return MondayService.create_board_static(board_name, workspace_id)
+    # Removed duplicate static create_board() method - use instance method instead
+    # The instance method at line 268 uses the correct API key from database
 

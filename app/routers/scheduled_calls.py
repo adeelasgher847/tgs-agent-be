@@ -86,8 +86,8 @@ async def analyze_call_transcript_internal(
                     
                     if agent and agent.model:
                         preferred_model = agent.model.model_name
-            except Exception as e:
-                print(f"⚠️ Could not get agent/model info: {e}")
+            except Exception:
+                pass
         
         # Fallback models
         fallback_models = [
@@ -222,10 +222,9 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                 recommendations_result = generate_analysis_text(
                     model, current_api_key, recommendations_prompt, max_tokens=300
                 )
-            except Exception as e:
-                print(f"⚠️ Failed to generate recommendations: {e}")
-        except Exception as e:
-            print(f"⚠️ Error generating analysis: {e}")
+            except Exception:
+                pass
+        except Exception:
             return None
         
         if not summary_result or not sentiment_result:
@@ -268,8 +267,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             "transcript_message_count": len(transcript_messages)
         }
         
-    except Exception as e:
-        print(f"⚠️ Error analyzing transcript for call session {call_session.id}: {e}")
+    except Exception:
         return None
 
 
@@ -403,9 +401,6 @@ async def upload_scheduled_calls_csv(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"❌ Error in upload_scheduled_calls_csv: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Failed to process CSV file: {str(e)}")
 
 
@@ -584,8 +579,7 @@ async def get_board_url(user: User = Depends(require_tenant), db: Session = Depe
         if hasattr(crm_service, 'get_board_url'):
             try:
                 board_url = crm_service.get_board_url(board_id)
-            except Exception as e:
-                print(f"⚠️ Failed to fetch Trello board URL from API: {e}")
+            except Exception:
                 # Fallback to stored URL or basic URL
                 board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
         else:
@@ -605,8 +599,7 @@ async def get_board_url(user: User = Depends(require_tenant), db: Session = Depe
         if hasattr(crm_service, 'get_list_url'):
             try:
                 board_url = crm_service.get_list_url(board_id)
-            except Exception as e:
-                print(f"⚠️ Failed to fetch ClickUp list URL from API: {e}")
+            except Exception:
                 # Fallback to stored URL or basic URL
                 board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
         else:
@@ -854,12 +847,12 @@ async def get_batch_analysis(
         
         # Fetch all items from CRM with this batch_id and tenant_id
         if crm_type.lower() == "monday":
-            # Monday.com specific method
-            items = MondayService.get_items_by_batch_id(
-                board_id=container_id,
+            # Monday.com specific method - use instance method to get database API key
+            items = crm_service.get_items_by_batch_id(
+                container_id=container_id,
                 batch_id=batch_id,
                 tenant_id=str(user.current_tenant_id),
-                column_map=field_map
+                field_map=field_map
             )
         elif crm_type.lower() == "clickup":
             # ClickUp specific method
@@ -974,8 +967,7 @@ async def get_batch_analysis(
                     else:
                         call_detail["transcript_analysis"] = None
                         call_detail["transcript_message_count"] = 0
-                except Exception as e:
-                    print(f"⚠️ Failed to analyze transcript for call {cs.id}: {e}")
+                except Exception:
                     call_detail["transcript_analysis"] = None
                     call_detail["transcript_message_count"] = 0
             else:
@@ -1144,8 +1136,7 @@ async def get_batch_analysis_jira(
                         crm_service = CRMServiceFactory.get_service(crm_config)
                         if isinstance(crm_service, JiraService):
                             field_map = crm_service.ensure_required_fields(container_id)
-            except Exception as e:
-                print(f"⚠️ Failed to get field_map: {e}")
+            except Exception:
                 field_map = {}
         
         # Calculate statistics
@@ -1188,8 +1179,7 @@ async def get_batch_analysis_jira(
                     else:
                         call_detail["transcript_analysis"] = None
                         call_detail["transcript_message_count"] = 0
-                except Exception as e:
-                    print(f"⚠️ Failed to analyze transcript for call {cs.id}: {e}")
+                except Exception:
                     call_detail["transcript_analysis"] = None
                     call_detail["transcript_message_count"] = 0
             else:
@@ -1310,19 +1300,9 @@ async def mark_batch_email_sent(
             raise HTTPException(status_code=404, detail="CRM configuration not found for user's board")
         
         # Get CRM service instance (uses database API key)
-        print(f"🔍 Creating CRM service for type: {crm_config.crm_type}")
-        print(f"   CRM Config ID: {crm_config.id}")
-        print(f"   Has encrypted_api_key: {bool(crm_config.encrypted_api_key)}")
-        if crm_config.encrypted_api_key:
-            print(f"   API key first 20 chars: {crm_config.encrypted_api_key[:20]}...")
-        
         try:
             crm_service = CRMServiceFactory.get_service(crm_config)
-            print(f"✅ CRM service created: {type(crm_service).__name__}")
-        except Exception as service_exc:
-            print(f"❌ Error creating CRM service: {service_exc}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
             raise
         
         # Verify it's Monday.com service
@@ -1335,18 +1315,12 @@ async def mark_batch_email_sent(
             raise HTTPException(status_code=404, detail="Container ID not found for user")
         
         # Get field map using instance method (uses database API key)
-        print(f"🔍 Getting field map for container: {container_id}")
         try:
             field_map = crm_service.ensure_required_fields(container_id)
-            print(f"✅ Field map retrieved: {list(field_map.keys())}")
-        except Exception as field_exc:
-            print(f"❌ Error getting field map: {field_exc}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
             raise
         
         # Fetch items by batch_id and tenant_id using instance method
-        print(f"🔍 Fetching items for batch_id: {batch_id}, tenant_id: {user.current_tenant_id}")
         try:
             items = crm_service.get_items_by_batch_id(
                 container_id=container_id,
@@ -1354,11 +1328,7 @@ async def mark_batch_email_sent(
             tenant_id=str(user.current_tenant_id),
                 field_map=field_map
             )
-            print(f"✅ Found {len(items)} items")
-        except Exception as fetch_exc:
-            print(f"❌ Error fetching items: {fetch_exc}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
             raise
         
         if not items:
@@ -1373,22 +1343,13 @@ async def mark_batch_email_sent(
         item_ids = [item["id"] for item in items]
         
         # Update Email Sent status to "Yes" using instance method (uses database API key)
-        print(f"🔍 About to update {len(item_ids)} items with email_sent status")
-        print(f"   Container ID: {container_id}")
-        print(f"   Item IDs: {item_ids[:3]}..." if len(item_ids) > 3 else f"   Item IDs: {item_ids}")
-        print(f"   Email Sent Column ID: {field_map.get('email_sent')}")
-        
         try:
             updated_count = crm_service.update_items_email_sent(
                 container_id=container_id,
             item_ids=item_ids,
                 field_map=field_map
             )
-            print(f"✅ Successfully updated {updated_count} items")
-        except Exception as update_exc:
-            print(f"❌ Error in update_items_email_sent: {update_exc}")
-            import traceback
-            traceback.print_exc()
+        except Exception:
             raise
         
         result = {
@@ -1405,10 +1366,6 @@ async def mark_batch_email_sent(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Exception in mark_batch_email_sent endpoint: {str(e)}")
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"   Full traceback:\n{error_trace}")
         raise HTTPException(status_code=500, detail=f"Failed to mark email sent: {str(e)}")
 
 

@@ -8,7 +8,6 @@ from app.routers.phone_numbers import router as phone_numbers_router
 from app.routers.call_sessions import router as call_sessions_router
 from app.routers.call_logs import router as call_logs_router
 from app.routers.general_websocket import router as general_websocket_router
-from app.routers.stt_websocket import router as stt_websocket_router
 from app.routers.tts_audio import router as tts_audio_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
 from app.routers.scheduled_calls import router as scheduled_calls_router
@@ -27,7 +26,6 @@ api_router.include_router(phone_numbers_router, prefix="/phone-numbers", tags=["
 api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"])
 api_router.include_router(call_logs_router, prefix="/call-logs", tags=["Call Logs"])
 api_router.include_router(general_websocket_router, prefix="/general", tags=["General WebSocket"])
-api_router.include_router(stt_websocket_router, prefix="/stt", tags=["Speech-to-Text WebSocket"])
 api_router.include_router(invite.router, prefix="/invites", tags=["invites"])
 api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])

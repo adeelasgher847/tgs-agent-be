@@ -158,6 +158,7 @@ class ScheduledCallService:
                         raise HTTPException(status_code=404, detail="User not found")
                     
                     container_name = f"Scheduled Calls - {user.email}"
+                    
                     additional_config = {}
                     if crm_config.additional_config:
                         import json
@@ -201,8 +202,16 @@ class ScheduledCallService:
                         board_record.crm_type = crm_config.crm_type
                         board_record.tenant_crm_config_id = crm_config_id
                         print(f"✅ Auto-created {crm_config.crm_type} container: {board_record.crm_container_id}")
+                    except HTTPException:
+                        # Re-raise HTTPExceptions as-is
+                        raise
                     except Exception as e:
-                        error_msg = f"Failed to auto-create {crm_config.crm_type} container: {str(e)}"
+                        error_msg = str(e)
+                        # If it's a ValueError from Monday.com service, use its message directly
+                        if isinstance(e, ValueError) and ("Monday.com API" in error_msg or "authentication failed" in error_msg):
+                            error_msg = error_msg
+                        else:
+                            error_msg = f"Failed to auto-create {crm_config.crm_type} container: {error_msg}"
                         print(f"❌ {error_msg}")
                         # Re-raise with more context
                         raise HTTPException(
@@ -600,143 +609,3 @@ class ScheduledCallService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item: {str(e)}")
 
-    @staticmethod
-    async def parse_csv_and_send_webhooks(
-        db: Session,
-        tenant_id: uuid.UUID,
-        user_id: uuid.UUID,
-        csv_content: str
-    ) -> CSVUploadResponse:
-        """
-        [LEGACY] Parse CSV file and send webhooks to n8n for automation.
-        No DB storage - just parse, validate, and send webhooks.
-        
-        Note: This is the old flow. Use parse_csv_and_send_to_monday() for Monday.com integration.
-        
-        Expected CSV format:
-        phone_number,agent_id,call_time_utc
-        
-        - phone_number: Phone number to call (required)
-        - agent_id: UUID of the agent (required)
-        - call_time_utc: Scheduled time in UTC (required) - ISO format (YYYY-MM-DDTHH:MM:SSZ) or YYYY-MM-DD HH:MM:SS
-        
-        Example CSV:
-        phone_number,agent_id,call_time_utc
-        +1234567890,550e8400-e29b-41d4-a716-446655440000,2024-01-15T14:30:00Z
-        +0987654321,550e8400-e29b-41d4-a716-446655440000,2024-01-15 16:00:00
-        """
-        reader = csv.DictReader(io.StringIO(csv_content))
-        successful_rows = 0
-        failed_rows = 0
-        errors = []
-        webhook_tasks = []
-        
-        for row_num, row in enumerate(reader, start=2):  # Start at 2 (row 1 is header)
-            try:
-                # Validate required fields
-                if not row.get('phone_number'):
-                    errors.append(f"Row {row_num}: Missing phone_number")
-                    failed_rows += 1
-                    continue
-                
-                if not row.get('agent_id'):
-                    errors.append(f"Row {row_num}: Missing agent_id")
-                    failed_rows += 1
-                    continue
-                
-                if not row.get('call_time_utc'):
-                    errors.append(f"Row {row_num}: Missing call_time_utc")
-                    failed_rows += 1
-                    continue
-                
-                # Parse call_time_utc (already in UTC)
-                call_time_str = row['call_time_utc'].strip()
-                try:
-                    # Try parsing ISO format first (with Z or +00:00)
-                    if 'T' in call_time_str or '+' in call_time_str or call_time_str.endswith('Z'):
-                        # Handle ISO format
-                        if call_time_str.endswith('Z'):
-                            call_time_str = call_time_str.replace('Z', '+00:00')
-                        scheduled_time_utc = datetime.fromisoformat(call_time_str)
-                    else:
-                        # Try parsing common formats (assume UTC)
-                        for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d %H:%M']:
-                            try:
-                                scheduled_time_utc = datetime.strptime(call_time_str, fmt)
-                                # Make it timezone-aware (UTC)
-                                scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
-                                break
-                            except ValueError:
-                                continue
-                        else:
-                            raise ValueError(f"Unable to parse date format: {call_time_str}")
-                    
-                    # Ensure it's timezone-aware and in UTC
-                    if scheduled_time_utc.tzinfo is None:
-                        scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
-                    else:
-                        # Convert to UTC if it has timezone info
-                        scheduled_time_utc = scheduled_time_utc.astimezone(timezone.utc)
-                        
-                except Exception as e:
-                    errors.append(f"Row {row_num}: Invalid call_time_utc format: {str(e)}")
-                    failed_rows += 1
-                    continue
-                
-                # Parse agent_id
-                try:
-                    agent_uuid = uuid.UUID(row['agent_id'])
-                except ValueError:
-                    errors.append(f"Row {row_num}: Invalid agent_id format: {row['agent_id']}")
-                    failed_rows += 1
-                    continue
-                
-                # Verify agent exists and belongs to tenant
-                agent = db.query(Agent).filter(
-                    and_(
-                        Agent.id == agent_uuid,
-                        Agent.tenant_id == tenant_id,
-                        Agent.is_deleted == False
-                    )
-                ).first()
-                
-                if not agent:
-                    errors.append(f"Row {row_num}: Agent not found or doesn't belong to tenant")
-                    failed_rows += 1
-                    continue
-                
-                # Generate unique schedule_id for tracking
-                schedule_id = uuid.uuid4()
-                
-                # Queue webhook task
-                webhook_tasks.append(
-                    ScheduledCallService.send_n8n_webhook(
-                        schedule_id=schedule_id,
-                        tenant_id=tenant_id,
-                        user_id=user_id,
-                        phone_number=row['phone_number'],
-                        agent_id=agent_uuid,
-                        call_time_utc=scheduled_time_utc
-                    )
-                )
-                
-                successful_rows += 1
-                
-            except Exception as e:
-                errors.append(f"Row {row_num}: Unexpected error: {str(e)}")
-                failed_rows += 1
-                continue
-        
-        # Send all webhooks in parallel (fire and forget)
-        if webhook_tasks:
-            try:
-                await asyncio.gather(*webhook_tasks, return_exceptions=True)
-            except Exception as e:
-                print(f"⚠️ Error sending webhooks: {e}")
-        
-        return CSVUploadResponse(
-            total_rows=successful_rows + failed_rows,
-            successful_rows=successful_rows,
-            failed_rows=failed_rows,
-            errors=errors
-        )

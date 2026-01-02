@@ -109,9 +109,8 @@ class JiraService(BaseCRMService):
                                     else:
                                         # Log warning if duplicate found
                                         existing_id = createmeta_map[normalized_name]["id"]
-                                        print(f"   ⚠️ Duplicate normalized name '{normalized_name}': {existing_id} vs {field_id}, keeping {existing_id}")
-        except Exception as e:
-            print(f"   ⚠️ Failed to fetch createmeta fields: {e}")
+        except Exception:
+            pass
         
         return createmeta_map
 
@@ -170,8 +169,7 @@ class JiraService(BaseCRMService):
                 return account_id
             # Fallback: try to get from email
             return None
-        except Exception as e:
-            print(f"⚠️ Failed to get current user account ID: {e}")
+        except Exception:
             return None
 
     def _generate_unique_project_key(self, base_name: str, max_attempts: int = 10) -> str:
@@ -254,8 +252,7 @@ class JiraService(BaseCRMService):
             response.raise_for_status()
             project_types = response.json()
             return project_types
-        except Exception as e:
-            print(f"⚠️ Failed to get project types: {e}")
+        except Exception:
             # Return default types
             return [
                 {"key": "software", "formattedKey": "Software"},
@@ -303,13 +300,11 @@ class JiraService(BaseCRMService):
         url = f"{self.server_url}/rest/api/3/project"
         
         try:
-            print(f"🔍 Creating Jira project: {project_name} (key: {project_key})...")
             response = requests.post(url, json=payload, headers=self._headers(), timeout=30)
             
             if response.status_code in [200, 201]:
                 project_data = response.json()
                 created_key = project_data.get("key", project_key)
-                print(f"✅ Successfully created Jira project: {created_key}")
                 return {
                     "id": created_key,
                     "url": self.build_container_url(created_key),
@@ -380,13 +375,11 @@ class JiraService(BaseCRMService):
         url = f"{self.server_url}/rest/api/3/field"
         
         try:
-            print(f"🔍 Creating custom field: {field_name} (type: {field_type})...")
             response = requests.post(url, json=payload, headers=self._headers(), timeout=30)
             
             if response.status_code in [200, 201]:
                 field_data = response.json()
                 field_id = field_data.get("id", "")
-                print(f"✅ Successfully created custom field: {field_name} (ID: {field_id})")
                 
                 # For select fields, add options
                 if field_type == "select" and field_id:
@@ -394,19 +387,9 @@ class JiraService(BaseCRMService):
                 
                 return field_id
             else:
-                try:
-                    error_data = response.json()
-                    error_messages = error_data.get("errorMessages", [])
-                    errors = error_data.get("errors", {})
-                    error_msg = ', '.join(error_messages) if error_messages else str(errors)
-                except:
-                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
-                
-                print(f"⚠️ Failed to create custom field {field_name}: {error_msg}")
                 return None
                 
-        except Exception as e:
-            print(f"⚠️ Failed to create custom field {field_name}: {e}")
+        except Exception:
             return None
 
     def _add_select_field_options(self, field_id: str, options: List[str]):
@@ -424,12 +407,14 @@ class JiraService(BaseCRMService):
                     options_url = f"{self.server_url}/rest/api/3/field/{field_id}/context/{context_id}/option"
                     for option in options:
                         option_payload = {"value": option}
-                        opt_response = requests.post(options_url, json=option_payload, headers=self._headers(), timeout=20)
-                        if opt_response.status_code in [200, 201]:
-                            print(f"✅ Added option '{option}' to select field")
-        except Exception as e:
-            print(f"⚠️ Failed to add options to select field: {e}")
-            # Non-critical, continue
+                        try:
+                            opt_response = requests.post(options_url, json=option_payload, headers=self._headers(), timeout=20)
+                            if opt_response.status_code in [200, 201]:
+                                pass  # Success
+                        except Exception:
+                            pass  # Non-critical, continue
+        except Exception:
+            pass  # Non-critical, continue
 
     def _get_required_fields_for_creation(self, container_id: str) -> Dict[str, Any]:
         """
@@ -500,17 +485,8 @@ class JiraService(BaseCRMService):
                                         # Can be omitted or set to current date
                                         pass
                                     
-                                    print(f"📋 Found required field: {field_name} ({field_id}) - type: {field_type}")
-                                    if field_type == "option" and allowed_values:
-                                        print(f"   Available options: {[opt.get('value') or opt.get('name') for opt in allowed_values]}")
-        except Exception as e:
-            print(f"⚠️ Failed to fetch required fields: {e}")
-            import traceback
-            print(f"   Traceback: {traceback.format_exc()}")
-        
-        print(f"📊 Total required fields detected: {len(required_fields)}")
-        if required_fields:
-            print(f"   Required field IDs: {list(required_fields.keys())}")
+        except Exception:
+            pass
         
         return required_fields
 
@@ -564,17 +540,14 @@ class JiraService(BaseCRMService):
                                     # If preferred not found, return first available option
                                     first_option = allowed_values[0].get("value", "")
                                     if first_option:
-                                        print(f"⚠️ Preferred value '{preferred_value}' not found in Email Sent field. Available: {[opt.get('value') or opt.get('name') for opt in allowed_values]}. Using '{first_option}' instead.")
                                         return first_option
                                     
                                     # If no value in option, try name
                                     first_name = allowed_values[0].get("name", "")
                                     if first_name:
-                                        print(f"⚠️ Using option name '{first_name}' for Email Sent field.")
                                         return first_name
                                 
                                 # If no allowed values, field might be empty/optional
-                                print(f"⚠️ Email Sent field has no allowed values. Field may be optional.")
                                 return None
             
             # Fallback: try to get from field context
@@ -607,7 +580,6 @@ class JiraService(BaseCRMService):
             
             return None
         except Exception as e:
-            print(f"⚠️ Failed to get select field options: {e}")
             return None
 
     def create_container(self, container_name: str, project_key: Optional[str] = None) -> Dict[str, str]:
@@ -643,14 +615,12 @@ class JiraService(BaseCRMService):
                 if response.status_code == 200:
                     # Project exists, return it
                     project_data = response.json()
-                    print(f"✅ Verified Jira project exists: {project_key}")
                     return {
                         "id": project_data.get("key", project_key),
                         "url": self.build_container_url(project_data.get("key", project_key)),
                     }
                 elif response.status_code == 404:
                     # Project doesn't exist - create it
-                    print(f"⚠️ Project '{project_key}' not found. Creating new project...")
                     return self._create_jira_project(container_name, project_key)
                 else:
                     # Other error (403, 500, etc.)
@@ -674,8 +644,6 @@ class JiraService(BaseCRMService):
                 )
         else:
             # No project_key provided - check if project with same name exists, otherwise create new
-            print(f"🔍 No project_key provided. Checking for existing project with name: {container_name}")
-            
             # First, try to find existing project by name
             try:
                 # Get all projects and search by name
@@ -688,14 +656,12 @@ class JiraService(BaseCRMService):
                     for project in all_projects:
                         if project.get("name", "").strip() == container_name.strip():
                             existing_key = project.get("key", "")
-                            print(f"✅ Found existing Jira project with same name: {existing_key}")
                             return {
                                 "id": existing_key,
                                 "url": self.build_container_url(existing_key),
                             }
-                    print(f"   No existing project found with name '{container_name}', creating new one...")
-            except Exception as search_error:
-                print(f"   ⚠️ Could not search for existing projects: {search_error}, proceeding with creation...")
+            except Exception:
+                pass
             
             # No existing project found - create new one
             generated_key = self._generate_unique_project_key(container_name)
@@ -705,7 +671,6 @@ class JiraService(BaseCRMService):
                 # If creation fails due to name conflict, try to find the project again
                 error_str = str(create_error)
                 if "project with that name already exists" in error_str.lower() or "projectname" in error_str.lower():
-                    print(f"   ⚠️ Project name conflict detected. Searching for existing project...")
                     try:
                         projects_url = f"{self.server_url}/rest/api/3/project"
                         projects_response = requests.get(projects_url, headers=self._headers(), timeout=20)
@@ -714,13 +679,12 @@ class JiraService(BaseCRMService):
                             for project in all_projects:
                                 if project.get("name", "").strip() == container_name.strip():
                                     existing_key = project.get("key", "")
-                                    print(f"✅ Found existing Jira project: {existing_key}")
                                     return {
                                         "id": existing_key,
                                         "url": self.build_container_url(existing_key),
                                     }
-                    except Exception as retry_error:
-                        print(f"   ⚠️ Failed to find existing project: {retry_error}")
+                    except Exception:
+                        pass
                 
                 # Re-raise the original error if we couldn't find existing project
                 raise create_error
@@ -741,12 +705,8 @@ class JiraService(BaseCRMService):
         
         try:
             # Step 1: Get createmeta fields (source of truth - fields available for Task in this project)
-            print(f"🔍 Fetching createmeta fields for project {container_id}...")
             createmeta_map = self.build_field_map_from_createmeta(container_id, "Task")
-            print(f"   ✅ Found {len(createmeta_map)} fields in createmeta")
-            
             # Step 2: Get all global fields as fallback
-            print(f"🔍 Fetching global fields as fallback...")
             url = f"{self.server_url}/rest/api/3/field"
             response = requests.get(url, headers=self._headers(), timeout=20)
             response.raise_for_status()
@@ -762,8 +722,6 @@ class JiraService(BaseCRMService):
                     if normalized_name not in global_field_by_normalized_name:
                         global_field_by_normalized_name[normalized_name] = field
             
-            print(f"   ✅ Found {len(global_field_by_normalized_name)} unique global fields (normalized)")
-            
             # Step 3: Map required fields, prioritizing createmeta
             for field_def in self.REQUIRED_FIELDS:
                 field_name = field_def["title"]
@@ -774,7 +732,6 @@ class JiraService(BaseCRMService):
                 # Status is a built-in field
                 if field_key == "status":
                     field_map[field_key] = "status"
-                    print(f"   ✅ Mapped {field_key} -> status (built-in)")
                     continue
                 
                 matched_field_id = None
@@ -785,7 +742,6 @@ class JiraService(BaseCRMService):
                     matched_field_id = createmeta_map[normalized_field_name]["id"]
                     matched_source = "createmeta"
                     original_name = createmeta_map[normalized_field_name]["name"]
-                    print(f"   ✅ Matched '{field_name}' -> {matched_field_id} (createmeta, original: '{original_name}')")
                 
                 # Priority 2: Fallback to global fields
                 elif normalized_field_name in global_field_by_normalized_name:
@@ -793,7 +749,6 @@ class JiraService(BaseCRMService):
                     matched_field_id = matched_field.get("id", "")
                     matched_source = "global"
                     original_name = matched_field.get("name", "")
-                    print(f"   ✅ Matched '{field_name}' -> {matched_field_id} (global, original: '{original_name}')")
                 
                 # Priority 3: Check if multiple fields match (safety check)
                 if not matched_field_id:
@@ -805,18 +760,15 @@ class JiraService(BaseCRMService):
                         matched_field_id = createmeta_map[matched_normalized]["id"]
                         matched_source = "createmeta (partial)"
                         original_name = createmeta_map[matched_normalized]["name"]
-                        print(f"   ⚠️ Partial match '{field_name}' -> {matched_field_id} (createmeta partial, original: '{original_name}')")
                 
                 if matched_field_id:
                     field_map[field_key] = matched_field_id
                 else:
                     # Field not found in either source - mark for creation
                     missing_fields.append({"name": field_name, "type": field_type, "key": field_key})
-                    print(f"   ⚠️ Field '{field_name}' not found, will create new")
             
             # Step 4: Create missing fields only if not found in BOTH sources
             if missing_fields:
-                print(f"⚠️ {len(missing_fields)} custom fields missing. Creating them automatically...")
                 for field_info in missing_fields:
                     # Double-check: maybe field was created between checks
                     normalized_name = self.normalize_name(field_info["name"])
@@ -825,20 +777,16 @@ class JiraService(BaseCRMService):
                     if normalized_name in createmeta_map:
                         field_id = createmeta_map[normalized_name]["id"]
                         field_map[field_info["key"]] = field_id
-                        print(f"   ✅ Found existing field '{field_info['name']}' -> {field_id} (after re-check)")
                         continue
                     
                     # Create new field
                     field_id = self._create_custom_field(field_info["name"], field_info["type"])
                     if field_id:
                         field_map[field_info["key"]] = field_id
-                        print(f"   ✅ Created and mapped field: {field_info['name']} -> {field_id}")
                     else:
-                        print(f"   ❌ Failed to create field: {field_info['name']}")
                         # Still raise error if critical field creation fails
                         raise ValueError(f"Failed to create required custom field: {field_info['name']}")
             
-            print(f"📊 Jira field_map: {field_map} (Total fields: {len(field_map)})")
             return field_map
             
         except requests.exceptions.HTTPError as e:
@@ -936,7 +884,6 @@ class JiraService(BaseCRMService):
                                     field_def = issue_type["fields"][req_field_id]
                                     field_name = field_def.get("name", "").strip().lower()
                                     
-                                    print(f"   🔍 Processing required field: '{field_name}' ({req_field_id})")
                                     
                                     # Check if this is Email Sent field
                                     if "email" in field_name and "sent" in field_name:
@@ -944,14 +891,12 @@ class JiraService(BaseCRMService):
                                         email_sent_value = self._get_select_field_value(req_field_id, container_id, preferred_value="No")
                                         if email_sent_value:
                                             basic_fields[req_field_id] = {"value": email_sent_value}
-                                            print(f"   ✅ Set required Email Sent field {req_field_id} to '{email_sent_value}'")
                                         else:
                                             # If no value found, use first available option
                                             allowed_values = field_def.get("allowedValues", [])
                                             if allowed_values:
                                                 first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
                                                 basic_fields[req_field_id] = {"value": first_option}
-                                                print(f"   ⚠️ Using first available option for Email Sent: '{first_option}'")
                                     # Check if this is Impact field (or other required select fields)
                                     elif field_def.get("schema", {}).get("type") == "option":
                                         # Select field - use first available option
@@ -959,7 +904,6 @@ class JiraService(BaseCRMService):
                                         if allowed_values:
                                             first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
                                             basic_fields[req_field_id] = {"value": first_option}
-                                            print(f"   ✅ Set required select field '{field_name}' ({req_field_id}) to '{first_option}'")
                                     # For other required fields, map to our actual values by matching field names
                                     elif req_field_id not in basic_fields:
                                         # Try to match required field to our field_map by name
@@ -968,47 +912,35 @@ class JiraService(BaseCRMService):
                                         # Match by field name patterns
                                         if "agent" in field_name and "id" in field_name:
                                             basic_fields[req_field_id] = agent_id
-                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → agent_id = {agent_id}")
                                             matched = True
                                         elif "call" in field_name and "time" in field_name and "utc" in field_name:
                                             basic_fields[req_field_id] = call_time_utc
-                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → call_time_utc = {call_time_utc}")
                                             matched = True
                                         elif "tenant" in field_name and "id" in field_name:
                                             basic_fields[req_field_id] = tenant_id
-                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → tenant_id = {tenant_id}")
                                             matched = True
                                         elif "user" in field_name and "id" in field_name and "agent" not in field_name and "tenant" not in field_name:
                                             basic_fields[req_field_id] = user_id
-                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → user_id = {user_id}")
                                             matched = True
                                         elif "batch" in field_name and "id" in field_name and batch_id:
                                             basic_fields[req_field_id] = batch_id
-                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → batch_id = {batch_id}")
                                             matched = True
                                         elif "phone" in field_name and "number" in field_name and "id" in field_name and phone_number_id:
                                             basic_fields[req_field_id] = phone_number_id
-                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → phone_number_id = {phone_number_id}")
                                             matched = True
                                         elif "call" in field_name and "session" in field_name and "id" in field_name:
                                             basic_fields[req_field_id] = ""  # Leave blank initially
-                                            print(f"   ✅ Mapped required field '{field_name}' ({req_field_id}) → call_session_id (blank)")
                                             matched = True
                                         
                                         # If not matched, use default value
                                         if not matched:
                                             default_value = required_fields[req_field_id]
                                             basic_fields[req_field_id] = default_value
-                                            print(f"   ⚠️ No match found for '{field_name}' ({req_field_id}), using default value: {default_value}")
-        except Exception as e:
-            print(f"   ⚠️ Failed to map required fields: {e}")
-            import traceback
-            print(f"   Traceback: {traceback.format_exc()}")
+        except Exception:
             # Fallback: add required fields with default values
             for field_id, field_value in required_fields.items():
                 if field_id not in basic_fields:
                     basic_fields[field_id] = field_value
-                    print(f"   ✅ Added required field {field_id} to creation payload (fallback)")
         
         # Step 3: Prepare ALL custom fields for update step (fields that are NOT required/on create screen)
         # Get list of required field IDs to exclude from update
@@ -1020,52 +952,31 @@ class JiraService(BaseCRMService):
             # Only add if not in required fields (not set during creation)
             if field_map["agent_id"] not in required_field_ids:
                 custom_fields_to_update[field_map["agent_id"]] = agent_id
-                print(f"   📦 Added agent_id field: {field_map['agent_id']} = {agent_id}")
-            else:
-                print(f"   ⏭️ Skipped agent_id (already set in required fields: {field_map['agent_id']})")
         
         if "call_time_utc" in field_map and field_map["call_time_utc"]:
             if field_map["call_time_utc"] not in required_field_ids:
                 custom_fields_to_update[field_map["call_time_utc"]] = call_time_utc
-                print(f"   📦 Added call_time_utc field: {field_map['call_time_utc']} = {call_time_utc}")
-            else:
-                print(f"   ⏭️ Skipped call_time_utc (already set in required fields: {field_map['call_time_utc']})")
         
         if "tenant_id" in field_map and field_map["tenant_id"]:
             if field_map["tenant_id"] not in required_field_ids:
                 custom_fields_to_update[field_map["tenant_id"]] = tenant_id
-                print(f"   📦 Added tenant_id field: {field_map['tenant_id']} = {tenant_id}")
-            else:
-                print(f"   ⏭️ Skipped tenant_id (already set in required fields: {field_map['tenant_id']})")
         
         if "user_id" in field_map and field_map["user_id"]:
             if field_map["user_id"] not in required_field_ids:
                 custom_fields_to_update[field_map["user_id"]] = user_id
-                print(f"   📦 Added user_id field: {field_map['user_id']} = {user_id}")
-            else:
-                print(f"   ⏭️ Skipped user_id (already set in required fields: {field_map['user_id']})")
         
         if batch_id and "batch_id" in field_map and field_map["batch_id"]:
             if field_map["batch_id"] not in required_field_ids:
                 custom_fields_to_update[field_map["batch_id"]] = batch_id
-                print(f"   📦 Added batch_id field: {field_map['batch_id']} = {batch_id}")
-            else:
-                print(f"   ⏭️ Skipped batch_id (already set in required fields: {field_map['batch_id']})")
         
         if phone_number_id and "phone_number_id" in field_map and field_map["phone_number_id"]:
             if field_map["phone_number_id"] not in required_field_ids:
                 custom_fields_to_update[field_map["phone_number_id"]] = phone_number_id
-                print(f"   📦 Added phone_number_id field: {field_map['phone_number_id']} = {phone_number_id}")
-            else:
-                print(f"   ⏭️ Skipped phone_number_id (already set in required fields: {field_map['phone_number_id']})")
         
         if "call_session_id" in field_map and field_map["call_session_id"]:
             # Only add if not already in basic_fields (not required)
             if field_map["call_session_id"] not in required_field_ids and field_map["call_session_id"] not in basic_fields:
                 custom_fields_to_update[field_map["call_session_id"]] = ""  # Leave blank initially
-                print(f"   📦 Added call_session_id field: {field_map['call_session_id']} = (blank)")
-            else:
-                print(f"   ⏭️ Skipped call_session_id (already set in required fields)")
         
         # Email Sent: Only add to update if it's NOT in required fields (already set in basic_fields)
         if "email_sent" in field_map and field_map["email_sent"]:
@@ -1076,87 +987,43 @@ class JiraService(BaseCRMService):
                 email_sent_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
                 if email_sent_value:
                     custom_fields_to_update[email_sent_field_id] = {"value": email_sent_value}
-                    print(f"   📦 Added email_sent field to update: {email_sent_field_id} = {email_sent_value}")
-                else:
-                    print(f"   ⚠️ Could not set Email Sent field - no valid value found")
-            else:
-                print(f"   ✅ Email Sent field already set in required fields (skipping update step)")
         
         basic_payload = {"fields": basic_fields}
         
         try:
-            print(f"🔍 Creating Jira issue for {phone_number} in project {container_id}...")
-            print(f"   URL: {url}")
-            print(f"   Step 1 - Basic payload: {json.dumps(basic_payload, indent=2)}")
-            
             response = requests.post(url, json=basic_payload, headers=self._headers(), timeout=20)
             
             if response.status_code in [200, 201]:
                 issue_data = response.json()
                 issue_key = issue_data.get("key", "")
                 issue_id = issue_data.get("id", "")
-                print(f"✅ Successfully created Jira issue {issue_key} (ID: {issue_id}) for {phone_number}")
                 
                 # Step 2: Update issue with custom fields (fields not on create screen)
                 if custom_fields_to_update:
                     update_url = f"{self.server_url}/rest/api/3/issue/{issue_id}"
                     update_payload = {"fields": custom_fields_to_update}
-                    print(f"   Step 2 - Updating custom fields: {json.dumps(update_payload, indent=2)}")
-                    print(f"   Total fields to update: {len(custom_fields_to_update)}")
                     
                     try:
                         update_response = requests.put(update_url, json=update_payload, headers=self._headers(), timeout=20)
-                        print(f"   Update response status: {update_response.status_code}")
                         
-                        if update_response.status_code in [200, 204]:
-                            print(f"✅ Successfully updated custom fields for issue {issue_key}")
-                        else:
-                            # Log error but don't fail - issue was created successfully
-                            try:
-                                update_error = update_response.json()
-                                error_messages = update_error.get("errorMessages", [])
-                                errors_dict = update_error.get("errors", {})
-                                print(f"⚠️ Failed to update custom fields for issue {issue_key}:")
-                                print(f"   Error Messages: {error_messages}")
-                                print(f"   Errors: {errors_dict}")
-                                print(f"   Full response: {update_response.text[:500]}")
-                                
-                                # If update fails due to screen issue, try to add fields one by one
-                                print(f"   🔄 Attempting to update fields individually...")
-                                successful_updates = 0
-                                failed_updates = 0
-                                
-                                for field_id, field_value in custom_fields_to_update.items():
-                                    try:
-                                        single_field_payload = {"fields": {field_id: field_value}}
-                                        print(f"   🔍 Updating field {field_id} with value: {field_value}")
-                                        single_update = requests.put(update_url, json=single_field_payload, headers=self._headers(), timeout=20)
-                                        if single_update.status_code in [200, 204]:
-                                            print(f"   ✅ Successfully updated field {field_id}")
-                                            successful_updates += 1
-                                        else:
-                                            try:
-                                                single_error = single_update.json()
-                                                print(f"   ⚠️ Failed to update field {field_id}: {single_error}")
-                                            except:
-                                                print(f"   ⚠️ Failed to update field {field_id}: HTTP {single_update.status_code} - {single_update.text[:200]}")
-                                            failed_updates += 1
-                                    except Exception as single_field_error:
-                                        print(f"   ❌ Error updating field {field_id}: {single_field_error}")
+                        if update_response.status_code not in [200, 204]:
+                            # If update fails due to screen issue, try to add fields one by one
+                            successful_updates = 0
+                            failed_updates = 0
+                            
+                            for field_id, field_value in custom_fields_to_update.items():
+                                try:
+                                    single_field_payload = {"fields": {field_id: field_value}}
+                                    single_update = requests.put(update_url, json=single_field_payload, headers=self._headers(), timeout=20)
+                                    if single_update.status_code in [200, 204]:
+                                        successful_updates += 1
+                                    else:
                                         failed_updates += 1
-                                
-                                print(f"   📊 Update summary: {successful_updates} successful, {failed_updates} failed")
-                            except Exception as parse_error:
-                                print(f"⚠️ Failed to parse update error for issue {issue_key}: {parse_error}")
-                                print(f"   Response status: {update_response.status_code}")
-                                print(f"   Response text: {update_response.text[:500]}")
-                    except Exception as update_error:
-                        print(f"⚠️ Error updating custom fields for issue {issue_key}: {update_error}")
-                        import traceback
-                        print(f"   Traceback: {traceback.format_exc()}")
+                                except Exception:
+                                    failed_updates += 1
+                    except Exception:
                         # Don't fail - issue was created successfully
-                else:
-                    print(f"⚠️ No custom fields to update for issue {issue_key}")
+                        pass
                 
                 # Set status using transition API - try "Pending" first, then fallback to available status
                 try:
@@ -1167,11 +1034,8 @@ class JiraService(BaseCRMService):
                         status="Pending",
                         field_map={}  # Not needed for transitions
                     )
-                    if status_result:
-                        print(f"✅ Set status to 'Pending' for issue {issue_key}")
-                    else:
+                    if not status_result:
                         # If "Pending" not available, try to get first available status (usually "To Do" or "In Progress")
-                        print(f"⚠️ 'Pending' status not available. Trying to get available statuses...")
                         transitions_url = f"{self.server_url}/rest/api/3/issue/{issue_id}/transitions"
                         transitions_response = requests.get(transitions_url, headers=self._headers(), timeout=20)
                         if transitions_response.status_code == 200:
@@ -1180,23 +1044,14 @@ class JiraService(BaseCRMService):
                                 # Use first available transition (usually "To Do" or initial status)
                                 first_transition = transitions[0]
                                 transition_id = first_transition.get("id")
-                                target_status = first_transition.get("to", {}).get("name", "Unknown")
                                 
                                 # Execute transition
                                 transition_execute_url = f"{self.server_url}/rest/api/3/issue/{issue_id}/transitions"
                                 transition_payload = {"transition": {"id": transition_id}}
-                                transition_exec_response = requests.post(transition_execute_url, json=transition_payload, headers=self._headers(), timeout=20)
-                                if transition_exec_response.status_code in [200, 204]:
-                                    print(f"✅ Set status to '{target_status}' for issue {issue_key} (Pending not available)")
-                                else:
-                                    print(f"⚠️ Could not set status for issue {issue_key}")
-                            else:
-                                print(f"⚠️ No transitions available for issue {issue_key}")
-                        else:
-                            print(f"⚠️ Could not fetch transitions for issue {issue_key}")
-                except Exception as status_error:
-                    print(f"⚠️ Error setting status for issue {issue_key}: {status_error}")
+                                requests.post(transition_execute_url, json=transition_payload, headers=self._headers(), timeout=20)
+                except Exception:
                     # Don't fail the entire operation if status transition fails
+                    pass
                 
                 return issue_data
             else:
@@ -1221,74 +1076,15 @@ class JiraService(BaseCRMService):
                     "payload": basic_payload
                 }
                 
-                print(f"❌ Failed to create Jira issue for {phone_number}:")
-                print(f"   Status: {response.status_code}")
-                print(f"   Error Messages: {error_messages}")
-                print(f"   Errors: {errors_dict}")
-                print(f"   Response: {response.text[:500]}")
-                print(f"   Payload: {json.dumps(basic_payload, indent=2)}")
-                
                 return None
                 
-        except requests.exceptions.HTTPError as e:
-            error_detail = {
-                "operation": "create_issue",
-                "phone_number": phone_number,
-                "container_id": container_id,
-                "url": url,
-                "status_code": e.response.status_code if e.response else None,
-                "response": e.response.text[:500] if e.response else str(e),
-                "error": str(e),
-                "payload": basic_payload
-            }
-            
-            print(f"❌ HTTP error creating Jira issue for {phone_number}:")
-            print(f"   Status: {error_detail['status_code']}")
-            print(f"   Response: {error_detail['response']}")
-            print(f"   Error: {error_detail['error']}")
-            if e.response:
-                try:
-                    error_data = e.response.json()
-                    print(f"   Error Messages: {error_data.get('errorMessages', [])}")
-                    print(f"   Errors: {error_data.get('errors', {})}")
-                except:
-                    pass
-            
+        except requests.exceptions.HTTPError:
             return None
             
-        except requests.exceptions.RequestException as e:
-            error_detail = {
-                "operation": "create_issue",
-                "phone_number": phone_number,
-                "container_id": container_id,
-                "url": url,
-                "error_type": type(e).__name__,
-                "error": str(e),
-                "payload": basic_payload
-            }
-            
-            print(f"❌ Network error creating Jira issue for {phone_number}:")
-            print(f"   Error Type: {error_detail['error_type']}")
-            print(f"   Error: {error_detail['error']}")
-            
+        except requests.exceptions.RequestException:
             return None
             
-        except Exception as exc:
-            error_detail = {
-                "operation": "create_issue",
-                "phone_number": phone_number,
-                "container_id": container_id,
-                "url": url,
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-                "payload": basic_payload
-            }
-            
-            print(f"❌ Unexpected error creating Jira issue for {phone_number}:")
-            print(f"   Error Type: {error_detail['error_type']}")
-            print(f"   Error: {error_detail['error']}")
-            print(f"   Traceback: {traceback.format_exc()}")
-            
+        except Exception:
             return None
 
     def update_item_status(
@@ -1315,10 +1111,8 @@ class JiraService(BaseCRMService):
                 error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
             except:
                 error_msg += f": {e.response.text[:200]}"
-            print(f"⚠️ Failed to fetch transitions for issue {item_id}: {error_msg}")
             return None
-        except Exception as e:
-            print(f"⚠️ Failed to fetch transitions for issue {item_id}: {e}")
+        except Exception:
             return None
         
         # Find transition for status (case-insensitive match)
@@ -1331,7 +1125,6 @@ class JiraService(BaseCRMService):
         
         if not transition_id:
             available_statuses = [t.get("to", {}).get("name", "") for t in transitions]
-            print(f"⚠️ No transition found for status '{status}'. Available: {', '.join(available_statuses)}")
             return None
         
         # Execute transition
@@ -1349,10 +1142,8 @@ class JiraService(BaseCRMService):
                 error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
             except:
                 error_msg += f": {e.response.text[:200]}"
-            print(f"⚠️ Failed to execute transition for issue {item_id}: {error_msg}")
             return None
-        except Exception as e:
-            print(f"⚠️ Failed to update Jira issue {item_id} status: {e}")
+        except Exception:
             return None
 
     def update_item_call_session_id(
@@ -1378,8 +1169,7 @@ class JiraService(BaseCRMService):
             response = requests.put(url, json=payload, headers=self._headers(), timeout=20)
             response.raise_for_status()
             return response.json()
-        except Exception as exc:
-            print(f"⚠️ Failed to update call_session_id for Jira issue {item_id}: {exc}")
+        except Exception:
             return None
 
     def get_required_fields(self) -> List[Dict]:
@@ -1404,8 +1194,8 @@ class JiraService(BaseCRMService):
                 deleted = self._delete_by_jql(container_id, tenant_id, tenant_field_id, batch_size)
                 if deleted > 0:
                     return deleted
-            except Exception as exc:
-                print(f"⚠️ JQL query failed, falling back to description parsing: {exc}")
+            except Exception:
+                pass
         
         # Fallback: Fetch all issues and parse descriptions
         deleted = self._delete_by_description_parsing(container_id, tenant_id, batch_size)
@@ -1448,7 +1238,6 @@ class JiraService(BaseCRMService):
                 issues = data.get("issues", [])
                 total = data.get("total", 0)
             except Exception as exc:
-                print(f"⚠️ Failed to search Jira issues: {exc}")
                 raise
             
             if not issues:
@@ -1463,8 +1252,8 @@ class JiraService(BaseCRMService):
                     delete_response = requests.delete(delete_url, headers=self._headers(), timeout=20)
                     delete_response.raise_for_status()
                     deleted += 1
-                except Exception as exc:
-                    print(f"⚠️ Failed to delete Jira issue {issue_key}: {exc}")
+                except Exception:
+                    pass
             
             # Check if more results
             start_at += len(issues)
@@ -1511,7 +1300,6 @@ class JiraService(BaseCRMService):
                 issues = data.get("issues", [])
                 total = data.get("total", 0)
             except Exception as exc:
-                print(f"⚠️ Failed to fetch Jira issues: {exc}")
                 break
             
             if not issues:
@@ -1542,11 +1330,11 @@ class JiraService(BaseCRMService):
                         deleted += 1
                     except requests.exceptions.HTTPError as exc:
                         if exc.response.status_code == 403:
-                            print(f"⚠️ Permission denied: Cannot delete Jira issue {issue_key}. Please check API token has 'Delete Issues' permission.")
+                            pass
                         else:
-                            print(f"⚠️ Failed to delete Jira issue {issue_key}: {exc}")
-                    except Exception as exc:
-                        print(f"⚠️ Failed to delete Jira issue {issue_key}: {exc}")
+                            pass
+                    except Exception:
+                        pass
             
             # Check if more results
             start_at += len(issues)
@@ -1595,9 +1383,6 @@ class JiraService(BaseCRMService):
             }
             
             try:
-                print(f"🔍 Fetching Jira issues (batch {start_at // batch_size + 1}):")
-                print(f"   JQL: {jql}")
-                print(f"   Start at: {start_at}, Max results: {batch_size}")
                 
                 response = requests.post(
                     url,
@@ -1612,7 +1397,6 @@ class JiraService(BaseCRMService):
                 issues = data.get("issues", [])
                 total = data.get("total", 0)
                 
-                print(f"   ✅ Fetched {len(issues)} issues (total: {total})")
                 
                 if not issues:
                     break
@@ -1654,31 +1438,21 @@ class JiraService(BaseCRMService):
                     status_match = re.search(r'Status:\s*([^\n]+)', description_text, re.IGNORECASE)
                     if status_match:
                         issue_status = status_match.group(1).strip()
-                        print(f"   🔍 Issue {issue_key}: tenant_id={issue_tenant_id}, status={issue_status}")
                         
                         # Check if status is pending
                         if issue_status.lower() == pending_label.lower():
                             pending_count += 1
-                            print(f"   ✅ Counted as pending! Total so far: {pending_count}")
-                    else:
-                        print(f"   ⚠️ Issue {issue_key}: No status found in description")
+                    # If no status match, continue to next issue
                 
                 # Check if more pages
                 if start_at + len(issues) >= total:
                     break
                 start_at += len(issues)
                 
-            except Exception as exc:
-                print(f"⚠️ Failed to count Jira pending issues: {exc}")
-                print(f"   URL used: {url}")
-                print(f"   Server URL: {self.server_url}")
-                if hasattr(exc, 'response') and exc.response is not None:
-                    print(f"   Response status: {exc.response.status_code}")
-                    print(f"   Response text: {exc.response.text[:200]}")
+            except Exception:
                 # Return count so far instead of 0
                 break
         
-        print(f"📊 Total pending issues for tenant {tenant_id}: {pending_count}")
         return pending_count
 
     def has_pending_issues_in_description(
@@ -1744,7 +1518,6 @@ class JiraService(BaseCRMService):
             return False
             
         except Exception as exc:
-            print(f"⚠️ Failed to check email sent status for project {container_id}: {exc}")
             return False
     
     def _adf_to_text(self, adf: Dict) -> str:
@@ -1837,7 +1610,6 @@ class JiraService(BaseCRMService):
             update_response = requests.put(update_url, json=update_payload, headers=self._headers(), timeout=20)
             update_response.raise_for_status()
             
-            print(f"✅ Updated Email Sent to 'Yes' for issue {item_id}")
             
             # Jira PUT requests may return empty body (204 No Content or 200 with empty body)
             # Check if response has content before parsing JSON
@@ -1852,7 +1624,6 @@ class JiraService(BaseCRMService):
                 return {}
             
         except Exception as exc:
-            print(f"⚠️ Failed to update Email Sent for issue {item_id}: {exc}")
             return None
 
     def update_items_email_sent(
