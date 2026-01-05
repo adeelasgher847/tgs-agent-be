@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 import json
 import asyncio
+from app.core.logger import logger
 
 class CallSessionService:
     """Service class for handling call session operations"""
@@ -339,7 +340,7 @@ class CallSessionService:
             from app.routers.general_websocket import broadcast_call_event
             await broadcast_call_event(call_session_id, event_type, event_data)
         except Exception as e:
-            print(f"Error broadcasting call event: {e}")
+            logger.error(f"Error broadcasting call event: {e}")
     
     async def _broadcast_status_update(self, call_session_id: str, status: str, metadata: dict = None):
         """Broadcast call status update to WebSocket connections"""
@@ -347,7 +348,7 @@ class CallSessionService:
             from app.routers.general_websocket import broadcast_call_status_update
             await broadcast_call_status_update(call_session_id, status, metadata)
         except Exception as e:
-            print(f"Error broadcasting status update: {e}")
+            logger.error(f"Error broadcasting status update: {e}")
     
     async def _broadcast_transcript_update(self, call_session_id: str, transcript: list, new_messages: list = None):
         """Broadcast transcript update to WebSocket connections"""
@@ -355,7 +356,7 @@ class CallSessionService:
             from app.routers.general_websocket import broadcast_transcript_update
             await broadcast_transcript_update(call_session_id, transcript, new_messages)
         except Exception as e:
-            print(f"Error broadcasting transcript update: {e}")
+            logger.error(f"Error broadcasting transcript update: {e}")
     
     async def _broadcast_metadata_update(self, call_session_id: str, metadata: dict):
         """Broadcast call metadata update to WebSocket connections"""
@@ -363,7 +364,7 @@ class CallSessionService:
             from app.routers.general_websocket import broadcast_call_metadata_update
             await broadcast_call_metadata_update(call_session_id, metadata)
         except Exception as e:
-            print(f"Error broadcasting metadata update: {e}")
+            logger.error(f"Error broadcasting metadata update: {e}")
 
 # Global instance
 call_session_service = CallSessionService()

@@ -8,6 +8,7 @@ from app.core.config import settings
 from typing import Optional
 import os
 import json
+from app.core.logger import logger
 
 
 class GoogleTTSService:
@@ -42,26 +43,26 @@ class GoogleTTSService:
                         temp_path = f.name
                     
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
-                    print(f"✅ Google TTS: Using credentials from JSON content (temp file: {temp_path})")
+                    logger.info(f"✅ Google TTS: Using credentials from JSON content (temp file: {temp_path})")
                 except Exception as e:
-                    print(f"⚠️ Google TTS: Error creating temp file for JSON credentials: {e}")
+                    logger.error(f"⚠️ Google TTS: Error creating temp file for JSON credentials: {e}")
             else:
                 # It's a file path - check if file exists
                 if os.path.exists(creds):
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
-                    print(f"✅ Google TTS: Using credentials from file: {creds}")
+                    logger.info(f"✅ Google TTS: Using credentials from file: {creds}")
                 else:
-                    print(f"⚠️ Google TTS: Credentials file not found: {creds}")
+                    logger.warning(f"⚠️ Google TTS: Credentials file not found: {creds}")
     
     def get_client(self):
         """Get Google Cloud TTS client"""
         if self._client is None:
             try:
                 self._client = texttospeech.TextToSpeechClient()
-                print("✅ Google Cloud Text-to-Speech client initialized")
+                logger.info("✅ Google Cloud Text-to-Speech client initialized")
             except Exception as e:
-                print(f"⚠️ Failed to initialize Google TTS client: {e}")
-                print("⚠️ Text-to-Speech will not be available without proper credentials")
+                logger.error(f"⚠️ Failed to initialize Google TTS client: {e}")
+                logger.warning("⚠️ Text-to-Speech will not be available without proper credentials")
         
         return self._client
     

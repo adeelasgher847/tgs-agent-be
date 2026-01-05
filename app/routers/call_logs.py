@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 import uuid
 import json
+from app.core.logger import logger
 
 from app.api.deps import get_db, require_tenant
 from app.models.user import User
@@ -45,13 +46,11 @@ async def get_call_logs(
     Comprehensive call logging system for monitoring all call activities
     """
     try:
-        print("=" * 60)
-        print(f"📊 GETTING CALL LOGS")
-        print(f"👤 User: {user.email}")
-        print(f"🏢 Tenant: {user.current_tenant_id}")
-        print(f"📄 Page: {page}, Per Page: {per_page}")
-        print(f"🔍 Filters: type={call_type}, success={success_evaluation}, agent={agent_id}")
-        print("=" * 60)
+        logger.info(f"📊 GETTING CALL LOGS")
+        logger.debug(f"👤 User: {user.email}")
+        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
+        logger.debug(f"📄 Page: {page}, Per Page: {per_page}")
+        logger.debug(f"🔍 Filters: type={call_type}, success={success_evaluation}, agent={agent_id}")
         
         # Create filters object
         filters = CallLogFilters(
@@ -73,8 +72,8 @@ async def get_call_logs(
             per_page=per_page
         )
         
-        print(f"✅ Found {call_logs_result['total']} call logs")
-        print(f"📊 Stats: {call_logs_result['stats']}")
+        logger.info(f"✅ Found {call_logs_result['total']} call logs")
+        logger.debug(f"📊 Stats: {call_logs_result['stats']}")
         
         return create_success_response(
             call_logs_result,
@@ -82,7 +81,7 @@ async def get_call_logs(
         )
         
     except Exception as e:
-        print(f"❌ Error getting call logs: {e}")
+        logger.error(f"❌ Error getting call logs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get call logs: {str(e)}")
 
 
@@ -96,12 +95,10 @@ async def get_call_log_detail(
     Get detailed information about a specific call log
     """
     try:
-        print("=" * 60)
-        print(f"📋 GETTING CALL LOG DETAIL")
-        print(f"🆔 Call Log ID: {call_log_id}")
-        print(f"👤 User: {user.email}")
-        print(f"🏢 Tenant: {user.current_tenant_id}")
-        print("=" * 60)
+        logger.info(f"📋 GETTING CALL LOG DETAIL")
+        logger.debug(f"🆔 Call Log ID: {call_log_id}")
+        logger.debug(f"👤 User: {user.email}")
+        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
         
         # Get call log detail
         call_log = CallLogService.get_call_log_by_id(
@@ -113,10 +110,10 @@ async def get_call_log_detail(
         if not call_log:
             raise HTTPException(status_code=404, detail="Call log not found")
         
-        print(f"✅ Found call log: {call_log.call_id}")
-        print(f"📞 Phone: {call_log.customer_phone_number}")
-        print(f"⏱️ Duration: {call_log.duration} seconds")
-        print(f"📊 Status: {call_log.success_evaluation}")
+        logger.info(f"✅ Found call log: {call_log.call_id}")
+        logger.debug(f"📞 Phone: {call_log.customer_phone_number}")
+        logger.debug(f"⏱️ Duration: {call_log.duration} seconds")
+        logger.debug(f"📊 Status: {call_log.success_evaluation}")
         
         return create_success_response(
             call_log,
@@ -126,7 +123,7 @@ async def get_call_log_detail(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error getting call log detail: {e}")
+        logger.error(f"❌ Error getting call log detail: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get call log detail: {str(e)}")
 
 
@@ -144,12 +141,10 @@ async def get_call_logs_stats(
     Get call logs statistics and analytics
     """
     try:
-        print("=" * 60)
-        print(f"📈 GETTING CALL LOGS STATS")
-        print(f"👤 User: {user.email}")
-        print(f"🏢 Tenant: {user.current_tenant_id}")
-        print(f"📅 Date Range: {date_from} to {date_to}")
-        print("=" * 60)
+        logger.info(f"📈 GETTING CALL LOGS STATS")
+        logger.debug(f"👤 User: {user.email}")
+        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
+        logger.debug(f"📅 Date Range: {date_from} to {date_to}")
         
         # Get call logs statistics
         stats = CallLogService.get_call_logs_stats(
@@ -159,12 +154,12 @@ async def get_call_logs_stats(
             date_to=date_to
         )
         
-        print(f"📊 Total Calls: {stats.total_calls}")
-        print(f"✅ Successful: {stats.successful_calls}")
-        print(f"❌ Failed: {stats.failed_calls}")
-        print(f"🔄 Transferred: {stats.transferred_calls}")
-        print(f"💰 Total Cost: ${stats.total_cost}")
-        print(f"⏱️ Avg Duration: {stats.average_duration} seconds")
+        logger.info(f"📊 Total Calls: {stats.total_calls}")
+        logger.debug(f"✅ Successful: {stats.successful_calls}")
+        logger.debug(f"❌ Failed: {stats.failed_calls}")
+        logger.debug(f"🔄 Transferred: {stats.transferred_calls}")
+        logger.debug(f"💰 Total Cost: ${stats.total_cost}")
+        logger.debug(f"⏱️ Avg Duration: {stats.average_duration} seconds")
         
         return create_success_response(
             stats,
@@ -172,7 +167,7 @@ async def get_call_logs_stats(
         )
         
     except Exception as e:
-        print(f"❌ Error getting call logs stats: {e}")
+        logger.error(f"❌ Error getting call logs stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get call logs stats: {str(e)}")
 
 
@@ -195,12 +190,10 @@ async def get_agent_call_logs(
     Get call logs for a specific agent
     """
     try:
-        print("=" * 60)
-        print(f"🤖 GETTING AGENT CALL LOGS")
-        print(f"🆔 Agent ID: {agent_id}")
-        print(f"👤 User: {user.email}")
-        print(f"🏢 Tenant: {user.current_tenant_id}")
-        print("=" * 60)
+        logger.info(f"🤖 GETTING AGENT CALL LOGS")
+        logger.debug(f"🆔 Agent ID: {agent_id}")
+        logger.debug(f"👤 User: {user.email}")
+        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
         
         # Verify agent belongs to tenant
         agent = db.query(Agent).filter(
@@ -227,7 +220,7 @@ async def get_agent_call_logs(
             per_page=per_page
         )
         
-        print(f"✅ Found {call_logs_result['total']} calls for agent: {agent.name}")
+        logger.info(f"✅ Found {call_logs_result['total']} calls for agent: {agent.name}")
         
         return create_success_response(
             {
@@ -244,7 +237,7 @@ async def get_agent_call_logs(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error getting agent call logs: {e}")
+        logger.error(f"❌ Error getting agent call logs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get agent call logs: {str(e)}")
 
 
@@ -258,12 +251,10 @@ async def get_recent_call_logs(
     Get recent call logs for quick monitoring
     """
     try:
-        print("=" * 60)
-        print(f"🕐 GETTING RECENT CALL LOGS")
-        print(f"👤 User: {user.email}")
-        print(f"🏢 Tenant: {user.current_tenant_id}")
-        print(f"📊 Limit: {limit}")
-        print("=" * 60)
+        logger.info(f"🕐 GETTING RECENT CALL LOGS")
+        logger.debug(f"👤 User: {user.email}")
+        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
+        logger.debug(f"📊 Limit: {limit}")
         
         # Get recent call logs
         recent_logs = CallLogService.get_recent_call_logs(
@@ -272,7 +263,7 @@ async def get_recent_call_logs(
             limit=limit
         )
         
-        print(f"✅ Found {len(recent_logs)} recent call logs")
+        logger.info(f"✅ Found {len(recent_logs)} recent call logs")
         
         return create_success_response(
             {
@@ -283,7 +274,7 @@ async def get_recent_call_logs(
         )
         
     except Exception as e:
-        print(f"❌ Error getting recent call logs: {e}")
+        logger.error(f"❌ Error getting recent call logs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get recent call logs: {str(e)}")
 
 
@@ -304,13 +295,11 @@ async def export_call_logs(
     Export call logs in various formats
     """
     try:
-        print("=" * 60)
-        print(f"📤 EXPORTING CALL LOGS")
-        print(f"👤 User: {user.email}")
-        print(f"🏢 Tenant: {user.current_tenant_id}")
-        print(f"📅 Date Range: {date_from} to {date_to}")
-        print(f"📄 Format: {format}")
-        print("=" * 60)
+        logger.info(f"📤 EXPORTING CALL LOGS")
+        logger.debug(f"👤 User: {user.email}")
+        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
+        logger.debug(f"📅 Date Range: {date_from} to {date_to}")
+        logger.debug(f"📄 Format: {format}")
         
         # Get all call logs for export
         filters = CallLogFilters(
@@ -346,5 +335,5 @@ async def export_call_logs(
             )
         
     except Exception as e:
-        print(f"❌ Error exporting call logs: {e}")
+        logger.error(f"❌ Error exporting call logs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to export call logs: {str(e)}")

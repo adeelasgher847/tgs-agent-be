@@ -7,6 +7,7 @@ from app.services.google_tts_service import google_tts_service
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.utils.audio_utils import add_ambient_noise_to_mulaw
 from app.core.config import settings
+from app.core.logger import logger
 
 
 async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female", use_chirp3_hd: bool = True, speaking_rate: float = 0.95, use_ssml: bool = False, add_office_bg: bool = False) -> bytes:
@@ -29,36 +30,42 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
     if not text or not text.strip():
         return b''
     
-    # Cache key aligned with existing cache strategy (include ssml and office_bg flags)
-    cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw") + ("_ssml" if use_ssml else "") + ("_officebg" if add_office_bg else "")
+    try:
+        # Cache key aligned with existing cache strategy (include ssml and office_bg flags)
+        cache_key = generate_cache_key(text.strip(), lang, voice, use_chirp3_hd, "mulaw") + ("_ssml" if use_ssml else "") + ("_officebg" if add_office_bg else "")
 
-    if cache_key in audio_cache:
-        return audio_cache[cache_key]
+        if cache_key in audio_cache:
+            logger.debug(f"✅ Serving cached MULAW TTS ('{text[:30]}...')")
+            return audio_cache[cache_key]
 
-    # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
-    # Google TTS auto-detects SSML if text starts with <speak>
-    # Let SSML control prosody (use defaults when SSML present, don't override)
-    audio_content = google_tts_service.text_to_speech(
-        text=text.strip(),
-        language=lang,
-        voice_type=voice,
-        speaking_rate=1.0 if use_ssml else speaking_rate,  # Use 1.0 (default) for SSML to respect prosody tags
-        pitch=0.0,  # Always 0, let SSML <prosody pitch> handle variations
-        output_format="mulaw",
-        use_chirp3_hd=use_chirp3_hd
-    )
-
-    # Mix office background noise if enabled (NO DOWNLOAD - generates programmatically!)
-    if add_office_bg:
-        audio_content = add_ambient_noise_to_mulaw(
-            audio_content, 
-            noise_level=0.06  # Office background noise (~-24dB) - audible but not distracting
+        # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
+        # Google TTS auto-detects SSML if text starts with <speak>
+        # Let SSML control prosody (use defaults when SSML present, don't override)
+        logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [chirp3_hd={use_chirp3_hd}, ssml={use_ssml}]")
+        audio_content = google_tts_service.text_to_speech(
+            text=text.strip(),
+            language=lang,
+            voice_type=voice,
+            speaking_rate=1.0 if use_ssml else speaking_rate,  # Use 1.0 (default) for SSML to respect prosody tags
+            pitch=0.0,  # Always 0, let SSML <prosody pitch> handle variations
+            output_format="mulaw",
+            use_chirp3_hd=use_chirp3_hd
         )
-        print(f"🔊 Added office background noise to TTS audio (noise_level: 0.06)")
 
-    # Cache for instant reuse (especially useful for repeated words/phrases)
-    audio_cache[cache_key] = audio_content
-    return audio_content
+        # Mix office background noise if enabled (NO DOWNLOAD - generates programmatically!)
+        if add_office_bg:
+            audio_content = add_ambient_noise_to_mulaw(
+                audio_content, 
+                noise_level=0.06  # Office background noise (~-24dB) - audible but not distracting
+            )
+            logger.info(f"🔊 Added office background noise to TTS audio (noise_level: 0.06)")
+
+        # Cache for instant reuse (especially useful for repeated words/phrases)
+        audio_cache[cache_key] = audio_content
+        return audio_content
+    except Exception as e:
+        logger.error(f"❌ Error in generate_mulaw_tts: {e}", exc_info=True)
+        raise
 
 
 def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
@@ -83,6 +90,7 @@ def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
             stream.parameter(Parameter(name="edge", value=edge))
         s.append(stream)
 
+    logger.debug(f"🛠️ Built streaming TwiML for session {call_session_id}")
     return str(vr)
 
 
@@ -131,5 +139,6 @@ def build_tts_only_twiml(call_session_id: str, agent_id: str, record_callback_ur
         transcribe=False
     )
     
+    logger.debug(f"🛠️ Built TTS-only TwiML for session {call_session_id}")
     return str(vr)
 

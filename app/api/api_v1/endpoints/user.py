@@ -27,6 +27,7 @@ from app.core.config import settings
 import uuid
 from typing import Optional
 import re
+from app.core.logger import logger
 
 router = APIRouter()
 
@@ -203,13 +204,13 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/login/google", response_model=SuccessResponse[TokenResponse])
 def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
     try:
-        print('Google token received:', req.google_token)
+        logger.debug(f'Google token received: {req.google_token}')
         idinfo = google_id_token.verify_oauth2_token(
             req.google_token,
             GoogleRequest(),
             settings.GOOGLE_CLIENT_ID
         )
-        print(idinfo)
+        logger.debug(f"Google ID Info: {idinfo}")
         # Fields we care about from Google
         sub = idinfo.get("sub")  # stable Google user id
         email = idinfo.get("email")
@@ -225,7 +226,7 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
                 detail="Google token missing required fields"
             )
     except Exception as e:
-        print("Google token decode error:", e)
+        logger.error(f"Google token decode error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Google token"

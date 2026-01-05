@@ -8,6 +8,7 @@ import asyncio
 from app.models.transcript_message import TranscriptMessage
 from app.models.call_session import CallSession
 from app.routers.general_websocket import broadcast_transcript_update
+from app.core.logger import logger
 
 class TranscriptService:
     """Service for managing transcript messages"""
@@ -127,7 +128,7 @@ class TranscriptService:
         
         message_lower = message.lower().strip()
         if any(sys_msg in message_lower for sys_msg in twilio_system_messages):
-            print(f"🚫 Filtered Twilio system message: '{message[:50]}...' (ignored, not saved)")
+            logger.info(f"🚫 Filtered Twilio system message: '{message[:50]}...' (ignored, not saved)")
             # Return None or create a minimal object - don't save to DB
             # This prevents LLM from seeing Twilio's messages!
             return None
@@ -172,9 +173,9 @@ class TranscriptService:
                 transcript=conversation,
                 new_messages=[new_message]
             ))
-            print(f"✅ WebSocket: Transcript update queued for session {call_session_id}")
+            logger.debug(f"✅ WebSocket: Transcript update queued for session {call_session_id}")
         except Exception as e:
-            print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+            logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
             # Don't let WebSocket failures affect transcript saving
         
         return transcript_message

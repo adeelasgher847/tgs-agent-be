@@ -16,6 +16,7 @@ from app.models.scheduled_call import ScheduledCall
 from app.models.tenant import Tenant
 from app.schemas.scheduled_call import CSVUploadResponse
 from app.services.monday_service import MondayService
+from app.core.logger import logger
 
 
 class ScheduledCallService:
@@ -152,7 +153,7 @@ class ScheduledCallService:
                 
                 # If still no container_id, create a new container automatically (auto-fix)
                 if not board_record.crm_container_id:
-                    print(f"⚠️ Container ID missing for user {user_id}. Auto-creating new container...")
+                    logger.warning(f"⚠️ Container ID missing for user {user_id}. Auto-creating new container...")
                     user = db.query(User).filter(User.id == user_id).first()
                     if not user:
                         raise HTTPException(status_code=404, detail="User not found")
@@ -201,7 +202,7 @@ class ScheduledCallService:
                             board_record.crm_container_url = crm_service.build_container_url(board_record.crm_container_id)
                         board_record.crm_type = crm_config.crm_type
                         board_record.tenant_crm_config_id = crm_config_id
-                        print(f"✅ Auto-created {crm_config.crm_type} container: {board_record.crm_container_id}")
+                        logger.info(f"✅ Auto-created {crm_config.crm_type} container: {board_record.crm_container_id}")
                     except HTTPException:
                         # Re-raise HTTPExceptions as-is
                         raise
@@ -212,7 +213,7 @@ class ScheduledCallService:
                             error_msg = error_msg
                         else:
                             error_msg = f"Failed to auto-create {crm_config.crm_type} container: {error_msg}"
-                        print(f"❌ {error_msg}")
+                        logger.error(f"❌ {error_msg}")
                         # Re-raise with more context
                         raise HTTPException(
                             status_code=500,
@@ -238,9 +239,7 @@ class ScheduledCallService:
         try:
             field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
         except Exception as exc:
-            import traceback
-            error_trace = traceback.format_exc()
-            print(f"❌ Error ensuring required fields: {error_trace}")
+            logger.error(f"❌ Error ensuring required fields", exc_info=True)
             raise HTTPException(
                 status_code=500, 
                 detail=f"Failed to prepare {board_record.crm_type} container: {exc}"
@@ -315,7 +314,7 @@ class ScheduledCallService:
     ):
         """Send webhook to n8n with scheduled call data"""
         if not settings.N8N_WEBHOOK_URL:
-            print("⚠️ N8N_WEBHOOK_URL not configured, skipping webhook")
+            logger.warning("⚠️ N8N_WEBHOOK_URL not configured, skipping webhook")
             return
         
         payload = {
@@ -337,9 +336,9 @@ class ScheduledCallService:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(settings.N8N_WEBHOOK_URL, json=payload, headers=headers)
                 response.raise_for_status()
-                print(f"✅ n8n webhook sent for schedule_id: {schedule_id}")
+                logger.info(f"✅ n8n webhook sent for schedule_id: {schedule_id}")
         except Exception as e:
-            print(f"⚠️ Failed to send n8n webhook for schedule_id {schedule_id}: {e}")
+            logger.error(f"⚠️ Failed to send n8n webhook for schedule_id {schedule_id}: {e}", exc_info=True)
             # Don't fail the entire operation if webhook fails
 
     @staticmethod
@@ -385,7 +384,7 @@ class ScheduledCallService:
         
         # Generate unique batch_id for this CSV upload
         batch_id = str(uuid.uuid4())
-        print(f"📦 Generated batch_id: {batch_id} for CSV upload")
+        logger.info(f"📦 Generated batch_id: {batch_id} for CSV upload")
         
         # Verify agent once before processing all rows
         agent = db.query(Agent).filter(
@@ -464,7 +463,7 @@ class ScheduledCallService:
                     
                     if result:
                         successful_rows += 1
-                        print(f"✅ Row {row_num}: Added to {board_record.crm_type} - {row['phone_number']}")
+                        logger.info(f"✅ Row {row_num}: Added to {board_record.crm_type} - {row['phone_number']}")
                     else:
                         errors.append(f"Row {row_num}: Failed to create {board_record.crm_type} item")
                         failed_rows += 1

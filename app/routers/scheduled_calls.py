@@ -739,7 +739,7 @@ async def clear_board_items(user: User = Depends(require_tenant), db: Session = 
     return create_success_response(data, f"Deleted {deleted} item(s) for current tenant from the {board_record.crm_type} container")
 
 
-@router.get("/batch/{batch_id}/analysis", response_model=SuccessResponse[dict], include_in_schema=False)
+@router.get("/batch/{batch_id}/analysis", response_model=SuccessResponse[dict], include_in_schema=True)
 async def get_batch_analysis(
     batch_id: str,
     http_request: Request,

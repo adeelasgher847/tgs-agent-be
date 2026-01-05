@@ -198,7 +198,7 @@ class CreditService:
             f"Call: {call_session_id}. "
             f"Description: {description}"
         )
-        print(f"💰 CREDIT DEDUCTION: Deducted {amount:.4f} credits | Remaining: {float(tenant.credits):.4f} | Call: {call_session_id}")
+        logger.info(f"💰 CREDIT DEDUCTION: Deducted {amount:.4f} credits | Remaining: {float(tenant.credits):.4f} | Call: {call_session_id}")
         
         # Return success=False if credits exhausted (call should end immediately)
         return (not credits_exhausted, float(tenant.credits))
@@ -244,7 +244,7 @@ class CreditService:
             f"Model: {model_name}, Cost: {credits_per_minute} credits/min "
             f"(Vapi-style per-second billing with float precision)"
         )
-        print(f"💰 CREDIT MONITORING STARTED: Call {call_session_id} | Model: {model_name} | Cost: {credits_per_minute} credits/min | Float credits enabled")
+        logger.info(f"💰 CREDIT MONITORING STARTED: Call {call_session_id} | Model: {model_name} | Cost: {credits_per_minute} credits/min | Float credits enabled")
         
         # Create monitoring task (will create its own DB session for thread-safety)
         task = asyncio.create_task(
@@ -405,7 +405,7 @@ class CreditService:
                             f"Call {call_session_id}: Deducted {credits_to_deduct_float:.4f} credits "
                             f"for {accumulated:.1f}s duration. Remaining: {remaining_credits:.4f}"
                         )
-                        print(f"💰 CREDIT DEDUCTED: {credits_to_deduct_float:.4f} credits for {accumulated:.1f}s | Remaining: {remaining_credits:.4f} | Call: {call_session_id}")
+                        logger.info(f"💰 CREDIT DEDUCTED: {credits_to_deduct_float:.4f} credits for {accumulated:.1f}s | Remaining: {remaining_credits:.4f} | Call: {call_session_id}")
         
         except asyncio.CancelledError:
             logger.info(f"Credit monitor cancelled for call {call_session_id}")
@@ -474,7 +474,7 @@ class CreditService:
                     f"Call {call_session_id}: Final deduction of {final_credits:.4f} credits "
                     f"for {accumulated:.1f}s. Remaining: {remaining_credits:.4f}"
                 )
-                print(f"💰 FINAL CREDIT DEDUCTION: {final_credits:.4f} credits for {accumulated:.1f}s | Remaining: {remaining_credits:.4f} | Call: {call_session_id}")
+                logger.info(f"💰 FINAL CREDIT DEDUCTION: {final_credits:.4f} credits for {accumulated:.1f}s | Remaining: {remaining_credits:.4f} | Call: {call_session_id}")
     
     async def _end_twilio_call(self, twilio_call_sid: str):
         """

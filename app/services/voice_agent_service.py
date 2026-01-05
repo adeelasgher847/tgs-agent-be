@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional
 from twilio.twiml.voice_response import VoiceResponse
 import uuid
+from app.core.logger import logger
 
 
 class VoiceAgentManager:
@@ -63,10 +64,10 @@ class VoiceAgentManager:
                 
                 agent_name = agent_obj.name
                 agent_voice = get_agent_voice(agent_obj)
-                print(f"🎤 Using agent voice: {agent_voice} for agent: {agent_name}")
+                logger.info(f"🎤 Using agent voice: {agent_voice} for agent: {agent_name}")
                     
             except Exception as e:
-                print(f"⚠️ Error processing agent object: {e}")
+                logger.error(f"⚠️ Error processing agent object: {e}")
         
         # Agent-specific greeting - natural and conversational
         response.say("Hello! How can I help you today?", voice=agent_voice)

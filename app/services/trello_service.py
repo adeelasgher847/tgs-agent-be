@@ -713,11 +713,38 @@ class TrelloService(BaseCRMService):
                     "column_values": []  # Format for compatibility with existing code
                 }
                 
-                # Add call_session_id to column_values format (required by batch analysis endpoint)
                 if item_call_session_id and call_session_field_id:
                     formatted_item["column_values"].append({
                         "id": call_session_field_id,
                         "text": item_call_session_id
+                    })
+                
+                # Add status to column_values format
+                status_field_id = field_map.get("status")
+                
+                # Try to find status in custom fields fallback if not found in loop above
+                item_status = None
+                if status_field_id:
+                    # Check if we already found it in loop (we didn't look for it yet)
+                    for field in custom_fields:
+                        if field.get("id", "") == status_field_id:
+                            field_value = field.get("value", {})
+                            if isinstance(field_value, dict):
+                                item_status = field_value.get("text", "").strip()
+                            else:
+                                item_status = str(field_value).strip() if field_value else None
+                            break
+                            
+                # Fallback to description
+                if not item_status and card_desc:
+                    status_match = re.search(r'Status:\s*([^\n]+)', card_desc, re.IGNORECASE)
+                    if status_match:
+                        item_status = status_match.group(1).strip()
+                
+                if item_status and status_field_id:
+                    formatted_item["column_values"].append({
+                        "id": status_field_id,
+                        "text": item_status
                     })
                 
                 items.append(formatted_item)

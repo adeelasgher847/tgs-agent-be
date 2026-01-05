@@ -8,6 +8,7 @@ from app.models.subscription import Subscription
 from app.models.user import User
 import uuid
 from datetime import datetime, timedelta
+from app.core.logger import logger
 
 # Initialize Stripe
 stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -285,17 +286,17 @@ class StripeService:
         plan_id = session.get("metadata", {}).get("plan_id")
 
         if not tenant_id or not plan_id:
-            print("Tenant ID or Plan ID not found in checkout session metadata")
+            logger.warning("Tenant ID or Plan ID not found in checkout session metadata")
             return
 
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenant:
-            print(f"Tenant with ID {tenant_id} not found")
+            logger.error(f"Tenant with ID {tenant_id} not found")
             return
 
         plan = db.query(Plan).filter(Plan.id == plan_id).first()
         if not plan:
-            print(f"Plan with ID {plan_id} not found")
+            logger.error(f"Plan with ID {plan_id} not found")
             return
 
         # Add credits from the plan to the tenant's account
@@ -304,6 +305,6 @@ class StripeService:
         db.commit()
         db.refresh(tenant)
 
-        print(f"Added {plan.credits} credits to tenant {tenant.id}")
+        logger.info(f"Added {plan.credits} credits to tenant {tenant.id}")
 
     # Note: Idempotency is now handled at the endpoint level using in-memory store in deps

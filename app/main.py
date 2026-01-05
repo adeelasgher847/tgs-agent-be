@@ -12,6 +12,11 @@ from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
 from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
 
+from app.core.logger import setup_logging, logger
+
+# Initialize centralized logging
+setup_logging()
+
 app = FastAPI()
 
 # Initialize rate limiter on startup (temporarily disabled due to Redis connection issues)
@@ -19,16 +24,18 @@ app = FastAPI()
 async def startup_event():
     try:
         await init_rate_limiter()
+        logger.info("Rate limiter initialized successfully")
     except Exception as e:
-        print(f"⚠️ Rate limiter initialization failed: {e}")
-        print("⚠️ Continuing without rate limiting...")
+        logger.warning(f"Rate limiter initialization failed: {e}")
+        logger.warning("Continuing without rate limiting...")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     try:
         await close_rate_limiter()
+        logger.info("Rate limiter closed successfully")
     except Exception as e:
-        print(f"⚠️ Rate limiter cleanup failed: {e}")
+        logger.error(f"Rate limiter cleanup failed: {e}")
 
 # Add CORS middleware
 app.add_middleware(

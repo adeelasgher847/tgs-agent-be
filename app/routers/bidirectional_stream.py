@@ -107,6 +107,7 @@ import uuid
 import sys
 import math
 import re
+from app.core.logger import logger
 
 # Google built-in endpointing (VAD) will be used via streaming_recognize
 
@@ -249,8 +250,8 @@ class BidirectionalStreamHandler:
                     agent_uuid,
                     self.call_session.tenant_id
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error loading session data: {e}", exc_info=True)
     
     async def _load_background_audio_async(self):
         """
@@ -270,9 +271,9 @@ class BidirectionalStreamHandler:
                 self._bg_audio_mulaw = bg_audio_bytes
                 self._bg_audio_length = bg_audio_len
                 self._use_background_audio = True
-        except Exception:
+        except Exception as e:
             # Continue without background audio - call won't crash
-            pass
+            logger.warning(f"Failed to load background audio: {e}")
     
     async def _precache_common_phrases(self):
         """
@@ -340,8 +341,8 @@ class BidirectionalStreamHandler:
                     )
                 except Exception:
                     continue
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in precache_common_phrases: {e}")
     
     async def _tts_pipeline_worker(self):
         """
@@ -378,13 +379,13 @@ class BidirectionalStreamHandler:
                     # Generate and stream TTS (this is the blocking part)
                     await self._stream_tts_chunk(text, use_ssml=use_ssml, is_final=is_final)
                     
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Error in TTS pipeline worker loop: {e}", exc_info=True)
                 finally:
                     self.tts_queue.task_done()
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"TTS pipeline worker error: {e}", exc_info=True)
     
     
     
@@ -453,8 +454,8 @@ class BidirectionalStreamHandler:
                     try:
                         # Start underlying blocking stream in executor
                         await self._stt_session.start()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.error(f"STT session start error: {e}", exc_info=True)
                 
                 # Start the session in background and concurrently read results
                 async def reader_loop():
@@ -482,8 +483,8 @@ class BidirectionalStreamHandler:
             # Push audio to Google
             self._stt_session.push_audio(audio_data)
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error handling media message: {e}", exc_info=True)
     
     # Removed chunk-based STT processing; relying on Google streaming endpointing
     
@@ -520,8 +521,8 @@ class BidirectionalStreamHandler:
             # Generate and stream response
             await self.generate_and_stream_response(transcript, confidence)
             
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error processing transcript: {e}", exc_info=True)
 
     async def _maybe_inject_backchannel(self, transcript: str):
         """
@@ -627,8 +628,8 @@ class BidirectionalStreamHandler:
             self._last_interim_text = transcript
             self._last_interim_sent_ts = now
             await self.generate_and_stream_response(transcript, confidence)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error processing interim: {e}")
     
     async def _send_quick_acknowledgement(self, user_text: str):
         """
@@ -813,7 +814,8 @@ IMPORTANT:
                     try:
                         from app.core.security import decrypt_api_key
                         api_key = decrypt_api_key(self.agent.model.api_key)
-                    except Exception:
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt agent API key: {e}")
                         api_key = None  # Will fallback to settings.OPENAI_API_KEY or settings.GOOGLE_API_KEY
                 else:
                     api_key = None  # Will use global key from .env
@@ -849,6 +851,7 @@ IMPORTANT:
             
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
+            logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
                 nonlocal chunk_counter
@@ -898,7 +901,8 @@ IMPORTANT:
             try:
                 # Use agent's configured model and service
                 final_text = await try_stream(llm_service, model_name, api_key)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
                 # Fallback: try alternate service
                 try:
                     if llm_service == openai_service:
@@ -907,7 +911,8 @@ IMPORTANT:
                     else:
                         # Fallback to OpenAI
                         final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
                     # Last fallback: non-streaming fast response via VoiceLoggingService
                     try:
                         final_text = await VoiceLoggingService.generate_agent_response(
@@ -926,7 +931,8 @@ IMPORTANT:
                                 "use_ssml": self._use_ssml,
                                 "is_final": True
                             })
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
                         # Ultimate fallback response
                         final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
                         chunk_counter += 1
@@ -940,8 +946,8 @@ IMPORTANT:
             if final_text:
                 await self._add_to_transcript("agent", final_text, "agent_response")
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
     
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
@@ -1007,8 +1013,8 @@ IMPORTANT:
                         self._prev_tts_tail = b""
                     self.is_speaking = False
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
     
     async def _stream_background_audio_loop(self):
         """
@@ -1070,8 +1076,8 @@ IMPORTANT:
                 
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in _stream_background_audio_loop: {e}")
     
     async def _stream_mulaw_with_background(
         self,
@@ -1209,8 +1215,8 @@ IMPORTANT:
                 finally:
                     self.is_speaking = False
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in stream_tts_response: {e}", exc_info=True)
     
     def _split_into_sentences(self, text: str) -> list:
         """
@@ -1234,8 +1240,8 @@ IMPORTANT:
                 pace_20ms=True,
             )
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in send_audio_to_twilio: {e}")
     
     async def _send_in_progress_status(self, transcript: str, confidence: float):
         """Send in-progress status when confident word is detected"""
@@ -1278,14 +1284,17 @@ IMPORTANT:
                             tenant_id=self.call_session.tenant_id,
                             agent_id=self.call_session.agent_id
                         ))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Could not start credit monitoring: {e}")
                     
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Error in _send_in_progress_status inner loop: {e}")
+                    
+            except Exception as e:
+                logger.error(f"Error updating call status in _send_in_progress_status: {e}")
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in _send_in_progress_status: {e}", exc_info=True)
     
     async def _check_and_end_call_if_goodbye(self, transcript: str):
         """
@@ -1365,12 +1374,13 @@ IMPORTANT:
                                     "reason": "User said goodbye"
                                 }
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"WebSocket close failed after goodbye: {e}")
                     
                     return True
                     
-                except Exception:
+                except Exception as e:
+                    logger.error(f"Error ending call after goodbye: {e}", exc_info=True)
                     return False
         
         return False
@@ -1449,12 +1459,13 @@ IMPORTANT:
                                     "reason": "Voicemail detected"
                                 }
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"WebSocket close failed after voicemail detection: {e}")
                     
                     return True
                     
-                except Exception:
+                except Exception as e:
+                    logger.error(f"Error ending call after voicemail detection: {e}", exc_info=True)
                     return False
         
         return False
@@ -1490,8 +1501,8 @@ IMPORTANT:
             self.call_session.call_transcript = conversation
             self.db.commit()
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in _add_to_transcript: {e}", exc_info=True)
     
     async def handle_start_message(self, message: dict):
         """Handle stream start - Just WebSocket connection (NOT user pickup!)"""
@@ -1503,8 +1514,8 @@ IMPORTANT:
             # DO NOT start credit monitoring or greeting here!
             # Wait for first media packet (user actually picks up - VAPI-style)
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in handle_start_message: {e}", exc_info=True)
     
     async def _handle_user_pickup(self):
         """Handle user pickup - called when actual user audio detected (not Twilio system messages)"""
@@ -1525,8 +1536,8 @@ IMPORTANT:
             if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
                 asyncio.create_task(self._start_background_audio_with_delay())
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
     
     async def _start_background_audio_with_delay(self):
         """
@@ -1540,8 +1551,8 @@ IMPORTANT:
             # Check again if background audio is ready and not already started
             if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
                 self._bg_audio_task = asyncio.create_task(self._stream_background_audio_loop())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in _start_background_audio_with_delay: {e}", exc_info=True)
     
     async def handle_stop_message(self, message: dict):
         """Handle stream stop"""
@@ -1574,8 +1585,8 @@ IMPORTANT:
             except Exception:
                 pass
         
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error in handle_stop_message: {e}", exc_info=True)
 
 
 @router.websocket("/ws/bidirectional/{callSessionId}/{agentId}")
@@ -1597,7 +1608,8 @@ async def bidirectional_stream_websocket(
     # Accept connection
     try:
         await websocket.accept()
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to accept bidirectional WebSocket: {e}")
         return
     
     # Get database session
@@ -1639,10 +1651,10 @@ async def bidirectional_stream_websocket(
                 pass  # Synchronization marks
     
     except WebSocketDisconnect:
-        pass
+        logger.info(f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}")
     
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
     
     finally:
         db.close()
@@ -1690,8 +1702,8 @@ async def tts_only_websocket(
         if call_session and agentId:
             agent_uuid = uuid.UUID(agentId)
             agent = agent_service.get_agent_by_id(db, agent_uuid, call_session.tenant_id)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Error loading session data for tts-only: {e}")
     
     try:
         while True:
@@ -1781,10 +1793,10 @@ async def tts_only_websocket(
                 pass  # Synchronization marks
     
     except WebSocketDisconnect:
-        pass
+        logger.info(f"🔌 TTS-only WebSocket disconnected for session {callSessionId}")
     
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"Unexpected error in TTS-only WebSocket: {e}", exc_info=True)
     
     finally:
         db.close()

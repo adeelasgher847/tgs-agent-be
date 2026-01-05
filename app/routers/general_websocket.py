@@ -11,6 +11,7 @@ import uuid
 import json
 import asyncio
 from datetime import datetime, timezone
+from app.core.logger import logger
 
 from app.api.deps import get_db, require_tenant, get_current_user_jwt
 from app.models.user import User
@@ -60,8 +61,8 @@ class GeneralWebSocketManager:
         self.global_metadata["total_connections"] = len(self.active_connections)
         self.global_metadata["last_activity"] = datetime.now(timezone.utc).isoformat()
         
-        print(f"✅ WebSocket connected for general monitoring. Total connections: {len(self.active_connections)}")
-        print(f"✅ WebSocket manager ID: {id(self)}")
+        logger.info(f"✅ WebSocket connected for general monitoring. Total connections: {len(self.active_connections)}")
+        logger.debug(f"✅ WebSocket manager ID: {id(self)}")
         
         # Send initial connection confirmation
         await self.send_to_websocket(websocket, {
@@ -94,25 +95,25 @@ class GeneralWebSocketManager:
         self.global_metadata["total_connections"] = len(self.active_connections)
         self.global_metadata["last_activity"] = datetime.now(timezone.utc).isoformat()
         
-        print(f"❌ WebSocket disconnected. Total connections: {len(self.active_connections)}")
+        logger.info(f"❌ WebSocket disconnected. Total connections: {len(self.active_connections)}")
     
     async def send_to_websocket(self, websocket: WebSocket, message: dict):
         """Send a message to a specific WebSocket"""
         try:
             await websocket.send_text(json.dumps(message))
         except Exception as e:
-            print(f"❌ Error sending message to WebSocket: {e}")
+            logger.error(f"❌ Error sending message to WebSocket: {e}")
             self.disconnect(websocket)
     
     async def broadcast_to_all(self, message: dict, event_type: str = None):
         """Broadcast a message to all connected WebSockets"""
-        print(f"📡 Broadcasting to {len(self.active_connections)} connections")
-        print(f"📡 Message type: {message.get('type', 'unknown')}")
-        print(f"📡 Event type: {event_type}")
-        print(f"📡 WebSocket manager ID: {id(self)}")
+        logger.debug(f"📡 Broadcasting to {len(self.active_connections)} connections")
+        logger.debug(f"📡 Message type: {message.get('type', 'unknown')}")
+        logger.debug(f"📡 Event type: {event_type}")
+        # logger.debug(f"📡 WebSocket manager ID: {id(self)}")
         
         if len(self.active_connections) == 0:
-            print(f"⚠️ No active WebSocket connections to broadcast to!")
+            logger.warning(f"⚠️ No active WebSocket connections to broadcast to!")
             return
         
         disconnected_websockets = []
@@ -122,19 +123,19 @@ class GeneralWebSocketManager:
             try:
                 # Check if websocket is subscribed to this event type
                 subscriptions = self.websocket_subscriptions.get(websocket, ["all"])
-                print(f"📡 WebSocket subscriptions: {subscriptions}")
+                logger.debug(f"📡 WebSocket subscriptions: {subscriptions}")
                 
                 if "all" in subscriptions or (event_type and event_type in subscriptions):
                     await websocket.send_text(json.dumps(message))
                     messages_sent += 1
-                    print(f"✅ Message sent to WebSocket {id(websocket)}")
+                    logger.debug(f"✅ Message sent to WebSocket {id(websocket)}")
                 else:
-                    print(f"⚠️ WebSocket {id(websocket)} not subscribed to {event_type}")
+                    logger.debug(f"⚠️ WebSocket {id(websocket)} not subscribed to {event_type}")
             except Exception as e:
-                print(f"❌ Error broadcasting to WebSocket: {e}")
+                logger.error(f"❌ Error broadcasting to WebSocket: {e}")
                 disconnected_websockets.append(websocket)
         
-        print(f"📡 Total messages sent: {messages_sent}")
+        logger.debug(f"📡 Total messages sent: {messages_sent}")
         
         # Clean up disconnected websockets
         for websocket in disconnected_websockets:
@@ -150,7 +151,7 @@ class GeneralWebSocketManager:
             if user_data.get("user_id") == user_id
         ]
         
-        print(f"📡 Broadcasting to {len(user_websockets)} connections for user {user_id}")
+        logger.debug(f"📡 Broadcasting to {len(user_websockets)} connections for user {user_id}")
         
         for websocket in user_websockets:
             try:
@@ -158,7 +159,7 @@ class GeneralWebSocketManager:
                 if "all" in subscriptions or (event_type and event_type in subscriptions):
                     await websocket.send_text(json.dumps(message))
             except Exception as e:
-                print(f"❌ Error broadcasting to user WebSocket: {e}")
+                logger.error(f"❌ Error broadcasting to user WebSocket: {e}")
                 self.disconnect(websocket)
     
     def get_connection_stats(self) -> dict:
@@ -220,11 +221,11 @@ async def general_websocket(
                         "email": token_data.get("email"),
                         "tenant_id": token_data.get("tenant_id")
                     }
-                    print(f"✅ JWT token validated for user: {user_id}")
+                    logger.info(f"✅ JWT token validated for user: {user_id}")
                 else:
                     raise Exception("Invalid token")
             except Exception as e:
-                print(f"⚠️ JWT token validation failed: {e}")
+                logger.warning(f"⚠️ JWT token validation failed: {e}")
                 # For testing, allow connection without valid token
                 user_id = "test_user"
                 user_info = {"email": "test@example.com", "tenant_id": "test_tenant"}
@@ -232,7 +233,7 @@ async def general_websocket(
             # For testing, allow connection without token
             user_id = "test_user"
             user_info = {"email": "test@example.com", "tenant_id": "test_tenant"}
-            print("⚠️ No JWT token provided - using test user")
+            logger.warning("⚠️ No JWT token provided - using test user")
         
         # Connect to general monitoring
         await websocket_manager.connect(websocket, user_id, user_info)
@@ -295,7 +296,7 @@ async def general_websocket(
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 })
             except Exception as e:
-                print(f"❌ Error handling WebSocket message: {e}")
+                logger.error(f"❌ Error handling WebSocket message: {e}")
                 await websocket_manager.send_to_websocket(websocket, {
                     "type": "error",
                     "message": f"Internal error: {str(e)}",
@@ -303,17 +304,17 @@ async def general_websocket(
                 })
     
     except WebSocketDisconnect:
-        print("🔌 WebSocket disconnected")
+        logger.info("🔌 WebSocket disconnected")
     except Exception as e:
-        print(f"❌ WebSocket error: {e}")
+        logger.error(f"❌ WebSocket error: {e}")
     finally:
         websocket_manager.disconnect(websocket)
 
 # Broadcast functions for use by other parts of the application
 async def broadcast_call_status_update(call_session_id: str, status: str, metadata: dict = None):
     """Broadcast call status update to all connected clients"""
-    print(f"🔔 broadcast_call_status_update called: session={call_session_id}, status={status}")
-    print(f"🔔 Active connections: {len(websocket_manager.active_connections)}")
+    logger.debug(f"🔔 broadcast_call_status_update called: session={call_session_id}, status={status}")
+    logger.debug(f"🔔 Active connections: {len(websocket_manager.active_connections)}")
     
     message = {
         "type": "call_status_update",
@@ -325,16 +326,16 @@ async def broadcast_call_status_update(call_session_id: str, status: str, metada
     
     try:
         await websocket_manager.broadcast_to_all(message, "call_status_update")
-        print(f"✅ broadcast_call_status_update completed successfully")
+        logger.debug(f"✅ broadcast_call_status_update completed successfully")
     except Exception as e:
-        print(f"❌ broadcast_call_status_update failed: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ broadcast_call_status_update failed: {e}", exc_info=True)
+        # import traceback
+        # traceback.print_exc()
 
 async def broadcast_transcript_update(call_session_id: str, transcript: list, new_messages: list = None):
     """Broadcast transcript update to all connected clients"""
-    print(f"💬 broadcast_transcript_update called: session={call_session_id}, new_messages={len(new_messages or [])}")
-    print(f"💬 Active connections: {len(websocket_manager.active_connections)}")
+    logger.debug(f"💬 broadcast_transcript_update called: session={call_session_id}, new_messages={len(new_messages or [])}")
+    logger.debug(f"💬 Active connections: {len(websocket_manager.active_connections)}")
     
     message = {
         "type": "transcript_update",
@@ -346,11 +347,11 @@ async def broadcast_transcript_update(call_session_id: str, transcript: list, ne
     
     try:
         await websocket_manager.broadcast_to_all(message, "transcript_update")
-        print(f"✅ broadcast_transcript_update completed successfully")
+        logger.debug(f"✅ broadcast_transcript_update completed successfully")
     except Exception as e:
-        print(f"❌ broadcast_transcript_update failed: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ broadcast_transcript_update failed: {e}", exc_info=True)
+        # import traceback
+        # traceback.print_exc()
 
 async def broadcast_call_ended(call_session_id: str, reason: str, final_data: dict = None):
     """Broadcast call ended event to all connected clients"""

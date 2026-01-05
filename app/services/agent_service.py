@@ -7,6 +7,7 @@ from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListRespo
 from app.services.billing_service import BillingService
 from fastapi import HTTPException, status
 import uuid
+from app.core.logger import logger
 
 class AgentService:
     """
@@ -128,13 +129,13 @@ class AgentService:
         """
         # Calculate offset
         offset = (page - 1) * limit
-        print(tenant_id,'tenant_id')
+        logger.debug(f"List agents for tenant: {tenant_id}")
         # Base query with tenant isolation
         query = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
             Agent.is_deleted == False
         )
-        print(query,'query')
+        logger.debug(f"Query: {query}")
 
         # Apply search filter - handle empty strings and whitespace
         if search and search.strip():

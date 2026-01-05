@@ -11,6 +11,7 @@ from app.services.gemini_service import gemini_service
 from app.services.model_service import model_service
 from app.core.security import decrypt_api_key
 import uuid
+from app.core.logger import logger
 
 router = APIRouter()
 
@@ -52,7 +53,7 @@ async def test_gemini_text_generation(
             try:
                 api_key = decrypt_api_key(model.api_key)
             except Exception as e:
-                print(f"Failed to decrypt model API key: {e}")
+                logger.error(f"Failed to decrypt model API key: {e}", exc_info=True)
                 # If decryption fails, use global key
                 pass
         
@@ -120,7 +121,7 @@ async def test_gemini_chat_completion(
             try:
                 api_key = decrypt_api_key(model.api_key)
             except Exception as e:
-                print(f"Failed to decrypt model API key: {e}")
+                logger.error(f"Failed to decrypt model API key: {e}", exc_info=True)
                 # If decryption fails, use global key
                 pass
         

@@ -7,6 +7,7 @@ from twilio.rest import Client
 from twilio.base.exceptions import TwilioException
 from app.core.config import settings
 from typing import List, Dict, Optional, Any
+from app.core.logger import logger
 
 class TwilioService:
     """Service class for handling Twilio operations"""
@@ -436,11 +437,11 @@ class TwilioService:
         
         try:
             call = client.calls(call_sid).update(status='completed')
-            print(f"✅ Call {call_sid} ended successfully")
+            logger.info(f"✅ Call {call_sid} ended successfully")
             return True
             
         except TwilioException as e:
-            print(f"❌ Error ending call {call_sid}: {str(e)}")
+            logger.error(f"❌ Error ending call {call_sid}: {str(e)}")
             return False
     
     def redirect_call(self, call_sid: str, redirect_url: str, method: str = "POST") -> bool:
@@ -463,11 +464,11 @@ class TwilioService:
                 url=redirect_url,
                 method=method
             )
-            print(f"✅ Call {call_sid} redirected to {redirect_url}")
+            logger.info(f"✅ Call {call_sid} redirected to {redirect_url}")
             return True
             
         except TwilioException as e:
-            print(f"❌ Error redirecting call {call_sid}: {str(e)}")
+            logger.error(f"❌ Error redirecting call {call_sid}: {str(e)}")
             return False
 
 # Global instance

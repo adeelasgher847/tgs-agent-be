@@ -13,6 +13,7 @@ from google.cloud.speech_v1p1beta1 import types
 from google.api_core import exceptions as gcp_exceptions
 from app.core.config import settings
 import json
+from app.core.logger import logger
 
 
 class GoogleSTTService:
@@ -45,16 +46,16 @@ class GoogleSTTService:
                         temp_path = f.name
                     
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
-                    print(f"✅ Using Google Cloud credentials from JSON content (temp file: {temp_path})")
+                    logger.info(f"✅ Using Google Cloud credentials from JSON content (temp file: {temp_path})")
                 except Exception as e:
-                    print(f"⚠️ Error creating temp file for JSON credentials: {e}")
+                    logger.error(f"⚠️ Error creating temp file for JSON credentials: {e}")
             else:
                 # It's a file path - check if file exists
                 if os.path.exists(creds):
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
-                    print(f"✅ Using Google Cloud credentials from file: {creds}")
+                    logger.info(f"✅ Using Google Cloud credentials from file: {creds}")
                 else:
-                    print(f"⚠️ Credentials file not found: {creds}")
+                    logger.warning(f"⚠️ Credentials file not found: {creds}")
         
         self.client = None
         self._initialize_client()
@@ -63,10 +64,10 @@ class GoogleSTTService:
         """Initialize the Speech client"""
         try:
             self.client = speech.SpeechClient()
-            print("✅ Google Cloud Speech-to-Text client initialized")
+            logger.info("✅ Google Cloud Speech-to-Text client initialized")
         except Exception as e:
-            print(f"⚠️ Failed to initialize Google Speech client: {e}")
-            print("⚠️ Transcription will not be available without proper credentials")
+            logger.error(f"⚠️ Failed to initialize Google Speech client: {e}")
+            logger.warning("⚠️ Transcription will not be available without proper credentials")
     
     def get_streaming_config(
         self,
@@ -334,8 +335,7 @@ class GoogleSTTService:
                         model = "default"
                         use_enhanced = True
                     
-                    print(f"📊 Auto-detected: WAV file, {sample_rate}Hz, LINEAR16, model={model}, enhanced={use_enhanced}")
-                    sys.stdout.flush()
+                    logger.info(f"📊 Auto-detected: WAV file, {sample_rate}Hz, LINEAR16, model={model}, enhanced={use_enhanced}")
                 else:
                     # Assume MULAW for Media Streams
                     encoding = settings.GOOGLE_STT_ENCODING
@@ -345,8 +345,7 @@ class GoogleSTTService:
                     model = "phone_call"
                     use_enhanced = False  # Enhanced not available for 8kHz MULAW
                     
-                    print(f"📊 Using config: MULAW, {sample_rate}Hz, model={model}, enhanced={use_enhanced}")
-                    sys.stdout.flush()
+                    logger.info(f"📊 Using config: MULAW, {sample_rate}Hz, model={model}, enhanced={use_enhanced}")
             else:
                 # Manual configuration provided
                 if sample_rate <= 8000:
@@ -388,9 +387,8 @@ class GoogleSTTService:
             # This is better for short phone call chunks (VAPI-style)
             audio = speech.RecognitionAudio(content=audio_content)
             
-            print(f"🎙️ Sending {len(audio_content)} bytes to Google Cloud STT...")
-            print(f"🔧 Config: encoding={encoding}, sample_rate={sample_rate}Hz, model={model}, enhanced={use_enhanced}")
-            sys.stdout.flush()
+            logger.info(f"🎙️ Sending {len(audio_content)} bytes to Google Cloud STT...")
+            logger.debug(f"🔧 Config: encoding={encoding}, sample_rate={sample_rate}Hz, model={model}, enhanced={use_enhanced}")
             
             # Run Google STT call in thread pool to avoid blocking
             import concurrent.futures
@@ -402,8 +400,7 @@ class GoogleSTTService:
             # Simple recognize() call - fast and reliable for short chunks
             response = await loop.run_in_executor(None, sync_recognize)
             
-            print(f"📡 Received response from Google STT")
-            sys.stdout.flush()
+            logger.debug(f"📡 Received response from Google STT")
             
             # Process results
             if response.results:
@@ -413,8 +410,7 @@ class GoogleSTTService:
                     transcript_text = alternative.transcript
                     confidence = alternative.confidence if hasattr(alternative, 'confidence') else 0.9
                     
-                    print(f"📝 Transcript: '{transcript_text}' (confidence: {confidence:.2f})")
-                    sys.stdout.flush()
+                    logger.info(f"📝 Transcript: '{transcript_text}' (confidence: {confidence:.2f})")
                     
                     return {
                         "transcript": transcript_text,
@@ -422,15 +418,11 @@ class GoogleSTTService:
                         "is_final": True
                     }
             
-            print(f"⚠️ No transcript in response - empty audio or silence")
-            sys.stdout.flush()
+            logger.debug(f"⚠️ No transcript in response - empty audio or silence")
             return {"transcript": "", "confidence": 0.0, "is_final": True}
         
         except Exception as e:
-            print(f"❌ Error in transcription: {e}")
-            import traceback
-            traceback.print_exc()
-            sys.stdout.flush()
+            logger.error(f"❌ Error in transcription: {e}", exc_info=True)
             return {"error": str(e), "transcript": "", "confidence": 0.0}
 
 

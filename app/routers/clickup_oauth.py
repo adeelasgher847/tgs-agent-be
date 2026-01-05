@@ -16,6 +16,7 @@ from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encry
 from app.core.config import settings
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
+from app.core.logger import logger
 
 router = APIRouter()
 
@@ -191,7 +192,7 @@ async def clickup_oauth_callback(
         
         # After storing access token, automatically fetch and store space_id
         try:
-            print(f"🔍 Auto-detecting ClickUp space after OAuth...")
+            logger.info(f"🔍 Auto-detecting ClickUp space after OAuth...")
             
             # Create headers with access token
             auth_headers = {
@@ -208,7 +209,7 @@ async def clickup_oauth_callback(
                 if teams:
                     team_id = teams[0].get("id", "")
                     team_name = teams[0].get("name", "Unknown")
-                    print(f"✅ Found team: {team_name} (ID: {team_id})")
+                    logger.info(f"✅ Found team: {team_name} (ID: {team_id})")
                     
                     # Get spaces for this team
                     spaces_url = f"https://api.clickup.com/api/v2/team/{team_id}/space"
@@ -225,18 +226,18 @@ async def clickup_oauth_callback(
                                 additional_config = {}
                             if "space_id" not in additional_config or not additional_config.get("space_id"):
                                 additional_config["space_id"] = space_id
-                                print(f"✅ Auto-detected and stored ClickUp space: {space_name} (ID: {space_id})")
+                                logger.info(f"✅ Auto-detected and stored ClickUp space: {space_name} (ID: {space_id})")
                             else:
-                                print(f"ℹ️ Space ID already exists in config: {additional_config.get('space_id')}")
+                                logger.info(f"ℹ️ Space ID already exists in config: {additional_config.get('space_id')}")
                     else:
-                        print(f"⚠️ Failed to fetch spaces: HTTP {spaces_response.status_code}")
+                        logger.warning(f"⚠️ Failed to fetch spaces: HTTP {spaces_response.status_code}")
                 else:
-                    print(f"⚠️ No teams found for this access token")
+                    logger.warning(f"⚠️ No teams found for this access token")
             else:
-                print(f"⚠️ Failed to fetch teams: HTTP {team_response.status_code}")
+                logger.warning(f"⚠️ Failed to fetch teams: HTTP {team_response.status_code}")
         except Exception as e:
             # Don't fail the OAuth flow if space detection fails
-            print(f"⚠️ Failed to auto-detect space_id: {str(e)}. You can add it manually later.")
+            logger.error(f"⚠️ Failed to auto-detect space_id: {str(e)}. You can add it manually later.", exc_info=True)
         
         # Update additional_config
         clickup_config.additional_config = json.dumps(additional_config)

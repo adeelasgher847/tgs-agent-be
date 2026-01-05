@@ -1261,11 +1261,14 @@ class MondayService(BaseCRMService):
         items = []
         cursor: Optional[str] = None
         
-        # Also fetch call_session_id column if available
+        # Also fetch call_session_id and status columns if available
         call_session_column_id = field_map.get("call_session_id")
+        status_column_id = field_map.get("status")
         column_ids = [batch_column_id, tenant_column_id]
         if call_session_column_id:
             column_ids.append(call_session_column_id)
+        if status_column_id:
+            column_ids.append(status_column_id)
         
         while True:
             # Fetch items with batch_id, tenant_id, and call_session_id columns

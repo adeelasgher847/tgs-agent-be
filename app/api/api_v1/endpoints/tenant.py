@@ -15,6 +15,7 @@ from app.models.user import user_tenant_association
 from app.models.refresh_token import RefreshToken
 
 from sqlalchemy import update
+from app.core.logger import logger
 router = APIRouter()
 
 def generate_schema_name(tenant_name: str) -> str:
@@ -562,7 +563,7 @@ def get_payment_history(
                 
                 payment_history.append(payment_entry)
         except Exception as e:
-            print(f"Error getting checkout sessions: {str(e)}")
+            logger.error(f"Error getting checkout sessions: {str(e)}", exc_info=True)
         
         # 2. Get all invoices
         try:
@@ -597,7 +598,7 @@ def get_payment_history(
                 
                 payment_history.append(payment_entry)
         except Exception as e:
-            print(f"Error getting invoices: {str(e)}")
+            logger.error(f"Error getting invoices: {str(e)}", exc_info=True)
         
         # Sort by creation date (newest first)
         payment_history.sort(key=lambda x: x["created"], reverse=True)

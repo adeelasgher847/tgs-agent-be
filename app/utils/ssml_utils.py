@@ -6,6 +6,7 @@ Handles SSML tag manipulation, text cleaning, and smart chunking.
 import re
 import random
 import sys
+from app.core.logger import logger
 
 
 def strip_ssml_tags(text: str) -> str:
@@ -119,8 +120,7 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
         ]
         chosen_filler = random.choice(boundary_fillers)
         ssml += chosen_filler
-        print(f"🔗 Added boundary filler: {chosen_filler[:50]}")
-        sys.stdout.flush()
+        logger.debug(f"🔗 Added boundary filler: {chosen_filler[:50]}")
     
     ssml += '</speak>'
     

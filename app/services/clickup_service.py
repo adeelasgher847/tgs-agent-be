@@ -877,6 +877,46 @@ class ClickUpService(BaseCRMService):
                 # Match by batch_id and tenant_id
                 if item_batch_id == batch_id and item_tenant_id == tenant_id:
                     # Format task similar to Monday.com item format for consistency
+                    
+                    # Resolve status label if status field exists
+                    status_field_id = field_map.get("status")
+                    if status_field_id:
+                        # Find status field in custom_fields
+                        status_field = next((f for f in custom_fields if f.get("id") == status_field_id), None)
+                        if status_field:
+                            # Parse status value (could be int index, UUID, or dict)
+                            field_value = status_field.get("value")
+                            status_label = None
+                            
+                            if isinstance(field_value, (int, float)):
+                                # Value is orderindex
+                                orderindex = int(field_value)
+                                type_config = status_field.get("type_config", {})
+                                options = type_config.get("options", [])
+                                for option in options:
+                                    if option.get("orderindex") == orderindex:
+                                        status_label = option.get("name", "") or option.get("label", "")
+                                        break
+                            elif isinstance(field_value, dict):
+                                # Value is object
+                                status_label = field_value.get("name", "") or field_value.get("label", "")
+                            elif isinstance(field_value, str):
+                                # Value might be UUID - limited reverse lookup here without API call
+                                # Check if it matches any option ID in type_config
+                                type_config = status_field.get("type_config", {})
+                                options = type_config.get("options", [])
+                                for option in options:
+                                    if option.get("id") == field_value or option.get("uuid") == field_value:
+                                        status_label = option.get("name", "") or option.get("label", "")
+                                        break
+                                
+                                # If still not found, use raw value if it looks like a label (not UUID)
+                                if not status_label and field_value and len(field_value) < 30: 
+                                     status_label = field_value
+                                     
+                            # Update existing field value in column_values to be the LABEL
+                            status_field["value"] = status_label if status_label else field_value
+
                     item = {
                         "id": task_id,
                         "name": task_name,
@@ -885,7 +925,7 @@ class ClickUpService(BaseCRMService):
                         "column_values": [
                             {
                                 "id": field.get("id"),
-                                "text": str(field.get("value", "")),
+                                "text": str(field.get("value", "")), # This will use the updated value above
                                 "value": field.get("value")
                             }
                             for field in custom_fields

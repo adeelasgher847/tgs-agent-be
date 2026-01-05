@@ -7,6 +7,7 @@ from app.models.tenant import Tenant
 from app.models.plan import Plan
 from app.services.stripe_service import StripeService
 import uuid
+from app.core.logger import logger
 
 router = APIRouter()
 
@@ -36,9 +37,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         
         if event_type == 'checkout.session.completed':
             # 🎉 Payment Webhook Received - Process Credits
-            print("=" * 60)
-            print(f"📞 STRIPE WEBHOOK RECEIVED: checkout.session.completed")
-            print("=" * 60)
+            logger.info(f"📞 STRIPE WEBHOOK RECEIVED: checkout.session.completed")
             
             # Process credits directly on webhook with idempotency
             session = event.get('data', {}).get('object', {}) or {}
@@ -46,11 +45,11 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             amount_total_cents = session.get('amount_total') or 0
             amount_dollars = float(amount_total_cents) / 100.0
             
-            print(f"   Session ID: {session_id}")
-            print(f"   Payment Amount: ${amount_dollars:.2f}")
+            logger.debug(f"   Session ID: {session_id}")
+            logger.debug(f"   Payment Amount: ${amount_dollars:.2f}")
             
             if session_id and is_session_already_credited(session_id):
-                print(f"⚠️ Session {session_id} already processed - skipping")
+                logger.warning(f"⚠️ Session {session_id} already processed - skipping")
                 return {"status": "already_processed"}
 
             metadata = session.get('metadata') or {}
@@ -86,7 +85,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 # 🎯 $2 Plan Payment → Add 20 Credits
                 if amount_dollars == 2.0:
                     credits_to_add = 20
-                    print(f"✅ $2 Plan Payment Detected - Adding 20 credits to tenant {tenant_uuid}")
+                    logger.info(f"✅ $2 Plan Payment Detected - Adding 20 credits to tenant {tenant_uuid}")
                 else:
                     # Fallback: Check plan.credits if it exists (for other plans)
                     plan_id_str = metadata.get('plan_id')
@@ -99,9 +98,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                         if plan and getattr(plan, 'credits', None) is not None:
                             credits_to_add = int(plan.credits)
                         else:
-                            print(f"⚠️ Plan {plan_uuid} has no credits field - no credits added")
+                            logger.warning(f"⚠️ Plan {plan_uuid} has no credits field - no credits added")
                     else:
-                        print(f"⚠️ No plan_id in metadata for plan purchase - no credits added")
+                        logger.warning(f"⚠️ No plan_id in metadata for plan purchase - no credits added")
 
             if credits_to_add and credits_to_add > 0:
                 old_credits = tenant.credits or 0
@@ -116,15 +115,13 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 db.refresh(tenant)
                 
                 # 🎉 Payment Success Notification
-                print("=" * 60)
-                print(f"✅ PAYMENT SUCCESS - Credits Added!")
-                print(f"   Tenant ID: {tenant_uuid}")
-                print(f"   Purchase Type: {purchase_type}")
-                print(f"   Credits Added: {credits_to_add}")
-                print(f"   Previous Credits: {old_credits}")
-                print(f"   New Credits Balance: {new_credits}")
-                print(f"   Tenant Status: {tenant.status}")
-                print("=" * 60)
+                logger.info(f"✅ PAYMENT SUCCESS - Credits Added!")
+                logger.debug(f"   Tenant ID: {tenant_uuid}")
+                logger.debug(f"   Purchase Type: {purchase_type}")
+                logger.debug(f"   Credits Added: {credits_to_add}")
+                logger.debug(f"   Previous Credits: {old_credits}")
+                logger.debug(f"   New Credits Balance: {new_credits}")
+                logger.debug(f"   Tenant Status: {tenant.status}")
                 
                 if session_id:
                     mark_session_credited(session_id)
@@ -138,14 +135,14 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                     "message": f"Payment successful! Added {credits_to_add} credits to account."
                 }
             else:
-                print(f"⚠️ No credits to add - purchase_type: {purchase_type}, amount: {session.get('amount_total', 0)}")
+                logger.warning(f"⚠️ No credits to add - purchase_type: {purchase_type}, amount: {session.get('amount_total', 0)}")
                 return {"status": "ignored", "reason": "no_credits_computed"}
         else:
-            print(f"Unhandled event type: {event_type}")
+            logger.info(f"Unhandled event type: {event_type}")
         
         return {"status": "success"}
     except Exception as e:
-        print(f"Error handling webhook: {str(e)}")
+        logger.error(f"Error handling webhook: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error processing webhook"

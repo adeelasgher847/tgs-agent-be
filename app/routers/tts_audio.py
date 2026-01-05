@@ -10,6 +10,7 @@ import base64
 from urllib.parse import quote
 from app.services.google_tts_service import google_tts_service
 from app.core.config import settings
+from app.core.logger import logger
 
 router = APIRouter()
 
@@ -66,12 +67,12 @@ async def serve_google_tts_audio(
         # Check cache first
         if cache_key in audio_cache:
             voice_label = "Chirp 3: HD" if chirp3_hd else "Neural2"
-            print(f"✅ Serving cached Google TTS audio ({voice_label}): '{text[:50]}...'")
+            logger.info(f"✅ Serving cached Google TTS audio ({voice_label}): '{text[:50]}...'")
             audio_content = audio_cache[cache_key]
         else:
             # Generate new audio
             voice_label = "Chirp 3: HD" if chirp3_hd else "Neural2"
-            print(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
+            logger.info(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
             
             # Optimized speaking rate for natural conversation (slightly slower for clarity)
             rate = 0.95  # Slightly slower and more natural
@@ -91,10 +92,10 @@ async def serve_google_tts_audio(
                 # Remove oldest entry
                 oldest_key = next(iter(audio_cache))
                 audio_cache.pop(oldest_key)
-                print(f"🗑️ Removed oldest cache entry (cache full)")
+                logger.info(f"🗑️ Removed oldest cache entry (cache full)")
             
             audio_cache[cache_key] = audio_content
-            print(f"💾 Cached Google TTS audio ({len(audio_content)} bytes)")
+            logger.info(f"💾 Cached Google TTS audio ({len(audio_content)} bytes)")
         
         # Return audio with appropriate media type
         media_types = {
@@ -123,9 +124,7 @@ async def serve_google_tts_audio(
         )
         
     except Exception as e:
-        print(f"❌ Error generating Google TTS audio: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ Error generating Google TTS audio: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
 
 

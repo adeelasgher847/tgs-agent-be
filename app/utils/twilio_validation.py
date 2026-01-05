@@ -3,6 +3,7 @@ import hashlib
 import base64
 from fastapi import Request, HTTPException
 from app.core.config import settings
+from app.core.logger import logger
 
 
 def validate_twilio_signature(request: Request, body: str) -> bool:
@@ -33,7 +34,7 @@ def validate_twilio_signature(request: Request, body: str) -> bool:
         return hmac.compare_digest(signature, expected_signature)
     
     except Exception as e:
-        print(f"Error validating Twilio signature: {e}")
+        logger.error(f"Error validating Twilio signature: {e}")
         return False
 
 

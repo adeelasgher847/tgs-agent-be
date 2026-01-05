@@ -15,6 +15,9 @@ from typing import Optional, Iterable
 
 from app.utils.audio_constants import BACKGROUND_AUDIO_BASE64
 
+
+from app.core.logger import logger
+
 # Real-time TTS MULAW streaming constants
 MULAW_SAMPLE_RATE_HZ = 8000  # Twilio-friendly
 BYTES_PER_SECOND = MULAW_SAMPLE_RATE_HZ  # 8-bit mu-law => 1 byte per sample
@@ -43,7 +46,7 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         return _background_audio_mulaw_cache, _background_audio_length_cache
     
     if not BACKGROUND_AUDIO_BASE64:
-        print("⚠️ No background audio configured (BACKGROUND_AUDIO_BASE64 is empty)")
+        logger.warning("⚠️ No background audio configured (BACKGROUND_AUDIO_BASE64 is empty)")
         return b'', 0
     
     try:
@@ -51,8 +54,7 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         import tempfile
         import os
     except ImportError as import_error:
-        print(f"❌ Failed to import required modules: {import_error}")
-        sys.stdout.flush()
+        logger.error(f"❌ Failed to import required modules: {import_error}")
         return b'', 0
     
     mp3_path = None
@@ -85,8 +87,7 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         pcm_data = result.stdout
         
         if not pcm_data or len(pcm_data) == 0:
-            print("⚠️ FFmpeg conversion produced empty output")
-            sys.stdout.flush()
+            logger.warning("⚠️ FFmpeg conversion produced empty output")
             return b'', 0
         
         # Convert linear PCM samples to MULAW
@@ -97,8 +98,7 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
                 linear_samples.append(sample)
         
         if not linear_samples:
-            print("⚠️ No audio samples extracted from PCM data")
-            sys.stdout.flush()
+            logger.warning("⚠️ No audio samples extracted from PCM data")
             return b'', 0
         
         mulaw_bytes = bytes([linear_to_ulaw_sample(sample) for sample in linear_samples])
@@ -106,25 +106,21 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         _background_audio_mulaw_cache = mulaw_bytes
         _background_audio_length_cache = len(mulaw_bytes)
         
-        print(f"✅ Decoded background audio using FFmpeg: {len(mulaw_bytes)} bytes MULAW ({len(mulaw_bytes)/8000:.2f}s)")
-        sys.stdout.flush()
+        logger.info(f"✅ Decoded background audio using FFmpeg: {len(mulaw_bytes)} bytes MULAW ({len(mulaw_bytes)/8000:.2f}s)")
         return mulaw_bytes, len(mulaw_bytes)
         
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
-        print(f"❌ FFmpeg conversion failed: {error_msg}")
-        print(f"⚠️ Make sure FFmpeg is installed: apt-get install ffmpeg (Linux) or brew install ffmpeg (Mac)")
-        sys.stdout.flush()
+        logger.error(f"❌ FFmpeg conversion failed: {error_msg}")
+        logger.warning(f"⚠️ Make sure FFmpeg is installed: apt-get install ffmpeg (Linux) or brew install ffmpeg (Mac)")
         return b'', 0
     except FileNotFoundError:
-        print(f"❌ FFmpeg not found. Please install FFmpeg: apt-get install ffmpeg (Linux) or brew install ffmpeg (Mac)")
-        sys.stdout.flush()
+        logger.error(f"❌ FFmpeg not found. Please install FFmpeg: apt-get install ffmpeg (Linux) or brew install ffmpeg (Mac)")
         return b'', 0
     except Exception as e:
-        print(f"❌ Failed to decode background audio: {e}")
+        logger.error(f"❌ Failed to decode background audio: {e}")
         import traceback
         traceback.print_exc()
-        sys.stdout.flush()
         return b'', 0
     finally:
         # Clean up temporary MP3 file
@@ -190,7 +186,7 @@ def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:
         faded_mulaw = bytes([linear_to_ulaw_sample(sample) for sample in faded_linear])
         return faded_mulaw
     except Exception as e:
-        print(f"⚠️ Volume fade failed: {e}, using original audio")
+        logger.warning(f"⚠️ Volume fade failed: {e}, using original audio")
         return audio_bytes
 
 
@@ -231,8 +227,7 @@ def mix_audio_with_background(tts_audio: bytes, bg_audio: bytes, bg_length: int,
         return mixed_mulaw
         
     except Exception as e:
-        print(f"⚠️ Audio mixing failed: {e}, using clean TTS")
-        sys.stdout.flush()
+        logger.warning(f"⚠️ Audio mixing failed: {e}, using clean TTS")
         return tts_audio
 
 
@@ -400,7 +395,7 @@ def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: 
         return prev_tail[:-overlap] + bytes(mixed) + next_head[overlap:]
 
     except Exception as e:
-        print(f"⚠️ Crossfade failed, using direct join: {e}")
+        logger.warning(f"⚠️ Crossfade failed, using direct join: {e}")
         return (prev_tail or b"") + (next_head or b"")
 
 
@@ -537,6 +532,6 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
         return mixed_mulaw
         
     except Exception as e:
-        print(f"⚠️ Office noise mixing failed: {e}, using clean audio")
+        logger.warning(f"⚠️ Office noise mixing failed: {e}, using clean audio")
         return audio_bytes
 

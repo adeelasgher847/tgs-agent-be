@@ -11,6 +11,7 @@ import requests
 import asyncio
 import csv
 import io
+from app.core.logger import logger
 
 from app.api.deps import get_db, require_tenant, get_optional_tenant_user
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse, CallInitiateErrorResponse
@@ -69,14 +70,14 @@ def get_twilio_credentials_for_call(db: Session, call_session: CallSession):
             # ✅ Use DB credentials (decrypt both)
             account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
             auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
-            print(f"✅ Using DB credentials for recording (phone: {call_session.from_number})")
+            logger.info(f"✅ Using DB credentials for recording (phone: {call_session.from_number})")
             return account_sid, auth_token
     
     # ✅ Fallback to env credentials
     client = twilio_service.get_client()
     account_sid = client.username
     auth_token = client.password
-    print(f"✅ Using env credentials for recording")
+    logger.info(f"✅ Using env credentials for recording")
     return account_sid, auth_token
 
 # Array of human-like "didn't catch that" response phrases
@@ -135,7 +136,7 @@ async def _add_to_transcript(
         metadata: Additional message metadata
     """
     
-    print(f"📝 Adding to transcript: {role} - {message[:50]}...")
+    logger.debug(f"📝 Adding to transcript: {role} - {message[:50]}...")
     
     try:
         # Use the new transcript service
@@ -153,7 +154,7 @@ async def _add_to_transcript(
             metadata=metadata
         )
         
-        print(f"✅ Added transcript message {transcript_message.id} for session {call_session.id}")
+        logger.debug(f"✅ Added transcript message {transcript_message.id} for session {call_session.id}")
         
         # Also update the legacy call_transcript field for backward compatibility
         conversation = transcript_service.get_conversation_array(db, call_session.id)
@@ -163,9 +164,7 @@ async def _add_to_transcript(
         return transcript_message
         
     except Exception as e:
-        print(f"❌ Failed to add transcript message: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ Failed to add transcript message: {e}", exc_info=True)
         raise
 
 
@@ -257,7 +256,7 @@ def get_agent_voice(agent) -> str:
     # Get the voice from the mapping
     selected_voice = voice_map.get(language, voice_map["en"]).get(voice_type, "Polly.Joanna")
     
-    print(f"🎤 Agent voice selection: language={language}, voice_type={voice_type}, selected_voice={selected_voice}")
+    logger.debug(f"🎤 Agent voice selection: language={language}, voice_type={voice_type}, selected_voice={selected_voice}")
     
     return selected_voice
 
@@ -370,14 +369,14 @@ async def initiate_call(
         )
         
         if not has_sufficient:
-            print(f"❌ Insufficient credits: {current_credits} < {required_credits}")
+            logger.warning(f"❌ Insufficient credits: {current_credits} < {required_credits}")
             error_message = f"Insufficient credits to initiate call. Current balance: {current_credits} credits, Required: {required_credits} credits. Model: {model_name}"
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=error_message
             )
         
-        print(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
+        logger.info(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
         
         # Get phone number and credentials - Priority: User Selected > Agent Assigned > Env
         from app.models.phone_number import PhoneNumber
@@ -398,7 +397,7 @@ async def initiate_call(
                     tenant_id=tenant_id_filter
                 )
                 if phone_number_obj and phone_number_obj.status == "active":
-                    print(f"✅ Using user selected phone number: {phone_number_obj.phone_number} (ID: {phone_number_uuid})")
+                    logger.info(f"✅ Using user selected phone number: {phone_number_obj.phone_number} (ID: {phone_number_uuid})")
                 elif phone_number_obj and phone_number_obj.status != "active":
                     # ✅ Phone number exists but is inactive - raise error
                     raise HTTPException(
@@ -427,7 +426,7 @@ async def initiate_call(
                 PhoneNumber.status == "active"
             ).first()
             if phone_number_obj:
-                print(f"✅ Using agent's assigned phone number: {phone_number_obj.phone_number}")
+                logger.info(f"✅ Using agent's assigned phone number: {phone_number_obj.phone_number}")
         
         # Use selected phone number with credentials if available
         if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
@@ -437,7 +436,7 @@ async def initiate_call(
             account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
             auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
             use_custom_credentials = True
-            print(f"✅ Using DB phone number: {from_number} with custom credentials")
+            logger.info(f"✅ Using DB phone number: {from_number} with custom credentials")
         else:
             # ✅ No fallback - user must have a phone number in DB
             raise HTTPException(
@@ -465,8 +464,8 @@ async def initiate_call(
         webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         
-        print(f"Making call with webhook_url: {webhook_url}")
-        print(f"Making call with status_callback_url: {status_callback_url}")
+        logger.info(f"Making call with webhook_url: {webhook_url}")
+        logger.info(f"Making call with status_callback_url: {status_callback_url}")
         
         # Optional WebSocket broadcast
         try:
@@ -481,9 +480,9 @@ async def initiate_call(
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             )
-            print(f"✅ WebSocket: Call initiating event sent")
+            logger.info(f"✅ WebSocket: Call initiating event sent")
         except Exception as e:
-            print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+            logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         
         # Make call with appropriate credentials
         if use_custom_credentials:
@@ -504,12 +503,12 @@ async def initiate_call(
                 webhook_url=webhook_url,
                 status_callback_url=status_callback_url
             )
-        print(f"✅ Call initiated successfully")
+        logger.info(f"✅ Call initiated successfully")
         
         # Update call session with Twilio SID
         call_session.twilio_call_sid = call.sid
         db.commit()
-        print(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
+        logger.info(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
         
         # Broadcast call initiated event AFTER Twilio confirms
         try:
@@ -525,9 +524,9 @@ async def initiate_call(
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             )
-            print(f"✅ Call initiated event sent for session {call_session.id}")
+            logger.info(f"✅ Call initiated event sent for session {call_session.id}")
         except Exception as e:
-            print(f"⚠️ Failed to send call initiated event (non-critical): {e}")
+            logger.warning(f"⚠️ Failed to send call initiated event (non-critical): {e}")
         
         # Generate call ID
         call_id = f"call_{call.sid[-8:]}"
@@ -622,16 +621,16 @@ async def handle_call_events_webhook(
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
-    print("🔥🔥🔥 WEBHOOK CALLED! 🔥🔥🔥")
-    print("=== Call Events Webhook Started ===")
-    print(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
-    print(f"Request method: {request.method}")
-    print(f"Request URL: {request.url}")
-    print(f"Request headers: {dict(request.headers)}")
-    print(f"Query params: agentId={agentId}, userId={userId}, callSessionId={callSessionId}")
-    print(f"Request body length: {len(body) if body else 0}")
-    print(f"Request body preview: {body[:200] if body else 'None'}...")
-    print(f"Database session: {db}")
+    logger.info("🔥🔥🔥 WEBHOOK CALLED! 🔥🔥🔥")
+    logger.info("=== Call Events Webhook Started ===")
+    logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
+    logger.info(f"Request method: {request.method}")
+    logger.info(f"Request URL: {request.url}")
+    logger.info(f"Request headers: {dict(request.headers)}")
+    logger.info(f"Query params: agentId={agentId}, userId={userId}, callSessionId={callSessionId}")
+    logger.info(f"Request body length: {len(body) if body else 0}")
+    logger.debug(f"Request body preview: {body[:200] if body else 'None'}...")
+    logger.debug(f"Database session: {db}")
     
     # Optional WebSocket broadcast (non-blocking - fire and forget)
     try:
@@ -645,12 +644,12 @@ async def handle_call_events_webhook(
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
         ))
-        print(f"✅ WebSocket broadcast queued at webhook start")
+        logger.info(f"✅ WebSocket broadcast queued at webhook start")
     except Exception as e:
-        print(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+        logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         # Don't print traceback - this is not critical for call processing
     try:
-        print("Parsing request body...")
+        logger.debug("Parsing request body...")
         
         # Parse form data to get call information
         form_data = await request.form()
@@ -666,7 +665,7 @@ async def handle_call_events_webhook(
         # confidence = form_data.get("Confidence", "")
         # speech_duration = form_data.get("SpeechDuration", "")
         
-        print(f"🎤 Speech handling is now managed by Google Cloud STT WebSocket")
+        logger.info(f"🎤 Speech handling is now managed by Google Cloud STT WebSocket")
         
         # Get call session using callSessionId from query parameters (OPTIMIZED)
         call_session = None
@@ -677,29 +676,29 @@ async def handle_call_events_webhook(
                 session_uuid = uuid.UUID(callSessionId)
                 call_session = call_session_service.get_call_session_by_id(db, session_uuid)
                 if call_session:
-                    print(f"✅ Found call session: {call_session.id} from query parameter")
+                    logger.info(f"✅ Found call session: {call_session.id} from query parameter")
                     
                     # Fetch agent using call session's tenant_id
                     if agentId:
                         agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
                         if agent:
-                            print(f"✅ Agent fetched: {agent.name} (ID: {agent.id})")
-                            print(f"🏢 Tenant: {agent.tenant_id}")
+                            logger.info(f"✅ Agent fetched: {agent.name} (ID: {agent.id})")
+                            logger.info(f"🏢 Tenant: {agent.tenant_id}")
                         else:
-                            print(f"⚠️ Agent {agentId} not found in tenant {call_session.tenant_id}")
+                            logger.warning(f"⚠️ Agent {agentId} not found in tenant {call_session.tenant_id}")
                 else:
-                    print(f"⚠️ No call session found for ID: {callSessionId}")
+                    logger.warning(f"⚠️ No call session found for ID: {callSessionId}")
             except ValueError:
-                print(f"⚠️ Invalid call session ID format: {callSessionId}")
+                logger.warning(f"⚠️ Invalid call session ID format: {callSessionId}")
         else:
-            print(f"⚠️ No callSessionId provided in query parameters")
+            logger.info(f"⚠️ No callSessionId provided in query parameters")
         
         # Validate request (Twilio signature or WebRTC auth)
         is_twilio = 'X-Twilio-Signature' in request.headers
         is_webrtc = 'Authorization' in request.headers
         
         if is_twilio:
-            print("Twilio signature found, but skipping validation for testing")
+            logger.info("Twilio signature found, but skipping validation for testing")
             # if not validate_twilio_signature(request, body):
             #     raise HTTPException(status_code=403, detail="Invalid Twilio signature")
         elif is_webrtc:
@@ -707,26 +706,26 @@ async def handle_call_events_webhook(
                 raise HTTPException(status_code=403, detail="Invalid WebRTC authentication")
         else:
             # For testing purposes, allow requests without validation
-            print("No authentication headers found, allowing for testing")
+            logger.info("No authentication headers found, allowing for testing")
         
         # (Removed outbound in-progress gating based on AnsweredBy/has_media)
 
         # Log the call event
-        print(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
-        print(f"AgentId from query: {agentId}")
+        logger.info(f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}")
+        logger.info(f"AgentId from query: {agentId}")
         
         # 🔍 DEBUG: Track all incoming statuses for troubleshooting
-        print("=" * 60)
-        print(f"🔍 DEBUG WEBHOOK RECEIVED:")
-        print(f"   Status: '{call_status}'")
-        print(f"   Direction: '{direction}'")
-        print(f"   Call SID: {call_sid}")
+        logger.debug("=" * 60)
+        logger.debug(f"🔍 DEBUG WEBHOOK RECEIVED:")
+        logger.debug(f"   Status: '{call_status}'")
+        logger.debug(f"   Direction: '{direction}'")
+        logger.debug(f"   Call SID: {call_sid}")
         if call_session:
-            print(f"   Current DB Status: '{call_session.status}'")
-            print(f"   Call Session ID: {call_session.id}")
+            logger.debug(f"   Current DB Status: '{call_session.status}'")
+            logger.debug(f"   Call Session ID: {call_session.id}")
         else:
-            print(f"   Call Session: Not found")
-        print("=" * 60)
+            logger.debug(f"   Call Session: Not found")
+        logger.debug("=" * 60)
         
         # Test WebSocket connection if we have a call session (non-blocking - fire and forget)
         # if call_session:
@@ -740,9 +739,9 @@ async def handle_call_events_webhook(
         #                 "call_sid": call_sid
         #             }
         #         ))
-        #         print(f"✅ Test broadcast queued to WebSocket for session {call_session.id}")
+        #         logger.info(f"✅ Test broadcast queued to WebSocket for session {call_session.id}")
         #     except Exception as e:
-        #         print(f"⚠️ Test broadcast failed (non-critical): {e}")
+        #         logger.warning(f"⚠️ Test broadcast failed (non-critical): {e}")
         
         # Status broadcasts will be handled in the main status update section below
         
@@ -750,10 +749,10 @@ async def handle_call_events_webhook(
         # ⚠️ SKIP automatic update for "answered" and "in-progress" - handled in specific handlers below
         # "in-progress" will ONLY be set when media streaming actually starts (first media packet in bidirectional_stream.py)
         if call_session and call_status and call_status not in ["answered", "in-progress"]:
-            print(f"🔄 Updating call session {call_session.id} status to: {call_status}")
+            logger.info(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             call_session.status = call_status
         elif call_session and call_status in ["answered", "in-progress"]:
-            print(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - will be set when media streaming starts")
+            logger.debug(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - will be set when media streaming starts")
         
         # Set end time and calculate duration when call completes
         if call_session and call_status == "completed":
@@ -761,7 +760,7 @@ async def handle_call_events_webhook(
             if call_session.start_time:
                 duration = (call_session.end_time - call_session.start_time).total_seconds()
                 call_session.duration = int(duration)
-                print(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
+                logger.info(f"⏰ Set end time and duration ({duration}s) for session {call_session.id}")
                 
                 # Broadcast call ended event (non-blocking - fire and forget)
                 try:
@@ -777,16 +776,16 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Queued call ended event for session {call_session.id}")
+                    logger.info(f"✅ Queued call ended event for session {call_session.id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to queue call ended event (non-critical): {e}")
+                    logger.warning(f"⚠️ Failed to queue call ended event (non-critical): {e}")
                 
                 # Stop credit monitoring when call completes
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
-                    print(f"✅ Stopped credit monitoring for call session {call_session.id}")
+                    logger.info(f"✅ Stopped credit monitoring for call session {call_session.id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             # Update call session AND call log together (single commit)
             call_session_service.update_call_session_status(
@@ -796,15 +795,15 @@ async def handle_call_events_webhook(
                 ended_reason="hung up"
             )
             
-            print(f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up")
+            logger.info(f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
             # SKIP "in-progress" status here - it will be sent when media stream starts
             if call_status == "in-progress":
-                print(f"ℹ️ Skipping 'in-progress' broadcast here - will be sent by media stream handler")
+                logger.info(f"ℹ️ Skipping 'in-progress' broadcast here - will be sent by media stream handler")
             else:
                 try:
-                    print(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
+                    logger.info(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
                     
                     # Prepare comprehensive metadata
                     metadata = {
@@ -829,7 +828,7 @@ async def handle_call_events_webhook(
                         status=call_status,
                         metadata=metadata
                     )
-                    print(f"✅ Call status update sent: {call_status} for session {call_session.id}")
+                    logger.debug(f"✅ Call status update sent: {call_status} for session {call_session.id}")
                     
                     # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
                     if call_status == "completed":
@@ -843,28 +842,26 @@ async def handle_call_events_webhook(
                                 "transcript": call_session.call_transcript or []
                             }
                         ))
-                        print(f"✅ Queued call ended event for session {call_session.id}")
+                        logger.debug(f"✅ Queued call ended event for session {call_session.id}")
                         
                 except Exception as e:
-                    print(f"❌ Failed to broadcast call status update: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.error(f"❌ Failed to broadcast call status update: {e}", exc_info=True)
         else:
             if not call_session:
-                print(f"⚠️ No call session found - cannot update status or broadcast")
+                logger.warning(f"⚠️ No call session found - cannot update status or broadcast")
             if not call_status:
-                print(f"⚠️ No call status provided - cannot update status or broadcast")
+                logger.warning(f"⚠️ No call status provided - cannot update status or broadcast")
         
         # Speech input is now handled by Google Cloud STT via WebSocket
         # The WebSocket will transcribe audio and generate responses
         # This webhook now primarily handles call status updates and plays pending responses
         
         # Handle different call statuses and trigger agent logic
-        print(f"Processing call status: '{call_status}' with direction: '{direction}'")
+        logger.info(f"Processing call status: '{call_status}' with direction: '{direction}'")
         
         if call_status == "initiated" and direction == "outbound-api":
             # Call has been initiated - just log and return empty response
-            print(f"Call initiated - SID: {call_sid}")
+            logger.info(f"Call initiated - SID: {call_sid}")
             
             # Broadcast call initiated event (non-blocking - fire and forget)
             if call_session:
@@ -879,17 +876,15 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Broadcasted call initiated event for session {call_session.id}")
+                    logger.debug(f"✅ Broadcasted call initiated event for session {call_session.id}")
                 except Exception as e:
-                    print(f"❌ Failed to broadcast call initiated event: {e}")
+                    logger.error(f"❌ Failed to broadcast call initiated event: {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "ringing" and direction == "outbound-api":
             # Outbound call is ringing - just log, don't play any audio
-            print("=" * 50)
-            print(f"🔔 CALL IS RINGING - SID: {call_sid}")
-            print("=" * 50)
+            logger.info(f"🔔 CALL IS RINGING - SID: {call_sid}")
             
             # Broadcast call ringing event (non-blocking - fire and forget)
             if call_session:
@@ -903,20 +898,18 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Broadcasted call ringing event for session {call_session.id}")
+                    logger.debug(f"✅ Broadcasted call ringing event for session {call_session.id}")
                 except Exception as e:
-                    print(f"❌ Failed to broadcast call ringing event: {e}")
+                    logger.error(f"❌ Failed to broadcast call ringing event: {e}")
             
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "answered" and direction == "outbound-api":
             # ⚠️ IGNORE - We use first media packet detection instead (VAPI-style)
-            print("=" * 60)
-            print(f"ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
-            print(f"🔍 DEBUG: Will wait for first media packet from WebSocket stream")
-            print(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
-            print("=" * 60)
+            logger.info(f"ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
+            logger.debug(f"🔍 DEBUG: Will wait for first media packet from WebSocket stream")
+            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
             
             # Don't start credit monitoring or update status here
             # Wait for first media packet event from WebSocket stream
@@ -926,18 +919,16 @@ async def handle_call_events_webhook(
         elif call_status == "in-progress":
             # ⚠️ IGNORE - This is Twilio's media-active notification
             # We use first media packet detection instead (VAPI-style)
-            print("=" * 60)
-            print(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
-            print(f"🔍 DEBUG: Media stream status from Twilio (not user pickup)")
-            print(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
-            print("=" * 60)
+            logger.info(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
+            logger.debug(f"🔍 DEBUG: Media stream status from Twilio (not user pickup)")
+            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
             
             # Don't do anything - first media packet will handle it
             
             return HTMLResponse("", media_type="application/xml")
         elif call_status == "completed":
             # Call completed
-            print(f"📞 CALL COMPLETED - SID: {call_sid}")
+            logger.info(f"📞 CALL COMPLETED - SID: {call_sid}")
             
             # Broadcast call completed event (this is already handled above in the status update section)
             # The broadcast_call_ended is already called in the status update section above
@@ -946,7 +937,7 @@ async def handle_call_events_webhook(
         
         elif call_status == "failed":
             # Call failed - handle error
-            print(f"Call failed - SID: {call_sid}")
+            logger.error(f"Call failed - SID: {call_sid}")
             
             # Broadcast call failed event (non-blocking - fire and forget)
             if call_session:
@@ -960,7 +951,7 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Queued call failed event for session {call_session.id}")
+                    logger.debug(f"✅ Queued call failed event for session {call_session.id}")
                     
                     # Also broadcast call ended event for failed calls (non-blocking - fire and forget)
                     asyncio.create_task(broadcast_call_ended(
@@ -973,22 +964,22 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Queued call ended (failed) event for session {call_session.id}")
+                    logger.debug(f"✅ Queued call ended (failed) event for session {call_session.id}")
                 except Exception as e:
-                    print(f"❌ Failed to broadcast call failed event: {e}")
+                    logger.error(f"❌ Failed to broadcast call failed event: {e}")
                 
                 # Stop credit monitoring when call fails
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
-                    print(f"✅ Stopped credit monitoring for failed call session {call_session.id}")
+                    logger.debug(f"✅ Stopped credit monitoring for failed call session {call_session.id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "busy":
             # Call busy - handle busy signal
-            print(f"Call busy - SID: {call_sid}")
+            logger.info(f"Call busy - SID: {call_sid}")
             
             # Broadcast call busy event (non-blocking - fire and forget)
             if call_session:
@@ -1002,7 +993,7 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Queued call busy event for session {call_session.id}")
+                    logger.debug(f"✅ Queued call busy event for session {call_session.id}")
                     
                     # Also broadcast call ended event for busy calls (non-blocking - fire and forget)
                     asyncio.create_task(broadcast_call_ended(
@@ -1015,22 +1006,22 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Queued call ended (busy) event for session {call_session.id}")
+                    logger.debug(f"✅ Queued call ended (busy) event for session {call_session.id}")
                 except Exception as e:
-                    print(f"❌ Failed to broadcast call busy event: {e}")
+                    logger.error(f"❌ Failed to broadcast call busy event: {e}")
                 
                 # Stop credit monitoring when call is busy
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
-                    print(f"✅ Stopped credit monitoring for busy call session {call_session.id}")
+                    logger.debug(f"✅ Stopped credit monitoring for busy call session {call_session.id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "no-answer":
             # Call no-answer - handle no answer
-            print(f"Call no-answer - SID: {call_sid}")
+            logger.info(f"Call no-answer - SID: {call_sid}")
             
             # Broadcast call no-answer event (non-blocking - fire and forget)
             if call_session:
@@ -1044,7 +1035,7 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Queued call no-answer event for session {call_session.id}")
+                    logger.debug(f"✅ Queued call no-answer event for session {call_session.id}")
                     
                     # Also broadcast call ended event for no-answer calls (non-blocking - fire and forget)
                     asyncio.create_task(broadcast_call_ended(
@@ -1057,22 +1048,22 @@ async def handle_call_events_webhook(
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    print(f"✅ Queued call ended (no-answer) event for session {call_session.id}")
+                    logger.debug(f"✅ Queued call ended (no-answer) event for session {call_session.id}")
                 except Exception as e:
-                    print(f"❌ Failed to broadcast call no-answer event: {e}")
+                    logger.error(f"❌ Failed to broadcast call no-answer event: {e}")
                 
                 # Stop credit monitoring when call has no-answer
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
-                    print(f"✅ Stopped credit monitoring for no-answer call session {call_session.id}")
+                    logger.debug(f"✅ Stopped credit monitoring for no-answer call session {call_session.id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
         else:
             # Default response for other statuses
-            print(f"Unhandled call status: '{call_status}' - using default response")
+            logger.info(f"Unhandled call status: '{call_status}' - using default response")
             response = VoiceResponse()
             text = "Thanks for calling! Have a great day!"
             lang = agent.language if agent and agent.language else "en"
@@ -1082,12 +1073,8 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        print(f"ERROR occurred: {str(e)}")
-        print(f"Error type: {type(e).__name__}")
-        print("Error traceback:")
-        import traceback
-        print(traceback.format_exc())
-        print("=== Call Events Webhook Failed ===")
+        logger.error(f"ERROR occurred: {str(e)}", exc_info=True)
+        logger.error("=== Call Events Webhook Failed ===")
         raise
 
 
@@ -1233,11 +1220,9 @@ async def handle_recording_callback(
     
     This is the simple, synchronous approach similar to feature/openai branch.
     """
-    print("=" * 80)
-    print(f"🎙️ RECORDING CALLBACK WEBHOOK - VAPI-style")
-    print(f"📞 Call Session: {callSessionId}")
-    print(f"🤖 Agent: {agentId}")
-    print("=" * 80)
+    logger.info(f"🎙️ RECORDING CALLBACK WEBHOOK - VAPI-style")
+    logger.debug(f"📞 Call Session: {callSessionId}")
+    logger.debug(f"🤖 Agent: {agentId}")
     
     try:
         form_data = await request.form()
@@ -1249,11 +1234,10 @@ async def handle_recording_callback(
         call_sid = form_data.get("CallSid", "")
         recording_status = form_data.get("RecordingStatus", "")
         
-        print(f"🎵 Recording URL: {recording_url}")
-        print(f"📝 Recording SID: {recording_sid}")
-        print(f"⏱️ Duration: {recording_duration}s")
-        print(f"📊 Status: {recording_status}")
-        sys.stdout.flush()
+        logger.debug(f"🎵 Recording URL: {recording_url}")
+        logger.debug(f"📝 Recording SID: {recording_sid}")
+        logger.debug(f"⏱️ Duration: {recording_duration}s")
+        logger.debug(f"📊 Status: {recording_status}")
         
         # IMPORTANT: Twilio calls this webhook twice:
         # 1. 'action' callback (no status, has URL) - User finished speaking → PROCESS THIS for TTS
@@ -1262,20 +1246,17 @@ async def handle_recording_callback(
         if recording_status:
             # This is a status callback, not the action callback
             # We don't need to return TTS here, just acknowledge
-            print(f"ℹ️ Recording status callback (status={recording_status}) - acknowledging only, no TTS")
-            sys.stdout.flush()
+            logger.debug(f"ℹ️ Recording status callback (status={recording_status}) - acknowledging only, no TTS")
             return HTMLResponse("", media_type="application/xml")
         
         # If no recording URL at all, something is wrong
         if not recording_url:
-            print(f"⚠️ No recording URL provided - cannot process")
-            sys.stdout.flush()
+            logger.warning(f"⚠️ No recording URL provided - cannot process")
             return HTMLResponse("", media_type="application/xml")
         
         # This is the 'action' callback - user finished speaking
         # Process this for TTS response
-        print(f"✅ Action callback detected - processing for TTS response")
-        sys.stdout.flush()
+        logger.info(f"✅ Action callback detected - processing for TTS response")
         
         # Get call session
         call_session = None
@@ -1288,9 +1269,9 @@ async def handle_recording_callback(
                 
                 if call_session and agentId:
                     agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
-                    print(f"✅ Found call session and agent: {agent.name if agent else 'Unknown'}")
+                    logger.debug(f"✅ Found call session and agent: {agent.name if agent else 'Unknown'}")
             except ValueError:
-                print(f"⚠️ Invalid call session ID: {callSessionId}")
+                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
         
         # Process recording if available
         if recording_url and call_session:
@@ -1309,17 +1290,17 @@ async def handle_recording_callback(
                     # Full URL - add auth
                     auth_url = recording_url.replace('https://api.twilio.com', f'https://{account_sid}:{auth_token}@api.twilio.com') + '.wav'
                 
-                print(f"📥 Downloading audio from Twilio...")
+                logger.debug(f"📥 Downloading audio from Twilio...")
                 
                 # Download the recording
                 audio_response = requests.get(auth_url, timeout=10)
                 
                 if audio_response.status_code != 200:
-                    print(f"❌ Failed to download recording: HTTP {audio_response.status_code}")
+                    logger.error(f"❌ Failed to download recording: HTTP {audio_response.status_code}")
                     raise Exception(f"Failed to download recording: HTTP {audio_response.status_code}")
                 
                 audio_content = audio_response.content
-                print(f"✅ Downloaded {len(audio_content)} bytes of audio")
+                logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
                 
                 # Get language from agent
                 language_code = "en-US"
@@ -1334,7 +1315,7 @@ async def handle_recording_callback(
                     }
                     language_code = language_map.get(agent.language, "en-US")
                 
-                print(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
+                logger.debug(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
                 
                 # Transcribe with Google STT
                 from app.services.google_stt_service import google_stt_service
@@ -1347,8 +1328,8 @@ async def handle_recording_callback(
                 transcript = stt_result.get("transcript", "").strip()
                 confidence = stt_result.get("confidence", 0.0)
                 
-                print(f"📝 Google STT Transcript: '{transcript}'")
-                print(f"📊 Confidence: {confidence:.2f}")
+                logger.info(f"📝 Google STT Transcript: '{transcript}'")
+                logger.debug(f"📊 Confidence: {confidence:.2f}")
                 
                 # If we have a transcript, process it
                 if transcript:
@@ -1379,7 +1360,7 @@ async def handle_recording_callback(
                     )
                     
                     # Generate agent response using LLM
-                    print(f"🤖 Generating agent response...")
+                    logger.debug(f"🤖 Generating agent response...")
                     response_text = await VoiceLoggingService.generate_agent_response(
                         speech_text=transcript,
                         confidence=confidence,
@@ -1388,7 +1369,7 @@ async def handle_recording_callback(
                         call_session_id=call_session.id
                     )
                     
-                    print(f"✅ Agent response: '{response_text}'")
+                    logger.info(f"✅ Agent response: '{response_text}'")
                     
                     # Add agent response to transcript
                     await _add_to_transcript(
@@ -1402,13 +1383,11 @@ async def handle_recording_callback(
                     # Check if this is a goodbye
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
                     if is_goodbye:
-                        print(f"🛑 Goodbye detected - ending call")
-                        sys.stdout.flush()
+                        logger.info(f"🛑 Goodbye detected - ending call")
                         response = VoiceResponse()
                         response.hangup()
                         twiml_str = str(response)
-                        print(f"📤 Returning TwiML (goodbye): {twiml_str[:200]}...")
-                        sys.stdout.flush()
+                        logger.debug(f"📤 Returning TwiML (goodbye): {twiml_str[:200]}...")
                         return HTMLResponse(twiml_str, media_type="application/xml")
                     
                     # Store TTS text in call session metadata for WebSocket to retrieve
@@ -1425,8 +1404,7 @@ async def handle_recording_callback(
                     }
                     db.commit()
                     
-                    print(f"💾 Stored pending TTS in metadata: '{response_text[:50]}...'")
-                    sys.stdout.flush()
+                    logger.debug(f"💾 Stored pending TTS in metadata: '{response_text[:50]}...'")
                     
                     # Build TwiML for TTS-only WebSocket streaming + Recording
                     recording_callback_url = f'{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}'
@@ -1438,14 +1416,13 @@ async def handle_recording_callback(
                         record_callback_url=recording_callback_url
                     )
                     
-                    print(f"🎵 Returning TwiML with TTS WebSocket streaming")
-                    print(f"📤 TwiML: {twiml_str[:200]}...")
-                    sys.stdout.flush()
+                    logger.debug(f"🎵 Returning TwiML with TTS WebSocket streaming")
+                    logger.debug(f"📤 TwiML: {twiml_str[:200]}...")
                     return HTMLResponse(twiml_str, media_type="application/xml")
                 
                 else:
                     # No transcript - ask user to repeat
-                    print(f"⚠️ No transcript from Google STT")
+                    logger.info(f"⚠️ No transcript from Google STT")
                     response = VoiceResponse()
                     
                     # Natural "didn't catch that" response
@@ -1473,9 +1450,7 @@ async def handle_recording_callback(
                     return HTMLResponse(str(response), media_type="application/xml")
             
             except Exception as e:
-                print(f"❌ Error processing recording: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"❌ Error processing recording: {e}", exc_info=True)
                 
                 # Fallback response
                 response = VoiceResponse()
@@ -1502,7 +1477,7 @@ async def handle_recording_callback(
                 return HTMLResponse(str(response), media_type="application/xml")
         
         # Fallback if no recording URL
-        print(f"⚠️ No recording URL provided")
+        logger.warning(f"⚠️ No recording URL provided")
         response = VoiceResponse()
         text = "I didn't hear anything. Please try speaking again."
         lang = agent.language if agent and agent.language else "en"
@@ -1527,9 +1502,7 @@ async def handle_recording_callback(
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        print(f"❌ Error in recording callback webhook: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ Error in recording callback webhook: {e}", exc_info=True)
         
         # Ultimate fallback - use streaming TwiML if we have session info
         if call_session and agent:
@@ -1557,10 +1530,8 @@ async def handle_gather_speech_webhook(
     
     Keeping this for backward compatibility with feature/openai branch style.
     """
-    print("=" * 80)
-    print(f"⚠️ DEPRECATED: GATHER SPEECH WEBHOOK CALLED")
-    print(f"Use /webhook/recording-callback instead")
-    print("=" * 80)
+    logger.warning(f"⚠️ DEPRECATED: GATHER SPEECH WEBHOOK CALLED")
+    logger.warning(f"Use /webhook/recording-callback instead")
     
     try:
         form_data = await request.form()
@@ -1570,10 +1541,10 @@ async def handle_gather_speech_webhook(
         speech_result = form_data.get("SpeechResult", "")  # Twilio's transcription
         confidence = form_data.get("Confidence", "0")
         
-        print(f"📞 Call SID: {call_sid}")
-        print(f"🎤 Twilio Speech Result: {speech_result}")
-        print(f"📊 Confidence: {confidence}")
-        print(f"🎵 Recording URL: {recording_url}")
+        logger.debug(f"📞 Call SID: {call_sid}")
+        logger.debug(f"🎤 Twilio Speech Result: {speech_result}")
+        logger.debug(f"📊 Confidence: {confidence}")
+        logger.debug(f"🎵 Recording URL: {recording_url}")
         
         # Get call session
         call_session = None
@@ -1581,18 +1552,18 @@ async def handle_gather_speech_webhook(
             try:
                 session_uuid = uuid.UUID(callSessionId)
                 call_session = call_session_service.get_call_session_by_id(db, session_uuid)
-                print(f"✅ Found call session: {call_session.id}")
+                logger.debug(f"✅ Found call session: {call_session.id}")
             except ValueError:
-                print(f"⚠️ Invalid call session ID: {callSessionId}")
+                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
         
         # Get agent
         agent = None
         if agentId and call_session:
             try:
                 agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
-                print(f"✅ Agent: {agent.name}")
+                logger.debug(f"✅ Agent: {agent.name}")
             except Exception as e:
-                print(f"⚠️ Error fetching agent: {e}")
+                logger.warning(f"⚠️ Error fetching agent: {e}")
         
         # Download audio from Twilio recording
         if recording_url and call_session:
@@ -1607,12 +1578,12 @@ async def handle_gather_speech_webhook(
                 
                 # Download recording with authentication
                 auth_url = f"https://{account_sid}:{auth_token}@api.twilio.com{recording_url}.wav"
-                print(f"📥 Downloading audio from Twilio...")
+                logger.debug(f"📥 Downloading audio from Twilio...")
                 
                 audio_response = requests.get(auth_url)
                 audio_content = audio_response.content
                 
-                print(f"✅ Downloaded {len(audio_content)} bytes of audio")
+                logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
                 
                 # Send to Google Cloud STT
                 from app.services.google_stt_service import google_stt_service
@@ -1630,7 +1601,7 @@ async def handle_gather_speech_webhook(
                     }
                     language_code = language_map.get(agent.language, "en-US")
                 
-                print(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
+                logger.debug(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
                 
                 # Transcribe with Google STT
                 stt_result = await google_stt_service.transcribe_audio_chunk_streaming(
@@ -1641,8 +1612,8 @@ async def handle_gather_speech_webhook(
                 google_transcript = stt_result.get("transcript", "")
                 google_confidence = stt_result.get("confidence", 0.0)
                 
-                print(f"📝 Google STT Transcript: '{google_transcript}'")
-                print(f"📊 Google STT Confidence: {google_confidence:.2f}")
+                logger.info(f"📝 Google STT Transcript: '{google_transcript}'")
+                logger.debug(f"📊 Google STT Confidence: {google_confidence:.2f}")
                 
                 # Use Google transcript (more accurate)
                 final_transcript = google_transcript if google_transcript else speech_result
@@ -1676,7 +1647,7 @@ async def handle_gather_speech_webhook(
                         message_type="agent_response"
                     )
                     
-                    print(f"✅ Generated agent response: '{response_text}'")
+                    logger.info(f"✅ Generated agent response: '{response_text}'")
                     
                     # Create response TwiML
                     response = VoiceResponse()
@@ -1691,7 +1662,7 @@ async def handle_gather_speech_webhook(
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
                     if is_goodbye:
                         response.hangup()
-                        print(f"🛑 Goodbye detected - ending call")
+                        logger.info(f"🛑 Goodbye detected - ending call")
                         return HTMLResponse(str(response), media_type="application/xml")
                     
                     # Continue conversation - gather next input
@@ -1717,13 +1688,11 @@ async def handle_gather_speech_webhook(
                         method='POST'
                     )
                     
-                    print(f"📝 Response TwiML: {str(response)[:200]}...")
+                    logger.debug(f"📝 Response TwiML: {str(response)[:200]}...")
                     return HTMLResponse(str(response), media_type="application/xml")
             
             except Exception as e:
-                print(f"❌ Error processing gathered speech: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"❌ Error processing gathered speech: {e}", exc_info=True)
         
         # Fallback response
         response = VoiceResponse()
@@ -1747,9 +1716,7 @@ async def handle_gather_speech_webhook(
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        print(f"❌ Error in gather speech webhook: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ Error in gather speech webhook: {e}", exc_info=True)
         raise
 
 
@@ -1772,14 +1739,12 @@ async def handle_recording_status_webhook(
         recording_url = form_data.get("RecordingUrl")
         recording_duration = form_data.get("RecordingDuration")
         
-        print("=" * 60)
-        print(f"🎙️ RECORDING STATUS UPDATE")
-        print(f"Recording SID: {recording_sid}")
-        print(f"Call SID: {call_sid}")
-        print(f"Status: {recording_status}")
-        print(f"URL: {recording_url}")
-        print(f"Duration: {recording_duration}")
-        print("=" * 60)
+        logger.info(f"🎙️ RECORDING STATUS UPDATE")
+        logger.debug(f"Recording SID: {recording_sid}")
+        logger.debug(f"Call SID: {call_sid}")
+        logger.debug(f"Status: {recording_status}")
+        logger.debug(f"URL: {recording_url}")
+        logger.debug(f"Duration: {recording_duration}")
         
         # Find the call session
         if call_sid:
@@ -1789,7 +1754,7 @@ async def handle_recording_status_webhook(
                 if recording_status == "completed" and recording_url:
                     call_session.recording_url = recording_url
                     db.commit()
-                    print(f"✅ Updated call session {call_session.id} with recording URL")
+                    logger.info(f"✅ Updated call session {call_session.id} with recording URL")
                     
                     # Broadcast call status update when recording is completed (non-blocking - fire and forget)
                     try:
@@ -1803,19 +1768,19 @@ async def handle_recording_status_webhook(
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             }
                         ))
-                        print(f"✅ Queued recording completed status update for session {call_session.id}")
+                        logger.debug(f"✅ Queued recording completed status update for session {call_session.id}")
                     except Exception as e:
-                        print(f"⚠️ Failed to queue recording completed status update (non-critical): {e}")
+                        logger.warning(f"⚠️ Failed to queue recording completed status update (non-critical): {e}")
                 else:
-                    print(f"📝 Recording status: {recording_status} - URL not ready yet")
+                    logger.debug(f"📝 Recording status: {recording_status} - URL not ready yet")
             else:
-                print(f"⚠️ Call session not found for SID: {call_sid}")
+                logger.warning(f"⚠️ Call session not found for SID: {call_sid}")
         
         # Return empty TwiML response
         return HTMLResponse("", media_type="application/xml")
         
     except Exception as e:
-        print(f"⚠️ Error handling recording status webhook: {e}")
+        logger.warning(f"⚠️ Error handling recording status webhook: {e}")
         return HTMLResponse("", media_type="application/xml")
 
 
@@ -1903,7 +1868,7 @@ async def end_call(
                 }
             ))
         except Exception as e:
-            print(f"⚠️ Failed to broadcast call ended event: {e}")
+            logger.warning(f"⚠️ Failed to broadcast call ended event: {e}")
         
         return SuccessResponse(
             data={
@@ -1919,7 +1884,7 @@ async def end_call(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error ending call: {e}")
+        logger.error(f"❌ Error ending call: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to end call")
 
 
@@ -1955,20 +1920,20 @@ async def get_recording_access(
         # Create authenticated Twilio URL for server-side download
         authenticated_url = f"https://{account_sid}:{auth_token}@api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
         
-        print(f"📥 Streaming recording for call session: {call_session_id}")
-        print(f"🎵 Recording SID: {recording_sid}")
+        logger.info(f"📥 Streaming recording for call session: {call_session_id}")
+        logger.debug(f"🎵 Recording SID: {recording_sid}")
         
         # Download recording from Twilio (server-side with auth)
         response = requests.get(authenticated_url, stream=True, timeout=30)
         
         if response.status_code != 200:
-            print(f"❌ Failed to fetch recording: HTTP {response.status_code}")
+            logger.error(f"❌ Failed to fetch recording: HTTP {response.status_code}")
             raise HTTPException(
                 status_code=500, 
                 detail=f"Failed to fetch recording from Twilio: HTTP {response.status_code}"
             )
         
-        print(f"✅ Streaming recording to user (no login required)")
+        logger.info(f"✅ Streaming recording to user (no login required)")
         
         # Stream audio directly to user (NO authentication required on user's end!)
         return StreamingResponse(
@@ -1984,10 +1949,10 @@ async def get_recording_access(
     except HTTPException:
         raise
     except requests.RequestException as e:
-        print(f"❌ Network error fetching recording: {e}")
+        logger.error(f"❌ Network error fetching recording: {e}")
         raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
     except Exception as e:
-        print(f"❌ Error streaming recording: {e}")
+        logger.error(f"❌ Error streaming recording: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to stream recording: {str(e)}")
 
 
@@ -2041,16 +2006,16 @@ async def analyze_call_transcript(
                     # Get agent's system prompt (priority: agent.system_prompt > model.system_prompt)
                     if agent.system_prompt:
                         agent_prompt = agent.system_prompt
-                        print(f"📝 Using agent's custom system prompt ({len(agent_prompt)} chars)")
+                        logger.debug(f"📝 Using agent's custom system prompt ({len(agent_prompt)} chars)")
                     elif agent.model and agent.model.system_prompt:
                         agent_prompt = agent.model.system_prompt
-                        print(f"📝 Using model's system prompt ({len(agent_prompt)} chars)")
+                        logger.debug(f"📝 Using model's system prompt ({len(agent_prompt)} chars)")
                     
                     if agent and agent.model:
                         preferred_model = agent.model.model_name
-                        print(f"🔍 Found call's model: {preferred_model}")
+                        logger.debug(f"🔍 Found call's model: {preferred_model}")
             except Exception as e:
-                print(f"⚠️ Could not get call's model or agent prompt: {e}")
+                logger.warning(f"⚠️ Could not get call's model or agent prompt: {e}")
         
         # Fallback models in priority order
         fallback_models = [
@@ -2069,13 +2034,13 @@ async def analyze_call_transcript(
         # Try each model until one works
         for model_name in fallback_models:
             try:
-                print(f"🔄 Trying model: {model_name}")
+                logger.debug(f"🔄 Trying model: {model_name}")
                 model = model_service.get_model_by_name(db, model_name)
                 if model:
-                    print(f"✅ Model found: {model.model_name}, Provider: {model.provider.name}")
+                    logger.debug(f"✅ Model found: {model.model_name}, Provider: {model.provider.name}")
                     break
             except Exception as e:
-                print(f"⚠️ Model {model_name} not available: {e}")
+                logger.warning(f"⚠️ Model {model_name} not available: {e}")
                 last_error = e
                 continue
         
@@ -2087,7 +2052,7 @@ async def analyze_call_transcript(
         
         # Get transcript messages
         transcript_messages = transcript_service.get_messages_by_session(db, session_uuid)
-        print(f"🔍 Found {len(transcript_messages)} transcript messages for session {call_session_id}")
+        logger.debug(f"🔍 Found {len(transcript_messages)} transcript messages for session {call_session_id}")
         
         if not transcript_messages:
             raise HTTPException(status_code=404, detail="No transcript messages found for this call session")
@@ -2218,7 +2183,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                     from app.core.security import decrypt_api_key
                     current_api_key = decrypt_api_key(current_model.api_key)
                 
-                print(f"🔄 Attempting analysis with {current_model.model_name}...")
+                logger.debug(f"🔄 Attempting analysis with {current_model.model_name}...")
                 
                 # Generate summary
                 summary_result = generate_analysis_text(current_model, current_api_key, summary_prompt, max_tokens=200)
@@ -2235,22 +2200,22 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                             recommendations_prompt, 
                             max_tokens=300
                         )
-                        print(f"✅ Recommendations generated")
+                        logger.debug(f"✅ Recommendations generated")
                     except Exception as e:
-                        print(f"⚠️ Failed to generate recommendations: {e}")
+                        logger.warning(f"⚠️ Failed to generate recommendations: {e}")
                         # Continue even if recommendations fail
                 
                 used_model = current_model.model_name
-                print(f"✅ Analysis successful with {used_model}")
+                logger.info(f"✅ Analysis successful with {used_model}")
                 break
                 
             except Exception as e:
                 error_str = str(e)
-                print(f"⚠️ Error with {model_name}: {e}")
+                logger.warning(f"⚠️ Error with {model_name}: {e}")
                 
                 # Check if it's a quota error - try next model
                 if "429" in error_str or "quota" in error_str.lower() or "exceeded" in error_str.lower():
-                    print(f"⚠️ Quota exceeded for {model_name}, trying next model...")
+                    logger.warning(f"⚠️ Quota exceeded for {model_name}, trying next model...")
                     last_error = e
                     continue
                 else:
@@ -2261,7 +2226,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
         # Check if we got required results
         if not summary_result or not sentiment_result:
             error_msg = f"Analysis failed with all models. Last error: {str(last_error)}"
-            print(f"❌ {error_msg}")
+            logger.error(f"❌ {error_msg}")
             raise HTTPException(status_code=500, detail=error_msg)
         
         # Prepare response (hide model_id for security)
@@ -2318,7 +2283,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        print(f"✅ Transcript analysis completed for session {call_session_id} using {used_model}")
+        logger.info(f"✅ Transcript analysis completed for session {call_session_id} using {used_model}")
         return create_success_response(
             data=analysis_result,
             message=f"Transcript analysis completed successfully using {used_model}"
@@ -2327,7 +2292,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error in transcript analysis endpoint: {e}")
+        logger.error(f"❌ Error in transcript analysis endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

@@ -12,6 +12,7 @@ from app.models.user import User
 from app.api.deps import get_current_user_jwt
 from typing import Callable
 import uuid
+from app.core.logger import logger
 
 class BillingMiddleware:
     """Middleware to track usage and enforce billing limits"""
@@ -60,7 +61,7 @@ class BillingMiddleware:
             
         except Exception as e:
             # If there's an error in billing middleware, log it but don't block the request
-            print(f"Billing middleware error: {str(e)}")
+            logger.error(f"Billing middleware error: {str(e)}", exc_info=True)
             await self.app(scope, receive, send)
 
 def check_agent_creation_limit(db: Session, tenant_id: uuid.UUID) -> bool:
@@ -68,7 +69,7 @@ def check_agent_creation_limit(db: Session, tenant_id: uuid.UUID) -> bool:
     try:
         return BillingService.check_agent_limit(db, tenant_id)
     except Exception as e:
-        print(f"Error checking agent limit: {str(e)}")
+        logger.error(f"Error checking agent limit: {str(e)}", exc_info=True)
         return False
 
 def check_calls_limit(db: Session, tenant_id: uuid.UUID, additional_calls: int = 1) -> bool:
@@ -76,7 +77,7 @@ def check_calls_limit(db: Session, tenant_id: uuid.UUID, additional_calls: int =
     try:
         return BillingService.check_calls_limit(db, tenant_id, additional_calls)
     except Exception as e:
-        print(f"Error checking calls limit: {str(e)}")
+        logger.error(f"Error checking calls limit: {str(e)}", exc_info=True)
         return False
 
 def track_agent_creation(db: Session, tenant_id: uuid.UUID) -> None:
@@ -84,21 +85,21 @@ def track_agent_creation(db: Session, tenant_id: uuid.UUID) -> None:
     try:
         BillingService.increment_agent_usage(db, tenant_id)
     except Exception as e:
-        print(f"Error tracking agent creation: {str(e)}")
+        logger.error(f"Error tracking agent creation: {str(e)}", exc_info=True)
 
 def track_calls_usage(db: Session, tenant_id: uuid.UUID, calls_count: int = 1) -> None:
     """Track calls usage"""
     try:
         BillingService.increment_calls_usage(db, tenant_id, calls_count)
     except Exception as e:
-        print(f"Error tracking calls usage: {str(e)}")
+        logger.error(f"Error tracking calls usage: {str(e)}", exc_info=True)
 
 def enforce_billing_limits(db: Session, tenant_id: uuid.UUID) -> dict:
     """Enforce billing limits and return status"""
     try:
         return BillingService.check_and_enforce_limits(db, tenant_id)
     except Exception as e:
-        print(f"Error enforcing billing limits: {str(e)}")
+        logger.error(f"Error enforcing billing limits: {str(e)}", exc_info=True)
         return {"within_limits": True, "over_agent_limit": False, "over_calls_limit": False}
 
 # Decorator for endpoints that create agents

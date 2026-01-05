@@ -14,6 +14,7 @@ import time
 import base64
 import io
 from datetime import datetime
+from app.core.logger import logger
 
 from app.api.deps import get_db, require_tenant
 from app.models.agent import Agent
@@ -306,7 +307,7 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                 })
                 
     except Exception as e:
-        print(f"Live voice WebSocket error: {e}")
+        logger.error(f"Live voice WebSocket error: {e}", exc_info=True)
     finally:
         # Update call session status when session ends
         try:
@@ -319,9 +320,9 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                     ended_reason="WebSocket disconnected",
                     success_evaluation="success"
                 )
-                print(f"Updated live voice call session {call_session.id} to completed")
+                logger.info(f"Updated live voice call session {call_session.id} to completed")
         except Exception as e:
-            print(f"Error updating call session on disconnect: {e}")
+            logger.error(f"Error updating call session on disconnect: {e}")
         
         manager.disconnect(session_id)
 
@@ -541,7 +542,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             try:
                                 api_key = decrypt_api_key(model.api_key)
                             except Exception as e:
-                                print(f"⚠️ Failed to decrypt model API key: {e}")
+                                logger.warning(f"⚠️ Failed to decrypt model API key: {e}")
                         
                         # Route to appropriate service
                         if 'gemini' in provider_name or 'google' in provider_name:
@@ -556,7 +557,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             )
                             ai_response_text = gemini_response["content"]
                             response_time = gemini_response["response_time"]
-                            print(f"✅ Live voice: Used Gemini model {model_name} (provider: {provider_name})")
+                            logger.info(f"✅ Live voice: Used Gemini model {model_name} (provider: {provider_name})")
                         
                         elif 'openai' in provider_name:
                             # Use OpenAI service
@@ -571,11 +572,11 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             )
                             ai_response_text = openai_response["response"]
                             response_time = openai_response["response_time"]
-                            print(f"✅ Live voice: Used OpenAI model {model_name} (provider: {provider_name})")
+                            logger.info(f"✅ Live voice: Used OpenAI model {model_name} (provider: {provider_name})")
                         
                         else:
                             # Unsupported provider - fall back to default OpenAI
-                            print(f"⚠️ Unsupported provider {provider_name}, falling back to default OpenAI")
+                            logger.warning(f"⚠️ Unsupported provider {provider_name}, falling back to default OpenAI")
                             openai_response = openai_service.process_agent_conversation(
                                 user_input=user_input,
                                 agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -585,7 +586,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             response_time = openai_response["response_time"]
                     else:
                         # Model not found or invalid - use default OpenAI
-                        print(f"⚠️ Model not found or invalid, using default OpenAI")
+                        logger.warning(f"⚠️ Model not found or invalid, using default OpenAI")
                         openai_response = openai_service.process_agent_conversation(
                             user_input=user_input,
                             agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -596,7 +597,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                 
                 except ValueError:
                     # Invalid UUID - use default OpenAI
-                    print(f"⚠️ Invalid model_id format, using default OpenAI")
+                    logger.warning(f"⚠️ Invalid model_id format, using default OpenAI")
                     openai_response = openai_service.process_agent_conversation(
                         user_input=user_input,
                         agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -607,7 +608,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
             
             else:
                 # No model_id - use default OpenAI
-                print(f"ℹ️ No model_id configured, using default OpenAI")
+                logger.info(f"ℹ️ No model_id configured, using default OpenAI")
                 openai_response = openai_service.process_agent_conversation(
                     user_input=user_input,
                     agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -617,9 +618,9 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
             response_time = openai_response["response_time"]
             
         except Exception as e:
-            print(f"Error processing with AI: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error processing with AI: {e}", exc_info=True)
+            # import traceback
+            # traceback.print_exc()
             ai_response_text = "I'm sorry, but I'm having trouble processing your request right now. Please try again."
             response_time = 0
         
