@@ -1055,7 +1055,7 @@ IMPORTANT:
                     # Reset timing when pausing so resume is smooth
                     first = True
                     next_send = time.perf_counter()
-                    await asyncio.sleep(0.1)  # Check every 100ms
+                    await asyncio.sleep(0.01)  # High-frequency check (10ms) for instant pause
                     continue
                 
                 bg_chunk = get_background_audio_chunk(

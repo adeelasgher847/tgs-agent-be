@@ -182,7 +182,7 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
     rate, pitch, volume = emotion_to_prosody(overall_emotion)
     
     sentences = re.split(r'([.!?])', text)
-    ssml = "<speak>\n"
+    ssml = "<speak>"
     
     # Office background now handled at audio level (not SSML - Google TTS doesn't support <par> tags)
     # Audio-level mixing in bidirectional_stream.py provides better control
@@ -190,23 +190,26 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
 
     # Apply SAME prosody to all sentences (prevents clicks/tak sounds)
     # Emotion still applied (based on overall response), but consistently!
-    ssml += f'  <prosody rate="{rate}" pitch="{pitch}" volume="{volume}">\n'
+    ssml += f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">'
     
+    processed_sentences = []
     for i in range(0, len(sentences) - 1, 2):
-        sentence = sentences[i].strip()
-        punct = sentences[i + 1] if i + 1 < len(sentences) else ""
+        s = sentences[i].strip()
+        p = sentences[i+1]
+        if s:
+            processed_sentences.append(s + p)
+    
+    if len(sentences) % 2 == 1 and sentences[-1].strip():
+        processed_sentences.append(sentences[-1].strip())
 
-        if not sentence:
-            continue
-
-        # Add breathing at sentence boundaries (not mid-sentence - prevents clicks)
+    for i, sentence in enumerate(processed_sentences):
         sentence_with_breath = add_breath(sentence, overall_emotion)
-        
-        ssml += f'    {sentence_with_breath}{punct}\n'
-        ssml += '    <break time="150ms"/>\n'  # Shorter breaks (consistent prosody = smoother)
+        ssml += sentence_with_breath
+        if i < len(processed_sentences) - 1:
+            ssml += '<break time="150ms"/>'
     
     # Close prosody tag
-    ssml += '  </prosody>\n'
+    ssml += '</prosody>'
     
     ssml += "</speak>"
     return ssml

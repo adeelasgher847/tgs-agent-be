@@ -558,10 +558,16 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
             noise_scaled = max(-32768, min(32767, noise_scaled))
             noise_samples.append(noise_scaled)
         
-        # Mix noise with original audio
+        # Mix noise with original audio (with 10ms micro fade-in for the noise)
         mixed_linear = []
+        noise_fade_samples = 80  # 10ms at 8kHz
         for i in range(num_samples):
-            mixed = linear_audio[i] + noise_samples[i]
+            current_noise = noise_samples[i]
+            if i < noise_fade_samples:
+                # Ramp noise from 0 to full volume over 10ms
+                current_noise = int(current_noise * (i / noise_fade_samples))
+            
+            mixed = linear_audio[i] + current_noise
             mixed = max(-32768, min(32767, mixed))
             mixed_linear.append(mixed)
         
