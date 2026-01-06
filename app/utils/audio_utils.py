@@ -178,15 +178,54 @@ def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:
         return audio_bytes
     
     try:
-        # Convert to linear, apply volume, convert back
         linear_samples = [ulaw_to_linear_sample(b) for b in audio_bytes]
-        faded_linear = [int(sample * volume) for sample in linear_samples]
-        # Clamp to valid range
-        faded_linear = [max(-32768, min(32767, sample)) for sample in faded_linear]
-        faded_mulaw = bytes([linear_to_ulaw_sample(sample) for sample in faded_linear])
-        return faded_mulaw
+        adjusted_samples = [max(-32768, min(32767, int(s * volume))) for s in linear_samples]
+        return bytes([linear_to_ulaw_sample(s) for s in adjusted_samples])
     except Exception as e:
-        logger.warning(f"⚠️ Volume fade failed: {e}, using original audio")
+        logger.warning(f"⚠️ Volume adjustment failed: {e}")
+        return audio_bytes
+
+
+def apply_micro_fade_in(audio_bytes: bytes, duration_ms: float = 10.0) -> bytes:
+    """
+    Apply a micro linear fade-in to the start of MULAW audio to eliminate clicks/pops.
+    
+    Args:
+        audio_bytes: MULAW audio bytes
+        duration_ms: Duration of fade in milliseconds (default 10ms)
+        
+    Returns:
+        Audio bytes with micro fade-in applied
+    """
+    if not audio_bytes or len(audio_bytes) == 0:
+        return audio_bytes
+        
+    try:
+        # Calculate samples to fade (8kHz sample rate)
+        num_fade_samples = int((duration_ms / 1000.0) * MULAW_SAMPLE_RATE_HZ)
+        num_fade_samples = min(num_fade_samples, len(audio_bytes))
+        
+        if num_fade_samples <= 0:
+            return audio_bytes
+            
+        # Convert only the part to fade to linear
+        fade_part = audio_bytes[:num_fade_samples]
+        remaining_part = audio_bytes[num_fade_samples:]
+        
+        linear_samples = [ulaw_to_linear_sample(b) for b in fade_part]
+        
+        faded_samples = []
+        for i, sample in enumerate(linear_samples):
+            # Linear ramp from 0.0 to 1.0
+            volume = i / num_fade_samples
+            faded_samples.append(int(sample * volume))
+            
+        faded_part_mulaw = bytes([linear_to_ulaw_sample(s) for s in faded_samples])
+        
+        return faded_part_mulaw + remaining_part
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Micro fade-in failed: {e}")
         return audio_bytes
 
 

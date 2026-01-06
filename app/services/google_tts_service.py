@@ -244,7 +244,7 @@ class GoogleTTSService:
                 pitch=pitch,
                 sample_rate_hertz=24000 if output_format == "mp3" else 8000,  # 24kHz for MP3 (better quality), 8kHz for MULAW
                 effects_profile_id=["telephony-class-application"],  # Optimize for phone calls/Twilio
-                volume_gain_db=2.0  # Slight volume boost for clarity on calls
+                volume_gain_db=0.0  # Reset to 0.0 to prevent digital clipping/distortion
             )
             
             # Perform the text-to-speech request
