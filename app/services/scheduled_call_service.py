@@ -138,6 +138,11 @@ class ScheduledCallService:
                 )
             
             # Update existing record if it's missing new fields (for backward compatibility)
+            # Or if it contains invalid data like "="
+            if board_record.crm_container_id == "=":
+                logger.warning(f"⚠️ Invalid container ID '=' detected for user {user_id}. Clearing it to trigger auto-fix.")
+                board_record.crm_container_id = None
+                
             if not board_record.crm_container_id or not board_record.crm_type:
                 # Try to use legacy fields or CRM config first
                 if not board_record.crm_container_id:
