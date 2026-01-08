@@ -1808,6 +1808,16 @@ async def select_crm_config(
         board_record = scheduled_call_service.get_board_for_user(db, user.id)
         
         if board_record:
+            # Check if CRM is already selected and is DIFFERENT from the new selection
+            if board_record.tenant_crm_config_id:
+                if board_record.tenant_crm_config_id != crm_config_uuid:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"User already has a CRM selected ({board_record.crm_type}). You cannot switch to a different CRM platform."
+                    )
+                # If it's already the same CRM, we can just return success or update just in case
+                # For now let's just proceed with update or skip
+            
             # Update existing board record with new CRM config
             board_record.tenant_crm_config_id = crm_config_uuid
             board_record.crm_type = crm_config.crm_type
