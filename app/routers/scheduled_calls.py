@@ -2162,8 +2162,9 @@ async def get_jira_credentials(
         )
 
 
-@router.get("/jira/projects/{project_key}/field-map", response_model=SuccessResponse[dict],include_in_schema=False)
+@router.get("/jira/projects/{project_key}/field-map", response_model=SuccessResponse[dict], include_in_schema=False)
 async def get_jira_field_map(
+    http_request: Request,
     project_key: str,
     user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
@@ -2175,10 +2176,14 @@ async def get_jira_field_map(
     This endpoint is designed for n8n automation workflows.
     It fetches or creates required custom fields and returns their mapping.
     
-    Args:
+    **Authentication:**
+    - JWT token (default) - user and tenant from token
+    - OR X-N8N-Webhook-Secret header - for n8n webhook access
+    
+    **Args:**
         project_key: Jira project key (e.g., "SCHEDU")
         
-    Returns:
+    **Returns:**
         {
             "project_key": "SCHEDU",
             "field_map": {
@@ -2195,6 +2200,8 @@ async def get_jira_field_map(
         }
     """
     try:
+        # Verify authentication: either JWT token OR webhook secret
+        is_webhook = await verify_n8n_webhook_secret_async(http_request)
         # Get Jira CRM config
         jira_config = crm_config_service.get_crm_config_by_type(db, "jira")
         
