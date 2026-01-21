@@ -40,6 +40,9 @@ from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
 from typing import Optional, Dict, Any, List
 import re
+import logging
+
+logger = logging.getLogger("tgs_agent")
 
 router = APIRouter()
 
@@ -1953,21 +1956,23 @@ async def get_jira_credentials(
     - `user_id` (str, optional): If provided, returns single user credentials
     
     **Returns (Single User Mode):**
-    - api_token: Decrypted Jira API token
     - email: Jira account email
     - server_url: Jira server URL
     - project_key: User's Jira project key
     - user_id: User ID
     - tenant_id: Tenant ID
+    - field_map: Dictionary mapping field keys to Jira custom field IDs
+      - Example: {"email_sent": "customfield_10078", "agent_id": "customfield_10072", ...}
     
     **Returns (All Users Mode):**
-    - api_token: Decrypted Jira API token (global)
     - email: Jira account email (global)
     - server_url: Jira server URL (global)
     - users: Array of users with Jira configured
       - user_id: User ID
       - tenant_id: Tenant ID
       - project_key: User's project key
+      - field_map: Dictionary mapping field keys to Jira custom field IDs
+    - total: Total number of users
     """
     try:
         # Verify authentication: either JWT token OR webhook secret
@@ -2053,6 +2058,20 @@ async def get_jira_credentials(
                     detail="Jira project key not found. Please upload a CSV first to create the project."
                 )
             
+            # Get field mapping for this project
+            field_map = {}
+            try:
+                jira_service = JiraService(
+                    api_key=jira_config.encrypted_api_key,
+                    email=email,
+                    server_url=server_url
+                )
+                field_map = jira_service.ensure_required_fields(project_key)
+            except Exception as e:
+                # If field mapping fails, still return credentials but log warning
+                logger.warning(f"⚠️ Failed to get field mapping for project {project_key}: {str(e)}")
+                field_map = {}
+            
             # Get tenant_id (use current_tenant_id or first tenant)
             tenant_id_value = str(user.current_tenant_id) if user.current_tenant_id else None
             if not tenant_id_value and user.tenants:
@@ -2063,7 +2082,8 @@ async def get_jira_credentials(
                 "server_url": server_url,
                 "project_key": project_key,
                 "user_id": str(user.id),
-                "tenant_id": tenant_id_value
+                "tenant_id": tenant_id_value,
+                "field_map": field_map
             }
             
             return create_success_response(
@@ -2081,12 +2101,31 @@ async def get_jira_credentials(
                 ScheduledCall.crm_container_id.isnot(None)
             ).all()
             
+            # Initialize JiraService once for all projects
+            jira_service = JiraService(
+                api_key=jira_config.encrypted_api_key,
+                email=email,
+                server_url=server_url
+            )
+            
             users_list = []
             for board_record in jira_boards:
                 # Get user
                 user = db.query(User).filter(User.id == board_record.user_id).first()
                 if not user:
                     continue
+                
+                project_key = board_record.crm_container_id
+                if not project_key:
+                    continue
+                
+                # Get field mapping for this project
+                field_map = {}
+                try:
+                    field_map = jira_service.ensure_required_fields(project_key)
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to get field mapping for project {project_key}: {str(e)}")
+                    field_map = {}
                 
                 # Get all tenants for this user
                 user_tenants = user.tenants
@@ -2098,7 +2137,8 @@ async def get_jira_credentials(
                     users_list.append({
                         "user_id": str(user.id),
                         "tenant_id": str(tenant.id),
-                        "project_key": board_record.crm_container_id
+                        "project_key": project_key,
+                        "field_map": field_map
                     })
             
             result = {
