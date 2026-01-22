@@ -11,6 +11,7 @@ import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
 import base64
+from app.core.logger import logger
 
 
 class JiraService(BaseCRMService):
@@ -845,6 +846,10 @@ class JiraService(BaseCRMService):
         # Step 1: Get required fields for creation (fields that MUST be set during creation)
         required_fields = self._get_required_fields_for_creation(container_id)
         
+        # Debug: Log field_map and required_fields
+        logger.debug(f"Field map: {field_map}")
+        logger.debug(f"Required fields: {required_fields}")
+        
         # Step 2: Create issue with basic fields + required fields
         # Build description with all fields including status (similar to Trello/ClickUp)
         desc_lines = [f"Scheduled call at {call_time_utc}"]
@@ -868,79 +873,180 @@ class JiraService(BaseCRMService):
         }
         
         # Add required fields to basic_fields (these MUST be set during creation)
-        # Map required field IDs to our field values by matching field names
-        try:
-            create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
-            metadata_resp = requests.get(create_metadata_url, headers=self._headers(), timeout=10)
-            if metadata_resp.status_code == 200:
-                metadata = metadata_resp.json()
-                if "projects" in metadata and len(metadata["projects"]) > 0:
-                    project = metadata["projects"][0]
-                    if "issuetypes" in project and len(project["issuetypes"]) > 0:
-                        issue_type = project["issuetypes"][0]
-                        if "fields" in issue_type:
-                            for req_field_id in required_fields.keys():
-                                if req_field_id in issue_type["fields"]:
-                                    field_def = issue_type["fields"][req_field_id]
-                                    field_name = field_def.get("name", "").strip().lower()
-                                    
-                                    
-                                    # Check if this is Email Sent field
-                                    if "email" in field_name and "sent" in field_name:
-                                        # This is Email Sent - set to "No"
-                                        email_sent_value = self._get_select_field_value(req_field_id, container_id, preferred_value="No")
-                                        if email_sent_value:
-                                            basic_fields[req_field_id] = {"value": email_sent_value}
+        # Since required_fields might be empty, directly use field_map to set all custom fields
+        # Set all fields from field_map that are required by Jira
+        if "agent_id" in field_map and field_map["agent_id"]:
+            basic_fields[field_map["agent_id"]] = agent_id
+        
+        if "call_time_utc" in field_map and field_map["call_time_utc"]:
+            basic_fields[field_map["call_time_utc"]] = call_time_utc
+        
+        if "tenant_id" in field_map and field_map["tenant_id"]:
+            basic_fields[field_map["tenant_id"]] = tenant_id
+        
+        if "user_id" in field_map and field_map["user_id"]:
+            basic_fields[field_map["user_id"]] = user_id
+        
+        if "batch_id" in field_map and field_map["batch_id"]:
+            basic_fields[field_map["batch_id"]] = batch_id if batch_id else ""
+        
+        if "phone_number_id" in field_map and field_map["phone_number_id"]:
+            basic_fields[field_map["phone_number_id"]] = phone_number_id if phone_number_id else ""
+        
+        if "call_session_id" in field_map and field_map["call_session_id"]:
+            # Jira requires non-empty value, so use a placeholder
+            basic_fields[field_map["call_session_id"]] = "N/A"  # Use placeholder instead of empty string
+        
+        if "email_sent" in field_map and field_map["email_sent"]:
+            # Check field type from metadata to determine format
+            email_sent_field_id = field_map["email_sent"]
+            try:
+                create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
+                metadata_resp = requests.get(create_metadata_url, headers=self._headers(), timeout=10)
+                if metadata_resp.status_code == 200:
+                    metadata = metadata_resp.json()
+                    if "projects" in metadata and len(metadata["projects"]) > 0:
+                        project = metadata["projects"][0]
+                        if "issuetypes" in project and len(project["issuetypes"]) > 0:
+                            issue_type = project["issuetypes"][0]
+                            if "fields" in issue_type and email_sent_field_id in issue_type["fields"]:
+                                field_def = issue_type["fields"][email_sent_field_id]
+                                field_schema = field_def.get("schema", {})
+                                field_type = field_schema.get("type", "")
+                                
+                                # Check if it's a select field (option) or text field
+                                if field_type == "option":
+                                    # Select field - use {"value": "..."} format
+                                    allowed_values = field_def.get("allowedValues", [])
+                                    if allowed_values:
+                                        # Try to find "No" first
+                                        for option in allowed_values:
+                                            option_value = option.get("value", "")
+                                            option_name = option.get("name", "")
+                                            if "no" in str(option_value).lower() or "no" in str(option_name).lower():
+                                                basic_fields[email_sent_field_id] = {"value": option_value or option_name}
+                                                break
                                         else:
-                                            # If no value found, use first available option
-                                            allowed_values = field_def.get("allowedValues", [])
-                                            if allowed_values:
-                                                first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
-                                                basic_fields[req_field_id] = {"value": first_option}
-                                    # Check if this is Impact field (or other required select fields)
-                                    elif field_def.get("schema", {}).get("type") == "option":
-                                        # Select field - use first available option
+                                            # No "No" option found, use first available
+                                            first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
+                                            basic_fields[email_sent_field_id] = {"value": first_option}
+                                    else:
+                                        # No options, try to get from _get_select_field_value
+                                        email_sent_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
+                                        if email_sent_value:
+                                            basic_fields[email_sent_field_id] = {"value": email_sent_value}
+                                        else:
+                                            basic_fields[email_sent_field_id] = {"value": "No"}
+                                else:
+                                    # Text field - use direct string value
+                                    basic_fields[email_sent_field_id] = "No"
+            except Exception as e:
+                logger.warning(f"Exception checking email_sent field type: {str(e)}")
+                # Default: assume text field and use direct string
+                basic_fields[email_sent_field_id] = "No"
+            
+            # Ensure field is set (fallback)
+            if email_sent_field_id not in basic_fields:
+                # Default to text field format (direct string)
+                basic_fields[email_sent_field_id] = "No"
+        
+        # Also handle any fields from required_fields (fallback if field_map doesn't have them)
+        for req_field_id in required_fields.keys():
+            # Check if this required field ID is in field_map values
+            if "agent_id" in field_map and field_map["agent_id"] == req_field_id:
+                basic_fields[req_field_id] = agent_id
+            elif "call_time_utc" in field_map and field_map["call_time_utc"] == req_field_id:
+                basic_fields[req_field_id] = call_time_utc
+            elif "tenant_id" in field_map and field_map["tenant_id"] == req_field_id:
+                basic_fields[req_field_id] = tenant_id
+            elif "user_id" in field_map and field_map["user_id"] == req_field_id:
+                basic_fields[req_field_id] = user_id
+            elif "batch_id" in field_map and field_map["batch_id"] == req_field_id:
+                basic_fields[req_field_id] = batch_id if batch_id else ""
+            elif "phone_number_id" in field_map and field_map["phone_number_id"] == req_field_id:
+                basic_fields[req_field_id] = phone_number_id if phone_number_id else ""
+            elif "call_session_id" in field_map and field_map["call_session_id"] == req_field_id:
+                basic_fields[req_field_id] = ""  # Leave blank initially
+            elif "email_sent" in field_map and field_map["email_sent"] == req_field_id:
+                # For email_sent (select field), need to get valid option value
+                email_sent_value = self._get_select_field_value(req_field_id, container_id, preferred_value="No")
+                if email_sent_value:
+                    basic_fields[req_field_id] = {"value": email_sent_value}
+                else:
+                    # Fallback: try to get from metadata
+                    try:
+                        create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
+                        metadata_resp = requests.get(create_metadata_url, headers=self._headers(), timeout=10)
+                        if metadata_resp.status_code == 200:
+                            metadata = metadata_resp.json()
+                            if "projects" in metadata and len(metadata["projects"]) > 0:
+                                project = metadata["projects"][0]
+                                if "issuetypes" in project and len(project["issuetypes"]) > 0:
+                                    issue_type = project["issuetypes"][0]
+                                    if "fields" in issue_type and req_field_id in issue_type["fields"]:
+                                        field_def = issue_type["fields"][req_field_id]
                                         allowed_values = field_def.get("allowedValues", [])
                                         if allowed_values:
                                             first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
                                             basic_fields[req_field_id] = {"value": first_option}
-                                    # For other required fields, map to our actual values by matching field names
-                                    elif req_field_id not in basic_fields:
-                                        # Try to match required field to our field_map by name
-                                        matched = False
-                                        
-                                        # Match by field name patterns
-                                        if "agent" in field_name and "id" in field_name:
-                                            basic_fields[req_field_id] = agent_id
-                                            matched = True
-                                        elif "call" in field_name and "time" in field_name and "utc" in field_name:
-                                            basic_fields[req_field_id] = call_time_utc
-                                            matched = True
-                                        elif "tenant" in field_name and "id" in field_name:
-                                            basic_fields[req_field_id] = tenant_id
-                                            matched = True
-                                        elif "user" in field_name and "id" in field_name and "agent" not in field_name and "tenant" not in field_name:
-                                            basic_fields[req_field_id] = user_id
-                                            matched = True
-                                        elif "batch" in field_name and "id" in field_name and batch_id:
-                                            basic_fields[req_field_id] = batch_id
-                                            matched = True
-                                        elif "phone" in field_name and "number" in field_name and "id" in field_name and phone_number_id:
-                                            basic_fields[req_field_id] = phone_number_id
-                                            matched = True
-                                        elif "call" in field_name and "session" in field_name and "id" in field_name:
-                                            basic_fields[req_field_id] = ""  # Leave blank initially
-                                            matched = True
-                                        
-                                        # If not matched, use default value
-                                        if not matched:
-                                            default_value = required_fields[req_field_id]
-                                            basic_fields[req_field_id] = default_value
-        except Exception:
-            # Fallback: add required fields with default values
-            for field_id, field_value in required_fields.items():
-                if field_id not in basic_fields:
-                    basic_fields[field_id] = field_value
+                    except Exception:
+                        pass
+            else:
+                # Field not in field_map, try to match by name from metadata (fallback)
+                try:
+                    create_metadata_url = f"{self.server_url}/rest/api/3/issue/createmeta?projectKeys={container_id}&issuetypeNames=Task&expand=projects.issuetypes.fields"
+                    metadata_resp = requests.get(create_metadata_url, headers=self._headers(), timeout=10)
+                    if metadata_resp.status_code == 200:
+                        metadata = metadata_resp.json()
+                        if "projects" in metadata and len(metadata["projects"]) > 0:
+                            project = metadata["projects"][0]
+                            if "issuetypes" in project and len(project["issuetypes"]) > 0:
+                                issue_type = project["issuetypes"][0]
+                                if "fields" in issue_type and req_field_id in issue_type["fields"]:
+                                    field_def = issue_type["fields"][req_field_id]
+                                    field_name = field_def.get("name", "").strip().lower()
+                                    field_schema = field_def.get("schema", {})
+                                    
+                                    # Check if this is Email Sent field
+                                    if "email" in field_name and "sent" in field_name:
+                                        email_sent_value = self._get_select_field_value(req_field_id, container_id, preferred_value="No")
+                                        if email_sent_value:
+                                            basic_fields[req_field_id] = {"value": email_sent_value}
+                                        else:
+                                            allowed_values = field_def.get("allowedValues", [])
+                                            if allowed_values:
+                                                first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
+                                                basic_fields[req_field_id] = {"value": first_option}
+                                    # Check if this is a select field
+                                    elif field_schema.get("type") == "option":
+                                        allowed_values = field_def.get("allowedValues", [])
+                                        if allowed_values:
+                                            first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
+                                            basic_fields[req_field_id] = {"value": first_option}
+                                    # For text fields, match by name patterns
+                                    elif "agent" in field_name and "id" in field_name:
+                                        basic_fields[req_field_id] = agent_id
+                                    elif "call" in field_name and "time" in field_name and "utc" in field_name:
+                                        basic_fields[req_field_id] = call_time_utc
+                                    elif "tenant" in field_name and "id" in field_name:
+                                        basic_fields[req_field_id] = tenant_id
+                                    elif "user" in field_name and "id" in field_name and "agent" not in field_name and "tenant" not in field_name:
+                                        basic_fields[req_field_id] = user_id
+                                    elif "batch" in field_name and "id" in field_name:
+                                        basic_fields[req_field_id] = batch_id if batch_id else ""
+                                    elif "phone" in field_name and "number" in field_name and "id" in field_name:
+                                        basic_fields[req_field_id] = phone_number_id if phone_number_id else ""
+                                    elif "call" in field_name and "session" in field_name and "id" in field_name:
+                                        basic_fields[req_field_id] = ""
+                                    else:
+                                        # Use default value from required_fields
+                                        default_value = required_fields[req_field_id]
+                                        basic_fields[req_field_id] = default_value
+                except Exception as e:
+                    logger.warning(f"Failed to match field {req_field_id} by name: {str(e)}")
+                    # Final fallback: use default value
+                    default_value = required_fields[req_field_id]
+                    basic_fields[req_field_id] = default_value
         
         # Step 3: Prepare ALL custom fields for update step (fields that are NOT required/on create screen)
         # Get list of required field IDs to exclude from update
@@ -987,6 +1093,9 @@ class JiraService(BaseCRMService):
                 email_sent_value = self._get_select_field_value(email_sent_field_id, container_id, preferred_value="No")
                 if email_sent_value:
                     custom_fields_to_update[email_sent_field_id] = {"value": email_sent_value}
+        
+        # Debug: Log what fields we're setting
+        logger.debug(f"Basic fields before POST: {json.dumps(basic_fields, indent=2)}")
         
         basic_payload = {"fields": basic_fields}
         
@@ -1075,6 +1184,9 @@ class JiraService(BaseCRMService):
                     "errors": errors_dict,
                     "payload": basic_payload
                 }
+                
+                # Log the error for debugging
+                logger.error(f"Failed to create Jira issue: {json.dumps(error_detail, indent=2)}")
                 
                 return None
                 
