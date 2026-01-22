@@ -386,33 +386,6 @@ class JiraService(BaseCRMService):
                     self._add_select_field_options(field_id, ["Yes", "No"])
                 
                 return field_id
-            elif response.status_code == 400:
-                # Field might already exist - try to find it
-                error_text = response.text.lower()
-                if "already exists" in error_text or "duplicate" in error_text or "name" in error_text:
-                    # Try to find existing field by name
-                    try:
-                        all_fields_url = f"{self.server_url}/rest/api/3/field"
-                        all_fields_response = requests.get(all_fields_url, headers=self._headers(), timeout=20)
-                        if all_fields_response.status_code == 200:
-                            all_fields = all_fields_response.json()
-                            normalized_search_name = self.normalize_name(field_name)
-                            
-                            for field in all_fields:
-                                existing_field_name = field.get("name", "")
-                                normalized_existing = self.normalize_name(existing_field_name)
-                                
-                                # Check if names match (normalized)
-                                if normalized_search_name == normalized_existing:
-                                    field_id = field.get("id", "")
-                                    if field_id:
-                                        # Found existing field - return its ID
-                                        return field_id
-                    except Exception:
-                        pass
-                
-                # If we couldn't find existing field, return None
-                return None
             else:
                 return None
                 
