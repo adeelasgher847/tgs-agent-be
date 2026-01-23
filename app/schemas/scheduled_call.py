@@ -14,6 +14,7 @@ class CSVUploadResponse(BaseModel):
 class BoardInfoResponse(BaseModel):
     board_id: str
     board_url: str
+    is_crm_enabled: bool = True
 
 
 class DeleteBoardItemsResponse(BaseModel):

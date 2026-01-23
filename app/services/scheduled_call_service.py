@@ -52,6 +52,15 @@ class ScheduledCallService:
         from app.services.crm_config_service import CRMConfigService
         from app.services.crm_service_factory import CRMServiceFactory
         
+        from app.services.billing_service import BillingService
+        
+        # Check if user has an active paid subscription
+        if not BillingService.has_active_paid_subscription(db, user_id):
+            raise HTTPException(
+                status_code=402,
+                detail="Access to CRM features requires an active paid subscription. Please update your payment method or subscribe to a plan."
+            )
+
         # Check if container already exists for this user
         board_record = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
 

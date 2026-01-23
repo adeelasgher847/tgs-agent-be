@@ -7,7 +7,7 @@ from app.db.base_class import Base
 
 class Subscription(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id'), nullable=False, unique=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('user.id'), nullable=False, unique=True)
     plan_id = Column(UUID(as_uuid=True), ForeignKey('plan.id'), nullable=False)
     stripe_subscription_id = Column(String, unique=True, nullable=True, index=True)
     stripe_customer_id = Column(String, nullable=True, index=True)
@@ -21,6 +21,6 @@ class Subscription(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     
     # Relationships
-    tenant = relationship("Tenant", back_populates="subscription")
+    user = relationship("User", back_populates="subscription")
     plan = relationship("Plan", back_populates="subscriptions")
     usage_records = relationship("UsageRecord", back_populates="subscription", cascade="all, delete-orphan")

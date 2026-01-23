@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     
     ADMIN_ROLE: str = "admin"
     
-    DATABASE_URL: str = "postgresql+psycopg2://postgres:admin@localhost:5432/voiceagent"
+    DATABASE_URL: str = "postgresql+psycopg2://postgres:flask123@127.0.0.1:5432/voiceagentdb"
     SECRET_KEY: str = "supersecretkey"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15

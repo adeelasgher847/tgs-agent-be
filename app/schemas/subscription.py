@@ -11,7 +11,7 @@ class SubscriptionBase(BaseModel):
     cancel_at_period_end: bool = False
 
 class SubscriptionCreate(SubscriptionBase):
-    tenant_id: uuid.UUID
+    user_id: uuid.UUID
     plan_id: uuid.UUID
     stripe_subscription_id: Optional[str] = None
     stripe_customer_id: Optional[str] = None
@@ -27,7 +27,7 @@ class SubscriptionUpdate(BaseModel):
 
 class SubscriptionOut(SubscriptionBase):
     id: uuid.UUID
-    tenant_id: uuid.UUID
+    user_id: uuid.UUID
     plan_id: uuid.UUID
     stripe_subscription_id: Optional[str] = None
     stripe_customer_id: Optional[str] = None

@@ -9,6 +9,7 @@ from app.core.security import verify_token,create_user_token, create_refresh_tok
 from app.models.refresh_token import RefreshToken
 from app.schemas.auth import TokenResponse, RoleInfo
 from app.services.role_service import is_admin_in_tenant
+from app.services.billing_service import BillingService
 import uuid
 
 security = HTTPBearer()
@@ -353,3 +354,16 @@ def issue_tokens_for_user(
         role=role_info,
         refresh_token=rt_value
     )
+
+
+def require_active_subscription(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+) -> User:
+    """Ensure user has an active paid subscription."""
+    if not BillingService.has_active_paid_subscription(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Access to CRM features requires an active paid subscription. Please update your payment method or subscribe to a plan."
+        )
+    return user

@@ -11,9 +11,6 @@ class PlanBase(BaseModel):
     # Simple Pricing (like Vapi)
     price_monthly: Optional[int] = None  # Price in cents (0 for free)
     
-    # Simple Limits
-    monthly_calls_limit: int = Field(default=0, ge=0)  # Keep existing
-    
     # Stripe
     stripe_price_id: Optional[str] = None
     
@@ -28,7 +25,6 @@ class PlanUpdate(BaseModel):
     display_name: Optional[str] = None
     description: Optional[str] = None
     price_monthly: Optional[int] = None
-    monthly_calls_limit: Optional[int] = None
     stripe_price_id: Optional[str] = None
     is_active: Optional[bool] = None
     is_popular: Optional[bool] = None

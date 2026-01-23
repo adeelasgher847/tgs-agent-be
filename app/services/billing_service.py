@@ -14,10 +14,10 @@ import uuid
 class BillingService:
     
     @staticmethod
-    def get_or_create_subscription(db: Session, tenant_id: uuid.UUID) -> Subscription:
+    def get_or_create_subscription(db: Session, user_id: uuid.UUID) -> Subscription:
         """Get existing subscription or create a free one"""
         subscription = db.query(Subscription).filter(
-            Subscription.tenant_id == tenant_id
+            Subscription.user_id == user_id
         ).first()
         
         if not subscription:
@@ -37,7 +37,7 @@ class BillingService:
                 db.refresh(free_plan)
             
             subscription = Subscription(
-                tenant_id=tenant_id,
+                user_id=user_id,
                 plan_id=free_plan.id,
                 status="active"
             )
@@ -48,6 +48,17 @@ class BillingService:
         return subscription
     
     @staticmethod
-    def increment_agent_usage(db: Session, tenant_id: uuid.UUID) -> None:
+    def increment_agent_usage(db: Session, user_id: uuid.UUID) -> None:
         """Increment agent creation count for current month"""
         pass
+
+    @staticmethod
+    def has_active_paid_subscription(db: Session, user_id: uuid.UUID) -> bool:
+        """Check if user has an active paid subscription"""
+        subscription = db.query(Subscription).join(Plan).filter(
+            Subscription.user_id == user_id,
+            Subscription.status == "active",
+            Plan.price_monthly > 0
+        ).first()
+        
+        return subscription is not None

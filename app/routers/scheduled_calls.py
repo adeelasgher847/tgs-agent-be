@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone
 import uuid
-from app.api.deps import get_db, require_tenant, get_optional_tenant_user, require_owner
+from app.api.deps import get_db, require_tenant, get_optional_tenant_user, require_owner, require_active_subscription
+from app.services.billing_service import BillingService
 from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.user import User
 from app.models.agent import Agent
@@ -277,7 +278,7 @@ async def upload_scheduled_calls_csv(
     crm_config_id: str = Query(..., description="CRM configuration ID (UUID)"),
     agent_id: str = Query(..., description="Agent ID to use for all calls in this CSV (required)"),
     phone_number_id: Optional[str] = Query(None, description="Optional phone number ID to use for all calls in CSV"),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_active_subscription),
     db: Session = Depends(get_db)
 ):
     """
@@ -411,7 +412,7 @@ async def create_single_scheduled_call(
     phone_number: str = Query(..., description="Phone number to call (e.g., +1234567890)"),
     call_time_utc: str = Query(..., description="Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS"),
     phone_number_id: Optional[str] = Query(None, description="Optional phone number ID from DB to use for call"),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_active_subscription),
     db: Session = Depends(get_db)
 ):
     """
@@ -495,7 +496,8 @@ async def create_single_scheduled_call(
 
 @router.get("/crm-config", response_model=SuccessResponse[CRMConfigListResponse])
 async def get_crm_config(
-    user: User = Depends(require_owner),  # Owner role only
+    user: User = Depends(require_active_subscription),
+    owner_user: User = Depends(require_owner),  # Owner role only
     db: Session = Depends(get_db)
 ):
     """
@@ -609,9 +611,12 @@ async def get_board_url(user: User = Depends(require_tenant), db: Session = Depe
         # Fallback for other CRM types
         board_url = board_record.crm_container_url or crm_service.build_container_url(board_id)
 
+    is_crm_enabled = BillingService.has_active_paid_subscription(db, user.id)
+
     data = BoardInfoResponse(
         board_id=board_id,
         board_url=board_url,
+        is_crm_enabled=is_crm_enabled
     )
     return create_success_response(data, f"Scheduled calls board URL retrieved for {crm_type}")
 
@@ -622,7 +627,7 @@ async def get_board_url(user: User = Depends(require_tenant), db: Session = Depe
     summary="Get count of pending scheduled calls for current tenant",
 )
 async def get_pending_scheduled_calls_count(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_active_subscription),
     db: Session = Depends(get_db),
 ):
     """
@@ -715,7 +720,7 @@ async def get_pending_scheduled_calls_count(
 
 
 @router.delete("/board/items", response_model=SuccessResponse[DeleteBoardItemsResponse])
-async def clear_board_items(user: User = Depends(require_tenant), db: Session = Depends(get_db)):
+async def clear_board_items(user: User = Depends(require_active_subscription), db: Session = Depends(get_db)):
     """
     Remove all items belonging to the current tenant from the user's CRM container.
     Works with all CRMs (Monday.com, ClickUp, Jira, Trello).

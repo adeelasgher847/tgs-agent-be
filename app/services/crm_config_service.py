@@ -23,6 +23,13 @@ class CRMConfigService:
         created_by: uuid.UUID
     ) -> CRMConfig:
         """Create a new global CRM configuration"""
+        from app.services.billing_service import BillingService
+        if not BillingService.has_active_paid_subscription(db, created_by):
+            raise HTTPException(
+                status_code=402,
+                detail="Access to CRM features requires an active paid subscription. Please update your payment method or subscribe to a plan."
+            )
+
         # Check if CRM config already exists for this CRM type
         existing = db.query(CRMConfig).filter(
             CRMConfig.crm_type == crm_config_data.crm_type.lower()
