@@ -5,6 +5,7 @@ Supports Monday.com, ClickUp, Jira, and Trello
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from typing import List
 import uuid
 
 from app.api.deps import get_db, require_tenant, require_owner, get_current_user_jwt
@@ -16,6 +17,8 @@ from app.schemas.crm_config import (
     CRMConfigUpdate,
     CRMConfigOut,
 )
+from app.schemas.subscription import UserSubscriptionSummary
+from app.models.subscription import Subscription
 from app.services.crm_config_service import CRMConfigService
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
@@ -299,6 +302,34 @@ async def get_all_crm_configs(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve CRM configurations: {str(e)}"
         )
+
+
+@router.get("/subscription", response_model=SuccessResponse[List[UserSubscriptionSummary]])
+def get_current_user_subscriptions(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db),
+):
+    """
+    Get current user's CRM subscriptions from subscription table.
+    Returns list of subscriptions with status, current_period_start, current_period_end, crm_type.
+    Only subscriptions for the authenticated user are returned.
+    """
+    subscriptions = (
+        db.query(Subscription)
+        .filter(Subscription.user_id == current_user.id)
+        .order_by(Subscription.crm_type)
+        .all()
+    )
+    data = [
+        UserSubscriptionSummary(
+            status=s.status,
+            current_period_start=s.current_period_start,
+            current_period_end=s.current_period_end,
+            crm_type=s.crm_type,
+        )
+        for s in subscriptions
+    ]
+    return create_success_response(data, "User subscriptions retrieved successfully")
 
 
 @router.post("/start-checkout", response_model=SuccessResponse[dict])

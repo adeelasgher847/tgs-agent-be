@@ -42,3 +42,13 @@ class SubscriptionOut(SubscriptionBase):
 
 class SubscriptionWithUsage(SubscriptionOut):
     current_usage: Optional[dict] = None  # Will be populated with current month usage
+
+
+class UserSubscriptionSummary(BaseModel):
+    """Minimal subscription info for current user: status, period start/end, crm_type."""
+    status: str
+    current_period_start: Optional[datetime] = None
+    current_period_end: Optional[datetime] = None
+    crm_type: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
