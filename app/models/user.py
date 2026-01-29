@@ -44,3 +44,5 @@ class User(Base):
     
     # Scheduled calls board (one board per user, shared by all their tenants)
     scheduled_call = relationship("ScheduledCall", back_populates="user", uselist=False)
+    # CRM plan subscriptions (one per crm_type: monday, clickup, jira, trello)
+    subscriptions = relationship("Subscription", back_populates="user", uselist=True)

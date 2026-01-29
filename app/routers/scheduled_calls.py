@@ -337,6 +337,17 @@ async def upload_scheduled_calls_csv(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid crm_config_id format")
         
+        # Verify CRM config exists and user has active subscription for this CRM (402 if not)
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
+        from app.services.billing_service import BillingService
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to a plan for this CRM."
+            )
+        
         # Validate and verify agent_id (REQUIRED)
         try:
             agent_uuid = uuid.UUID(agent_id)
@@ -440,6 +451,17 @@ async def create_single_scheduled_call(
             crm_config_uuid = uuid.UUID(crm_config_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid crm_config_id format")
+        
+        # Verify CRM config exists and user has active subscription for this CRM (402 if not)
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
+        from app.services.billing_service import BillingService
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to a plan for this CRM."
+            )
         
         # Parse agent_id
         try:

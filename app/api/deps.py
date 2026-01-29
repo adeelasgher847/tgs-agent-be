@@ -353,3 +353,17 @@ def issue_tokens_for_user(
         role=role_info,
         refresh_token=rt_value
     )
+
+
+def require_active_subscription(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+) -> User:
+    """Ensure user has at least one active paid CRM subscription with valid period."""
+    from app.services.billing_service import BillingService
+    if not BillingService.has_active_paid_subscription(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Access to CRM features requires an active paid subscription. Please subscribe to a plan for your CRM."
+        )
+    return user

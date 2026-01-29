@@ -3,12 +3,14 @@ CRM Configuration API endpoints
 Supports Monday.com, ClickUp, Jira, and Trello
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 import uuid
 
-from app.api.deps import get_db, require_tenant, require_owner
+from app.api.deps import get_db, require_tenant, require_owner, get_current_user_jwt
 from app.models.user import User
+from app.models.plan import Plan
+from app.models.tenant import Tenant
 from app.schemas.crm_config import (
     CRMConfigCreate,
     CRMConfigUpdate,
@@ -297,5 +299,94 @@ async def get_all_crm_configs(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve CRM configurations: {str(e)}"
         )
+
+
+@router.post("/start-checkout", response_model=SuccessResponse[dict])
+def start_plan_checkout(
+    stripe_price_id: str = Query(..., description="Stripe Price ID of the plan to purchase"),
+    current_user: User = Depends(get_current_user_jwt),
+    owner_user: User = Depends(require_owner),
+    db: Session = Depends(get_db)
+):
+    """
+    Start Stripe checkout session for a CRM plan purchase.
+    Owner tenant only: only the owner of the current tenant can pay for a CRM plan.
+    Plan is identified by stripe_price_id; metadata includes user_id, tenant_id, plan_id, crm_type
+    so webhook can update user's CRM subscription (no credits added for plan purchase).
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    plan = db.query(Plan).filter(Plan.stripe_price_id == stripe_price_id).first()
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Plan not found for the given stripe_price_id"
+        )
+
+    import stripe
+    from app.core.config import settings
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    if not tenant.stripe_customer_id:
+        from app.services.stripe_service import StripeService
+        stripe_customer_id = StripeService.create_customer(
+            tenant=tenant,
+            email=current_user.email,
+            user=current_user
+        )
+        tenant.stripe_customer_id = stripe_customer_id
+        db.commit()
+    else:
+        stripe_customer_id = tenant.stripe_customer_id
+
+    tenant_id_str = str(current_user.current_tenant_id)
+    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant_id_str}&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant_id_str}"
+
+    raw_amount = int(plan.price_monthly or 0)
+    amount_cents = raw_amount if raw_amount >= 50 else raw_amount * 100
+    if amount_cents < 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Plan amount is not configured"
+        )
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            customer=stripe_customer_id,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            mode="payment",
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": f"CRM Plan - {plan.display_name}"},
+                    "unit_amount": amount_cents
+                },
+                "quantity": 1
+            }],
+            metadata={
+                "tenant_id": tenant_id_str,
+                "user_id": str(current_user.id),
+                "purchase_type": "plan_purchase",
+                "plan_id": str(plan.id),
+                "crm_type": plan.crm_type or "",
+                "amount": str(amount_cents / 100.0)
+            }
+        )
+        return create_success_response(
+            {"session_id": checkout_session.id, "url": checkout_session.url},
+            "Checkout session created successfully"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 

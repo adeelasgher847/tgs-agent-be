@@ -218,100 +218,6 @@ def switch_tenant(
     
     return create_success_response(token_response, "Tenant switched successfully")
 
-@router.post("/start-checkout")
-def start_checkout_session(
-    stripe_price_id: str,
-    current_user: User = Depends(get_current_user_jwt),
-    admin_user: User = Depends(require_admin_or_owner),
-    db: Session = Depends(get_db)
-):
-    """
-    Start a one-time Stripe checkout for a plan purchase.
-    Credits will be granted after verification: $1 = 10 credits.
-    """
-    if not current_user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No tenant selected"
-        )
-    tenant_id = str(current_user.current_tenant_id)
-    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
-    if not tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found"
-        )
-    # Create Stripe customer if not exists
-    if not tenant.stripe_customer_id:
-        from app.services.stripe_service import StripeService
-        stripe_customer_id = StripeService.create_customer(
-            tenant=tenant,
-            email=current_user.email,
-            user=current_user
-        )
-        tenant.stripe_customer_id = stripe_customer_id
-        db.commit()
-    else:
-        stripe_customer_id = tenant.stripe_customer_id
-    # Create checkout session directly with Stripe (one-time payment)
-    import stripe
-    from app.core.config import settings
-    
-    stripe.api_key = settings.STRIPE_SECRET_KEY
-    
-    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant_id}&session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant_id}"
-    
-    try:
-        # Lookup plan to compute amount and embed metadata
-        from app.models.plan import Plan
-        plan = db.query(Plan).filter(Plan.stripe_price_id == stripe_price_id).first()
-        if not plan:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Plan not found for the given stripe_price_id"
-            )
-        raw_amount = int(plan.price_monthly or 0)
-        amount_cents = raw_amount if raw_amount >= 50 else raw_amount * 100
-        if amount_cents < 50:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Plan amount is not configured"
-            )
-        amount_dollars = amount_cents / 100.0
-
-        checkout_session = stripe.checkout.Session.create(
-            customer=stripe_customer_id,
-            success_url=success_url,
-            cancel_url=cancel_url,
-            mode="payment",
-            line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {"name": f"Plan Purchase - {plan.display_name}"},
-                    "unit_amount": amount_cents
-                },
-                "quantity": 1
-            }],
-            metadata={
-                "tenant_id": tenant_id,
-                "purchase_type": "plan_purchase",
-                "plan_id": str(plan.id),
-                "amount": str(amount_dollars)
-            }
-        )
-
-        return create_success_response({
-            "session_id": checkout_session.id,
-            "url": checkout_session.url
-        }, "Checkout session created successfully")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
 @router.post("/start-credit-checkout-session")
 def start_credit_checkout_session(
     amount: float,  # Amount in dollars
@@ -463,22 +369,28 @@ def verify_last_payment(
             detail="No tenant selected"
         )
     
-    # Get the latest subscription for the tenant
+    # Get the latest subscription for the user (with a session ID)
     from app.models.subscription import Subscription
-    subscription = db.query(Subscription).filter(
-        Subscription.tenant_id == current_user.current_tenant_id
-    ).first()
+    subscription = (
+        db.query(Subscription)
+        .filter(
+            Subscription.user_id == current_user.id,
+            Subscription.stripe_session_id.isnot(None),
+        )
+        .order_by(Subscription.updated_at.desc())
+        .first()
+    )
     
     if not subscription:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No subscription found for this tenant"
+            detail="No subscription with payment session found for this user"
         )
     
     if not subscription.stripe_session_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No payment session found for this tenant"
+            detail="No payment session found for this user"
         )
     
     # Use the existing verify_payment function with the session ID

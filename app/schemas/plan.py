@@ -16,6 +16,8 @@ class PlanBase(BaseModel):
     
     # Stripe
     stripe_price_id: Optional[str] = None
+    # CRM plan: monday, clickup, jira, trello (optional)
+    crm_type: Optional[str] = None
     
     # Status
     is_active: bool = True
@@ -30,6 +32,7 @@ class PlanUpdate(BaseModel):
     price_monthly: Optional[int] = None
     monthly_calls_limit: Optional[int] = None
     stripe_price_id: Optional[str] = None
+    crm_type: Optional[str] = None
     is_active: Optional[bool] = None
     is_popular: Optional[bool] = None
 
