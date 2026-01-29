@@ -350,12 +350,11 @@ def start_plan_checkout(
     success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant_id_str}&session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant_id_str}"
 
-    raw_amount = int(plan.price_monthly or 0)
-    amount_cents = raw_amount if raw_amount >= 50 else raw_amount * 100
-    if amount_cents < 50:
+    # Recurring subscription: use Stripe Price ID so Stripe creates a Subscription and we get subscription_id
+    if not plan.stripe_price_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Plan amount is not configured"
+            detail="Plan has no Stripe price ID configured for recurring billing"
         )
 
     try:
@@ -363,13 +362,9 @@ def start_plan_checkout(
             customer=stripe_customer_id,
             success_url=success_url,
             cancel_url=cancel_url,
-            mode="payment",
+            mode="subscription",
             line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {"name": f"CRM Plan - {plan.display_name}"},
-                    "unit_amount": amount_cents
-                },
+                "price": plan.stripe_price_id,
                 "quantity": 1
             }],
             metadata={
@@ -377,8 +372,7 @@ def start_plan_checkout(
                 "user_id": str(current_user.id),
                 "purchase_type": "plan_purchase",
                 "plan_id": str(plan.id),
-                "crm_type": plan.crm_type or "",
-                "amount": str(amount_cents / 100.0)
+                "crm_type": plan.crm_type or ""
             }
         )
         return create_success_response(

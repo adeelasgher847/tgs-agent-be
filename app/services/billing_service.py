@@ -94,14 +94,28 @@ class BillingService:
 
             # Plan purchase: update subscription only, NO credits
             if purchase_type == 'plan_purchase' and user_id and plan_id:
+                stripe_sub_id = session.get('subscription')  # present when mode=subscription
+                period_start, period_end = None, None
+                if stripe_sub_id:
+                    try:
+                        sub = stripe.Subscription.retrieve(stripe_sub_id)
+                        if sub.current_period_start:
+                            period_start = datetime.fromtimestamp(sub.current_period_start, tz=timezone.utc)
+                        if sub.current_period_end:
+                            period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc)
+                    except Exception:
+                        pass
                 BillingService.update_subscription(
                     db=db,
                     user_id=user_id,
                     plan_id=plan_id,
                     status="active",
+                    stripe_subscription_id=stripe_sub_id,
                     stripe_customer_id=session.get('customer'),
                     stripe_session_id=session_id,
-                    crm_type=crm_type
+                    crm_type=crm_type,
+                    current_period_start=period_start,
+                    current_period_end=period_end
                 )
                 logger.info(f"Subscription updated for user {user_id} (crm_type={crm_type}) via sync - no credits added")
                 mark_session_credited(session_id)
@@ -161,16 +175,19 @@ class BillingService:
         stripe_subscription_id: Optional[str] = None,
         stripe_customer_id: Optional[str] = None,
         stripe_session_id: Optional[str] = None,
-        crm_type: Optional[str] = None
+        crm_type: Optional[str] = None,
+        current_period_start: Optional[datetime] = None,
+        current_period_end: Optional[datetime] = None
     ) -> Subscription:
-        """Update or create user subscription for this CRM. Sets current_period_start and current_period_end."""
+        """Update or create user subscription for this CRM. Sets current_period_start/end from args or default 30 days."""
         subscription = db.query(Subscription).filter(
             Subscription.user_id == user_id,
             (Subscription.crm_type == crm_type) if crm_type is not None else Subscription.crm_type.is_(None)
         ).first()
 
         now = datetime.now(timezone.utc)
-        period_end = now + timedelta(days=BillingService.DEFAULT_PERIOD_DAYS)
+        period_start = current_period_start if current_period_start is not None else now
+        period_end = current_period_end if current_period_end is not None else (now + timedelta(days=BillingService.DEFAULT_PERIOD_DAYS))
 
         if not subscription:
             subscription = Subscription(user_id=user_id, crm_type=crm_type)
@@ -178,7 +195,7 @@ class BillingService:
 
         subscription.plan_id = plan_id
         subscription.status = status
-        subscription.current_period_start = now
+        subscription.current_period_start = period_start
         subscription.current_period_end = period_end
         if stripe_subscription_id:
             subscription.stripe_subscription_id = stripe_subscription_id
