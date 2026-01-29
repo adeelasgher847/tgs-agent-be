@@ -1826,6 +1826,14 @@ async def select_crm_config(
         if not crm_config:
             raise HTTPException(status_code=404, detail="CRM config not found")
         
+        # Require active subscription for this CRM (402 if not)
+        from app.services.billing_service import BillingService
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to a plan for this CRM before selecting it."
+            )
+        
         # Get or create board record for user
         board_record = scheduled_call_service.get_board_for_user(db, user.id)
         
