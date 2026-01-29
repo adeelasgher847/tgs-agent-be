@@ -588,7 +588,15 @@ async def get_board_url(user: User = Depends(require_tenant), db: Session = Depe
     crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
     if not crm_config:
         raise HTTPException(status_code=404, detail="CRM configuration not found")
-    
+
+    # Verify user has active subscription for this CRM (402 if not)
+    from app.services.billing_service import BillingService
+    if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to a plan for this CRM."
+        )
+
     # Get CRM service using API credentials
     crm_service = CRMServiceFactory.get_service(crm_config)
     
