@@ -45,5 +45,5 @@ class User(Base):
     # Scheduled calls board (one board per user, shared by all their tenants)
     scheduled_call = relationship("ScheduledCall", back_populates="user", uselist=False)
     
-    # Subscription
-    subscription = relationship("Subscription", back_populates="user", uselist=False)
+    # Subscriptions
+    subscriptions = relationship("Subscription", back_populates="user", uselist=True)

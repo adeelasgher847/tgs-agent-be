@@ -9,6 +9,7 @@ class SubscriptionBase(BaseModel):
     current_period_start: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     cancel_at_period_end: bool = False
+    crm_type: Optional[str] = None
 
 class SubscriptionCreate(SubscriptionBase):
     user_id: uuid.UUID
@@ -24,6 +25,7 @@ class SubscriptionUpdate(BaseModel):
     canceled_at: Optional[datetime] = None
     stripe_subscription_id: Optional[str] = None
     stripe_customer_id: Optional[str] = None
+    crm_type: Optional[str] = None
 
 class SubscriptionOut(SubscriptionBase):
     id: uuid.UUID
@@ -31,6 +33,7 @@ class SubscriptionOut(SubscriptionBase):
     plan_id: uuid.UUID
     stripe_subscription_id: Optional[str] = None
     stripe_customer_id: Optional[str] = None
+    crm_type: Optional[str] = None
     canceled_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None

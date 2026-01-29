@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import uuid
 
-from app.api.deps import get_db, require_tenant, require_owner, require_admin_or_owner, get_current_user_jwt, require_active_subscription
+from app.api.deps import get_db, require_tenant, require_owner, get_current_user_jwt, require_active_subscription
 from app.models.user import User
 from app.schemas.crm_config import (
     CRMConfigCreate,
@@ -17,10 +17,6 @@ from app.schemas.crm_config import (
 from app.services.crm_config_service import CRMConfigService
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
-from app.core.config import settings
-from app.models.tenant import Tenant
-from app.models.plan import Plan
-import stripe
 
 router = APIRouter()
 
@@ -30,7 +26,7 @@ crm_config_service = CRMConfigService()
 @router.post("", response_model=SuccessResponse[CRMConfigOut])
 async def create_crm_config(
     crm_config_data: CRMConfigCreate,
-    user: User = Depends(require_active_subscription),
+    user: User = Depends(get_current_user_jwt),
     owner_user: User = Depends(require_owner),
     db: Session = Depends(get_db)
 ):
@@ -134,7 +130,7 @@ async def create_crm_config(
 async def update_crm_config(
     crm_config_id: str,
     update_data: CRMConfigUpdate,
-    user: User = Depends(require_active_subscription),
+    user: User = Depends(get_current_user_jwt),
     owner_user: User = Depends(require_owner),
     db: Session = Depends(get_db)
 ):
@@ -214,7 +210,7 @@ async def update_crm_config(
 @router.delete("/{crm_config_id}", response_model=SuccessResponse[dict])
 async def delete_crm_config(
     crm_config_id: str,
-    user: User = Depends(require_active_subscription),
+    user: User = Depends(get_current_user_jwt),
     owner_user: User = Depends(require_owner),
     db: Session = Depends(get_db)
 ):
@@ -260,7 +256,7 @@ async def delete_crm_config(
 
 @router.get("", response_model=SuccessResponse[list[CRMConfigOut]])
 async def get_all_crm_configs(
-    user: User = Depends(require_active_subscription),
+    user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
     """
@@ -272,16 +268,36 @@ async def get_all_crm_configs(
     try:
         crm_configs = crm_config_service.get_all_crm_configs(db)
         
+        # 🛡️ Lock to paid CRMs if subscription is active
+        from app.models.subscription import Subscription
+        user_subscriptions = db.query(Subscription).filter(
+            Subscription.user_id == user.id,
+            Subscription.status == "active"
+        ).all()
+        
+        subscribed_crm_types = {s.crm_type.lower() for s in user_subscriptions if s.crm_type}
+
         response_list = []
         for crm_config in crm_configs:
+            # If user has an active subscription for any specific CRMs, skip others
+            # But allow if they have a subscription for THIS crm
+            if subscribed_crm_types and crm_config.crm_type.lower() not in subscribed_crm_types:
+                continue
+            
+            # Additional safety: if they have a paid subscription but it's NOT this CRM and NOT empty, skip it.
+            # (already covered by above logic, but keeping it clean)
+
             # Parse additional_config for response
             additional_config_dict = None
             if crm_config.additional_config:
-                import json
-                additional_config_dict = json.loads(crm_config.additional_config)
-                # Don't expose encrypted tokens in response
-                if "api_token" in additional_config_dict:
-                    additional_config_dict["api_token"] = "***encrypted***"
+                try:
+                    import json
+                    additional_config_dict = json.loads(crm_config.additional_config)
+                    # Don't expose encrypted tokens in response
+                    if additional_config_dict and "api_token" in additional_config_dict:
+                        additional_config_dict["api_token"] = "***encrypted***"
+                except Exception:
+                    additional_config_dict = {"status": "parse_error"}
             
             response_list.append(
                 CRMConfigOut(
@@ -300,101 +316,12 @@ async def get_all_crm_configs(
             f"Retrieved {len(response_list)} CRM configuration(s)"
         )
     except Exception as e:
+        logger.error(f"Failed to retrieve CRM configurations: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve CRM configurations: {str(e)}"
         )
 
 
-@router.post("/start-checkout")
-def start_checkout_session(
-    stripe_price_id: str,
-    current_user: User = Depends(get_current_user_jwt),
-    admin_user: User = Depends(require_admin_or_owner),
-    db: Session = Depends(get_db)
-):
-    """
-    Start a one-time Stripe checkout for a plan purchase.
-    Credits will be granted after verification: $1 = 10 credits.
-    """
-    if not current_user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No tenant selected"
-        )
-    tenant_id = str(current_user.current_tenant_id)
-    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
-    if not tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found"
-        )
-    # Create Stripe customer if not exists
-    if not tenant.stripe_customer_id:
-        from app.services.stripe_service import StripeService
-        stripe_customer_id = StripeService.create_customer(
-            tenant=tenant,
-            email=current_user.email,
-            user=current_user
-        )
-        tenant.stripe_customer_id = stripe_customer_id
-        db.commit()
-    else:
-        stripe_customer_id = tenant.stripe_customer_id
-    # Create checkout session directly with Stripe (one-time payment)
-    
-    stripe.api_key = settings.STRIPE_SECRET_KEY
-    
-    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant_id}&session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant_id}"
-    
-    try:
-        # Lookup plan to compute amount and embed metadata
-        plan = db.query(Plan).filter(Plan.stripe_price_id == stripe_price_id).first()
-        if not plan:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Plan not found for the given stripe_price_id"
-            )
-        raw_amount = int(plan.price_monthly or 0)
-        amount_cents = raw_amount if raw_amount >= 50 else raw_amount * 100
-        if amount_cents < 50:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Plan amount is not configured"
-            )
-        amount_dollars = amount_cents / 100.0
-
-        checkout_session = stripe.checkout.Session.create(
-            customer=stripe_customer_id,
-            success_url=success_url,
-            cancel_url=cancel_url,
-            mode="payment",
-            line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {"name": f"Plan Purchase - {plan.display_name}"},
-                    "unit_amount": amount_cents
-                },
-                "quantity": 1
-            }],
-            metadata={
-                "tenant_id": tenant_id,
-                "purchase_type": "plan_purchase",
-                "plan_id": str(plan.id),
-                "amount": str(amount_dollars)
-            }
-        )
-
-        return create_success_response({
-            "session_id": checkout_session.id,
-            "url": checkout_session.url
-        }, "Checkout session created successfully")
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
 
 

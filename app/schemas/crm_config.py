@@ -54,6 +54,7 @@ class CRMConfigListItem(BaseModel):
     container_id: Optional[str]
     container_url: Optional[str]
     created_at: str
+    is_selected: bool = False
 
 
 class CRMConfigListResponse(BaseModel):

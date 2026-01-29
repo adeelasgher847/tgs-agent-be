@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import EmailStr
 from datetime import datetime
 import uuid
+from app.schemas.subscription import SubscriptionOut
 
 
 class UserBase(BaseModel):
@@ -66,6 +67,7 @@ class UserProfile(UserBase):
     # role: Optional[RoleInfo]  = None
     current_tenant: Optional[TenantInfo] = None
     tenants: list[TenantInfo] = []
+    subscription: Optional[SubscriptionOut] = None
     
     model_config = ConfigDict(from_attributes=True) 
 

@@ -10,6 +10,7 @@ from app.models.user import User, user_tenant_association
 from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
+from app.models.plan import Plan
 from app.models.refresh_token import RefreshToken
 from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security, issue_tokens_for_user, is_session_already_credited, mark_session_credited
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
@@ -639,12 +640,17 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
 
 @router.get("/profile", response_model=SuccessResponse[UserProfile])
 def get_user_profile(
+    stripe_price_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     current_user: User = Depends(get_current_user_jwt),
     db: Session = Depends(get_db)
 ):
     """
     Get complete user profile information including role and tenant details.
     Requires JWT Bearer token authentication.
+    
+    🔥 **Subscription Sync:** If `stripe_price_id` or `session_id` is provided, 
+    the backend will verify the payment and activate the user's subscription immediately.
     """
     # Fetch user with all related data
     user = db.query(User).filter(User.id == current_user.id).first()
@@ -655,7 +661,36 @@ def get_user_profile(
             detail="User not found"
         )
     
-    # Stripe credits are now processed via webhook; no crediting logic here.
+    # 🔄 Sync subscription status with Stripe
+    from app.services.billing_service import BillingService
+    
+    # Verification Logic: if session_id is provided, verify from Stripe backend (Secure)
+    if session_id:
+        logger.info(f"🔄 Verifying secure payment for session: {session_id}")
+        sync_result = BillingService.sync_payment_status(db, session_id)
+        if sync_result and sync_result.get("status") == "success":
+            logger.info(f"✅ Secure payment verification successful for user {user.id}")
+            db.refresh(user)
+    elif stripe_price_id:
+        # Fallback for price sync (Legacy/Direct)
+        logger.info(f"🔄 Price sync requested for price: {stripe_price_id}")
+        plan = db.query(Plan).filter(Plan.stripe_price_id == stripe_price_id).first()
+        if plan:
+            # Update user's subscription and tenant status
+            BillingService.update_subscription(
+                db=db,
+                user_id=user.id,
+                plan_id=plan.id,
+                status="active",
+                crm_type=plan.crm_type
+            )
+            # Also ensure tenant is active
+            if user.current_tenant:
+                user.current_tenant.status = "active"
+                db.commit()
+            
+            db.refresh(user)
+            logger.info(f"✅ Price sync complete for user {user.id} with crm_type {plan.crm_type}")
 
     # Get role information for the current tenant
     role_info = None
@@ -678,7 +713,8 @@ def get_user_profile(
         created_at=user.created_at,
         role=role_info,
         current_tenant=user.current_tenant,
-        tenants=user.tenants
+        tenants=user.tenants,
+        subscription=user.subscription
     )
     
     return create_success_response(

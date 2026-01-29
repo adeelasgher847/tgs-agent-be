@@ -17,7 +17,8 @@ class CRMConfig(Base):
     crm_type = Column(String(20), nullable=False, unique=True, index=True)
     
     # Encrypted API key/token (using JWT encryption)
-    encrypted_api_key = Column(String(1000), nullable=False)
+    from sqlalchemy import Text
+    encrypted_api_key = Column(Text, nullable=False)
     
     # Container info (board_id/list_id/project_id) - optional, can be set later
     container_id = Column(String(200), nullable=True, index=True)

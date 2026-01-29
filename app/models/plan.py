@@ -16,6 +16,7 @@ class Plan(Base):
     
     # Stripe
     stripe_price_id = Column(String, nullable=True)
+    crm_type = Column(String(50), nullable=True)  # monday, clickup, jira, trello
     
     # Status
     is_active = Column(Boolean, default=True)

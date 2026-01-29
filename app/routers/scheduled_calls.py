@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone
 import uuid
-from app.api.deps import get_db, require_tenant, get_optional_tenant_user, require_owner, require_active_subscription
+import stripe
+from app.core.config import settings
+from app.models.tenant import Tenant
+from app.models.plan import Plan
+from app.api.deps import get_db, require_tenant, get_optional_tenant_user, require_owner, require_active_subscription, get_current_user_jwt, require_admin_or_owner
 from app.services.billing_service import BillingService
 from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.user import User
@@ -47,6 +51,100 @@ router = APIRouter()
 scheduled_call_service = ScheduledCallService()
 model_service = ModelService()
 crm_config_service = CRMConfigService()
+
+
+@router.post("/start-checkout")
+def start_checkout_session(
+    stripe_price_id: str,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db)
+):
+    """
+    Start a one-time Stripe checkout for a plan purchase.
+    Credits will be granted after verification: $1 = 10 credits.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant_id = str(current_user.current_tenant_id)
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found"
+        )
+    # Create Stripe customer if not exists
+    if not tenant.stripe_customer_id:
+        from app.services.stripe_service import StripeService
+        stripe_customer_id = StripeService.create_customer(
+            tenant=tenant,
+            email=current_user.email,
+            user=current_user
+        )
+        tenant.stripe_customer_id = stripe_customer_id
+        db.commit()
+    else:
+        stripe_customer_id = tenant.stripe_customer_id
+    # Create checkout session directly with Stripe (one-time payment)
+    
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    
+    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant_id}&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant_id}"
+    
+    try:
+        # Lookup plan to compute amount and embed metadata
+        plan = db.query(Plan).filter(Plan.stripe_price_id == stripe_price_id).first()
+        if not plan:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Plan not found for the given stripe_price_id"
+            )
+        raw_amount = int(plan.price_monthly or 0)
+        amount_cents = raw_amount if raw_amount >= 50 else raw_amount * 100
+        if amount_cents < 50:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Plan amount is not configured"
+            )
+        amount_dollars = amount_cents / 100.0
+
+        checkout_session = stripe.checkout.Session.create(
+            customer=stripe_customer_id,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            mode="payment",
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": f"Plan Purchase - {plan.display_name}"},
+                    "unit_amount": amount_cents
+                },
+                "quantity": 1
+            }],
+            metadata={
+                "tenant_id": tenant_id,
+                "user_id": str(current_user.id),
+                "purchase_type": "plan_purchase",
+                "plan_id": str(plan.id),
+                "amount": str(amount_dollars),
+                "crm_type": plan.crm_type if plan.crm_type else ""
+            }
+        )
+
+        return create_success_response({
+            "session_id": checkout_session.id,
+            "url": checkout_session.url
+        }, "Checkout session created successfully")
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
 
 async def analyze_call_transcript_internal(
@@ -332,11 +430,24 @@ async def upload_scheduled_calls_csv(
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail="File must be a CSV file")
         
-        # Validate crm_config_id
         try:
-            crm_config_uuid = uuid.UUID(crm_config_id)
+            crm_config_uuid = uuid.uuid4() if crm_config_id == "null" else uuid.UUID(crm_config_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid crm_config_id format")
+        
+        # 🧪 Verify CRM access based on subscription
+        from app.services.crm_config_service import CRMConfigService
+        crm_config_service = CRMConfigService()
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
+            
+        from app.services.billing_service import BillingService
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"You do not have a subscription for {crm_config.crm_type}. Please select a plan for this CRM."
+            )
         
         # Validate and verify agent_id (REQUIRED)
         try:
@@ -436,11 +547,24 @@ async def create_single_scheduled_call(
     **Note:** `tenant_id` and `user_id` are automatically taken from logged-in session.
     """
     try:
-        # Validate crm_config_id
         try:
-            crm_config_uuid = uuid.UUID(crm_config_id)
+            crm_config_uuid = uuid.uuid4() if crm_config_id == "null" else uuid.UUID(crm_config_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid crm_config_id format")
+        
+        # 🧪 Verify CRM access based on subscription
+        from app.services.crm_config_service import CRMConfigService
+        crm_config_service = CRMConfigService()
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM configuration not found")
+            
+        from app.services.billing_service import BillingService
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"You do not have a subscription for {crm_config.crm_type}. Please select a plan for this CRM."
+            )
         
         # Parse agent_id
         try:
@@ -496,7 +620,7 @@ async def create_single_scheduled_call(
 
 @router.get("/crm-config", response_model=SuccessResponse[CRMConfigListResponse])
 async def get_crm_config(
-    user: User = Depends(require_active_subscription),
+    user: User = Depends(get_current_user_jwt),
     owner_user: User = Depends(require_owner),  # Owner role only
     db: Session = Depends(get_db)
 ):
@@ -1778,7 +1902,8 @@ async def mark_batch_email_sent_jira(
 @router.post("/select-crm-config", response_model=SuccessResponse[dict])
 async def select_crm_config(
     crm_config_id: str = Query(..., description="CRM Config ID to select"),
-    user: User = Depends(require_owner),  # Only owner can select
+    user: User = Depends(require_active_subscription),
+    owner_user: User = Depends(require_owner),  # Only owner can select
     db: Session = Depends(get_db)
 ):
     """

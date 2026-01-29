@@ -54,13 +54,6 @@ class ScheduledCallService:
         
         from app.services.billing_service import BillingService
         
-        # Check if user has an active paid subscription
-        if not BillingService.has_active_paid_subscription(db, user_id):
-            raise HTTPException(
-                status_code=402,
-                detail="Access to CRM features requires an active paid subscription. Please update your payment method or subscribe to a plan."
-            )
-
         # Check if container already exists for this user
         board_record = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
 
@@ -69,9 +62,7 @@ class ScheduledCallService:
         crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
         if not crm_config:
             raise HTTPException(status_code=404, detail="CRM configuration not found")
-        
-        # CRM configs are global - no tenant validation needed
-        
+            
         # Get CRM service (needed for both new and existing records)
         crm_service = CRMServiceFactory.get_service(crm_config)
         
@@ -253,10 +244,19 @@ class ScheduledCallService:
         try:
             field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
         except Exception as exc:
-            logger.error(f"❌ Error ensuring required fields", exc_info=True)
+            error_msg = str(exc)
+            logger.error(f"❌ Error ensuring required fields for {board_record.crm_type}: {error_msg}", exc_info=True)
+            
+            # If it's a CRM authentication issue, return 400 (Bad Config) instead of 500
+            if "authentication failed" in error_msg.lower() or "401" in error_msg:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"The {board_record.crm_type.title()} configuration is invalid or the API key has expired. Please update it in CRM Settings."
+                )
+            
             raise HTTPException(
-                status_code=500, 
-                detail=f"Failed to prepare {board_record.crm_type} container: {exc}"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail=f"Failed to prepare {board_record.crm_type} container: {error_msg}"
             )
 
         return board_record, field_map

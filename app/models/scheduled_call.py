@@ -13,7 +13,7 @@ class ScheduledCall(Base):
     Supports Monday.com, ClickUp, Jira, and Trello."""
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, unique=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, index=True)
     
     # Reference to global CRM configuration (column name kept for backward compatibility)
     tenant_crm_config_id = Column(UUID(as_uuid=True), nullable=True, index=True)
@@ -35,7 +35,7 @@ class ScheduledCall(Base):
     # Note: tenant_crm_config relationship removed to avoid FK validation issues
     # Access CRMConfig via: crm_config_service.get_crm_config_by_id(db, scheduled_call.tenant_crm_config_id)
 
-    __table_args__ = (UniqueConstraint("user_id", name="uq_scheduledcall_user_id"),)
+    __table_args__ = (UniqueConstraint("user_id", "crm_type", name="uq_scheduledcall_user_crm_type"),)
 
     def __repr__(self) -> str:  # pragma: no cover - repr for debugging
         return f"<ScheduledCall(user_id={self.user_id}, crm_type={self.crm_type}, container_id={self.crm_container_id})>"
