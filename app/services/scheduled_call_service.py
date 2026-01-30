@@ -52,8 +52,11 @@ class ScheduledCallService:
         from app.services.crm_config_service import CRMConfigService
         from app.services.crm_service_factory import CRMServiceFactory
         
-        # Check if container already exists for this user
-        board_record = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
+        # Check if container already exists for this user AND this CRM config (one board per user per CRM)
+        board_record = db.query(ScheduledCall).filter(
+            ScheduledCall.user_id == user_id,
+            ScheduledCall.tenant_crm_config_id == crm_config_id
+        ).first()
 
         # Get CRM config (needed for both new and existing records)
         crm_config_service = CRMConfigService()
@@ -130,13 +133,7 @@ class ScheduledCallService:
             db.commit()
             db.refresh(board_record)
         else:
-            # Verify existing container uses the same CRM config
-            if board_record.tenant_crm_config_id and board_record.tenant_crm_config_id != crm_config_id:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"User already has a container configured with a different CRM. Please use the existing CRM config."
-                )
-            
+            # Same user + same CRM config: use existing board (update if missing fields)
             # Update existing record if it's missing new fields (for backward compatibility)
             # Or if it contains invalid data like "="
             if board_record.crm_container_id == "=":
@@ -253,9 +250,14 @@ class ScheduledCallService:
         return board_record, field_map
 
     @staticmethod
-    def get_board_for_user(db: Session, user_id: uuid.UUID) -> Optional[ScheduledCall]:
-        """Get Monday.com board for a user."""
-        return db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id).first()
+    def get_board_for_user(
+        db: Session, user_id: uuid.UUID, tenant_crm_config_id: Optional[uuid.UUID] = None
+    ) -> Optional[ScheduledCall]:
+        """Get board for a user. If tenant_crm_config_id given, return that CRM's board; else first (backward compat)."""
+        q = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id)
+        if tenant_crm_config_id is not None:
+            q = q.filter(ScheduledCall.tenant_crm_config_id == tenant_crm_config_id)
+        return q.first()
 
     @staticmethod
     def clear_board_items(db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, int]:

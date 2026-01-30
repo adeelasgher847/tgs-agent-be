@@ -46,7 +46,7 @@ class StripeService:
             return customer
         except stripe.error.StripeError as e:
             raise Exception(f"Failed to get customer: {str(e)}")
-    
+
     @staticmethod
     def update_customer(customer_id: str, **kwargs) -> Dict[str, Any]:
         """Update customer information"""

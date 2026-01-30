@@ -48,6 +48,11 @@ class SingleCallResponse(BaseModel):
     message: str
 
 
+class SelectCrmConfigRequest(BaseModel):
+    """Request body for linking user with one or more CRMs (multi-CRM support)."""
+    crm_config_ids: List[str] = Field(..., min_length=1, description="List of CRM config IDs (UUIDs) to link with user")
+
+
 class JiraBatchAnalysisRequest(BaseModel):
     """Request body for Jira batch analysis endpoint"""
     call_session_ids: List[str] = Field(..., description="List of call session IDs (UUIDs)")

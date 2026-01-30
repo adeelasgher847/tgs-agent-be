@@ -561,13 +561,22 @@ async def get_crm_config(
 
 
 @router.get("/board", response_model=SuccessResponse[BoardInfoResponse])
-async def get_board_url(user: User = Depends(require_tenant), db: Session = Depends(get_db)):
+async def get_board_url(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+    crm_config_id: Optional[str] = Query(None, description="CRM config ID (required when user has multiple CRMs linked)"),
+):
     """
-    Retrieve the CRM container (board/list/project) URL for the current tenant.
-    Returns view-only URL that redirects user to their CRM platform.
-    Each tenant can only see their own data (filtered by tenant_id).
+    Retrieve the CRM container (board/list/project) URL.
+    When user has multiple CRMs linked, pass crm_config_id to get that CRM's board URL.
     """
-    board_record = scheduled_call_service.get_board_for_user(db, user.id)
+    tenant_crm_config_uuid = None
+    if crm_config_id:
+        try:
+            tenant_crm_config_uuid = uuid.UUID(crm_config_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid crm_config_id format")
+    board_record = scheduled_call_service.get_board_for_user(db, user.id, tenant_crm_config_uuid)
     if not board_record:
         raise HTTPException(status_code=404, detail="No scheduled calls board found for this user")
 
@@ -1802,38 +1811,36 @@ async def mark_batch_email_sent_jira(
 
 @router.post("/select-crm-config", response_model=SuccessResponse[dict])
 async def select_crm_config(
-    crm_config_id: str = Query(..., description="CRM Config ID to select"),
+    crm_config_id: str = Query(..., description="CRM configuration ID (UUID)"),
     user: User = Depends(require_owner),  # Only owner can select
     db: Session = Depends(get_db)
 ):
     """
-    Owner tenant selects a CRM config for the user.
-    This CRM will be available for all tenants of this user.
+    Owner tenant links user with one CRM config (multi-CRM: call once per CRM to link).
+    If user is already linked with this CRM, returns 400.
     
     **Authentication:** JWT token required (owner role only)
     
-    **Query Parameters:**
-    - `crm_config_id` (str, required): ID of the CRM config to select
-    
-    **Returns:**
-    - crm_config_id: Selected CRM config ID
-    - crm_type: Type of CRM (monday, clickup, jira, trello)
-    - container_id: User's container ID (if exists)
-    - container_url: User's container URL (if exists)
-    - message: Success message
+    **Query params:** `crm_config_id=uuid`
     """
+    if not user.current_tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant selected")
     try:
-        # Validate UUID format
         try:
             crm_config_uuid = uuid.UUID(crm_config_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid CRM config ID format")
-        
+        # Already linked with this CRM?
+        existing = scheduled_call_service.get_board_for_user(db, user.id, crm_config_uuid)
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail="Already linked with this CRM config. Each CRM can be linked only once per user.",
+            )
         # Verify CRM config exists
         crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_uuid)
         if not crm_config:
             raise HTTPException(status_code=404, detail="CRM config not found")
-        
         # Require active subscription for this CRM (402 if not)
         from app.services.billing_service import BillingService
         if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
@@ -1841,58 +1848,17 @@ async def select_crm_config(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to a plan for this CRM before selecting it."
             )
-        
-        # Get or create board record for user
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        
-        if board_record:
-            # Check if CRM is already selected and is DIFFERENT from the new selection
-            if board_record.tenant_crm_config_id:
-                if board_record.tenant_crm_config_id != crm_config_uuid:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"User already has a CRM selected ({board_record.crm_type}). You cannot switch to a different CRM platform."
-                    )
-                # If it's already the same CRM, we can just return success or update just in case
-                # For now let's just proceed with update or skip
-            
-            # Update existing board record with new CRM config
-            board_record.tenant_crm_config_id = crm_config_uuid
-            board_record.crm_type = crm_config.crm_type
-            db.commit()
-            db.refresh(board_record)
-        else:
-            # Create a minimal board record to save the CRM config selection
-            # Container will be created on first CSV upload
-            board_record = ScheduledCall(
-                user_id=user.id,
-                tenant_crm_config_id=crm_config_uuid,
-                crm_type=crm_config.crm_type,
-                crm_container_id=None,  # Will be created on first CSV upload
-                crm_container_url=None  # Will be created on first CSV upload
-            )
-            db.add(board_record)
-            db.commit()
-            db.refresh(board_record)
-        
+        # Get or create board for this user + CRM config (creates container on first use)
+        board_record, _ = scheduled_call_service.get_or_create_board_for_user(
+            db=db, user_id=user.id, tenant_id=user.current_tenant_id, crm_config_id=crm_config_uuid
+        )
         result = {
             "crm_config_id": str(crm_config_uuid),
             "crm_type": crm_config.crm_type,
-            "container_id": board_record.crm_container_id if board_record else None,
-            "container_url": board_record.crm_container_url if board_record else None
+            "container_id": board_record.crm_container_id,
+            "container_url": board_record.crm_container_url,
         }
-        
-        # Set message based on whether container exists
-        if board_record and board_record.crm_container_id:
-            message = f"CRM config '{crm_config.crm_type}' selected successfully for user."
-        else:
-            message = f"CRM config '{crm_config.crm_type}' selected successfully for user. Container will be created on first CSV upload."
-        
-        return create_success_response(
-            result,
-            message
-        )
-        
+        return create_success_response(result, f"CRM config '{crm_config.crm_type}' linked successfully.")
     except HTTPException:
         raise
     except Exception as e:
@@ -1905,62 +1871,29 @@ async def get_selected_crm_config(
     db: Session = Depends(get_db)
 ):
     """
-    Get the CRM config selected by owner tenant for this user.
-    All tenants of the user can see this.
+    Get all CRM configs linked with this user (multi-CRM support).
+    Returns list of linked CRMs with crm_config_id, crm_type, container_id, container_url.
     
     **Authentication:** JWT token required
-    
-    **Returns:**
-    - crm_config_id: Selected CRM config ID (if any)
-    - crm_type: Type of CRM (monday, clickup, jira, trello)
-    - crm_config: Full CRM config details (without sensitive data)
-    - container_id: User's container ID (if exists)
-    - container_url: User's container URL (if exists)
-    - message: Status message
     """
     try:
-        # Get board record for user
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        
-        if not board_record or not board_record.tenant_crm_config_id:
-            # No CRM selected yet
-            return create_success_response(
-                {
-                    "crm_config_id": None,
-                    "crm_type": None,
-                    "crm_config": None,
-                    "container_id": None,
-                    "container_url": None,
-                    "message": "No CRM config selected yet"
-                },
-                "No CRM config selected for this user"
-            )
-        
-        # Get CRM config details
-        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
-        
-        if not crm_config:
-            raise HTTPException(status_code=404, detail="Selected CRM config not found")
-        
-        # Prepare CRM config response (only id and crm_type)
-        crm_config_data = {
-            "id": str(crm_config.id),
-            "crm_type": crm_config.crm_type
-        }
-        
-        result = {
-            "crm_config_id": str(crm_config.id),
-            "crm_type": crm_config.crm_type,
-            "crm_config": crm_config_data,
-            "container_id": board_record.crm_container_id,
-            "container_url": board_record.crm_container_url
-        }
-        
+        # All board records for user (one per linked CRM)
+        board_records = db.query(ScheduledCall).filter(ScheduledCall.user_id == user.id).order_by(ScheduledCall.crm_type).all()
+        linked_crms: List[Dict[str, Any]] = []
+        for board_record in board_records:
+            if not board_record.tenant_crm_config_id:
+                continue
+            crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+            linked_crms.append({
+                "crm_config_id": str(board_record.tenant_crm_config_id),
+                "crm_type": board_record.crm_type or (crm_config.crm_type if crm_config else None),
+                "container_id": board_record.crm_container_id,
+                "container_url": board_record.crm_container_url,
+            })
         return create_success_response(
-            result,
-            f"Selected CRM config: {crm_config.crm_type}"
+            {"linked_crms": linked_crms, "count": len(linked_crms)},
+            f"Retrieved {len(linked_crms)} linked CRM config(s)" if linked_crms else "No CRM configs linked yet"
         )
-        
     except HTTPException:
         raise
     except Exception as e:
