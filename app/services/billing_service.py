@@ -94,6 +94,11 @@ class BillingService:
 
             # Plan purchase: update subscription only, NO credits
             if purchase_type == 'plan_purchase' and user_id and plan_id:
+                # If crm_type missing/empty in metadata, get from plan so we create correct subscription row
+                if not crm_type and plan_id:
+                    plan_row = db.query(Plan).filter(Plan.id == plan_id).first()
+                    if plan_row and plan_row.crm_type:
+                        crm_type = plan_row.crm_type
                 stripe_sub_id = session.get('subscription')  # present when mode=subscription
                 period_start, period_end = None, None
                 if stripe_sub_id:

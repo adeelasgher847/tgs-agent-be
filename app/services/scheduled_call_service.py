@@ -260,16 +260,32 @@ class ScheduledCallService:
         return q.first()
 
     @staticmethod
-    def clear_board_items(db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID) -> Tuple[ScheduledCall, int]:
+    def get_all_boards_for_user(db: Session, user_id: uuid.UUID) -> list:
+        """Get all linked boards (one per CRM) for a user. Used for aggregating pending count across CRMs."""
+        return (
+            db.query(ScheduledCall)
+            .filter(ScheduledCall.user_id == user_id)
+            .order_by(ScheduledCall.crm_type)
+            .all()
+        )
+
+    @staticmethod
+    def clear_board_items(
+        db: Session,
+        user_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        tenant_crm_config_id: Optional[uuid.UUID] = None,
+    ) -> Tuple[ScheduledCall, int]:
         """
         Delete only items belonging to this tenant from user's container.
         Works with all CRMs (Monday.com, ClickUp, Jira, Trello).
         Items are filtered by tenant_id field/column.
+        If tenant_crm_config_id is given, clears that CRM's board; otherwise first linked board.
         """
         from app.services.crm_config_service import CRMConfigService
         from app.services.crm_service_factory import CRMServiceFactory
-        
-        board_record = ScheduledCallService.get_board_for_user(db, user_id)
+
+        board_record = ScheduledCallService.get_board_for_user(db, user_id, tenant_crm_config_id)
         if not board_record:
             raise HTTPException(status_code=404, detail="Container not found for user")
 

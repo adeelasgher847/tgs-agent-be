@@ -22,12 +22,20 @@ class DeleteBoardItemsResponse(BaseModel):
     board_url: str
 
 
-class PendingCountResponse(BaseModel):
-    board_id: str
-    board_url: str
-    tenant_id: str
+class PendingCountByCrm(BaseModel):
+    """Pending count for one CRM (used when user has multiple CRMs)."""
+    crm_type: str
+    crm_config_id: Optional[str] = None
     pending_count: int
-    total_items: int
+
+
+class PendingCountResponse(BaseModel):
+    tenant_id: str
+    pending_count: int  # Total across all user's CRMs (current tenant only)
+    total_items: int   # Total across all CRMs
+    by_crm: List[PendingCountByCrm] = Field(default_factory=list, description="Per-CRM breakdown")
+    board_id: str = ""  # First board for backward compat; empty when multiple CRMs
+    board_url: str = ""
 
 
 class SingleCallRequest(BaseModel):

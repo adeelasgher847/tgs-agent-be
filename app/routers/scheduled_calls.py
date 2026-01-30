@@ -20,6 +20,7 @@ from app.schemas.scheduled_call import (
     SingleCallRequest,
     SingleCallResponse,
     PendingCountResponse,
+    PendingCountByCrm,
     JiraBatchAnalysisRequest,
 )
 from app.schemas.crm_config import CRMConfigResponse, CRMConfigListResponse, CRMConfigListItem
@@ -562,20 +563,29 @@ async def get_crm_config(
 
 @router.get("/board", response_model=SuccessResponse[BoardInfoResponse])
 async def get_board_url(
+    crm_config_id: Optional[str] = Query(None, description="CRM config ID. Pass to get that CRM's board URL; omit for first linked board."),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
-    crm_config_id: Optional[str] = Query(None, description="CRM config ID (required when user has multiple CRMs linked)"),
 ):
     """
     Retrieve the CRM container (board/list/project) URL.
-    When user has multiple CRMs linked, pass crm_config_id to get that CRM's board URL.
+    Pass crm_config_id to get that CRM's board URL; omit for first linked board (same as clear board items).
     """
     tenant_crm_config_uuid = None
     if crm_config_id:
         try:
             tenant_crm_config_uuid = uuid.UUID(crm_config_id)
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid crm_config_id format")
+            raise HTTPException(status_code=400, detail="Invalid CRM config ID format")
+        crm_config = crm_config_service.get_crm_config_by_id(db, tenant_crm_config_uuid)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM config not found")
+        from app.services.billing_service import BillingService
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to use this CRM.",
+            )
     board_record = scheduled_call_service.get_board_for_user(db, user.id, tenant_crm_config_uuid)
     if not board_record:
         raise HTTPException(status_code=404, detail="No scheduled calls board found for this user")
@@ -658,112 +668,136 @@ async def get_board_url(
 @router.get(
     "/board/pending-count",
     response_model=SuccessResponse[PendingCountResponse],
-    summary="Get count of pending scheduled calls for current tenant",
+    summary="Get total pending scheduled calls for current tenant across all CRMs",
 )
 async def get_pending_scheduled_calls_count(
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """
-    Return how many scheduled call items on the CRM container are still in **Pending** status
-    for the current tenant. Works with all CRMs (Monday.com, ClickUp, Jira, Trello).
+    Return total scheduled call items in **Pending** status for the current tenant
+    across all CRMs the user has linked. If user has Trello (10) + Jira (5), returns 15.
+    If user has only one CRM with 5 pending, returns 5. Count is tenant-specific.
     """
+    from app.services.billing_service import BillingService
     from app.services.crm_config_service import CRMConfigService
     from app.services.crm_service_factory import CRMServiceFactory
-    
-    # Get the user's board
-    board_record = scheduled_call_service.get_board_for_user(db, user.id)
-    if not board_record:
-        raise HTTPException(status_code=404, detail="Container not found for user")
 
-    # Get CRM type
-    crm_type = board_record.crm_type or "monday"  # Default to monday for backward compatibility
-    
-    # Check if CRM config exists
-    if not board_record.tenant_crm_config_id:
-        # Fallback to Monday.com for backward compatibility (legacy implementation)
-        if crm_type.lower() == "monday":
+    tenant_id_str = str(user.current_tenant_id)
+    board_records = scheduled_call_service.get_all_boards_for_user(db, user.id)
+    if not board_records:
+        raise HTTPException(status_code=404, detail="No CRM boards found for this user")
+
+    total_pending = 0
+    total_items_sum = 0
+    by_crm: List[PendingCountByCrm] = []
+    first_board_id = ""
+    first_board_url = ""
+
+    for board_record in board_records:
+        crm_type = (board_record.crm_type or "monday").lower()
+
+        # Legacy Monday (no tenant_crm_config_id)
+        if not board_record.tenant_crm_config_id:
+            if crm_type != "monday":
+                continue
             board_id = board_record.monday_board_id
             if not board_id:
-                raise HTTPException(status_code=404, detail="No board ID found for Monday.com")
-            
+                continue
             try:
                 column_map = MondayService.ensure_required_columns(board_id)
-                pending_count = MondayService.count_pending_items_for_tenant_static(
+                cnt = MondayService.count_pending_items_for_tenant_static(
                     board_id=board_id,
-                    tenant_id=str(user.current_tenant_id),
+                    tenant_id=tenant_id_str,
                     column_map=column_map,
                     pending_label="Pending",
                 )
-                # Count total items (simplified for backward compatibility)
-                total_items = pending_count  # Approximate
-            except Exception as exc:
-                raise HTTPException(status_code=500, detail=f"Failed to count pending items from Monday.com: {exc}")
-            
-            board_url = board_record.monday_board_url or MondayService.build_board_url(board_id)
-            
-            data = PendingCountResponse(
-                board_id=board_id,
-                board_url=board_url,
-                tenant_id=str(user.current_tenant_id),
-                pending_count=pending_count,
-                total_items=total_items,
+            except Exception:
+                continue
+            total_pending += cnt
+            total_items_sum += cnt
+            by_crm.append(PendingCountByCrm(crm_type="monday", crm_config_id=None, pending_count=cnt))
+            if not first_board_id:
+                first_board_id = board_id
+                first_board_url = board_record.monday_board_url or MondayService.build_board_url(board_id)
+            continue
+
+        crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
+        if not crm_config:
+            continue
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            continue
+
+        try:
+            crm_service = CRMServiceFactory.get_service(crm_config)
+            field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
+            cnt = crm_service.count_pending_items_for_tenant(
+                container_id=board_record.crm_container_id,
+                tenant_id=tenant_id_str,
+                field_map=field_map,
+                pending_label="Pending",
             )
-            return create_success_response(data, "Pending scheduled calls count retrieved from Monday.com")
-        else:
-            raise HTTPException(status_code=404, detail=f"CRM configuration not found for {crm_type}")
-
-    # Get CRM config and service
-    crm_config_service = CRMConfigService()
-    crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
-    if not crm_config:
-        raise HTTPException(status_code=404, detail="CRM configuration not found")
-
-    # For all CRMs (Monday.com with config, ClickUp, Jira, Trello), use generic approach
-    try:
-        # Get CRM service
-        crm_service = CRMServiceFactory.get_service(crm_config)
-        
-        # Get field map
-        field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
-        
-        # Count pending items by tenant
-        pending_count = crm_service.count_pending_items_for_tenant(
-            container_id=board_record.crm_container_id,
-            tenant_id=str(user.current_tenant_id),
-            field_map=field_map,
-            pending_label="Pending"
+        except Exception:
+            continue
+        total_pending += cnt
+        total_items_sum += cnt
+        by_crm.append(
+            PendingCountByCrm(
+                crm_type=crm_type,
+                crm_config_id=str(board_record.tenant_crm_config_id),
+                pending_count=cnt,
+            )
         )
-        
-        # Total items count (simplified - can be enhanced later)
-        total_items = pending_count  # Approximate for now
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to count pending items from {crm_type}: {exc}"
-        )
+        if not first_board_id:
+            first_board_id = board_record.crm_container_id or ""
+            first_board_url = board_record.crm_container_url or ""
 
     data = PendingCountResponse(
-        board_id=board_record.crm_container_id,
-        board_url=board_record.crm_container_url,
-        tenant_id=str(user.current_tenant_id),
-        pending_count=pending_count,
-        total_items=total_items,
+        tenant_id=tenant_id_str,
+        pending_count=total_pending,
+        total_items=total_items_sum,
+        by_crm=by_crm,
+        board_id=first_board_id,
+        board_url=first_board_url,
     )
-    return create_success_response(data, f"Pending scheduled calls count retrieved from {crm_type}")
+    return create_success_response(
+        data,
+        f"Pending scheduled calls count: {total_pending} total across {len(by_crm)} CRM(s)" if by_crm else "No pending counts available",
+    )
 
 
 @router.delete("/board/items", response_model=SuccessResponse[DeleteBoardItemsResponse])
-async def clear_board_items(user: User = Depends(require_tenant), db: Session = Depends(get_db)):
+async def clear_board_items(
+    crm_config_id: Optional[str] = Query(None, description="CRM config ID to clear. If omitted, first linked board is used."),
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
     """
     Remove all items belonging to the current tenant from the user's CRM container.
     Works with all CRMs (Monday.com, ClickUp, Jira, Trello).
     Only items with matching tenant_id are deleted, keeping other tenants' items intact.
+    Pass crm_config_id to clear a specific CRM's board; omit for first linked board.
     """
+    tenant_crm_config_uuid = None
+    if crm_config_id:
+        try:
+            tenant_crm_config_uuid = uuid.UUID(crm_config_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid CRM config ID format")
+        crm_config = crm_config_service.get_crm_config_by_id(db, tenant_crm_config_uuid)
+        if not crm_config:
+            raise HTTPException(status_code=404, detail="CRM config not found")
+        from app.services.billing_service import BillingService
+        if not BillingService.has_crm_access(db, user.id, crm_config.crm_type):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to use this CRM.",
+            )
     board_record, deleted = scheduled_call_service.clear_board_items(
-        db, 
-        user.id,  # user_id
-        user.current_tenant_id  # tenant_id for filtering
+        db,
+        user.id,
+        user.current_tenant_id,
+        tenant_crm_config_id=tenant_crm_config_uuid,
     )
     
     # Use generic fields, fallback to legacy
