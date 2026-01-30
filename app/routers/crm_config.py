@@ -210,7 +210,7 @@ async def update_crm_config(
         )
 
 
-@router.delete("/{crm_config_id}", response_model=SuccessResponse[dict])
+@router.delete("/{crm_config_id}", response_model=SuccessResponse[dict],include_in_schema=False)
 async def delete_crm_config(
     crm_config_id: str,
     user: User = Depends(require_owner),
