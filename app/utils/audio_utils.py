@@ -186,13 +186,13 @@ def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:
         return audio_bytes
 
 
-def apply_micro_fade_in(audio_bytes: bytes, duration_ms: float = 10.0) -> bytes:
+def apply_micro_fade_in(audio_bytes: bytes, duration_ms: float = 25.0) -> bytes:
     """
     Apply a micro linear fade-in to the start of MULAW audio to eliminate clicks/pops.
     
     Args:
         audio_bytes: MULAW audio bytes
-        duration_ms: Duration of fade in milliseconds (default 10ms)
+        duration_ms: Duration of fade in milliseconds (default 25ms for smoother start)
         
     Returns:
         Audio bytes with micro fade-in applied

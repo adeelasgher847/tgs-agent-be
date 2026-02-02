@@ -1000,15 +1000,12 @@ IMPORTANT:
                     # Stream TTS CLEAN (no background mixing when AI is speaking)
                     # Background audio loop will automatically pause when is_speaking=True
                     if audio_bytes and not self._tts_cancel.is_set():
-                        # Determine if this is the first chunk of a response to apply fade-in
-                        is_first_chunk = not self._twilio_buffer_primed
-                        if is_first_chunk:
-                            # Apply micro fade-in (10ms) to eliminate start-of-audio clicks
-                            from app.utils.audio_utils import apply_micro_fade_in
-                            audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=10.0)
-                            logger.debug("🔊 Applied micro fade-in to first TTS chunk")
+                        # Apply fade-in at start of EVERY agent reply (not just first) to avoid abrupt/tak start
+                        from app.utils.audio_utils import apply_micro_fade_in
+                        audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
+                        logger.debug("🔊 Applied micro fade-in to TTS chunk (25ms)")
                         
-                        # Prime Twilio's jitter buffer with 100ms (5 frames) of silence for the very first speak
+                        # Prime Twilio's jitter buffer with 100ms (5 frames) of silence for the very first speak only
                         prime_frames = 0 if self._twilio_buffer_primed else 5
                         
                         # Always stream clean TTS - background loop handles background separately
@@ -1186,7 +1183,7 @@ IMPORTANT:
                         # Apply micro fade-in to the very first part of the response
                         if not self._twilio_buffer_primed:
                             from app.utils.audio_utils import apply_micro_fade_in
-                            prefix_main = apply_micro_fade_in(prefix_main, duration_ms=10.0)
+                            prefix_main = apply_micro_fade_in(prefix_main, duration_ms=25.0)
                             logger.debug("🔊 Applied micro fade-in to initial prefix chunk")
 
                         await stream_mulaw_bytes_over_twilio(
@@ -1761,7 +1758,7 @@ async def tts_only_websocket(
                             
                             # Apply audio optimizations
                             from app.utils.audio_utils import apply_micro_fade_in
-                            audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=10.0)
+                            audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
 
                             # Stream in 20ms chunks with 100ms jitter buffer priming
                             await stream_mulaw_bytes_over_twilio(
@@ -1795,7 +1792,7 @@ async def tts_only_websocket(
                     
                     # Apply audio optimizations
                     from app.utils.audio_utils import apply_micro_fade_in
-                    audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=10.0)
+                    audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
 
                     # Stream in 20ms chunks with 100ms jitter buffer priming
                     await stream_mulaw_bytes_over_twilio(
