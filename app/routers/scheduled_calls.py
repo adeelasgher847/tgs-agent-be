@@ -518,13 +518,13 @@ async def create_single_scheduled_call(
 
 @router.get("/crm-config", response_model=SuccessResponse[CRMConfigListResponse])
 async def get_crm_config(
-    user: User = Depends(require_owner),  # Owner role only
+    user: User = Depends(require_tenant),  # Member, admin, owner — all tenant users
     db: Session = Depends(get_db)
 ):
     """
-    Get list of all available global CRMs (Owner only).
+    Get list of all available global CRMs.
     Returns all CRM configurations with their IDs, types, and container info.
-    All users can select any configured CRM to use for scheduled calls.
+    All tenant users (member, admin, owner) can access this list for scheduled calls.
     
     **Response includes:**
     - List of all configured CRMs (Monday.com, ClickUp, Jira, Trello)
