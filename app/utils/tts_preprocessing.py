@@ -118,19 +118,18 @@ def detect_emotion(sentence: str) -> str:
 def emotion_to_prosody(emotion: str):
     """
     Maps emotion to prosody settings.
-    Base speed: 0.90 (10% slower than normal for realistic human-like speech)
-    All emotions slowed down further for more natural, realistic conversation
+    Rate 0.93 (93%) = human-like natural speed (Vapi-style). Pitch fixed 0st for consistent voice.
     """
     if emotion == "happy":
-        return ("0.85", "0st", "medium")  # 15% slower, fixed pitch (0st)
+        return ("0.93", "0st", "medium")
     if emotion == "sad":
-        return ("0.80", "0st", "soft")    # 20% slower, fixed pitch (0st)
+        return ("0.93", "0st", "soft")
     if emotion == "uncertain":
-        return ("0.82", "0st", "soft")    # 18% slower, fixed pitch (0st)
+        return ("0.93", "0st", "soft")
     if emotion == "confident":
-        return ("0.87", "0st", "medium")  # 13% slower, fixed pitch (0st)
-    # Neutral: 0.90 fixed rate, 0st fixed pitch (no random = same voice throughout call)
-    return ("0.90", "0st", "medium")
+        return ("0.93", "0st", "medium")
+    # Neutral: 0.93 same human-like rate, 0st pitch
+    return ("0.93", "0st", "medium")
 
 
 # ---------------------------------------------------------
@@ -183,6 +182,8 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
     
     sentences = re.split(r'([.!?])', text)
     ssml = "<speak>"
+    # 150ms break at start to prevent audio pop (Vapi-style smooth start)
+    ssml += '<break time="150ms"/>'
     
     # Office background now handled at audio level (not SSML - Google TTS doesn't support <par> tags)
     # Audio-level mixing in bidirectional_stream.py provides better control

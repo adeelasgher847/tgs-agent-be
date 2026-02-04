@@ -77,10 +77,10 @@ CACHING & LOW-LATENCY STRATEGIES:
    - <50ms response time for cached phrases (vs 500-2900ms generation)
    - Instant "Hello", "Got it", "Thank you" responses
 
-3. Quick Acknowledgement Pattern:
-   - Instant "Got it" from cache for 5+ word queries
-   - Then full response streams in parallel
-   - User gets immediate feedback while response generates
+3. Quick Acknowledgement Pattern (5-Word Rule + Probability):
+   - Eligible when user says 5+ words; then only ~38% chance we send "Got it" (more natural).
+   - Never used for emotional/serious content (help, emergency, problem, etc.).
+   - Instant from cache when sent; then full response streams in parallel.
    - Example: "Got it" (50ms) → "checking that now..." (1500ms)
 
 4. Adaptive Max Tokens:
@@ -157,6 +157,14 @@ router = APIRouter()
 
 class BidirectionalStreamHandler:
     """Handles real-time bidirectional voice streaming"""
+
+    # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
+    QUICK_ACK_MIN_WORDS = 5
+    QUICK_ACK_PROBABILITY = 0.38  # Only ~38% of eligible turns get "Got it" — more human-like
+    QUICK_ACK_SKIP_PHRASES = (  # Never say "Got it" to emotional/serious content
+        "help", "emergency", "urgent", "problem", "issue", "sad", "angry",
+        "please help", "asap", "critical", "wrong", "broken", "not working", "complaint",
+    )
     
     def __init__(
         self,
@@ -371,6 +379,7 @@ class BidirectionalStreamHandler:
                     text = task.get("text", "")
                     use_ssml = task.get("use_ssml", False)
                     is_final = task.get("is_final", False)
+                    end_call_after = task.get("end_call_after", False)
                     
                     if not text or not text.strip():
                         self.tts_queue.task_done()
@@ -378,6 +387,10 @@ class BidirectionalStreamHandler:
                     
                     # Generate and stream TTS (this is the blocking part)
                     await self._stream_tts_chunk(text, use_ssml=use_ssml, is_final=is_final)
+                    
+                    # If agent response contained [END_CALL], end call after this TTS has played
+                    if end_call_after:
+                        await self._end_call_after_agent_request()
                     
                 except Exception as e:
                     logger.error(f"Error in TTS pipeline worker loop: {e}", exc_info=True)
@@ -635,23 +648,30 @@ class BidirectionalStreamHandler:
         """
         Send instant acknowledgement for longer queries while generating full response.
         Uses pre-cached phrases for <50ms latency.
+        Probability-based (QUICK_ACK_PROBABILITY) so we don't say "Got it" every time — more natural.
+        Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
         """
         import random
         
-        # Only for longer queries (5+ words) - short queries get direct response
-        if len(user_text.split()) >= 5:
-            # Quick acknowledgements (these should be pre-cached = instant!)
-            acks = ["Got it", "I see", "Okay", "Sure", "Let me check that"]
-            ack = random.choice(acks)
-            
-            # Queue cached acknowledgement (should be instant!)
-            await self.tts_queue.put({
-                "text": ack,
-                "chunk_id": "quick_ack",
-                "use_ssml": False,
-                "is_acknowledgement": True,
-                "is_final": False
-            })
+        text = (user_text or "").strip()
+        words = text.split()
+        if len(words) < self.QUICK_ACK_MIN_WORDS:
+            return
+        lower = text.lower()
+        for phrase in self.QUICK_ACK_SKIP_PHRASES:
+            if phrase in lower:
+                return
+        if random.random() >= self.QUICK_ACK_PROBABILITY:
+            return
+        acks = ["Got it", "I see", "Okay", "Sure", "Let me check that"]
+        ack = random.choice(acks)
+        await self.tts_queue.put({
+            "text": ack,
+            "chunk_id": "quick_ack",
+            "use_ssml": False,
+            "is_acknowledgement": True,
+            "is_final": False
+        })
     
     async def generate_and_stream_response(self, user_text: str, confidence: float, is_greeting: bool = False):
         """
@@ -733,73 +753,79 @@ class BidirectionalStreamHandler:
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
             
-            # Base prompt for phone conversations
-            base_prompt = f"""You are {agent_name}, a real person having a phone conversation.
+            # Base prompt for phone conversations (voice-first, plain text only, no SSML)
+            base_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call with a human.
 
-Guidelines:
-- Speak naturally and conversationally
-- Keep responses brief (1-2 sentences)
-- Remember previous conversation - don't repeat questions
-- Be friendly and engaging
-- Talk like a real human, not a robot
+# STYLE & TONE
+- VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
+- NATURAL: Use natural fillers like "uhm," "well," or "I see" occasionally to sound human.
+- CONCISE: Max 20 words per response unless explaining something complex.
+- NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
+- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. Prosody is handled by the system.
 
+# CONVERSATION STATE
 Previous conversation:
 {history_text}
 
-IMPORTANT: 
-- Use the conversation history above. Don't ask questions you already asked. Continue the conversation naturally.
-- If you have completed all your objectives/questions from the conversation, naturally end the conversation with a friendly closing (e.g., "Thank you for calling, have a great day!" or similar). 
-- DO NOT restart the conversation, repeat questions, or ask questions again once everything is complete. Once all objectives are finished, end the call gracefully.
-- Example: <speak><prosody rate="100%" pitch="0st">Hello, how can I help you?</prosody><break time="150ms"/><prosody rate="98%" pitch="-1st">Let me check that for you.</prosody></speak>"""
+# CRITICAL RULES
+1. NO REPETITION: If the history shows you asked a question, move to the next point.
+2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
+3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
+
+# GOAL
+Continue the conversation based on the history above. Be {agent_name}."""
             
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self.agent and self.agent.system_prompt:
-                # Agent has custom system prompt - use it with context
-                system_prompt = f"""You are {agent_name}, a real person taking phone calls.
+                # Agent has custom system prompt - use it with context (voice-first, plain text)
+                system_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
-Your identity:
-- You are {agent_name}, a real human being
-- You speak {agent_language} naturally
-- You are having a phone conversation
-
-Custom instructions:
+# CUSTOM INSTRUCTIONS
 {self.agent.system_prompt}
 
+# STYLE & TONE
+- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
+- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
+
+# CONVERSATION STATE
 Previous conversation:
 {history_text}
 
-Guidelines:
-- Keep responses brief (1-2 sentences) for phone conversations
-- Use the conversation history to provide relevant responses
-- Don't repeat information you've already shared
-- Talk naturally like a real person
+# CRITICAL RULES
+1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
+2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
-IMPORTANT: 
-- Follow your custom instructions above while maintaining natural conversation flow.
-- If you have completed all objectives/questions from your custom instructions, naturally end the conversation with a friendly closing. 
-- DO NOT restart the conversation, repeat questions, or ask new questions once all objectives are complete. Once everything is finished, end the call gracefully."""
+# GOAL
+Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
-                # Model has system prompt - use it
-                system_prompt = f"""You are {agent_name}, a real person taking phone calls.
+                # Model has system prompt - use it (voice-first, plain text)
+                system_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
-Your identity:
-- You are {agent_name}, a real human being
-- You speak {agent_language} naturally
-
-Model instructions:
+# MODEL INSTRUCTIONS
 {self.agent.model.system_prompt}
 
+# STYLE & TONE
+- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
+- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
+
+# CONVERSATION STATE
 Previous conversation:
 {history_text}
 
-Guidelines:
-- Keep responses brief (1-2 sentences) for phone conversations
-- Use the conversation history to provide relevant responses
+# CRITICAL RULES
+1. NO REPETITION: Do not repeat questions. Move to the next point.
+2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
-IMPORTANT: 
-- Follow the model instructions above.
-- If you have completed all objectives/questions, naturally end the conversation with a friendly closing. 
-- DO NOT restart the conversation, repeat questions, or ask questions again once everything is complete. Once all objectives are finished, end the call gracefully."""
+# GOAL
+Follow the model instructions. Continue from the history above. Be {agent_name}."""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
@@ -881,23 +907,26 @@ IMPORTANT:
 
                 # Now generate TTS for FULL response (no chunks, no distortion!)
                 full_response = response_accum.strip()
+                # Strip [END_CALL] token if present; end call after this TTS plays
+                end_call_after = "[END_CALL]" in full_response
+                text_for_tts = full_response.replace("[END_CALL]", "").strip()
                 
-                if full_response and not self._tts_cancel.is_set():
-                    # Preprocess with SSML using middleware (version 1.0.1 style - simple and reliable)
+                if text_for_tts and not self._tts_cancel.is_set():
+                    # Preprocess with SSML using middleware (plain text from LLM, we add prosody at TTS layer)
                     if self._use_ssml:
-                        # Strip any SSML tags that LLM might have generated (we use middleware for SSML)
-                        clean_text = strip_ssml_tags(full_response)
+                        clean_text = strip_ssml_tags(text_for_tts)
                         enhanced_text = preprocess_for_tts(clean_text)
                     else:
-                        enhanced_text = quick_clean(full_response)
+                        enhanced_text = quick_clean(text_for_tts)
                     
-                    # Queue SINGLE TTS chunk (complete response)
+                    # Queue SINGLE TTS chunk (complete response); optionally end call after it plays
                     chunk_counter += 1
                     await self.tts_queue.put({
                         "text": enhanced_text,
                         "chunk_id": chunk_counter,
                         "use_ssml": self._use_ssml,
-                        "is_final": True
+                        "is_final": True,
+                        "end_call_after": end_call_after,
                     })
 
                 return response_accum.strip()
@@ -949,7 +978,10 @@ IMPORTANT:
                         })
 
             if final_text:
-                await self._add_to_transcript("agent", final_text, "agent_response")
+                # Strip [END_CALL] from transcript so saved conversation is clean
+                transcript_text = final_text.replace("[END_CALL]", "").strip()
+                if transcript_text:
+                    await self._add_to_transcript("agent", transcript_text, "agent_response")
         
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
@@ -1402,6 +1434,41 @@ IMPORTANT:
                     return False
         
         return False
+    
+    async def _end_call_after_agent_request(self):
+        """End the call when agent response contained [END_CALL] (after TTS has played)."""
+        if self._call_ended:
+            return
+        try:
+            self._call_ended = True
+            if self.call_session:
+                self.call_session.status = "completed"
+                self.call_session.end_time = datetime.now(timezone.utc)
+                self.call_session.ended_reason = "Agent sent [END_CALL]"
+                if self.call_session.start_time:
+                    duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
+                    self.call_session.duration = int(duration)
+                self.db.commit()
+            if self.call_sid:
+                twilio_service.end_call(self.call_sid)
+            if self.call_session:
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(self.call_session.id),
+                        status="completed",
+                        metadata={
+                            "call_sid": self.call_sid,
+                            "stream_sid": self.stream_sid,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "call_ended",
+                            "event": "end_call_token",
+                            "reason": "Agent sent [END_CALL]",
+                        },
+                    )
+                except Exception as e:
+                    logger.debug(f"WebSocket broadcast after [END_CALL]: {e}")
+        except Exception as e:
+            logger.error(f"Error ending call after [END_CALL]: {e}", exc_info=True)
     
     async def _check_and_end_call_if_voicemail(self, transcript: str):
         """
