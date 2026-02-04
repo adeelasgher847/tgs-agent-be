@@ -129,8 +129,8 @@ def emotion_to_prosody(emotion: str):
         return ("0.82", "-1st", "soft")    # 18% slower, hesitant (was 0.88)
     if emotion == "confident":
         return ("0.87", "+1st", "medium")  # 13% slower, clear (was 0.92)
-    # Neutral: 0.90 (fixed - realistic normal voice speed, was 0.95)
-    return ("0.90", random.choice(["-1st", "0st", "+1st"]), "medium")
+    # Neutral: 0.90 fixed rate, 0st fixed pitch (no random = same voice throughout call)
+    return ("0.90", "0st", "medium")
 
 
 # ---------------------------------------------------------
