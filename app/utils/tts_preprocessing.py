@@ -122,13 +122,13 @@ def emotion_to_prosody(emotion: str):
     All emotions slowed down further for more natural, realistic conversation
     """
     if emotion == "happy":
-        return ("0.85", "+2st", "medium")  # 15% slower, higher pitch (was 0.90)
+        return ("0.85", "0st", "medium")  # 15% slower, fixed pitch (0st)
     if emotion == "sad":
-        return ("0.80", "-1st", "soft")    # 20% slower, gentle (was 0.85)
+        return ("0.80", "0st", "soft")    # 20% slower, fixed pitch (0st)
     if emotion == "uncertain":
-        return ("0.82", "-1st", "soft")    # 18% slower, hesitant (was 0.88)
+        return ("0.82", "0st", "soft")    # 18% slower, fixed pitch (0st)
     if emotion == "confident":
-        return ("0.87", "+1st", "medium")  # 13% slower, clear (was 0.92)
+        return ("0.87", "0st", "medium")  # 13% slower, fixed pitch (0st)
     # Neutral: 0.90 fixed rate, 0st fixed pitch (no random = same voice throughout call)
     return ("0.90", "0st", "medium")
 
