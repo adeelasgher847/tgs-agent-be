@@ -502,11 +502,8 @@ class BidirectionalStreamHandler:
             if await self._check_and_end_call_if_voicemail(transcript):
                 return  # Stop processing - call is ending
             
-            # 🎯 Send "in-progress" status when confident word is detected (like "hello")
-            # Only send once when we get a confident transcript with meaningful words
-            if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
-                await self._send_in_progress_status(transcript, confidence)
-                self._in_progress_sent = True
+            # 🎯 NOTE: "in-progress" status is now handled in voice.py immediately on pickup
+            # We no longer wait for a confident word to mark the call as connected.
             
             # Reset user speech timer (user finished speaking)
             self._last_user_speech_start = 0.0

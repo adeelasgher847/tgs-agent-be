@@ -352,9 +352,7 @@ async def initiate_call(
         except (ValueError, HTTPException):
             raise HTTPException(status_code=404, detail=f"Agent {call_request.agentId} not found")
         
-        # Validate phone number format
-        if not twilio_service.validate_phone_number(call_request.userPhoneNumber):
-            raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
+        # (Phone number format validation moved after session creation to support 'failed' status display)
         
         # Check credits before initiating call
         if not agent.model:
@@ -458,6 +456,29 @@ async def initiate_call(
             to_number=call_request.userPhoneNumber,
             call_type="outbound"  # Agent is initiating the call, so it's outbound
         )
+
+        # ✅ NEW: Validate phone number format AFTER session creation so we can show 'failed' status
+        if not twilio_service.validate_phone_number(call_request.userPhoneNumber):
+            display_msg = "The call could not be completed as dialed, most likely because the provided number was invalid."
+            call_session.status = "failed"
+            call_session.ended_reason = display_msg
+            db.commit()
+            
+            # Broadcast "failed" status immediately
+            try:
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status="failed",
+                    metadata={
+                        "message": display_msg,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                )
+                logger.info(f"✅ Broadcasted 'failed' status for invalid format (Session: {call_session.id})")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to broadcast format failure: {e}")
+                
+            raise HTTPException(status_code=400, detail=display_msg)
         
         # Direct WebSocket streaming connection (Vapi-style - no intermediate messages!)
         # User speaks first, agent responds naturally
@@ -485,25 +506,57 @@ async def initiate_call(
             logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         
         # Make call with appropriate credentials
-        if use_custom_credentials:
-            # ✅ Use custom credentials from DB
-            call = twilio_service.make_call_with_credentials(
-                to_number=call_request.userPhoneNumber,
-                from_number=from_number,
-                webhook_url=webhook_url,
-                status_callback_url=status_callback_url,
-                account_sid=account_sid,
-                auth_token=auth_token
-            )
-        else:
-            # ✅ Use env credentials (current behavior)
-            call = twilio_service.make_call(
-                to_number=call_request.userPhoneNumber,
-                from_number=from_number,
-                webhook_url=webhook_url,
-                status_callback_url=status_callback_url
-            )
-        logger.info(f"✅ Call initiated successfully")
+        try:
+            if use_custom_credentials:
+                # ✅ Use custom credentials from DB
+                call = twilio_service.make_call_with_credentials(
+                    to_number=call_request.userPhoneNumber,
+                    from_number=from_number,
+                    webhook_url=webhook_url,
+                    status_callback_url=status_callback_url,
+                    account_sid=account_sid,
+                    auth_token=auth_token
+                )
+            else:
+                # ✅ Use env credentials (current behavior)
+                call = twilio_service.make_call(
+                    to_number=call_request.userPhoneNumber,
+                    from_number=from_number,
+                    webhook_url=webhook_url,
+                    status_callback_url=status_callback_url
+                )
+            logger.info(f"✅ Call initiated successfully")
+        except Exception as twilio_error:
+            logger.error(f"❌ Twilio API Error: {twilio_error}")
+            
+            # Extract error code if available
+            error_msg = str(twilio_error)
+            display_msg = "Call failed"
+            
+            # General error message for any failure as requested by USER
+            display_msg = "The call could not be completed as dialed, most likely because the provided number was invalid."
+            # We still log the technical error for debugging
+            logger.debug(f"🔍 DEBUG: Specific Twilio error was: {error_msg}")
+            
+            # Update session to failed
+            call_session.status = "failed"
+            call_session.ended_reason = display_msg
+            db.commit()
+            
+            # Broadcast "failed" status immediately
+            try:
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status="failed",
+                    metadata={
+                        "message": display_msg,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to broadcast failure (non-critical): {e}")
+                
+            raise HTTPException(status_code=400, detail=display_msg)
         
         # Update call session with Twilio SID
         call_session.twilio_call_sid = call.sid
@@ -658,6 +711,8 @@ async def handle_call_events_webhook(
         from_number = form_data.get("From", "")
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
+        error_code = form_data.get("ErrorCode")
+        error_message = form_data.get("ErrorMessage")
         
         # Note: Speech input is now handled by Google Cloud STT via WebSocket
         # The old Twilio SpeechResult is no longer used
@@ -745,14 +800,14 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
-        # Update call session status if we have a call session and status
-        # ⚠️ SKIP automatic update for "answered" and "in-progress" - handled in specific handlers below
-        # "in-progress" will ONLY be set when media streaming actually starts (first media packet in bidirectional_stream.py)
-        if call_session and call_status and call_status not in ["answered", "in-progress"]:
+        if call_session and call_status:
             logger.info(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             call_session.status = call_status
-        elif call_session and call_status in ["answered", "in-progress"]:
-            logger.debug(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - will be set when media streaming starts")
+            
+            # If call is answered/in-progress, ensure start_time is set
+            if call_status in ["answered", "in-progress"] and not call_session.start_time:
+                call_session.start_time = datetime.now(timezone.utc)
+                logger.info(f"⏰ Set start time for answered session {call_session.id}")
         
         # Set end time and calculate duration when call completes
         if call_session and call_status == "completed":
@@ -798,54 +853,56 @@ async def handle_call_events_webhook(
             logger.info(f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
-            # SKIP "in-progress" status here - it will be sent when media stream starts
-            if call_status == "in-progress":
-                logger.info(f"ℹ️ Skipping 'in-progress' broadcast here - will be sent by media stream handler")
-            else:
-                try:
-                    logger.info(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
-                    
-                    # Prepare comprehensive metadata
-                    metadata = {
-                        # "call_sid": call_sid,
-                        "from_number": from_number,
-                        "to_number": to_number,
-                        "direction": direction,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                        "duration": call_session.duration
-                    }
-                    
-                    # Add status-specific messages
-                    if call_status == "ringing":
-                        metadata["message"] = "Call is ringing"
-                    elif call_status == "completed":
-                        metadata["message"] = "Call has been completed"
-                    
-                    await broadcast_call_status_update(
+            try:
+                logger.info(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
+                
+                # Prepare comprehensive metadata
+                metadata = {
+                    # "call_sid": call_sid,
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "direction": direction,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                    "duration": call_session.duration
+                }
+                
+                # Add status-specific messages
+                if call_status == "ringing":
+                    metadata["message"] = "Call is ringing"
+                elif call_status == "completed":
+                    metadata["message"] = "Call has been completed"
+                elif call_status == "failed":
+                    # General error message for any failure as requested by USER
+                    metadata["message"] = "The call could not be completed as dialed, most likely because the provided number was invalid."
+                    metadata["error_code"] = error_code
+                    if error_message:
+                        metadata["technical_error"] = error_message
+                
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status=call_status,
+                    metadata=metadata
+                )
+                logger.debug(f"✅ Call status update sent: {call_status} for session {call_session.id}")
+                
+                # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
+                if call_status == "completed":
+                    asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
-                        status=call_status,
-                        metadata=metadata
-                    )
-                    logger.debug(f"✅ Call status update sent: {call_status} for session {call_session.id}")
+                        reason="Call completed",
+                        final_data={
+                            "call_sid": call_sid,
+                            "duration": call_session.duration,
+                            "end_time": call_session.end_time.isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
+                    ))
+                    logger.debug(f"✅ Queued call ended event for session {call_session.id}")
                     
-                    # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                    if call_status == "completed":
-                        asyncio.create_task(broadcast_call_ended(
-                            call_session_id=str(call_session.id),
-                            reason="Call completed",
-                            final_data={
-                                "call_sid": call_sid,
-                                "duration": call_session.duration,
-                                "end_time": call_session.end_time.isoformat(),
-                                "transcript": call_session.call_transcript or []
-                            }
-                        ))
-                        logger.debug(f"✅ Queued call ended event for session {call_session.id}")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call status update: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"❌ Failed to broadcast call status update: {e}", exc_info=True)
         else:
             if not call_session:
                 logger.warning(f"⚠️ No call session found - cannot update status or broadcast")
@@ -905,25 +962,46 @@ async def handle_call_events_webhook(
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
 
-        elif call_status == "answered" and direction == "outbound-api":
-            # ⚠️ IGNORE - We use first media packet detection instead (VAPI-style)
-            logger.info(f"ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug(f"🔍 DEBUG: Will wait for first media packet from WebSocket stream")
-            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
+        elif call_status in ["answered", "in-progress"] and direction == "outbound-api":
+            # ✅ CALL PICKED UP - Immediately mark as in-progress
+            logger.info(f"✅ CALL PICKED UP - SID: {call_sid}, Status: {call_status}")
             
-            # Don't start credit monitoring or update status here
-            # Wait for first media packet event from WebSocket stream
-            
-            return HTMLResponse("", media_type="application/xml")
-
-        elif call_status == "in-progress":
-            # ⚠️ IGNORE - This is Twilio's media-active notification
-            # We use first media packet detection instead (VAPI-style)
-            logger.info(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug(f"🔍 DEBUG: Media stream status from Twilio (not user pickup)")
-            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
-            
-            # Don't do anything - first media packet will handle it
+            if call_session:
+                # Update status and broadcast if not already done
+                if call_session.status != "in-progress":
+                    call_session.status = "in-progress"
+                    if not call_session.start_time:
+                        call_session.start_time = datetime.now(timezone.utc)
+                    db.commit()
+                
+                # Broadcast in-progress status
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "Call is now in-progress"
+                        }
+                    )
+                    logger.debug(f"✅ Broadcasted in-progress status for session {call_session.id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to broadcast in-progress status: {e}")
+                
+                # 🎯 START CREDIT MONITORING - Start billing immediately when connected
+                try:
+                    if str(call_session.id) not in credit_service._active_monitors:
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=db,
+                            call_session_id=call_session.id,
+                            tenant_id=call_session.tenant_id,
+                            agent_id=call_session.agent_id
+                        ))
+                        logger.info(f"✅ Started credit monitoring for session {call_session.id} at pickup")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to start credit monitoring at pickup: {e}")
             
             return HTMLResponse("", media_type="application/xml")
         elif call_status == "completed":
@@ -937,17 +1015,22 @@ async def handle_call_events_webhook(
         
         elif call_status == "failed":
             # Call failed - handle error
-            logger.error(f"Call failed - SID: {call_sid}")
+            logger.error(f"❌ Call failed - SID: {call_sid}, ErrorCode: {error_code}, ErrorMessage: {error_message}")
             
             # Broadcast call failed event (non-blocking - fire and forget)
             if call_session:
                 try:
+                    # General error message for any failure as requested by USER
+                    display_message = "The call could not be completed as dialed, most likely because the provided number was invalid."
+
                     asyncio.create_task(broadcast_call_status_update(
                         call_session_id=str(call_session.id),
                         status="failed",
                         metadata={
                             "call_sid": call_sid,
                             "direction": direction,
+                            "error_code": error_code,
+                            "message": display_message,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
@@ -961,6 +1044,8 @@ async def handle_call_events_webhook(
                         metadata={
                             "call_sid": call_sid,
                             "direction": direction,
+                            "error_code": error_code,
+                            "message": display_message,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
