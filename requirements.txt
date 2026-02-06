@@ -18,7 +18,7 @@ elevenlabs
 python-dotenv
 email-validator
 stripe
-fastapi_limiter
+fastapi-limiter==0.1.6
 websockets
 aiohttp
 google-genai
