@@ -851,30 +851,35 @@ async def handle_call_events_webhook(
             )
             
             logger.info(f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up")
-            
+        
+        # --- UNIVERSAL STATUS BROADCAST (MOVED OUT OF COMPLETED BLOCK) ---
+        if call_session and call_status:
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
             try:
                 logger.info(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
                 
                 # Prepare comprehensive metadata
                 metadata = {
-                    # "call_sid": call_sid,
+                    "call_sid": call_sid,
                     "from_number": from_number,
                     "to_number": to_number,
                     "direction": direction,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
                     "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                    "duration": call_session.duration
+                    "duration": getattr(call_session, 'duration', 0)
                 }
                 
                 # Add status-specific messages
                 if call_status == "ringing":
                     metadata["message"] = "Call is ringing"
+                elif call_status == "answered":
+                    metadata["message"] = "Call answered"
+                elif call_status == "in-progress":
+                    metadata["message"] = "Call is now in-progress"
                 elif call_status == "completed":
                     metadata["message"] = "Call has been completed"
                 elif call_status == "failed":
-                    # General error message for any failure as requested by USER
                     metadata["message"] = "The call could not be completed as dialed, most likely because the provided number was invalid."
                     metadata["error_code"] = error_code
                     if error_message:
@@ -887,15 +892,15 @@ async def handle_call_events_webhook(
                 )
                 logger.debug(f"✅ Call status update sent: {call_status} for session {call_session.id}")
                 
-                # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                if call_status == "completed":
+                # Also broadcast call ended event for completed/failed/busy calls (non-blocking - fire and forget)
+                if call_status in ["completed", "failed", "busy", "no-answer"]:
                     asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
-                        reason="Call completed",
+                        reason=call_status if call_status != "completed" else "Call completed",
                         final_data={
                             "call_sid": call_sid,
-                            "duration": call_session.duration,
-                            "end_time": call_session.end_time.isoformat(),
+                            "duration": getattr(call_session, 'duration', 0),
+                            "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
                             "transcript": call_session.call_transcript or []
                         }
                     ))
@@ -974,22 +979,21 @@ async def handle_call_events_webhook(
                         call_session.start_time = datetime.now(timezone.utc)
                     db.commit()
                 
-                # Broadcast in-progress status (MOVED TO TwiML WEBHOOKS)
-                # This broadcast is now maturity-gated: only happens when TwiML is actually fetched
-                # try:
-                #     await broadcast_call_status_update(
-                #         call_session_id=str(call_session.id),
-                #         status="in-progress",
-                #         metadata={
-                #             "call_sid": call_sid,
-                #             "direction": direction,
-                #             "timestamp": datetime.now(timezone.utc).isoformat(),
-                #             "message": "Call is now in-progress"
-                #         }
-                #     )
-                #     logger.debug(f"✅ Broadcasted in-progress status for session {call_session.id}")
-                # except Exception as e:
-                #     logger.error(f"❌ Failed to broadcast in-progress status: {e}")
+                # Broadcast in-progress status (UN-COMMENTED FOR RELIABILITY)
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="in-progress",
+                        metadata={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "Call is now in-progress"
+                        }
+                    )
+                    logger.debug(f"✅ Broadcasted in-progress status for session {call_session.id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to broadcast in-progress status: {e}")
                 
                 # 🎯 START CREDIT MONITORING - Start billing immediately when connected
                 try:

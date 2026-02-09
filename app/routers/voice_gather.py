@@ -731,6 +731,17 @@ async def streaming_greeting_webhook(
         # ✅ User answered! Return streaming TwiML
         logger.info(f"✅ Call answered (status: '{call_status}') - Starting streaming!")
 
+        # Get call session if ID provided (CRITICAL FIX: Fetch from DB to avoid NameError)
+        call_session = None
+        if callSessionId:
+            try:
+                session_uuid = uuid.UUID(callSessionId)
+                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+                if call_session:
+                    logger.info(f"✅ Found call session: {call_session.id} for streaming")
+            except Exception as e:
+                logger.warning(f"⚠️ Error fetching call session {callSessionId}: {e}")
+
         # 🎯 BROADCAST IN-PROGRESS STATUS - This is the point of true connection!
         if call_session:
             try:
