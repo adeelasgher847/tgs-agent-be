@@ -974,21 +974,22 @@ async def handle_call_events_webhook(
                         call_session.start_time = datetime.now(timezone.utc)
                     db.commit()
                 
-                # Broadcast in-progress status
-                try:
-                    await broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="in-progress",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "message": "Call is now in-progress"
-                        }
-                    )
-                    logger.debug(f"✅ Broadcasted in-progress status for session {call_session.id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast in-progress status: {e}")
+                # Broadcast in-progress status (MOVED TO TwiML WEBHOOKS)
+                # This broadcast is now maturity-gated: only happens when TwiML is actually fetched
+                # try:
+                #     await broadcast_call_status_update(
+                #         call_session_id=str(call_session.id),
+                #         status="in-progress",
+                #         metadata={
+                #             "call_sid": call_sid,
+                #             "direction": direction,
+                #             "timestamp": datetime.now(timezone.utc).isoformat(),
+                #             "message": "Call is now in-progress"
+                #         }
+                #     )
+                #     logger.debug(f"✅ Broadcasted in-progress status for session {call_session.id}")
+                # except Exception as e:
+                #     logger.error(f"❌ Failed to broadcast in-progress status: {e}")
                 
                 # 🎯 START CREDIT MONITORING - Start billing immediately when connected
                 try:

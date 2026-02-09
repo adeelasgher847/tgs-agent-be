@@ -27,7 +27,7 @@ from app.services.openai_service import openai_service
 from app.services.model_service import ModelService
 from app.core.config import settings
 from app.utils.twilio_validation import get_request_body
-from app.routers.general_websocket import broadcast_transcript_update, broadcast_call_event
+from app.routers.general_websocket import broadcast_transcript_update, broadcast_call_event, broadcast_call_status_update
 from urllib.parse import quote
 import hashlib
 from app.routers.bidirectional_stream import build_streaming_twiml
@@ -249,6 +249,30 @@ async def gather_greeting_webhook(
                 ))
             except Exception as e:
                 logger.warning(f"⚠️ Broadcast failed (non-critical): {e}")
+        
+        # 🎯 BROADCAST IN-PROGRESS STATUS - This is the point of true connection!
+        if call_session:
+            try:
+                # Update DB status if not already done
+                if call_session.status != "in-progress":
+                    call_session.status = "in-progress"
+                    if not call_session.start_time:
+                        call_session.start_time = datetime.now(timezone.utc)
+                    db.commit()
+                
+                asyncio.create_task(broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status="in-progress",
+                    metadata={
+                        "call_sid": call_sid,
+                        "direction": "outbound-api",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message": "Call is now in-progress"
+                    }
+                ))
+                logger.info(f"✅ Broadcasted 'in-progress' status for session {call_session.id} (Gather)")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to broadcast in-progress status: {e}")
         
         # Build callback URL for speech input
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
@@ -706,6 +730,30 @@ async def streaming_greeting_webhook(
         
         # ✅ User answered! Return streaming TwiML
         logger.info(f"✅ Call answered (status: '{call_status}') - Starting streaming!")
+
+        # 🎯 BROADCAST IN-PROGRESS STATUS - This is the point of true connection!
+        if call_session:
+            try:
+                # Update DB status if not already done
+                if call_session.status != "in-progress":
+                    call_session.status = "in-progress"
+                    if not call_session.start_time:
+                        call_session.start_time = datetime.now(timezone.utc)
+                    db.commit()
+                
+                asyncio.create_task(broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status="in-progress",
+                    metadata={
+                        "call_sid": call_sid,
+                        "direction": "outbound-api",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message": "Call is now in-progress"
+                    }
+                ))
+                logger.info(f"✅ Broadcasted 'in-progress' status for session {call_session.id} (Streaming)")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to broadcast in-progress status: {e}")
         
         # Build WebSocket URL for bidirectional streaming
         ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
