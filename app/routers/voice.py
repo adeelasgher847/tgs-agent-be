@@ -817,7 +817,7 @@ async def handle_call_events_webhook(
                         "duration": call_session.duration
                     }
                     
-                    # Add status-specific messages
+                    # Add call_status-specific messages
                     if call_status == "ringing":
                         metadata["message"] = "Call is ringing"
                     elif call_status == "completed":
