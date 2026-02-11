@@ -1262,55 +1262,16 @@ IMPORTANT:
             logger.error(f"Error in send_audio_to_twilio: {e}")
     
     async def _send_in_progress_status(self, transcript: str, confidence: float):
-        """Send in-progress status when confident word is detected"""
+        """
+        Legacy function - in-progress status is now handled immediately in voice.py.
+        This function now only logs the detection of confident speech.
+        """
         try:
-            if not self.call_session:
-                return
+            logger.info(f"🎙️ Confident speech detected: '{transcript}' ({confidence})")
             
-            try:
-                if self.call_session.status != "in-progress":
-                    self.call_session.status = "in-progress"
-                    
-                    # Set start time when confident speech is detected
-                    if not self.call_session.start_time:
-                        self.call_session.start_time = datetime.now(timezone.utc)
-                    
-                    self.db.commit()
-                
-                # Broadcast "in-progress" event (confident word detected)
-                await broadcast_call_status_update(
-                    call_session_id=str(self.call_session.id),
-                    status="in-progress",
-                    metadata={
-                        "call_sid": self.call_sid,
-                        "stream_sid": self.stream_sid,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "message": "connected",
-                        "event": "confident_speech_detected",
-                        "detected_word": transcript,
-                        "confidence": confidence
-                    }
-                )
-                
-                # 🎯 START CREDIT MONITORING - Start billing when connected status is sent (first media packet + connected status)
-                try:
-                    if self.call_session and str(self.call_session.id) not in credit_service._active_monitors:
-                        # Pass current DB session (credit service will create its own for async task)
-                        asyncio.create_task(credit_service.start_credit_monitoring(
-                            db=self.db,
-                            call_session_id=self.call_session.id,
-                            tenant_id=self.call_session.tenant_id,
-                            agent_id=self.call_session.agent_id
-                        ))
-                except Exception as e:
-                    logger.debug(f"Could not start credit monitoring: {e}")
-                    
-            except Exception as e:
-                logger.error(f"Error in _send_in_progress_status inner loop: {e}")
-                    
-            except Exception as e:
-                logger.error(f"Error updating call status in _send_in_progress_status: {e}")
-        
+            # (Redundant broadcast removed - handled in voice.py upon pickup)
+            # (Redundant credit monitoring removed - handled in voice.py upon pickup)
+            
         except Exception as e:
             logger.error(f"Error in _send_in_progress_status: {e}", exc_info=True)
     
@@ -1536,21 +1497,15 @@ IMPORTANT:
             logger.error(f"Error in handle_start_message: {e}", exc_info=True)
     
     async def _handle_user_pickup(self):
-        """Handle user pickup - called when actual user audio detected (not Twilio system messages)"""
+        """Handle user pickup - called when actual user audio detected"""
         try:
             if self._user_picked_up:
                 return  # Already handled
             
             self._user_picked_up = True
+            logger.info("👤 User pickup detected via media stream")
             
-            # ❌ Credit monitoring moved to _send_in_progress_status() 
-            # Credit deduction will start when connected status is sent (first media packet + connected status)
-            
-            # Don't send in-progress status here - wait for confident word detection
-            # Status will be sent in _process_transcript() when confident transcript is detected
-            
-            # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
-            # Delay prevents cold start issues and gives call time to establish
+            # 🎵 START BACKGROUND AUDIO LOOP
             if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
                 asyncio.create_task(self._start_background_audio_with_delay())
         

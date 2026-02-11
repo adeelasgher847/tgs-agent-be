@@ -519,7 +519,7 @@ async def initiate_call(
                     "call_sid": call.sid,
                     "agent_id": str(agent.id),
                     "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
+                    "to_number": call_request.userPhoneNumber,
                     "from_number": twilio_service.get_phone_number(),
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
@@ -780,12 +780,6 @@ async def handle_call_events_webhook(
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to queue call ended event (non-critical): {e}")
                 
-                # Stop credit monitoring when call completes
-                try:
-                    credit_service.stop_credit_monitoring(call_session.id)
-                    logger.info(f"✅ Stopped credit monitoring for call session {call_session.id}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             # Update call session AND call log together (single commit)
             call_session_service.update_call_session_status(
@@ -794,63 +788,88 @@ async def handle_call_events_webhook(
                 "completed",
                 ended_reason="hung up"
             )
-            
             logger.info(f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up")
-            
-            # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
-            # SKIP "in-progress" status here - it will be sent when media stream starts
-            if call_status == "in-progress":
-                logger.info(f"ℹ️ Skipping 'in-progress' broadcast here - will be sent by media stream handler")
-            else:
-                try:
-                    logger.info(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
-                    
-                    # Prepare comprehensive metadata
-                    metadata = {
-                        # "call_sid": call_sid,
-                        "from_number": from_number,
-                        "to_number": to_number,
-                        "direction": direction,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-                        "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-                        "duration": call_session.duration
-                    }
-                    
-                    # Add call_status-specific messages
-                    if call_status == "ringing":
-                        metadata["message"] = "Call is ringing"
-                    elif call_status == "completed":
-                        metadata["message"] = "Call has been completed"
-                    
-                    await broadcast_call_status_update(
+
+        # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
+        if call_session and call_status:
+            # Allow "in-progress" and "answered" statuses to be broadcasted
+            broadcast_status = call_status
+            if call_status == "answered":
+                broadcast_status = "in-progress"
+                logger.info(f"🔄 Treating 'answered' as 'in-progress' for immediate status update")
+
+            try:
+                logger.info(f"🚀 Broadcasting call status update: {broadcast_status} for session {call_session.id}")
+                
+                # Prepare comprehensive metadata
+                metadata = {
+                    "from_number": from_number,
+                    "to_number": to_number,
+                    "direction": direction,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
+                    "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
+                    "duration": call_session.duration
+                } 
+                
+                # Add status-specific messages
+                if broadcast_status == "ringing":
+                    metadata["message"] = "Call is ringing"
+                elif broadcast_status == "in-progress":
+                    metadata["message"] = "Call is in progress"
+                elif broadcast_status == "completed":
+                    metadata["message"] = "Call has been completed"
+                elif broadcast_status == "initiated":
+                    metadata["message"] = "Call is being initiated"
+                elif broadcast_status == "failed":
+                    metadata["message"] = "Call failed to connect"
+                elif broadcast_status == "busy":
+                    metadata["message"] = "Line is busy"
+                elif broadcast_status == "no-answer":
+                    metadata["message"] = "No answer from the recipient"
+                elif broadcast_status == "canceled":
+                    metadata["message"] = "Call was canceled"
+                
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status=broadcast_status,
+                    metadata=metadata
+                )
+                logger.debug(f"✅ Call status update sent: {broadcast_status} for session {call_session.id}")
+                
+                # Terminate monitoring and broadcast final event for terminal statuses
+                terminal_statuses = ["completed", "failed", "busy", "no-answer", "canceled"]
+                if call_status in terminal_statuses:
+                    # Stop credit monitoring
+                    try:
+                        credit_service.stop_credit_monitoring(call_session.id)
+                        logger.info(f"✅ Stopped credit monitoring for session {call_session.id} (status: {call_status})")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to stop credit monitoring: {e}")
+
+                    # Broadcast call ended event
+                    asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
-                        status=call_status,
-                        metadata=metadata
-                    )
-                    logger.debug(f"✅ Call status update sent: {call_status} for session {call_session.id}")
-                    
-                    # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
-                    if call_status == "completed":
-                        asyncio.create_task(broadcast_call_ended(
-                            call_session_id=str(call_session.id),
-                            reason="Call completed",
-                            final_data={
-                                "call_sid": call_sid,
-                                "duration": call_session.duration,
-                                "end_time": call_session.end_time.isoformat(),
-                                "transcript": call_session.call_transcript or []
-                            }
-                        ))
-                        logger.debug(f"✅ Queued call ended event for session {call_session.id}")
+                        reason=call_status,
+                        final_data={
+                            "call_sid": call_sid,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "direction": direction,
+                            "duration": call_session.duration if call_session.duration else 0,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "transcript": call_session.call_transcript or []
+                        }
+                    ))
+                    logger.debug(f"✅ Queued call ended event ({call_status}) for session {call_session.id}")
                         
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call status update: {e}", exc_info=True)
+            except Exception as e:
+                logger.error(f"❌ Failed to broadcast call status update: {e}", exc_info=True)
         else:
             if not call_session:
-                logger.warning(f"⚠️ No call session found - cannot update status or broadcast")
+                logger.warning(f"⚠️ No call session found - cannot broadcast status")
             if not call_status:
-                logger.warning(f"⚠️ No call status provided - cannot update status or broadcast")
+                logger.warning(f"⚠️ No call status provided - cannot broadcast status")
         
         # Speech input is now handled by Google Cloud STT via WebSocket
         # The WebSocket will transcribe audio and generate responses
@@ -863,67 +882,63 @@ async def handle_call_events_webhook(
             # Call has been initiated - just log and return empty response
             logger.info(f"Call initiated - SID: {call_sid}")
             
-            # Broadcast call initiated event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="initiated",
-                        metadata={
-                            "check":"just checking",
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Broadcasted call initiated event for session {call_session.id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call initiated event: {e}")
-            
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "ringing" and direction == "outbound-api":
             # Outbound call is ringing - just log, don't play any audio
             logger.info(f"🔔 CALL IS RINGING - SID: {call_sid}")
             
-            # Broadcast call ringing event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="ringing",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Broadcasted call ringing event for session {call_session.id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call ringing event: {e}")
-            
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "answered" and direction == "outbound-api":
-            # ⚠️ IGNORE - We use first media packet detection instead (VAPI-style)
-            logger.info(f"ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug(f"🔍 DEBUG: Will wait for first media packet from WebSocket stream")
-            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
+            # Treat answered as in-progress for immediate feedback
+            logger.info(f"✅ Call answered! Updating session status to in-progress.")
             
-            # Don't start credit monitoring or update status here
-            # Wait for first media packet event from WebSocket stream
-            
+            if call_session:
+                # Update call session status and start time
+                call_session.status = "in-progress"
+                if not call_session.start_time:
+                    call_session.start_time = datetime.now(timezone.utc)
+                db.commit()
+                
+                # Start credit monitoring as soon as call connects
+                try:
+                    if str(call_session.id) not in credit_service._active_monitors:
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=db,
+                            call_session_id=call_session.id,
+                            tenant_id=call_session.tenant_id,
+                            agent_id=call_session.agent_id
+                        ))
+                        logger.info(f"✅ Started credit monitoring for session {call_session.id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to start credit monitoring: {e}")
+
             return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "in-progress":
-            # ⚠️ IGNORE - This is Twilio's media-active notification
-            # We use first media packet detection instead (VAPI-style)
-            logger.info(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug(f"🔍 DEBUG: Media stream status from Twilio (not user pickup)")
-            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
+            # Ensure session is marked as in-progress and credit monitoring is running
+            logger.info(f"ℹ️ IN-PROGRESS STATUS RECEIVED")
             
-            # Don't do anything - first media packet will handle it
+            if call_session:
+                if call_session.status != "in-progress":
+                    call_session.status = "in-progress"
+                    if not call_session.start_time:
+                        call_session.start_time = datetime.now(timezone.utc)
+                    db.commit()
+                
+                # Ensure credit monitoring is running
+                try:
+                    if str(call_session.id) not in credit_service._active_monitors:
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=db,
+                            call_session_id=call_session.id,
+                            tenant_id=call_session.tenant_id,
+                            agent_id=call_session.agent_id
+                        ))
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to check/start credit monitoring: {e}")
             
             return HTMLResponse("", media_type="application/xml")
         elif call_status == "completed":
@@ -939,125 +954,17 @@ async def handle_call_events_webhook(
             # Call failed - handle error
             logger.error(f"Call failed - SID: {call_sid}")
             
-            # Broadcast call failed event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="failed",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call failed event for session {call_session.id}")
-                    
-                    # Also broadcast call ended event for failed calls (non-blocking - fire and forget)
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="failed",
-                        duration=0,
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call ended (failed) event for session {call_session.id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call failed event: {e}")
-                
-                # Stop credit monitoring when call fails
-                try:
-                    credit_service.stop_credit_monitoring(call_session.id)
-                    logger.debug(f"✅ Stopped credit monitoring for failed call session {call_session.id}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-            
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "busy":
             # Call busy - handle busy signal
             logger.info(f"Call busy - SID: {call_sid}")
             
-            # Broadcast call busy event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="busy",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call busy event for session {call_session.id}")
-                    
-                    # Also broadcast call ended event for busy calls (non-blocking - fire and forget)
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="busy",
-                        duration=0,
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call ended (busy) event for session {call_session.id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call busy event: {e}")
-                
-                # Stop credit monitoring when call is busy
-                try:
-                    credit_service.stop_credit_monitoring(call_session.id)
-                    logger.debug(f"✅ Stopped credit monitoring for busy call session {call_session.id}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-            
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "no-answer":
             # Call no-answer - handle no answer
             logger.info(f"Call no-answer - SID: {call_sid}")
-            
-            # Broadcast call no-answer event (non-blocking - fire and forget)
-            if call_session:
-                try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="no-answer",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call no-answer event for session {call_session.id}")
-                    
-                    # Also broadcast call ended event for no-answer calls (non-blocking - fire and forget)
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="no-answer",
-                        duration=0,
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call ended (no-answer) event for session {call_session.id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call no-answer event: {e}")
-                
-                # Stop credit monitoring when call has no-answer
-                try:
-                    credit_service.stop_credit_monitoring(call_session.id)
-                    logger.debug(f"✅ Stopped credit monitoring for no-answer call session {call_session.id}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
             
             return HTMLResponse("", media_type="application/xml")
         
