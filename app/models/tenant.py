@@ -21,3 +21,5 @@ class Tenant(Base):
     call_sessions = relationship("CallSession", back_populates="tenant")
     call_logs = relationship("CallLog", back_populates="tenant")
     phone_numbers = relationship("PhoneNumber", back_populates="tenant")
+    carriers = relationship("Carrier", back_populates="tenant")
+    carriers = relationship("Carrier", back_populates="tenant")

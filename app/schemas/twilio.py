@@ -83,7 +83,7 @@ class CallInitiateRequest(BaseModel):
 
 class CallInitiateResponse(BaseModel):
     callId: str
-    twilioCallSid: str
+    twilioCallSid: Optional[str] = None  # Optional: only for Twilio calls
     callSessionId: str
     status: str
     

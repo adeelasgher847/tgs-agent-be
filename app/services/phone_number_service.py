@@ -35,15 +35,25 @@ class PhoneNumberService:
             encrypted_account_sid = encrypt_api_key(settings.TWILIO_ACCOUNT_SID)
             encrypted_auth_token = encrypt_api_key(settings.TWILIO_AUTH_TOKEN)
         
-        # Create phone number with env credentials
+        # Get dialer_type, carrier_id and Vicidial fields from request
+        dialer_type = getattr(phone_number_data, 'dialer_type', 'twilio') or 'twilio'
+        carrier_id = getattr(phone_number_data, 'carrier_id', None)
+        vicidial_campaign_id = getattr(phone_number_data, 'vicidial_campaign_id', None)
+        caller_id_number = getattr(phone_number_data, 'caller_id_number', None)
+        
+        # Create phone number with env credentials (Twilio) or carrier + Vicidial fields
         phone_number = PhoneNumber(
             phone_number=phone_number_data.phone_number,
             label=phone_number_data.label,
             tenant_id=phone_number_data.tenant_id,
             assistant_id=phone_number_data.assistant_id,
             status="active",
-            twilio_account_sid=encrypted_account_sid,  # ✅ From env (encrypted)
-            twilio_auth_token=encrypted_auth_token    # ✅ From env (encrypted)
+            dialer_type=dialer_type,
+            carrier_id=carrier_id if dialer_type == 'vicidial' else None,
+            twilio_account_sid=encrypted_account_sid if dialer_type == 'twilio' else None,
+            twilio_auth_token=encrypted_auth_token if dialer_type == 'twilio' else None,
+            vicidial_campaign_id=vicidial_campaign_id if dialer_type == 'vicidial' else None,
+            caller_id_number=caller_id_number if dialer_type == 'vicidial' else None
         )
         db.add(phone_number)
         db.commit()

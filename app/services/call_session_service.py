@@ -21,7 +21,7 @@ class CallSessionService:
                            tenant_id: uuid.UUID, twilio_call_sid: str = None,
                            from_number: str = None, to_number: str = None,
                            call_type: str = "inbound", assistant_phone_number: str = None,
-                           customer_phone_number: str = None) -> CallSession:
+                           customer_phone_number: str = None, dialer_type: str = "twilio") -> CallSession:
         """
         Create a new call session and associated call log
         
@@ -30,12 +30,13 @@ class CallSessionService:
             user_id: User ID
             agent_id: Agent ID
             tenant_id: Tenant ID
-            twilio_call_sid: Twilio call SID
+            twilio_call_sid: Twilio call SID (for Twilio calls)
             from_number: Caller number
             to_number: Called number
             call_type: Type of call (inbound, outbound, web)
             assistant_phone_number: Assistant's phone number
             customer_phone_number: Customer's phone number
+            dialer_type: Dialer type ("twilio" or "vicidial") - defaults to "twilio" for backward compatibility
             
         Returns:
             CallSession object
@@ -48,6 +49,7 @@ class CallSessionService:
             start_time=datetime.utcnow(),
             status="active",
             call_type=call_type,
+            dialer_type=dialer_type,  # Set dialer type
             twilio_call_sid=twilio_call_sid,
             from_number=from_number,
             to_number=to_number,

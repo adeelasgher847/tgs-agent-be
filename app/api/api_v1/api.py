@@ -13,6 +13,7 @@ from app.routers.bidirectional_stream import router as bidirectional_stream_rout
 from app.routers.scheduled_calls import router as scheduled_calls_router
 from app.routers.crm_config import router as crm_config_router
 from app.routers.clickup_oauth import router as clickup_oauth_router
+from app.routers.carriers import router as carriers_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -39,3 +40,4 @@ api_router.include_router(bidirectional_stream_router, prefix="/stream", tags=["
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
 api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Configuration"])
 api_router.include_router(clickup_oauth_router, prefix="/auth/clickup", tags=["ClickUp OAuth"],include_in_schema=False)
+api_router.include_router(carriers_router, prefix="/carriers", tags=["Carriers"])

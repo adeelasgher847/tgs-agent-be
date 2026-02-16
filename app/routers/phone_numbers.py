@@ -13,6 +13,7 @@ from app.schemas.phone_number import (
 )
 from app.schemas.base import SuccessResponse
 from app.services.phone_number_service import phone_number_service
+from app.services.carrier_service import carrier_service
 from app.services.twilio_service import twilio_service
 from app.utils.response import create_success_response
 from app.core.logger import logger
@@ -39,8 +40,13 @@ async def get_phone_numbers(
                 label=pn.label,
                 status=pn.status,
                 assistant_id=pn.assistant_id,
+                dialer_type=pn.dialer_type or "twilio",
+                carrier_id=pn.carrier_id,
+                caller_id_number=pn.caller_id_number,
                 twilio_phone_number_sid=pn.twilio_phone_number_sid,
-                twilio_account_sid=account_sid_display,  # ✅ Don't expose encrypted value
+                twilio_account_sid=account_sid_display,
+                vicidial_cid_group_id=pn.vicidial_cid_group_id,
+                vicidial_campaign_id=pn.vicidial_campaign_id,
                 created_at=pn.created_at,
                 updated_at=pn.updated_at
             ))
@@ -79,11 +85,26 @@ async def create_phone_number(
                     detail=f"Assistant with ID {request.assistant_id} not found or doesn't belong to your tenant"
                 )
         
+        # Validate carrier_id when dialer_type=vicidial (carrier must exist and be usable by this tenant)
+        dialer_type = getattr(request, 'dialer_type', 'twilio') or 'twilio'
+        carrier_id = getattr(request, 'carrier_id', None)
+        if dialer_type == 'vicidial' and carrier_id:
+            carrier = carrier_service.get_carrier_by_id(db, carrier_id, user.current_tenant_id)
+            if not carrier:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Carrier not found or not available to your tenant. Use a global carrier or one belonging to your tenant."
+                )
+        
         phone_number_data = PhoneNumberCreate(
             phone_number=request.phone_number,
             label=request.label,
-            assistant_id=request.assistant_id,  # This can be None
-            tenant_id=user.current_tenant_id
+            assistant_id=request.assistant_id,
+            tenant_id=user.current_tenant_id,
+            dialer_type=dialer_type,
+            carrier_id=carrier_id,
+            vicidial_campaign_id=getattr(request, 'vicidial_campaign_id', None),
+            caller_id_number=getattr(request, 'caller_id_number', None)
         )
         
         phone_number = phone_number_service.create_phone_number(db, phone_number_data)

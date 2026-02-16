@@ -41,6 +41,8 @@ from app.services.credit_service import credit_service
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.services.phone_number_service import phone_number_service
+from app.services.dialer_factory import DialerFactory
+from app.models.phone_number import PhoneNumber
 
 router = APIRouter()
 
@@ -428,21 +430,16 @@ async def initiate_call(
             if phone_number_obj:
                 logger.info(f"✅ Using agent's assigned phone number: {phone_number_obj.phone_number}")
         
-        # Use selected phone number with credentials if available
-        if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
-            # ✅ Use DB phone number with custom credentials (decrypt both)
-            from_number = phone_number_obj.phone_number
-            from app.core.security import decrypt_api_key
-            account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
-            auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
-            use_custom_credentials = True
-            logger.info(f"✅ Using DB phone number: {from_number} with custom credentials")
-        else:
-            # ✅ No fallback - user must have a phone number in DB
+        # Validate phone number exists
+        if not phone_number_obj:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No phone number found. Please create and assign a phone number in your account before making calls."
             )
+        
+        # Get dialer_type from phone number (defaults to "twilio" for backward compatibility)
+        dialer_type = phone_number_obj.dialer_type or "twilio"
+        from_number = phone_number_obj.phone_number
         
         # Get base URL for webhooks
         base_url = settings.WEBHOOK_BASE_URL
@@ -454,9 +451,10 @@ async def initiate_call(
             agent_id=agent.id,
             tenant_id=tenant_id_filter,
             twilio_call_sid="",  # Will be updated after call is made
-            from_number=from_number,  # ✅ Use selected phone number
+            from_number=from_number,
             to_number=call_request.userPhoneNumber,
-            call_type="outbound"  # Agent is initiating the call, so it's outbound
+            call_type="outbound",
+            dialer_type=dialer_type  # Set dialer_type from phone number
         )
         
         # Direct WebSocket streaming connection (Vapi-style - no intermediate messages!)
@@ -464,7 +462,7 @@ async def initiate_call(
         webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         
-        logger.info(f"Making call with webhook_url: {webhook_url}")
+        logger.info(f"Making call with dialer_type={dialer_type}, webhook_url: {webhook_url}")
         logger.info(f"Making call with status_callback_url: {status_callback_url}")
         
         # Optional WebSocket broadcast
@@ -476,7 +474,8 @@ async def initiate_call(
                     "agent_id": str(agent.id),
                     "agent_name": agent.name,
                     "to_number": call_request.userPhoneNumber,
-                    "from_number": from_number,  # ✅ Use selected phone number
+                    "from_number": from_number,
+                    "dialer_type": dialer_type,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             )
@@ -484,43 +483,104 @@ async def initiate_call(
         except Exception as e:
             logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         
-        # Make call with appropriate credentials
-        if use_custom_credentials:
-            # ✅ Use custom credentials from DB
-            call = twilio_service.make_call_with_credentials(
-                to_number=call_request.userPhoneNumber,
+        # Get appropriate dialer service based on dialer_type
+        dialer = DialerFactory.get_dialer(dialer_type)
+        
+        # Initiate call using dialer abstraction
+        if dialer_type == "twilio":
+            # ✅ TWILIO FLOW - Existing logic preserved exactly as before
+            if phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
+                # Use DB phone number with custom credentials (decrypt both)
+                from app.core.security import decrypt_api_key
+                account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
+                auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
+                call_result = dialer.initiate_call(
+                    to_number=call_request.userPhoneNumber,
+                    from_number=from_number,
+                    webhook_url=webhook_url,
+                    status_callback_url=status_callback_url,
+                    call_session_id=str(call_session.id),
+                    account_sid=account_sid,
+                    auth_token=auth_token
+                )
+            else:
+                # Use env credentials (current behavior)
+                call_result = dialer.initiate_call(
+                    to_number=call_request.userPhoneNumber,
+                    from_number=from_number,
+                    webhook_url=webhook_url,
+                    status_callback_url=status_callback_url,
+                    call_session_id=str(call_session.id)
+                )
+            
+            # Update call session with Twilio SID (existing behavior)
+            call_session.twilio_call_sid = call_result["call_id"]
+            db.commit()
+            logger.info(f"✅ Updated call session {call_session.id} with Twilio SID: {call_result['call_id']}")
+            
+        elif dialer_type == "vicidial":
+            # ✅ VICIDIAL FLOW - New implementation
+            if not phone_number_obj.vicidial_campaign_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Vicidial phone number must have a campaign_id configured"
+                )
+            
+            # Get carrier info if available
+            carrier = None
+            if phone_number_obj.carrier_id:
+                from app.models.carrier import Carrier
+                carrier = db.query(Carrier).filter(Carrier.id == phone_number_obj.carrier_id).first()
+            
+            # Get list_id from campaign (for now, use first list from campaign)
+            # TODO: In future, allow user to specify list_id
+            list_id = phone_number_obj.vicidial_campaign_id  # Temporary: use campaign_id as list_id placeholder
+            
+            # Extract phone code and number for Vicidial (Vicidial expects number without +)
+            to_number_clean = call_request.userPhoneNumber.replace("+", "")
+            caller_id_clean = (phone_number_obj.caller_id_number or from_number).replace("+", "") if phone_number_obj.caller_id_number or from_number else None
+            
+            call_result = dialer.initiate_call(
+                to_number=to_number_clean,
                 from_number=from_number,
                 webhook_url=webhook_url,
                 status_callback_url=status_callback_url,
-                account_sid=account_sid,
-                auth_token=auth_token
+                call_session_id=str(call_session.id),
+                campaign_id=phone_number_obj.vicidial_campaign_id,
+                list_id=list_id,
+                phone_code="1",  # Default, can be extracted from phone number
+                caller_id_number=caller_id_clean
             )
+            
+            # Update call session with Vicidial call info
+            call_session.vicidial_call_id = call_result.get("call_id")
+            call_session.vicidial_lead_id = call_result.get("lead_id")
+            db.commit()
+            logger.info(f"✅ Updated call session {call_session.id} with Vicidial info: call_id={call_result.get('call_id')}, lead_id={call_result.get('lead_id')}")
+        
         else:
-            # ✅ Use env credentials (current behavior)
-            call = twilio_service.make_call(
-                to_number=call_request.userPhoneNumber,
-                from_number=from_number,
-                webhook_url=webhook_url,
-                status_callback_url=status_callback_url
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported dialer_type: {dialer_type}"
             )
-        logger.info(f"✅ Call initiated successfully")
         
-        # Update call session with Twilio SID
-        call_session.twilio_call_sid = call.sid
-        db.commit()
-        logger.info(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
+        logger.info(f"✅ Call initiated successfully with {dialer_type} dialer")
         
-        # Broadcast call initiated event AFTER Twilio confirms
+        # Get call_id from result (works for both Twilio and Vicidial)
+        external_call_id = call_result.get("call_id", "")
+        
+        # Broadcast call initiated event AFTER dialer confirms
         try:
             await broadcast_call_status_update(
                 call_session_id=str(call_session.id),
                 status="initiated",
                 metadata={
-                    "call_sid": call.sid,
+                    "call_id": external_call_id,
+                    "dialer_type": dialer_type,
                     "agent_id": str(agent.id),
                     "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
-                    "from_number": twilio_service.get_phone_number(),
+                    "to_number": call_request.userPhoneNumber,
+                    "from_number": from_number,
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
             )
@@ -528,8 +588,8 @@ async def initiate_call(
         except Exception as e:
             logger.warning(f"⚠️ Failed to send call initiated event (non-critical): {e}")
         
-        # Generate call ID
-        call_id = f"call_{call.sid[-8:]}"
+        # Generate call ID (shortened for display)
+        call_id = f"call_{external_call_id[-8:]}" if external_call_id else f"call_{str(call_session.id)[:8]}"
         
         # Determine which fields to echo back (prioritize generic fields, fallback to legacy)
         crm_container_id = call_request.crm_container_id or call_request.board_id
@@ -540,7 +600,7 @@ async def initiate_call(
         return create_success_response(
             CallInitiateResponse(
                 callId=call_id,
-                twilioCallSid=call.sid,
+                twilioCallSid=external_call_id if dialer_type == "twilio" else None,  # Only for Twilio
                 callSessionId=str(call_session.id),
                 status="initiated",
                 # Legacy Monday.com fields (for backward compatibility)
@@ -555,7 +615,7 @@ async def initiate_call(
                 call_session_id_field_id=call_session_id_field_id,  # Echo back generic call_session_id field ID
                 crm_type=call_request.crm_type  # Echo back CRM type if provided
             ),
-            "Call initiated successfully"
+            f"Call initiated successfully with {dialer_type} dialer"
         )
         
     except HTTPException as e:

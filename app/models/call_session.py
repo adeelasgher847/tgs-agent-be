@@ -33,8 +33,13 @@ class CallSession(Base):
     response_times = Column(JSONB, nullable=True)  # Store response times for each interaction
     recording_url = Column(String(500), nullable=True)  # URL to the call recording
     
+    # Dialer Type
+    dialer_type = Column(String(20), nullable=False, default="twilio", server_default="twilio")  # twilio, vicidial
+    
     # Phone numbers and external IDs
-    twilio_call_sid = Column(String(255), nullable=True, index=True)
+    twilio_call_sid = Column(String(255), nullable=True, index=True)  # Twilio call SID
+    vicidial_call_id = Column(String(255), nullable=True, index=True)  # Vicidial call ID
+    vicidial_lead_id = Column(String(255), nullable=True)  # Vicidial lead ID
     from_number = Column(String(50), nullable=True)
     to_number = Column(String(50), nullable=True)
     assistant_phone_number = Column(String(50), nullable=True)  # The phone number assigned to the assistant

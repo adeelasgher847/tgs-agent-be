@@ -16,10 +16,21 @@ class PhoneNumber(Base):
     label = Column(String(100), nullable=True)  # Custom label
     status = Column(String(20), nullable=False, default="active")  # active, inactive
     
+    # Dialer Type
+    dialer_type = Column(String(20), nullable=False, default="twilio", server_default="twilio")  # twilio, vicidial
+    
+    # Carrier Reference (for Vicidial)
+    carrier_id = Column(UUID(as_uuid=True), ForeignKey("carrier.id"), nullable=True, index=True)
+    caller_id_number = Column(String(20), nullable=True)  # User's caller ID number
+    
     # Twilio integration
     twilio_phone_number_sid = Column(String(255), nullable=True, index=True)
     twilio_account_sid = Column(String(255), nullable=True)  # Custom Twilio Account SID
     twilio_auth_token = Column(String(500), nullable=True)  # Custom Twilio Auth Token (encrypted)
+    
+    # Vicidial integration
+    vicidial_cid_group_id = Column(String(50), nullable=True)  # CID Group ID in Vicidial
+    vicidial_campaign_id = Column(String(50), nullable=True)  # Campaign ID in Vicidial
     
     # Assistant assignment
     assistant_id = Column(UUID(as_uuid=True), ForeignKey("agent.id"), nullable=True)
@@ -30,6 +41,7 @@ class PhoneNumber(Base):
     
     # Relationships
     tenant = relationship("Tenant", back_populates="phone_numbers")
+    carrier = relationship("Carrier", back_populates="phone_numbers")
     
     # Composite unique constraint: phone_number must be unique within each tenant
     __table_args__ = (
@@ -37,4 +49,4 @@ class PhoneNumber(Base):
     )
     
     def __repr__(self):
-        return f"<PhoneNumber(id={self.id}, number={self.phone_number}, label={self.label})>"
+        return f"<PhoneNumber(id={self.id}, number={self.phone_number}, label={self.label}, dialer_type={self.dialer_type})>"

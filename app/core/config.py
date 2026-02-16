@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
     MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
+    
+    # Vicidial Configuration
+    VICIDIAL_BASE_URL: str = "https://vagenttgs.com/vicidial"
+    VICIDIAL_API_USER: str = ""
+    VICIDIAL_API_PASS: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
