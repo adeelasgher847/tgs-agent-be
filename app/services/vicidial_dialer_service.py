@@ -104,6 +104,7 @@ class VicidialDialerService(BaseDialerService):
             lead_params = {
                 "function": "add_lead",
                 "campaign_id": campaign_id,
+                "list_id": list_id,  # Use the provided list_id
                 "phone_number": phone,
                 "phone_code": phone_code,
                 "vendor_lead_code": call_session_id,  # Store our call_session_id
@@ -130,7 +131,10 @@ class VicidialDialerService(BaseDialerService):
             lead_id = None
             if "SUCCESS" in response_data:
                 parts = response_data.split("|")
-                if len(parts) > 1:
+                # Format: SUCCESS: add_lead... - phone|list_id|lead_id|...
+                if len(parts) > 2:
+                    lead_id = parts[2].strip()
+                elif len(parts) > 1:
                     lead_id = parts[1].strip()
             
             logger.info(f"✅ Vicidial lead added (with add_to_hopper=Y): lead_id={lead_id}, campaign={campaign_id}, phone={phone}")

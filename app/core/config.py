@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     VICIDIAL_BASE_URL: str = "https://vagenttgs.com/vicidial"
     VICIDIAL_API_USER: str = ""
     VICIDIAL_API_PASS: str = ""
+    VICIDIAL_LIST_ID: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

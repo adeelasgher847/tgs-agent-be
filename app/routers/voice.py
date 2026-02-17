@@ -532,12 +532,19 @@ async def initiate_call(
                 from app.models.carrier import Carrier
                 carrier = db.query(Carrier).filter(Carrier.id == phone_number_obj.carrier_id).first()
             
-            # Get list_id from campaign (for now, use first list from campaign)
-            # TODO: In future, allow user to specify list_id
-            list_id = phone_number_obj.vicidial_campaign_id  # Temporary: use campaign_id as list_id placeholder
+            # Get list_id from environment settings
+            list_id = settings.VICIDIAL_LIST_ID
             
             # Extract phone code and number for Vicidial (Vicidial expects number without +)
-            to_number_clean = call_request.userPhoneNumber.replace("+", "")
+            # USA numbers: if starts with 1, separate it as phone_code to avoid double prefixing
+            raw_to = call_request.userPhoneNumber.replace("+", "")
+            if raw_to.startswith("1") and len(raw_to) == 11:
+                phone_code = "1"
+                to_number_clean = raw_to[1:]
+            else:
+                phone_code = "1" # Default
+                to_number_clean = raw_to
+            
             caller_id_clean = (phone_number_obj.caller_id_number or from_number).replace("+", "") if phone_number_obj.caller_id_number or from_number else None
             
             call_result = dialer.initiate_call(
@@ -548,7 +555,7 @@ async def initiate_call(
                 call_session_id=str(call_session.id),
                 campaign_id=phone_number_obj.vicidial_campaign_id,
                 list_id=list_id,
-                phone_code="1",  # Default, can be extracted from phone number
+                phone_code=phone_code,
                 caller_id_number=caller_id_clean
             )
             
@@ -588,8 +595,11 @@ async def initiate_call(
         except Exception as e:
             logger.warning(f"⚠️ Failed to send call initiated event (non-critical): {e}")
         
-        # Generate call ID (shortened for display)
-        call_id = f"call_{external_call_id[-8:]}" if external_call_id else f"call_{str(call_session.id)[:8]}"
+        # Generate call ID (clean numeric for Vicidial, prefixed for others)
+        if dialer_type == "vicidial" and external_call_id:
+            call_id = external_call_id
+        else:
+            call_id = f"call_{external_call_id[-8:]}" if external_call_id else f"call_{str(call_session.id)[:8]}"
         
         # Determine which fields to echo back (prioritize generic fields, fallback to legacy)
         crm_container_id = call_request.crm_container_id or call_request.board_id
