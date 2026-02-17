@@ -92,73 +92,86 @@ async def test_vicidial_ip_validation(
             "user_pass": test_pass
         }
         
-        logger.info(f"🔍 Testing Vicidial IP validation: {teleconnect_url} with user={test_user}")
+        logger.info(f"🔍 Testing Vicidial IP validation and login: {teleconnect_url} with user={test_user}")
         
-        # Make request to teleconnect.php
+        # Create a session to maintain cookies (needed for login)
+        session = requests.Session()
+        
+        # Make request to teleconnect.php with login credentials
         try:
-            response = requests.post(
+            response = session.post(
                 teleconnect_url,
                 data=post_data,
                 timeout=10,
-                allow_redirects=False  # Don't follow redirects, we just want to check if connection works
+                allow_redirects=True  # Follow redirects to see if login was successful
             )
             
             # Check response
             status_code = response.status_code
-            response_text = response.text[:500] if response.text else ""  # First 500 chars
+            final_url = response.url  # Final URL after redirects
+            response_text = response.text[:1000] if response.text else ""  # First 1000 chars
             
-            # Success criteria:
-            # - Status 200: Connection successful, page loaded
-            # - Status 302/301: Redirect (likely means login successful or redirect to agent screen)
-            # - Status 403: Forbidden (IP blocked)
-            # - Connection refused/timeout: IP not whitelisted or server down
+            # Check if login was successful:
+            # - Redirect to agent screen (e.g., /agc/ or /agent/ or contains "agent" in URL)
+            # - Response contains agent interface elements (not login form)
+            # - Status 200 with agent screen content
             
-            if status_code == 200:
-                logger.info(f"✅ Vicidial IP validation successful: Status {status_code}")
+            login_successful = False
+            login_message = ""
+            
+            # Check for redirect to agent screen
+            if "agc" in final_url.lower() or "agent" in final_url.lower() or "viciphone" in final_url.lower():
+                login_successful = True
+                login_message = f"Login successful - Redirected to agent screen: {final_url}"
+            # Check response content for agent interface indicators
+            elif "agent" in response_text.lower() and ("logged in" in response_text.lower() or "session" in response_text.lower() or "campaign" in response_text.lower()):
+                login_successful = True
+                login_message = "Login successful - Agent interface detected in response"
+            # Check if still on login page (login failed)
+            elif "user validation" in response_text.lower() or "phone login" in response_text.lower() or "user login" in response_text.lower():
+                login_successful = False
+                login_message = "Login failed - Still on login/validation page"
+            # Check for error messages
+            elif "error" in response_text.lower() or "invalid" in response_text.lower() or "denied" in response_text.lower():
+                login_successful = False
+                login_message = "Login failed - Error detected in response"
+            else:
+                # If redirect happened but not to agent screen, might be partial success
+                if status_code in [301, 302, 303, 307, 308]:
+                    login_successful = True
+                    login_message = f"Login may be successful - Redirect received to: {final_url}"
+                else:
+                    login_successful = False
+                    login_message = f"Unable to determine login status - Status {status_code}"
+            
+            if login_successful:
+                logger.info(f"✅ Vicidial login successful: {login_message}")
                 return {
                     "success": True,
-                    "message": "Vicidial server is accessible from Render IP",
+                    "message": "Vicidial IP validation and login successful",
+                    "login_status": "successful",
+                    "login_message": login_message,
                     "status_code": status_code,
-                    "response_preview": response_text,
+                    "final_url": final_url,
+                    "response_preview": response_text[:500],
                     "render_ip": "Request sent from Render server IP",
                     "test_url": teleconnect_url,
                     "test_user": test_user
                 }
-            elif status_code in [301, 302, 303, 307, 308]:
-                # Redirect usually means login successful or page redirect
-                redirect_location = response.headers.get("Location", "")
-                logger.info(f"✅ Vicidial IP validation successful: Redirect {status_code} to {redirect_location}")
-                return {
-                    "success": True,
-                    "message": "Vicidial server is accessible from Render IP (redirect received)",
-                    "status_code": status_code,
-                    "redirect_location": redirect_location,
-                    "render_ip": "Request sent from Render server IP",
-                    "test_url": teleconnect_url,
-                    "test_user": test_user
-                }
-            elif status_code == 403:
-                logger.warning(f"⚠️ Vicidial IP validation failed: Forbidden (Status {status_code})")
+            else:
+                logger.warning(f"⚠️ Vicidial login failed: {login_message}")
                 return {
                     "success": False,
-                    "message": "Vicidial server returned Forbidden - IP may be blocked",
+                    "message": "Vicidial IP accessible but login failed",
+                    "login_status": "failed",
+                    "login_message": login_message,
                     "status_code": status_code,
-                    "response_preview": response_text,
+                    "final_url": final_url,
+                    "response_preview": response_text[:500],
                     "render_ip": "Request sent from Render server IP",
                     "test_url": teleconnect_url,
                     "test_user": test_user,
-                    "action_required": "Check Vicidial server firewall/whitelist settings"
-                }
-            else:
-                logger.warning(f"⚠️ Vicidial IP validation returned unexpected status: {status_code}")
-                return {
-                    "success": False,
-                    "message": f"Vicidial server returned status {status_code}",
-                    "status_code": status_code,
-                    "response_preview": response_text,
-                    "render_ip": "Request sent from Render server IP",
-                    "test_url": teleconnect_url,
-                    "test_user": test_user
+                    "action_required": "Check credentials (user=1001, pass=1001) or user permissions in Vicidial"
                 }
                 
         except requests.exceptions.ConnectionError as e:
