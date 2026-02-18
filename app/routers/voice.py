@@ -545,7 +545,13 @@ async def initiate_call(
                 phone_code = "1" # Default
                 to_number_clean = raw_to
             
-            caller_id_clean = (phone_number_obj.caller_id_number or from_number).replace("+", "") if phone_number_obj.caller_id_number or from_number else None
+            # Use caller_id_number from phone record if available, otherwise fallback to phone_number
+            # This ensures outbound calls use the user's specified caller ID number (from create phone number API)
+            caller_id_clean = None
+            if phone_number_obj.caller_id_number:
+                caller_id_clean = phone_number_obj.caller_id_number.replace("+", "")
+            elif from_number:
+                caller_id_clean = from_number.replace("+", "")
             
             call_result = dialer.initiate_call(
                 to_number=to_number_clean,
