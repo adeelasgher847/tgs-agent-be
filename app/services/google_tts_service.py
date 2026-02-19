@@ -107,10 +107,10 @@ class GoogleTTSService:
                     "male": "cmn-CN-Wavenet-B",      # Male Mandarin
                     "female": "cmn-CN-Wavenet-A"     # Female Mandarin
                 },
-                # Urdu - Fallback to Hindi
+                # Urdu - REALISTIC VOICES
                 "ur": {
-                    "male": "hi-IN-Neural2-B",       # Fast Male Hindi
-                    "female": "hi-IN-Neural2-A"      # Fast Female Hindi
+                    "male": "ur-PK-Wavenet-B",       # Male Urdu Pakistan
+                    "female": "ur-PK-Wavenet-A"      # Female Urdu Pakistan
                 }
             }
             
@@ -146,10 +146,10 @@ class GoogleTTSService:
                 "male": "cmn-CN-Wavenet-B",      # Male Mandarin
                 "female": "cmn-CN-Wavenet-A"     # Female Mandarin
             },
-            # Urdu (using Hindi voices as fallback)
+            # Urdu (using correct Wavenet voices)
             "ur": {
-                "male": "hi-IN-Neural2-B",       # Fast Male Hindi
-                "female": "hi-IN-Neural2-A"      # Fast Female Hindi
+                "male": "ur-PK-Wavenet-B",       # Male Urdu
+                "female": "ur-PK-Wavenet-A"      # Female Urdu
             }
         }
         
@@ -175,7 +175,7 @@ class GoogleTTSService:
             "hi": "hi-IN",
             "ar": "ar-XA",
             "zh": "cmn-CN",
-            "ur": "hi-IN"  # Using Hindi as fallback for Urdu
+            "ur": "ur-PK"  # Fixed mapping for Urdu
         }
         
         return language_code_map.get(language, "en-US")

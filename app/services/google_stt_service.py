@@ -69,6 +69,18 @@ class GoogleSTTService:
             logger.error(f"⚠️ Failed to initialize Google Speech client: {e}")
             logger.warning("⚠️ Transcription will not be available without proper credentials")
     
+    def get_language_code(self, language: str = "en") -> str:
+        """
+        Get BCP-47 language code for Google STT
+        """
+        language_code_map = {
+            "en": "en-US",
+            "es": "es-ES",
+            "ar": "ar-XA",
+            "ur": "ur-PK"
+        }
+        return language_code_map.get(language, "en-US")
+
     def get_streaming_config(
         self,
         language_code: str = None,
@@ -94,6 +106,9 @@ class GoogleSTTService:
             StreamingRecognitionConfig object
         """
         # Use defaults from settings if not provided
+        if language_code and len(language_code) <= 3:
+            language_code = self.get_language_code(language_code)
+        
         language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
         sample_rate = sample_rate or settings.GOOGLE_STT_SAMPLE_RATE
         
@@ -150,7 +165,13 @@ class GoogleSTTService:
             import queue
             import threading
             self._client = client
-            self._language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
+            
+            # Resolve short language codes (e.g., 'ur' -> 'ur-PK')
+            if language_code and len(language_code) <= 3:
+                self._language_code = config.get_language_code(language_code)
+            else:
+                self._language_code = language_code or settings.GOOGLE_STT_LANGUAGE_CODE
+                
             self._encoding = (encoding or settings.GOOGLE_STT_ENCODING)
             self._sample_rate = sample_rate or settings.GOOGLE_STT_SAMPLE_RATE
             self._interim_results = interim_results

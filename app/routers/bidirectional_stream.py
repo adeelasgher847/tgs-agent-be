@@ -152,6 +152,39 @@ from app.services.bidirectional_stream_service import (
     build_tts_only_twiml
 )
 
+# MULTILINGUAL PHRASES - User provided mappings for instant responses
+MULTILINGUAL_PHRASES = {
+    "en": {
+        "greetings": ["Hello", "Hi there", "Hi", "Good morning", "Good afternoon", "Good evening"],
+        "acknowledgements": ["Got it", "I see", "Okay", "Sure", "Alright", "Perfect", "Great", "Understood"],
+        "confirmations": ["Yes", "No", "Absolutely", "Of course"],
+        "thinking": ["Let me check that", "One moment please", "Just a second", "Let me see"],
+        "transitions": ["Thank you", "Thanks", "You're welcome"],
+        "closings": ["Goodbye", "Have a great day", "Thank you for calling", "Talk to you later"]
+    },
+    "ur": {
+        "greetings": ["السلام علیکم", "سلام", "ہیلو"],
+        "acknowledgements": ["ٹھیک ہے", "سمجھ گیا", "سمجھ گئی", "جی", "بالکل"],
+        "confirmations": ["ہاں", "نہیں", "ضرور", "بالکل ٹھیک"],
+        "thinking": ["ایک لمحہ دیں", "ذرا چیک کرتا ہوں", "ایک منٹ"],
+        "closings": ["شکریہ", "اللہ حافظ", "خدا حافظ", "اچھا دن گزاریں"]
+    },
+    "es": {
+        "greetings": ["Hola", "Buenos días", "Buenas tardes", "Buenas noches"],
+        "acknowledgements": ["Entiendo", "De acuerdo", "Claro", "Perfecto"],
+        "confirmations": ["Sí", "No", "Por supuesto"],
+        "thinking": ["Un momento por favor", "Déjeme verificar", "Solo un segundo"],
+        "closings": ["Gracias", "De nada", "Que tenga un buen día", "Adiós"]
+    },
+    "ar": {
+        "greetings": ["السلام علیکم", "مرحباً", "صباح الخير", "مساء الخير"],
+        "acknowledgements": ["تفضل", "نعم", "تمام", "مفهوم"],
+        "confirmations": ["نعم", "لا", "بالکل", "طبعاً"],
+        "thinking": ["لحظة من فضلك", "انتظر قليلاً", "دعني أتحقق"],
+        "closings": ["شكراً", "عفواً", "مع السلامة", "يوم سعيد"]
+    }
+}
+
 router = APIRouter()
 
 
@@ -281,54 +314,17 @@ class BidirectionalStreamHandler:
         Runs in background during initialization.
         """
         try:
-            # Common phrases for instant responses (greetings, confirmations, acknowledgements)
-            common_phrases = [
-                # Greetings
-                "Hello",
-                "Hi there",
-                "Hi",
-                "Good morning",
-                "Good afternoon",
-                "Good evening",
-                
-                # Acknowledgements (Quick feedback)
-                "Got it",
-                "I see",
-                "Okay",
-                "Sure",
-                "Alright",
-                "Perfect",
-                "Great",
-                "Understood",
-                
-                # Confirmations
-                "Yes",
-                "No",
-                "Absolutely",
-                "Of course",
-                
-                # Thinking/Processing
-                "Let me check that",
-                "One moment please",
-                "Just a second",
-                "Let me see",
-                
-                # Transitions
-                "Thank you",
-                "Thanks",
-                "You're welcome",
-                
-                # Closings
-                "Goodbye",
-                "Have a great day",
-                "Thank you for calling",
-                "Talk to you later",
-            ]
             
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
             
-            for phrase in common_phrases:
+            # Get appropriate phrases based on language
+            phrase_data = MULTILINGUAL_PHRASES.get(lang, MULTILINGUAL_PHRASES["en"])
+            all_phrases = []
+            for category in phrase_data.values():
+                all_phrases.extend(category)
+            
+            for phrase in all_phrases:
                 try:
                     # Generate and cache (async, non-blocking)
                     await generate_mulaw_tts(
@@ -440,10 +436,11 @@ class BidirectionalStreamHandler:
                 return  # Don't send to STT - this is likely system message/ringing
 
             # (Removed first-media DB marker for outbound gating)
-            # Lazily create a streaming session
+            # ✅ Resolve language code (e.g., 'ur' -> 'ur-PK')
             if self._stt_session is None:
+                agent_lang = getattr(self.agent, "language", "en") or "en"
                 self._stt_session = google_stt_service.create_streaming_session(
-                    language_code=(self.agent.language + "-US") if getattr(self.agent, "language", None) == "en" else None,
+                    language_code=agent_lang,
                     encoding="MULAW",
                     sample_rate=8000,
                     interim_results=True,
@@ -640,8 +637,12 @@ class BidirectionalStreamHandler:
         
         # Only for longer queries (5+ words) - short queries get direct response
         if len(user_text.split()) >= 5:
-            # Quick acknowledgements (these should be pre-cached = instant!)
-            acks = ["Got it", "I see", "Okay", "Sure", "Let me check that"]
+            lang = self.agent.language if self.agent and self.agent.language else "en"
+            
+            # Get acknowledgements from multilingual phrases
+            phrase_data = MULTILINGUAL_PHRASES.get(lang, MULTILINGUAL_PHRASES["en"])
+            acks = phrase_data.get("acknowledgements", MULTILINGUAL_PHRASES["en"]["acknowledgements"])
+            
             ack = random.choice(acks)
             
             # Queue cached acknowledgement (should be instant!)
@@ -736,6 +737,9 @@ class BidirectionalStreamHandler:
             # Base prompt for phone conversations
             base_prompt = f"""You are {agent_name}, a real person having a phone conversation.
 
+            Language: You speak {agent_language} naturally. 
+            IMPORTANT: You MUST provide your entire response in {agent_language}. Avoid using English unless specifically requested by the user.
+
 Guidelines:
 - Speak naturally and conversationally
 - Keep responses brief (1-2 sentences)
@@ -760,6 +764,7 @@ IMPORTANT:
 Your identity:
 - You are {agent_name}, a real human being
 - You speak {agent_language} naturally
+- You MUST provide your entire response in {agent_language}.
 - You are having a phone conversation
 
 Custom instructions:
@@ -785,6 +790,7 @@ IMPORTANT:
 Your identity:
 - You are {agent_name}, a real human being
 - You speak {agent_language} naturally
+- You MUST provide your entire response in {agent_language}.
 
 Model instructions:
 {self.agent.model.system_prompt}
