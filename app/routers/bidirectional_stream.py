@@ -152,7 +152,7 @@ from app.services.bidirectional_stream_service import (
     build_tts_only_twiml
 )
 
-# MULTILINGUAL PHRASES - User provided mappings for instant responses
+# PRE-CACHED MULTILINGUAL PHRASES: Optimized language mappings for ultra-low latency interaction responses
 MULTILINGUAL_PHRASES = {
     "en": {
         "greetings": ["Hello", "Hi there", "Hi", "Good morning", "Good afternoon", "Good evening"],
