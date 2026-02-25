@@ -163,13 +163,20 @@ def add_breath(sentence: str, emotion: str) -> str:
 # 5. SSML Generator (Google-Compatible)
 # ---------------------------------------------------------
 
-def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
+def wrap_in_ssml(
+    text: str,
+    add_office_bg: bool = True,
+    start_break_ms: int = 150,
+    between_sentence_break_ms: int = 150,
+) -> str:
     """
     Wraps text in SSML with prosody and emotion.
     
     Args:
         text: Text to wrap
         add_office_bg: (Deprecated - office background now handled at audio level in bidirectional_stream.py)
+        start_break_ms: Optional break at start of utterance (ms). Use 0 for no leading silence.
+        between_sentence_break_ms: Break inserted between sentences (ms). Use 0 to disable.
     """
     # Add thinking delays BEFORE wrapping
     text = add_thinking_delays(text)
@@ -182,8 +189,9 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
     
     sentences = re.split(r'([.!?])', text)
     ssml = "<speak>"
-    # 150ms break at start to prevent audio pop (Vapi-style smooth start)
-    ssml += '<break time="150ms"/>'
+    # Optional break at start to prevent audio pop (can be reduced/disabled when audio fade-in is applied)
+    if start_break_ms and start_break_ms > 0:
+        ssml += f'<break time="{int(start_break_ms)}ms"/>'
     
     # Office background now handled at audio level (not SSML - Google TTS doesn't support <par> tags)
     # Audio-level mixing in bidirectional_stream.py provides better control
@@ -207,7 +215,8 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
         sentence_with_breath = add_breath(sentence, overall_emotion)
         ssml += sentence_with_breath
         if i < len(processed_sentences) - 1:
-            ssml += '<break time="150ms"/>'
+            if between_sentence_break_ms and between_sentence_break_ms > 0:
+                ssml += f'<break time="{int(between_sentence_break_ms)}ms"/>'
     
     # Close prosody tag
     ssml += '</prosody>'
@@ -220,7 +229,12 @@ def wrap_in_ssml(text: str, add_office_bg: bool = True) -> str:
 # 6. Main Preprocessing Entry
 # ---------------------------------------------------------
 
-def preprocess_for_tts(text: str, add_office_bg: bool = False) -> str:
+def preprocess_for_tts(
+    text: str,
+    add_office_bg: bool = False,
+    start_break_ms: int = 150,
+    between_sentence_break_ms: int = 150,
+) -> str:
     """
     Complete humanization pipeline with optional office background.
     
@@ -248,7 +262,12 @@ def preprocess_for_tts(text: str, add_office_bg: bool = False) -> str:
     text = normalize_abbreviations(text)
     text = normalize_numbers(text)
     text = add_contractions(text)
-    return wrap_in_ssml(text, add_office_bg=add_office_bg)
+    return wrap_in_ssml(
+        text,
+        add_office_bg=add_office_bg,
+        start_break_ms=start_break_ms,
+        between_sentence_break_ms=between_sentence_break_ms,
+    )
 
 
 # ---------------------------------------------------------

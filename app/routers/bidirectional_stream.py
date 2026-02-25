@@ -165,6 +165,13 @@ class BidirectionalStreamHandler:
         "help", "emergency", "urgent", "problem", "issue", "sad", "angry",
         "please help", "asap", "critical", "wrong", "broken", "not working", "complaint",
     )
+
+    # Conversation context: keep the prompt small for latency (voice calls)
+    HISTORY_MAX_MESSAGES = 12  # last N client/agent messages only (not full transcript)
+
+    # Incremental TTS: flush when we have a complete thought/sentence
+    TTS_FLUSH_MIN_WORDS = 6
+    TTS_FLUSH_MAX_WORDS = 28  # safety cap to avoid waiting too long for punctuation
     
     def __init__(
         self,
@@ -729,13 +736,13 @@ class BidirectionalStreamHandler:
                 except:
                     conversation_history = []
             
-            # Build history text - FULL HISTORY (VAPI-style) - handle different formats
+            # Build history text - LAST N MESSAGES (faster + lower token usage)
             history_text = ""
             if conversation_history:
                 try:
                     history_lines = []
-                    # Use FULL history instead of last 6 messages (VAPI approach)
-                    for msg in conversation_history:  # Full history, not [-6:]
+                    filtered = []
+                    for msg in conversation_history:
                         if isinstance(msg, dict):
                             # Handle both 'content' and 'message' keys
                             role = msg.get('role', 'unknown')
@@ -744,7 +751,12 @@ class BidirectionalStreamHandler:
                             
                             # Filter: Only include client and agent messages (skip system/greeting/status messages)
                             if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
-                                history_lines.append(f"{role.capitalize()}: {content}")
+                                filtered.append((role, content))
+
+                    # Keep only the last N messages for latency + cost control
+                    for role, content in filtered[-self.HISTORY_MAX_MESSAGES:]:
+                        history_lines.append(f"{role.capitalize()}: {content}")
+
                     history_text = "\n".join(history_lines)
                 except Exception:
                     history_text = ""
@@ -886,9 +898,52 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
                 nonlocal chunk_counter
-                response_accum = ""
+                import re
 
-                # SIMPLE: Collect FULL response first (no chunking during LLM streaming)
+                response_accum = ""
+                tts_buffer = ""
+                end_call_after = False
+                first_tts_chunk = True
+
+                def _strip_control_tokens(text: str) -> str:
+                    # These are backend/system markers and must NEVER be spoken.
+                    if not text:
+                        return ""
+                    text = text.replace("[END_CALL]", "")
+                    text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
+                    return text
+
+                def _find_flush_index(buf: str):
+                    """
+                    Return an index (end-exclusive) where we can safely flush.
+                    Prefer sentence boundaries. Fallback to comma/semicolon if buffer is getting long.
+                    """
+                    if not buf:
+                        return None
+
+                    # Prefer sentence boundaries: ., !, ? followed by whitespace/newline/end
+                    last_boundary = None
+                    for m in re.finditer(r"([.!?])(\s+|$)", buf):
+                        last_boundary = m.end(1)
+
+                    if last_boundary is not None:
+                        prefix = buf[:last_boundary].strip()
+                        if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
+                            return last_boundary
+
+                    # If the buffer is getting long, allow a softer boundary split
+                    words = buf.split()
+                    if len(words) >= self.TTS_FLUSH_MAX_WORDS:
+                        last_soft = None
+                        for m in re.finditer(r"([,;:])(\s+|$)", buf):
+                            last_soft = m.end(1)
+                        if last_soft is not None:
+                            prefix = buf[:last_soft].strip()
+                            if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
+                                return last_soft
+
+                    return None
+
                 async for chunk in service.stream_text(
                     prompt=user_text,
                     system_prompt=system_prompt,
@@ -904,22 +959,63 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         break
 
                     response_accum += chunk
+                    tts_buffer += chunk
 
-                # Now generate TTS for FULL response (no chunks, no distortion!)
+                    # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
+                    if "[END_CALL]" in response_accum:
+                        end_call_after = True
+                        # Remove it from TTS buffer immediately so it never gets spoken
+                        tts_buffer = _strip_control_tokens(tts_buffer)
+
+                    # Remove OUTCOME tokens from any in-flight buffer (never spoken)
+                    if "[OUTCOME:" in tts_buffer:
+                        tts_buffer = _strip_control_tokens(tts_buffer)
+
+                    # Flush complete thoughts early for faster perceived latency
+                    flush_idx = _find_flush_index(tts_buffer)
+                    if flush_idx is not None and not self._tts_cancel.is_set():
+                        flush_text = tts_buffer[:flush_idx].strip()
+                        tts_buffer = tts_buffer[flush_idx:].lstrip()
+
+                        flush_text = _strip_control_tokens(flush_text).strip()
+                        if flush_text:
+                            if self._use_ssml:
+                                clean_text = strip_ssml_tags(flush_text)
+                                enhanced_text = preprocess_for_tts(
+                                    clean_text,
+                                    start_break_ms=80 if first_tts_chunk else 0,
+                                    between_sentence_break_ms=150,
+                                )
+                            else:
+                                enhanced_text = quick_clean(flush_text)
+
+                            chunk_counter += 1
+                            await self.tts_queue.put({
+                                "text": enhanced_text,
+                                "chunk_id": chunk_counter,
+                                "use_ssml": self._use_ssml,
+                                "is_final": False,
+                            })
+                            first_tts_chunk = False
+
+                # Flush any remaining text as the FINAL chunk
                 full_response = response_accum.strip()
-                # Strip [END_CALL] token if present; end call after this TTS plays
-                end_call_after = "[END_CALL]" in full_response
-                text_for_tts = full_response.replace("[END_CALL]", "").strip()
-                
-                if text_for_tts and not self._tts_cancel.is_set():
-                    # Preprocess with SSML using middleware (plain text from LLM, we add prosody at TTS layer)
+                end_call_after = end_call_after or ("[END_CALL]" in full_response)
+
+                # Never speak control tokens
+                tts_buffer = _strip_control_tokens(tts_buffer).strip()
+
+                if tts_buffer and not self._tts_cancel.is_set():
                     if self._use_ssml:
-                        clean_text = strip_ssml_tags(text_for_tts)
-                        enhanced_text = preprocess_for_tts(clean_text)
+                        clean_text = strip_ssml_tags(tts_buffer)
+                        enhanced_text = preprocess_for_tts(
+                            clean_text,
+                            start_break_ms=80 if first_tts_chunk else 0,
+                            between_sentence_break_ms=150,
+                        )
                     else:
-                        enhanced_text = quick_clean(text_for_tts)
-                    
-                    # Queue SINGLE TTS chunk (complete response); optionally end call after it plays
+                        enhanced_text = quick_clean(tts_buffer)
+
                     chunk_counter += 1
                     await self.tts_queue.put({
                         "text": enhanced_text,
@@ -1032,10 +1128,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Stream TTS CLEAN (no background mixing when AI is speaking)
                     # Background audio loop will automatically pause when is_speaking=True
                     if audio_bytes and not self._tts_cancel.is_set():
-                        # Apply fade-in at start of EVERY agent reply (not just first) to avoid abrupt/tak start
+                        # Apply fade-in only at the start of the utterance to avoid "phat" / pop
                         from app.utils.audio_utils import apply_micro_fade_in
-                        audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
-                        logger.debug("🔊 Applied micro fade-in to TTS chunk (25ms)")
+                        from app.utils.audio_utils import build_crossfade_bridge
+
+                        overlap_bytes = int(getattr(self, "_tts_overlap_bytes", 400) or 400)
+
+                        # If we have a previous tail, create a crossfade bridge and drop the overlapped head
+                        bridge = b""
+                        head_drop = 0
+                        if self._prev_tts_tail:
+                            bridge = build_crossfade_bridge(self._prev_tts_tail, audio_bytes, overlap_bytes=overlap_bytes)
+                            head_drop = min(overlap_bytes, len(audio_bytes))
+
+                        body = audio_bytes[head_drop:]
+
+                        # Hold back a tail for the NEXT chunk (only when not final)
+                        next_tail = b""
+                        if (not is_final) and overlap_bytes > 0 and len(body) > overlap_bytes:
+                            to_play = body[:-overlap_bytes]
+                            next_tail = body[-overlap_bytes:]
+                        else:
+                            to_play = body
+
+                        to_stream = (bridge + to_play) if bridge else to_play
+
+                        if not self._twilio_buffer_primed and to_stream:
+                            to_stream = apply_micro_fade_in(to_stream, duration_ms=25.0)
+                            logger.debug("🔊 Applied micro fade-in to first TTS audio (25ms)")
                         
                         # Prime Twilio's jitter buffer with 100ms (5 frames) of silence for the very first speak only
                         prime_frames = 0 if self._twilio_buffer_primed else 5
@@ -1045,12 +1165,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         await stream_mulaw_bytes_over_twilio(
                             websocket=self.websocket,
                             stream_sid=self.stream_sid,
-                            audio_bytes=audio_bytes,
+                            audio_bytes=to_stream,
                             pace_20ms=True,
                             cancel=self._tts_cancel,
                             prime_frames=prime_frames,
                         )
                         self._twilio_buffer_primed = True
+
+                        # Update crossfade tail state
+                        if self._tts_cancel.is_set():
+                            self._prev_tts_tail = b""
+                        else:
+                            self._prev_tts_tail = b"" if is_final else (next_tail or b"")
                 finally:
                     if self._tts_cancel.is_set():
                         self._prev_tts_tail = b""
