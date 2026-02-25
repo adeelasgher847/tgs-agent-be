@@ -121,6 +121,7 @@ from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
+from app.services.google_tts_service import google_tts_service
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
@@ -170,8 +171,8 @@ class BidirectionalStreamHandler:
     HISTORY_MAX_MESSAGES = 12  # last N client/agent messages only (not full transcript)
 
     # Incremental TTS: flush when we have a complete thought/sentence
-    TTS_FLUSH_MIN_WORDS = 6
-    TTS_FLUSH_MAX_WORDS = 28  # safety cap to avoid waiting too long for punctuation
+    TTS_FLUSH_MIN_WORDS = 3
+    TTS_FLUSH_MAX_WORDS = 18  # safety cap to avoid waiting too long for punctuation
     
     def __init__(
         self,
@@ -899,11 +900,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
                 nonlocal chunk_counter
                 import re
+                import time
 
                 response_accum = ""
                 tts_buffer = ""
                 end_call_after = False
                 first_tts_chunk = True
+                last_flush_ts = time.perf_counter()
 
                 def _strip_control_tokens(text: str) -> str:
                     # These are backend/system markers and must NEVER be spoken.
@@ -944,6 +947,24 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     return None
 
+                def _find_time_flush_index(buf: str):
+                    """
+                    Time-based flush (Vapi-style): if punctuation is delayed, flush on a safe word boundary
+                    so we can start speaking fast. Returns an index (end-exclusive) or None.
+                    """
+                    if not buf:
+                        return None
+                    words = buf.split()
+                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 5):
+                        return None
+
+                    # Flush around ~10-12 words to keep chunks short for fast TTS.
+                    target_words = min(12, len(words))
+                    m = re.match(rf"^(?:\\S+\\s+){{{target_words - 1}}}\\S+", buf)
+                    if not m:
+                        return None
+                    return m.end()
+
                 async for chunk in service.stream_text(
                     prompt=user_text,
                     system_prompt=system_prompt,
@@ -973,6 +994,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
+                    # If punctuation-based flush isn't available, do a time-based flush (~450ms)
+                    if flush_idx is None:
+                        now_ts = time.perf_counter()
+                        if (now_ts - last_flush_ts) >= 0.45:
+                            flush_idx = _find_time_flush_index(tts_buffer)
                     if flush_idx is not None and not self._tts_cancel.is_set():
                         flush_text = tts_buffer[:flush_idx].strip()
                         tts_buffer = tts_buffer[flush_idx:].lstrip()
@@ -983,7 +1009,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 clean_text = strip_ssml_tags(flush_text)
                                 enhanced_text = preprocess_for_tts(
                                     clean_text,
-                                    start_break_ms=80 if first_tts_chunk else 0,
+                                    start_break_ms=0,
                                     between_sentence_break_ms=150,
                                 )
                             else:
@@ -997,6 +1023,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 "is_final": False,
                             })
                             first_tts_chunk = False
+                            last_flush_ts = time.perf_counter()
 
                 # Flush any remaining text as the FINAL chunk
                 full_response = response_accum.strip()
@@ -1010,7 +1037,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         clean_text = strip_ssml_tags(tts_buffer)
                         enhanced_text = preprocess_for_tts(
                             clean_text,
-                            start_break_ms=80 if first_tts_chunk else 0,
+                            start_break_ms=0,
                             between_sentence_break_ms=150,
                         )
                     else:
@@ -1108,6 +1135,180 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     lang = self.agent.language if self.agent and self.agent.language else "en"
                     voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
                     clean = text.strip()
+
+                    # Prefer true streaming TTS for longer responses (real-time playback).
+                    # Keep cache-friendly path for very short phrases (ack/backchannel).
+                    word_count = len(clean.split())
+                    use_streaming_tts = word_count >= 4  # speak sooner; streaming reduces time-to-first-audio
+                    if use_streaming_tts and not self._tts_cancel.is_set():
+                        try:
+                            import base64
+                            import time
+                            from app.utils.audio_utils import apply_micro_fade_in, build_crossfade_bridge, MULAW_FRAME_BYTES
+
+                            # We crossfade at chunk boundaries with a single 20ms overlap for speed.
+                            overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)
+
+                            async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
+                                if not frame:
+                                    return
+                                payload = base64.b64encode(frame).decode("utf-8")
+                                await self.websocket.send_json({
+                                    "event": "media",
+                                    "streamSid": self.stream_sid,
+                                    "media": {"payload": payload}
+                                })
+                                if not pace:
+                                    return
+                                # Pacing with drift correction (shared state)
+                                if state is None:
+                                    return
+                                if state["first"]:
+                                    state["first"] = False
+                                    state["next_send"] = time.perf_counter() + state["send_interval"]
+                                    return
+                                state["next_send"] += state["send_interval"]
+                                now = time.perf_counter()
+                                sleep_dur = state["next_send"] - now
+                                if sleep_dur > 0:
+                                    await asyncio.sleep(sleep_dur)
+                                elif sleep_dur < -0.03:
+                                    state["next_send"] = time.perf_counter()
+
+                            async def stream_mulaw_from_audio_iter(audio_iter):
+                                """
+                                Consume an async iterator of MULAW bytes and stream as 20ms frames.
+                                Uses:
+                                - Optional jitter-buffer priming (first speak only)
+                                - Single crossfade bridge at chunk boundary (prev tail + next head)
+                                - Tail holdback (20ms) between chunks to avoid clicks/distortion
+                                """
+                                # Prime Twilio jitter buffer once per utterance
+                                if not self._twilio_buffer_primed:
+                                    silent = bytes([0xFF]) * MULAW_FRAME_BYTES
+                                    for _ in range(5):
+                                        if self._tts_cancel.is_set():
+                                            return
+                                        await send_frame(silent, pace=False)
+
+                                pace_state = {"send_interval": 0.02, "first": True, "next_send": time.perf_counter()}
+
+                                # Frame buffers
+                                byte_buf = bytearray()
+                                pending_frames = []
+
+                                # Boundary crossfade with previous chunk tail (if any)
+                                need_bridge = bool(self._prev_tts_tail)
+                                bridge_sent = False
+
+                                # Whether we've applied fade-in for this utterance
+                                fade_needed = not self._twilio_buffer_primed
+
+                                async for chunk_bytes in audio_iter:
+                                    if self._tts_cancel.is_set():
+                                        return
+                                    if not chunk_bytes:
+                                        continue
+                                    byte_buf.extend(chunk_bytes)
+
+                                    # Build and send boundary bridge once we have enough head audio
+                                    if need_bridge and not bridge_sent and len(byte_buf) >= overlap_bytes:
+                                        head = bytes(byte_buf[:overlap_bytes])
+                                        bridge = build_crossfade_bridge(self._prev_tts_tail, head, overlap_bytes=overlap_bytes)
+                                        self._prev_tts_tail = b""
+                                        # Drop head overlap from normal stream (bridge already covers it)
+                                        del byte_buf[:overlap_bytes]
+                                        need_bridge = False
+                                        bridge_sent = True
+
+                                        # bridge length == overlap_bytes => exactly one frame
+                                        if fade_needed and bridge:
+                                            bridge = apply_micro_fade_in(bridge, duration_ms=25.0)
+                                            fade_needed = False
+                                        if bridge:
+                                            await send_frame(bridge[:MULAW_FRAME_BYTES], pace=True, state=pace_state)
+
+                                    # Convert bytes to 20ms frames
+                                    while len(byte_buf) >= MULAW_FRAME_BYTES:
+                                        frame = bytes(byte_buf[:MULAW_FRAME_BYTES])
+                                        del byte_buf[:MULAW_FRAME_BYTES]
+                                        pending_frames.append(frame)
+
+                                        # Hold back 1 frame for crossfade tail unless final
+                                        if not is_final and len(pending_frames) <= 1:
+                                            continue
+
+                                        # Send oldest frame
+                                        out = pending_frames.pop(0)
+                                        if fade_needed and out:
+                                            out = apply_micro_fade_in(out, duration_ms=25.0)
+                                            fade_needed = False
+                                        await send_frame(out, pace=True, state=pace_state)
+
+                                # End of streaming responses: handle remainder
+                                if self._tts_cancel.is_set():
+                                    return
+
+                                # If we never had a chance to build a bridge but still had prev tail,
+                                # clear it to avoid carrying stale audio forward.
+                                if need_bridge and self._prev_tts_tail:
+                                    self._prev_tts_tail = b""
+
+                                if is_final:
+                                    # Flush any partial remainder (pad with silence)
+                                    if byte_buf:
+                                        pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
+                                        if pad != MULAW_FRAME_BYTES:
+                                            byte_buf.extend(b"\xFF" * pad)
+                                        while len(byte_buf) >= MULAW_FRAME_BYTES:
+                                            pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
+                                            del byte_buf[:MULAW_FRAME_BYTES]
+
+                                    # Send all remaining frames
+                                    for out in pending_frames:
+                                        if fade_needed and out:
+                                            out = apply_micro_fade_in(out, duration_ms=25.0)
+                                            fade_needed = False
+                                        await send_frame(out, pace=True, state=pace_state)
+                                    pending_frames.clear()
+                                    self._prev_tts_tail = b""
+                                else:
+                                    # Keep exactly 1 frame as tail (pad remainder into tail if needed)
+                                    if byte_buf:
+                                        pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
+                                        if pad != MULAW_FRAME_BYTES:
+                                            byte_buf.extend(b"\xFF" * pad)
+                                        while len(byte_buf) >= MULAW_FRAME_BYTES:
+                                            pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
+                                            del byte_buf[:MULAW_FRAME_BYTES]
+
+                                    # Keep last frame as tail; send earlier pending frames
+                                    tail_frame = pending_frames[-1] if pending_frames else bytes([0xFF]) * MULAW_FRAME_BYTES
+                                    frames_to_send = pending_frames[:-1]
+                                    for out in frames_to_send:
+                                        if fade_needed and out:
+                                            out = apply_micro_fade_in(out, duration_ms=25.0)
+                                            fade_needed = False
+                                        await send_frame(out, pace=True, state=pace_state)
+                                    self._prev_tts_tail = tail_frame
+
+                                self._twilio_buffer_primed = True
+
+                            # Use Google StreamingSynthesize (bidirectional streaming) to reduce time-to-first-audio
+                            audio_iter = google_tts_service.stream_text_to_speech(
+                                text=clean,
+                                language=lang,
+                                voice_type=voice,
+                                speaking_rate=1.0,
+                                output_format="mulaw",
+                                use_chirp3_hd=True,
+                                sample_rate_hz=8000,
+                            )
+
+                            await stream_mulaw_from_audio_iter(audio_iter)
+                            return  # streaming path complete
+                        except Exception as e:
+                            logger.warning(f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}")
                     
                     # Generate TTS audio (Google TTS auto-detects SSML)
                     # Note: add_office_bg=False because mixing is handled during streaming

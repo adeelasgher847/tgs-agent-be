@@ -4,8 +4,9 @@ Handles text-to-speech operations using Google Cloud TTS API
 """
 
 from google.cloud import texttospeech
+from google.cloud import texttospeech_v1
 from app.core.config import settings
-from typing import Optional
+from typing import Optional, AsyncIterator
 import os
 import json
 from app.core.logger import logger
@@ -16,6 +17,7 @@ class GoogleTTSService:
     
     def __init__(self):
         self._client = None
+        self._async_client = None
         self._initialize_credentials()
     
     def _initialize_credentials(self):
@@ -65,6 +67,17 @@ class GoogleTTSService:
                 logger.warning("⚠️ Text-to-Speech will not be available without proper credentials")
         
         return self._client
+
+    def get_async_client(self):
+        """Get Google Cloud TTS async client (for bidirectional streaming)."""
+        if self._async_client is None:
+            try:
+                self._async_client = texttospeech_v1.TextToSpeechAsyncClient()
+                logger.info("✅ Google Cloud Text-to-Speech ASYNC client initialized")
+            except Exception as e:
+                logger.error(f"⚠️ Failed to initialize Google TTS async client: {e}")
+                logger.warning("⚠️ Streaming TTS will not be available without proper credentials")
+        return self._async_client
     
     def get_voice_name(self, language: str = "en", voice_type: str = "female", use_chirp3_hd: bool = False) -> str:
         """
@@ -259,6 +272,75 @@ class GoogleTTSService:
             
         except Exception as e:
             raise Exception(f"Error in Google TTS: {str(e)}")
+
+    async def stream_text_to_speech(
+        self,
+        text: str,
+        language: str = "en",
+        voice_type: str = "female",
+        speaking_rate: float = 1.0,
+        output_format: str = "mulaw",
+        use_chirp3_hd: bool = True,
+        sample_rate_hz: int = 8000,
+    ) -> AsyncIterator[bytes]:
+        """
+        Bidirectional streaming TTS (StreamingSynthesize).
+        Yields audio bytes chunks as they arrive to reduce latency.
+
+        Notes:
+        - Streaming synthesize is compatible with Chirp 3: HD voices.
+        - For HD voices, SSML-like content may need to go through `markup`.
+        """
+        client = self.get_async_client()
+        if client is None:
+            raise Exception("Google TTS async client not available")
+
+        # Streaming is only supported for specific voices (Chirp 3: HD per docs).
+        voice_name = self.get_voice_name(language, voice_type, use_chirp3_hd=True if use_chirp3_hd else False)
+        language_code = self.get_language_code(language)
+        if use_chirp3_hd and "Chirp3" not in voice_name:
+            raise Exception(f"Streaming TTS requires Chirp3-HD voice; got '{voice_name}'")
+
+        # StreamingAudioConfig supports PCM, ALAW, MULAW, OGG_OPUS.
+        encoding_map = {
+            "mulaw": texttospeech_v1.AudioEncoding.MULAW,
+            "alaw": texttospeech_v1.AudioEncoding.ALAW,
+            "linear16": texttospeech_v1.AudioEncoding.LINEAR16,
+            "pcm": texttospeech_v1.AudioEncoding.LINEAR16,  # alias
+            "ogg_opus": texttospeech_v1.AudioEncoding.OGG_OPUS,
+        }
+        audio_encoding = encoding_map.get(output_format.lower(), texttospeech_v1.AudioEncoding.MULAW)
+
+        streaming_config = texttospeech_v1.StreamingSynthesizeConfig(
+            voice=texttospeech_v1.VoiceSelectionParams(
+                name=voice_name,
+                language_code=language_code,
+            ),
+            streaming_audio_config=texttospeech_v1.StreamingAudioConfig(
+                audio_encoding=audio_encoding,
+                sample_rate_hertz=int(sample_rate_hz),
+                speaking_rate=float(speaking_rate),
+            ),
+        )
+
+        # Decide whether to send as markup (for HD voices) or plain text.
+        text_stripped = (text or "").strip()
+        use_markup = text_stripped.startswith("<speak>")
+
+        async def request_generator():
+            # First request must be config only
+            yield texttospeech_v1.StreamingSynthesizeRequest(streaming_config=streaming_config)
+            # Then input
+            if use_markup:
+                inp = texttospeech_v1.StreamingSynthesisInput(markup=text_stripped)
+            else:
+                inp = texttospeech_v1.StreamingSynthesisInput(text=text_stripped)
+            yield texttospeech_v1.StreamingSynthesizeRequest(input=inp)
+
+        stream = await client.streaming_synthesize(requests=request_generator())
+        async for response in stream:
+            if response and getattr(response, "audio_content", None):
+                yield response.audio_content
 
 
 # Global instance
