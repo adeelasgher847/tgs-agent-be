@@ -9,6 +9,7 @@ from app.core.config import settings
 from typing import Optional, AsyncIterator
 import os
 import json
+import re
 from app.core.logger import logger
 
 
@@ -323,18 +324,20 @@ class GoogleTTSService:
             ),
         )
 
-        # Decide whether to send as markup (for HD voices) or plain text.
+        # IMPORTANT:
+        # In streaming_synthesize, HD "markup" is NOT SSML. If we send SSML tags here,
+        # some voices may literally speak them (e.g. "less than prosody...").
+        # So we ALWAYS stream plain text (strip any SSML/XML tags defensively).
         text_stripped = (text or "").strip()
-        use_markup = text_stripped.startswith("<speak>")
+        if "<" in text_stripped and ">" in text_stripped:
+            text_stripped = re.sub(r"<[^>]+>", "", text_stripped)
+            text_stripped = re.sub(r"\s+", " ", text_stripped).strip()
 
         async def request_generator():
             # First request must be config only
             yield texttospeech_v1.StreamingSynthesizeRequest(streaming_config=streaming_config)
             # Then input
-            if use_markup:
-                inp = texttospeech_v1.StreamingSynthesisInput(markup=text_stripped)
-            else:
-                inp = texttospeech_v1.StreamingSynthesisInput(text=text_stripped)
+            inp = texttospeech_v1.StreamingSynthesisInput(text=text_stripped)
             yield texttospeech_v1.StreamingSynthesizeRequest(input=inp)
 
         stream = await client.streaming_synthesize(requests=request_generator())

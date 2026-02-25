@@ -1295,8 +1295,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 self._twilio_buffer_primed = True
 
                             # Use Google StreamingSynthesize (bidirectional streaming) to reduce time-to-first-audio
+                            # NEVER send SSML to streaming synthesize; strip tags to prevent them being spoken.
+                            streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
                             audio_iter = google_tts_service.stream_text_to_speech(
-                                text=clean,
+                                text=streaming_text,
                                 language=lang,
                                 voice_type=voice,
                                 speaking_rate=1.0,
