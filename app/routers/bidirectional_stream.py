@@ -214,7 +214,20 @@ class BidirectionalStreamHandler:
         self._user_speech_duration = 0.0    # Track user monologue duration
         self._last_backchannel_time = 0.0   # Prevent frequent backchannels
         self._last_user_speech_start = 0.0  # Track when user started speaking
-        self._backchannel_phrases = ["mm-hmm", "I see", "okay", "right", "yeah", "got it"]
+        # Backchannels should be SHORT and natural (avoid long phrases that sound like interruptions)
+        self._backchannel_phrases = [
+            "mm-hmm",
+            "uh-huh",
+            "hmm",
+            "I see",
+            "okay",
+            "alright",
+            "right",
+            "yeah",
+            "got it",
+            "oh, I see",
+            "oh, okay",
+        ]
         self._use_ssml = True                # Enable SSML by default
         
         # Session data
@@ -671,7 +684,18 @@ class BidirectionalStreamHandler:
                 return
         if random.random() >= self.QUICK_ACK_PROBABILITY:
             return
-        acks = ["Got it", "I see", "Okay", "Sure", "Let me check that"]
+        acks = [
+            "Got it",
+            "I see",
+            "Okay",
+            "Alright",
+            "Sure",
+            "Mm-hmm",
+            "Oh, okay",
+            "One moment",
+            "Hang on a sec",
+            "Let me check that",
+        ]
         ack = random.choice(acks)
         await self.tts_queue.put({
             "text": ack,
@@ -737,7 +761,7 @@ class BidirectionalStreamHandler:
                 except:
                     conversation_history = []
             
-            # Build history text - LAST N MESSAGES (faster + lower token usage)
+            # Build history text - FULL FILTERED HISTORY (for better long-call memory)
             history_text = ""
             if conversation_history:
                 try:
@@ -754,8 +778,8 @@ class BidirectionalStreamHandler:
                             if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
                                 filtered.append((role, content))
 
-                    # Keep only the last N messages for latency + cost control
-                    for role, content in filtered[-self.HISTORY_MAX_MESSAGES:]:
+                    # Use all filtered messages (full context) so the agent remembers long conversations
+                    for role, content in filtered:
                         history_lines.append(f"{role.capitalize()}: {content}")
 
                     history_text = "\n".join(history_lines)
@@ -772,10 +796,11 @@ You are {agent_name}, having a real-time phone call with a human.
 
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers like "uhm," "well," or "I see" occasionally to sound human.
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 - OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. Prosody is handled by the system.
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
 Previous conversation:
@@ -801,8 +826,9 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 - OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
 Previous conversation:

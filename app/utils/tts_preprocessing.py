@@ -60,6 +60,67 @@ def add_contractions(text: str) -> str:
 
 
 # ---------------------------------------------------------
+# 1b. Symbol Normalization (for TTS readability)
+# ---------------------------------------------------------
+
+def normalize_symbols(text: str) -> str:
+    """
+    Clean up punctuation/symbols that sound unnatural when read literally:
+    - "..." → comma pause (prevents "dot dot dot")
+    - "word/word" → "word and word" (e.g. FastAPI/ML → FastAPI and ML)
+    """
+    if not text:
+        return ""
+
+    # Collapse ellipses (and longer) into a soft pause
+    text = re.sub(r'\.{3,}', ', ', text)
+
+    # Turn inline slashes between words into "and"
+    # e.g. "FastAPI/ML" or "A / B" → "FastAPI and ML"
+    text = re.sub(r'(?<=\w)\s*/\s*(?=\w)', ' and ', text)
+
+    return text
+
+# ---------------------------------------------------------
+# 1c. Emotion-aware Interjections (text-only, streaming-safe)
+# ---------------------------------------------------------
+
+def inject_emotion_preface(text: str, probability: float = 0.18) -> str:
+    """
+    Add a short human interjection at the START of an utterance.
+    This is TEXT-ONLY (no SSML), so it works with both:
+    - SSML synthesize_speech (tags wrap around it)
+    - StreamingSynthesize (where SSML tags may be stripped)
+    """
+    if not text or not text.strip():
+        return ""
+
+    t = text.strip()
+    lower = t.lower()
+
+    # If it already starts with an interjection, don't stack.
+    if re.match(r'^(umm|um|hmm|hm|oh|okay|alright|well|right|got it|hang on|wait)\b', lower):
+        return t
+
+    if random.random() >= probability:
+        return t
+
+    emotion = detect_emotion(t)
+
+    if emotion == "uncertain":
+        prefaces = ["Hmm,", "Umm,", "Well,"]
+    elif emotion == "happy":
+        prefaces = ["Oh, nice,", "Oh, great,", "Alright,"]
+    elif emotion == "sad":
+        prefaces = ["Oh, I'm sorry,", "Hmm, okay,", "I see,"]
+    elif emotion == "confident":
+        prefaces = ["Alright,", "Okay,", "Got it,"]
+    else:
+        prefaces = ["Okay,", "Alright,", "I see,"]
+
+    return f"{random.choice(prefaces)} {t}"
+
+# ---------------------------------------------------------
 # 2. Thinking Delay Mode (NEW!)
 # ---------------------------------------------------------
 
@@ -262,6 +323,7 @@ def preprocess_for_tts(
     text = normalize_abbreviations(text)
     text = normalize_numbers(text)
     text = add_contractions(text)
+    text = normalize_symbols(text)
     return wrap_in_ssml(
         text,
         add_office_bg=add_office_bg,
