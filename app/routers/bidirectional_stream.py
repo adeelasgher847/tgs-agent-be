@@ -172,8 +172,8 @@ class BidirectionalStreamHandler:
     HISTORY_MAX_MESSAGES = 12  # last N client/agent messages only (not full transcript)
 
     # Incremental TTS: flush when we have a complete thought/sentence
-    TTS_FLUSH_MIN_WORDS = 3
-    TTS_FLUSH_MAX_WORDS = 18  # safety cap to avoid waiting too long for punctuation
+    TTS_FLUSH_MIN_WORDS = 2
+    TTS_FLUSH_MAX_WORDS = 12  # keep chunks short for fast TTS start
     
     def __init__(
         self,
@@ -985,8 +985,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 5):
                         return None
 
-                    # Flush around ~10-12 words to keep chunks short for fast TTS.
-                    target_words = min(12, len(words))
+                    # Flush around ~6-8 words to start speaking quickly.
+                    target_words = min(8, len(words))
                     m = re.match(rf"^(?:\\S+\\s+){{{target_words - 1}}}\\S+", buf)
                     if not m:
                         return None
@@ -1021,10 +1021,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
-                    # If punctuation-based flush isn't available, do a time-based flush (~450ms)
+                    # If punctuation-based flush isn't available, do a time-based flush (~300ms)
                     if flush_idx is None:
                         now_ts = time.perf_counter()
-                        if (now_ts - last_flush_ts) >= 0.45:
+                        if (now_ts - last_flush_ts) >= 0.30:
                             flush_idx = _find_time_flush_index(tts_buffer)
                     if flush_idx is not None and not self._tts_cancel.is_set():
                         flush_text = tts_buffer[:flush_idx].strip()
@@ -1037,7 +1037,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 enhanced_text = preprocess_for_tts(
                                     clean_text,
                                     start_break_ms=0,
-                                    between_sentence_break_ms=150,
+                                    between_sentence_break_ms=100,
                                 )
                             else:
                                 enhanced_text = quick_clean(flush_text)
@@ -1151,6 +1151,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             
             if not text or not text.strip():
                 return
+
+            # If stream isn't ready yet (race at call start), wait briefly rather than dropping TTS.
+            if not self.stream_sid:
+                for _ in range(100):  # ~1s max
+                    if self._tts_cancel.is_set():
+                        return
+                    if self.stream_sid:
+                        break
+                    await asyncio.sleep(0.01)
+                if not self.stream_sid:
+                    return
             
             # Check if already cancelled before acquiring lock
             if self._tts_cancel.is_set():
@@ -1179,12 +1190,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
                                 if not frame:
                                     return
+                                if self._tts_cancel.is_set() or not self.stream_sid:
+                                    return
                                 payload = base64.b64encode(frame).decode("utf-8")
-                                await self.websocket.send_json({
-                                    "event": "media",
-                                    "streamSid": self.stream_sid,
-                                    "media": {"payload": payload}
-                                })
+                                try:
+                                    await self.websocket.send_json({
+                                        "event": "media",
+                                        "streamSid": self.stream_sid,
+                                        "media": {"payload": payload}
+                                    })
+                                except RuntimeError:
+                                    # WebSocket already closed (hangup). Stop sending immediately.
+                                    self._tts_cancel.set()
+                                    return
                                 if not pace:
                                     return
                                 # Pacing with drift correction (shared state)
@@ -1352,9 +1370,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             return  # streaming path complete
                         except Exception as e:
                             logger.warning(f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}")
+
+                            # If call ended / barge-in occurred, never fall back to batch TTS.
+                            if self._tts_cancel.is_set() or not self.stream_sid:
+                                self._prev_tts_tail = b""
+                                return
                     
                     # Generate TTS audio (Google TTS auto-detects SSML)
                     # Note: add_office_bg=False because mixing is handled during streaming
+                    if self._tts_cancel.is_set() or not self.stream_sid:
+                        self._prev_tts_tail = b""
+                        return
                     audio_bytes = await generate_mulaw_tts(
                         text=clean,
                         lang=lang,

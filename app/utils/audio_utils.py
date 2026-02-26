@@ -352,21 +352,28 @@ async def stream_mulaw_bytes_over_twilio(
             if cancel and cancel.is_set():
                 break
             payload = base64.b64encode(silent_frame).decode("utf-8")
-            await websocket.send_json({
-                "event": "media",
-                "streamSid": stream_sid,
-                "media": {"payload": payload}
-            })
+            try:
+                await websocket.send_json({
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {"payload": payload}
+                })
+            except RuntimeError:
+                # WebSocket already closed (hangup). Stop sending immediately.
+                return
             # do not pace priming frames to quickly fill buffer
     for frame in iter_mulaw_20ms_frames(audio_bytes):
         if cancel and cancel.is_set():
             break
         payload = base64.b64encode(frame).decode("utf-8")
-        await websocket.send_json({
-            "event": "media",
-            "streamSid": stream_sid,
-            "media": {"payload": payload}
-        })
+        try:
+            await websocket.send_json({
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {"payload": payload}
+            })
+        except RuntimeError:
+            return
         if not pace_20ms:
             continue
         if first:
