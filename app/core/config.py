@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
     GOOGLE_STT_SAMPLE_RATE: int = 8000  # Twilio uses 8kHz for MULAW
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
+
+    # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
+    # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
+    CLOUD_TTS_ENDPOINT: str = ""  # e.g. https://us-texttospeech.googleapis.com
+    GOOGLE_TTS_VOICE_NAME: str = ""  # Optional exact voice name override (e.g. en-US-Chirp3-HD-Achernar)
     
     # Voice Conversation Settings - VAPI-STYLE REAL-TIME STREAMING
     USE_GATHER_APPROACH: bool = False  # Using real-time bidirectional streaming

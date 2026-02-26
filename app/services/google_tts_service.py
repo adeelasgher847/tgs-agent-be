@@ -11,6 +11,7 @@ import os
 import json
 import re
 from app.core.logger import logger
+from google.api_core.client_options import ClientOptions
 
 
 class GoogleTTSService:
@@ -61,7 +62,9 @@ class GoogleTTSService:
         """Get Google Cloud TTS client"""
         if self._client is None:
             try:
-                self._client = texttospeech.TextToSpeechClient()
+                endpoint = (settings.CLOUD_TTS_ENDPOINT or "").strip()
+                client_options = ClientOptions(api_endpoint=endpoint) if endpoint else None
+                self._client = texttospeech.TextToSpeechClient(client_options=client_options)
                 logger.info("✅ Google Cloud Text-to-Speech client initialized")
             except Exception as e:
                 logger.error(f"⚠️ Failed to initialize Google TTS client: {e}")
@@ -73,7 +76,9 @@ class GoogleTTSService:
         """Get Google Cloud TTS async client (for bidirectional streaming)."""
         if self._async_client is None:
             try:
-                self._async_client = texttospeech_v1.TextToSpeechAsyncClient()
+                endpoint = (settings.CLOUD_TTS_ENDPOINT or "").strip()
+                client_options = ClientOptions(api_endpoint=endpoint) if endpoint else None
+                self._async_client = texttospeech_v1.TextToSpeechAsyncClient(client_options=client_options)
                 logger.info("✅ Google Cloud Text-to-Speech ASYNC client initialized")
             except Exception as e:
                 logger.error(f"⚠️ Failed to initialize Google TTS async client: {e}")
@@ -93,6 +98,11 @@ class GoogleTTSService:
         Returns:
             Google Cloud TTS voice name
         """
+        # Optional exact voice override (useful for A/B testing naturalness)
+        # Example: en-US-Chirp3-HD-Achernar
+        if getattr(settings, "GOOGLE_TTS_VOICE_NAME", "").strip():
+            return settings.GOOGLE_TTS_VOICE_NAME.strip()
+
         # Chirp 3: HD voices - ULTRA REALISTIC + PREMIUM QUALITY (Google's latest AI TTS model)
         if use_chirp3_hd:
             chirp3_hd_voice_map = {

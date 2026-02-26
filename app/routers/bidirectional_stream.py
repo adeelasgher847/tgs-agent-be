@@ -122,6 +122,7 @@ from app.services.groq_service import groq_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.services.google_tts_service import google_tts_service
+from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
@@ -1323,11 +1324,25 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             # Use Google StreamingSynthesize (bidirectional streaming) to reduce time-to-first-audio
                             # NEVER send SSML to streaming synthesize; strip tags to prevent them being spoken.
                             streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
+
+                            # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
+                            # Keep this subtle to avoid uncanny/unstable cadence.
+                            emo = detect_emotion(streaming_text)
+                            speaking_rate = 1.0
+                            if emo == "happy":
+                                speaking_rate = 1.03
+                            elif emo == "sad":
+                                speaking_rate = 0.97
+                            elif emo == "uncertain":
+                                speaking_rate = 0.98
+                            elif emo == "confident":
+                                speaking_rate = 1.01
+
                             audio_iter = google_tts_service.stream_text_to_speech(
                                 text=streaming_text,
                                 language=lang,
                                 voice_type=voice,
-                                speaking_rate=1.0,
+                                speaking_rate=speaking_rate,
                                 output_format="mulaw",
                                 use_chirp3_hd=True,
                                 sample_rate_hz=8000,
