@@ -14,6 +14,23 @@ from app.core.logger import logger
 from google.api_core.client_options import ClientOptions
 
 
+def _grpc_endpoint_from_url(url: str) -> str:
+    """
+    gRPC expects host:port, not https://... . Strip scheme and return host (and port if present).
+    Example: https://us-texttospeech.googleapis.com -> us-texttospeech.googleapis.com
+    """
+    if not url or not url.strip():
+        return ""
+    s = url.strip()
+    for prefix in ("https://", "http://"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix):]
+            break
+    # remove trailing slash and any path
+    s = s.split("/")[0]
+    return s
+
+
 class GoogleTTSService:
     """Service class for handling Google Cloud Text-to-Speech operations"""
     
@@ -62,7 +79,7 @@ class GoogleTTSService:
         """Get Google Cloud TTS client"""
         if self._client is None:
             try:
-                endpoint = (settings.CLOUD_TTS_ENDPOINT or "").strip()
+                endpoint = _grpc_endpoint_from_url(settings.CLOUD_TTS_ENDPOINT or "")
                 client_options = ClientOptions(api_endpoint=endpoint) if endpoint else None
                 self._client = texttospeech.TextToSpeechClient(client_options=client_options)
                 logger.info("✅ Google Cloud Text-to-Speech client initialized")
@@ -76,7 +93,7 @@ class GoogleTTSService:
         """Get Google Cloud TTS async client (for bidirectional streaming)."""
         if self._async_client is None:
             try:
-                endpoint = (settings.CLOUD_TTS_ENDPOINT or "").strip()
+                endpoint = _grpc_endpoint_from_url(settings.CLOUD_TTS_ENDPOINT or "")
                 client_options = ClientOptions(api_endpoint=endpoint) if endpoint else None
                 self._async_client = texttospeech_v1.TextToSpeechAsyncClient(client_options=client_options)
                 logger.info("✅ Google Cloud Text-to-Speech ASYNC client initialized")
