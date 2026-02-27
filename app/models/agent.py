@@ -12,6 +12,10 @@ class Agent(Base):
     system_prompt = Column(Text, nullable=True)
     language = Column(String(50), nullable=True)
     voice_type = Column(String(100), nullable=True)
+    # TTS configuration
+    tts_provider = Column(String(50), nullable=True)  # e.g. "google", "elevenlabs"
+    tts_voice_id = Column(String(255), nullable=True)  # provider-specific voice identifier
+    tts_background_preset_id = Column(String(50), nullable=True)  # ElevenLabs: el_office_1, el_cafe_1, none; Google uses project background
     fallback_response = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

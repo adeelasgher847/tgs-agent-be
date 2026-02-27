@@ -6,7 +6,7 @@ Handles text-to-speech operations using Google Cloud TTS API
 from google.cloud import texttospeech
 from google.cloud import texttospeech_v1
 from app.core.config import settings
-from typing import Optional, AsyncIterator
+from typing import Optional, AsyncIterator, List, Dict, Any
 import os
 import json
 import re
@@ -199,6 +199,62 @@ class GoogleTTSService:
         voice_type = voice_type if voice_type in ["male", "female"] else "female"
         
         return voice_map[language][voice_type]
+
+    # Voice maps for list_curated_voices (Neural2 and Chirp3 HD)
+    _NEURAL2_VOICE_MAP = {
+        "en": {"male": "en-US-Neural2-A", "female": "en-US-Neural2-C"},
+        "es": {"male": "es-ES-Neural2-B", "female": "es-ES-Neural2-A"},
+        "hi": {"male": "hi-IN-Neural2-B", "female": "hi-IN-Neural2-A"},
+        "ar": {"male": "ar-XA-Wavenet-B", "female": "ar-XA-Wavenet-A"},
+        "zh": {"male": "cmn-CN-Wavenet-B", "female": "cmn-CN-Wavenet-A"},
+        "ur": {"male": "hi-IN-Neural2-B", "female": "hi-IN-Neural2-A"},
+    }
+    _CHIRP3_HD_VOICE_MAP = {
+        "en": {"male": "en-US-Chirp3-HD-Achird", "female": "en-US-Chirp3-HD-Achernar"},
+        "es": {"male": "es-US-Journey-D", "female": "es-US-Journey-F"},
+        "hi": {"male": "hi-IN-Neural2-B", "female": "hi-IN-Neural2-A"},
+        "ar": {"male": "ar-XA-Wavenet-B", "female": "ar-XA-Wavenet-A"},
+        "zh": {"male": "cmn-CN-Wavenet-B", "female": "cmn-CN-Wavenet-A"},
+        "ur": {"male": "hi-IN-Neural2-B", "female": "hi-IN-Neural2-A"},
+    }
+
+    def list_curated_voices(self, language: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Return curated Google TTS voices for UI dropdown from Neural2 and Chirp3 HD maps.
+        Returns: [{ id: google_voice_name, label, language, gender }].
+        """
+        result: List[Dict[str, Any]] = []
+        seen: set = set()
+        gender_label = {"male": "Male", "female": "Female"}
+        for lang_code, voices in self._NEURAL2_VOICE_MAP.items():
+            if language is not None and lang_code != language.strip().lower():
+                continue
+            for gender, voice_name in voices.items():
+                key = (voice_name, "neural2")
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append({
+                    "id": voice_name,
+                    "label": f"{voice_name} ({gender_label[gender]})",
+                    "language": lang_code,
+                    "gender": gender,
+                })
+        for lang_code, voices in self._CHIRP3_HD_VOICE_MAP.items():
+            if language is not None and lang_code != language.strip().lower():
+                continue
+            for gender, voice_name in voices.items():
+                key = (voice_name, "chirp3")
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append({
+                    "id": voice_name,
+                    "label": f"{voice_name} ({gender_label[gender]})",
+                    "language": lang_code,
+                    "gender": gender,
+                })
+        return result
     
     def get_language_code(self, language: str = "en") -> str:
         """

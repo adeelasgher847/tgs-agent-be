@@ -22,6 +22,19 @@ class AgentBase(BaseModel):
     system_prompt: Optional[str] = None
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
+    # TTS configuration
+    tts_provider: Optional[str] = Field(
+        default=None,
+        description="TTS provider identifier (e.g. 'google', 'elevenlabs')"
+    )
+    tts_voice_id: Optional[str] = Field(
+        default=None,
+        description="Provider-specific TTS voice identifier"
+    )
+    tts_background_preset_id: Optional[str] = Field(
+        default=None,
+        description="ElevenLabs background preset (el_office_1, el_cafe_1, none); ignored for Google (uses project background)"
+    )
     fallback_response: Optional[str] = None
     provider_id: Optional[uuid.UUID] = Field(None, description="Provider ID for filtering models")
     # Agent-specific model configuration
@@ -40,6 +53,19 @@ class AgentUpdate(BaseModel):
     system_prompt: Optional[str] = None 
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
+    # TTS configuration
+    tts_provider: Optional[str] = Field(
+        default=None,
+        description="TTS provider identifier (e.g. 'google', 'elevenlabs')"
+    )
+    tts_voice_id: Optional[str] = Field(
+        default=None,
+        description="Provider-specific TTS voice identifier"
+    )
+    tts_background_preset_id: Optional[str] = Field(
+        default=None,
+        description="ElevenLabs background preset (el_office_1, el_cafe_1, none)"
+    )
     fallback_response: Optional[str] = None
     model_id: Optional[uuid.UUID] = None
     provider_id: Optional[uuid.UUID] = Field(None, description="Provider ID for filtering models")

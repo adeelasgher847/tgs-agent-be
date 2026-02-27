@@ -122,6 +122,7 @@ from app.services.groq_service import groq_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.services.google_tts_service import google_tts_service
+from app.services.elevenlabs_service import elevenlabs_service
 from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
@@ -477,8 +478,20 @@ class BidirectionalStreamHandler:
             # (Removed first-media DB marker for outbound gating)
             # Lazily create a streaming session
             if self._stt_session is None:
+                # Map agent.language (short code) to full BCP-47 language code for Google STT
+                agent_lang = getattr(self.agent, "language", None) or "en"
+                language_code_map = {
+                    "en": "en-US",
+                    "es": "es-ES",
+                    "hi": "hi-IN",
+                    "ar": "ar-XA",
+                    "zh": "cmn-CN",
+                    "ur": "ur-PK",
+                }
+                stt_language_code = language_code_map.get(agent_lang, "en-US")
+
                 self._stt_session = google_stt_service.create_streaming_session(
-                    language_code=(self.agent.language + "-US") if getattr(self.agent, "language", None) == "en" else None,
+                    language_code=stt_language_code,
                     encoding="MULAW",
                     sample_rate=8000,
                     interim_results=True,
@@ -1175,226 +1188,310 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             async with self._tts_lock:
                 self.is_speaking = True
                 try:
+                    # Resolve TTS configuration from agent
                     lang = self.agent.language if self.agent and self.agent.language else "en"
                     voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+                    tts_provider = getattr(self.agent, "tts_provider", None) or "google"
+                    tts_voice_id = getattr(self.agent, "tts_voice_id", None)
                     clean = text.strip()
+
+                    # ElevenLabs should not receive SSML markup. If SSML was added upstream,
+                    # strip it back to plain text and disable SSML-specific behavior.
+                    if tts_provider == "elevenlabs":
+                        if use_ssml or ("<" in clean and ">" in clean):
+                            clean = strip_ssml_tags(clean)
+                        use_ssml = False
 
                     # Prefer true streaming TTS for longer responses (real-time playback).
                     # Keep cache-friendly path for very short phrases (ack/backchannel).
                     word_count = len(clean.split())
                     use_streaming_tts = word_count >= 4  # speak sooner; streaming reduces time-to-first-audio
                     if use_streaming_tts and not self._tts_cancel.is_set():
-                        try:
-                            import base64
-                            import time
-                            from app.utils.audio_utils import apply_micro_fade_in, build_crossfade_bridge, MULAW_FRAME_BYTES
+                        # Provider-specific true streaming paths
+                        if tts_provider == "google":
+                            try:
+                                import base64
+                                import time
+                                from app.utils.audio_utils import apply_micro_fade_in, build_crossfade_bridge, MULAW_FRAME_BYTES
 
-                            # We crossfade at chunk boundaries with a single 20ms overlap for speed.
-                            overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)
+                                # We crossfade at chunk boundaries with a single 20ms overlap for speed.
+                                overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)
 
-                            async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
-                                if not frame:
-                                    return
+                                async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
+                                    if not frame:
+                                        return
+                                    if self._tts_cancel.is_set() or not self.stream_sid:
+                                        return
+                                    payload = base64.b64encode(frame).decode("utf-8")
+                                    try:
+                                        await self.websocket.send_json({
+                                            "event": "media",
+                                            "streamSid": self.stream_sid,
+                                            "media": {"payload": payload}
+                                        })
+                                    except RuntimeError:
+                                        # WebSocket already closed (hangup). Stop sending immediately.
+                                        self._tts_cancel.set()
+                                        return
+                                    if not pace:
+                                        return
+                                    # Pacing with drift correction (shared state)
+                                    if state is None:
+                                        return
+                                    if state["first"]:
+                                        state["first"] = False
+                                        state["next_send"] = time.perf_counter() + state["send_interval"]
+                                        return
+                                    state["next_send"] += state["send_interval"]
+                                    now = time.perf_counter()
+                                    sleep_dur = state["next_send"] - now
+                                    if sleep_dur > 0:
+                                        await asyncio.sleep(sleep_dur)
+                                    elif sleep_dur < -0.03:
+                                        state["next_send"] = time.perf_counter()
+
+                                async def stream_mulaw_from_audio_iter(audio_iter):
+                                    """
+                                    Consume an async iterator of MULAW bytes and stream as 20ms frames.
+                                    Uses:
+                                    - Optional jitter-buffer priming (first speak only)
+                                    - Single crossfade bridge at chunk boundary (prev tail + next head)
+                                    - Tail holdback (20ms) between chunks to avoid clicks/distortion
+                                    """
+                                    # Prime Twilio jitter buffer once per utterance
+                                    if not self._twilio_buffer_primed:
+                                        silent = bytes([0xFF]) * MULAW_FRAME_BYTES
+                                        for _ in range(5):
+                                            if self._tts_cancel.is_set():
+                                                return
+                                            await send_frame(silent, pace=False)
+
+                                    pace_state = {"send_interval": 0.02, "first": True, "next_send": time.perf_counter()}
+
+                                    # Frame buffers
+                                    byte_buf = bytearray()
+                                    pending_frames = []
+
+                                    # Boundary crossfade with previous chunk tail (if any)
+                                    need_bridge = bool(self._prev_tts_tail)
+                                    bridge_sent = False
+
+                                    # Whether we've applied fade-in for this utterance
+                                    fade_needed = not self._twilio_buffer_primed
+
+                                    async for chunk_bytes in audio_iter:
+                                        if self._tts_cancel.is_set():
+                                            return
+                                        if not chunk_bytes:
+                                            continue
+                                        byte_buf.extend(chunk_bytes)
+
+                                        # Build and send boundary bridge once we have enough head audio
+                                        if need_bridge and not bridge_sent and len(byte_buf) >= overlap_bytes:
+                                            head = bytes(byte_buf[:overlap_bytes])
+                                            bridge = build_crossfade_bridge(self._prev_tts_tail, head, overlap_bytes=overlap_bytes)
+                                            self._prev_tts_tail = b""
+                                            # Drop head overlap from normal stream (bridge already covers it)
+                                            del byte_buf[:overlap_bytes]
+                                            need_bridge = False
+                                            bridge_sent = True
+
+                                            # bridge length == overlap_bytes => exactly one frame
+                                            if fade_needed and bridge:
+                                                bridge = apply_micro_fade_in(bridge, duration_ms=25.0)
+                                                fade_needed = False
+                                            if bridge:
+                                                await send_frame(bridge[:MULAW_FRAME_BYTES], pace=True, state=pace_state)
+
+                                        # Convert bytes to 20ms frames
+                                        while len(byte_buf) >= MULAW_FRAME_BYTES:
+                                            frame = bytes(byte_buf[:MULAW_FRAME_BYTES])
+                                            del byte_buf[:MULAW_FRAME_BYTES]
+                                            pending_frames.append(frame)
+
+                                            # Hold back 1 frame for crossfade tail unless final
+                                            if not is_final and len(pending_frames) <= 1:
+                                                continue
+
+                                            # Send oldest frame
+                                            out = pending_frames.pop(0)
+                                            if fade_needed and out:
+                                                out = apply_micro_fade_in(out, duration_ms=25.0)
+                                                fade_needed = False
+                                            await send_frame(out, pace=True, state=pace_state)
+
+                                    # End of streaming responses: handle remainder
+                                    if self._tts_cancel.is_set():
+                                        return
+
+                                    # If we never had a chance to build a bridge but still had prev tail,
+                                    # clear it to avoid carrying stale audio forward.
+                                    if need_bridge and self._prev_tts_tail:
+                                        self._prev_tts_tail = b""
+
+                                    if is_final:
+                                        # Flush any partial remainder (pad with silence)
+                                        if byte_buf:
+                                            pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
+                                            if pad != MULAW_FRAME_BYTES:
+                                                byte_buf.extend(b"\xFF" * pad)
+                                            while len(byte_buf) >= MULAW_FRAME_BYTES:
+                                                pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
+                                                del byte_buf[:MULAW_FRAME_BYTES]
+
+                                        # Send all remaining frames
+                                        for out in pending_frames:
+                                            if fade_needed and out:
+                                                out = apply_micro_fade_in(out, duration_ms=25.0)
+                                                fade_needed = False
+                                            await send_frame(out, pace=True, state=pace_state)
+                                        pending_frames.clear()
+                                        self._prev_tts_tail = b""
+                                    else:
+                                        # Keep exactly 1 frame as tail (pad remainder into tail if needed)
+                                        if byte_buf:
+                                            pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
+                                            if pad != MULAW_FRAME_BYTES:
+                                                byte_buf.extend(b"\xFF" * pad)
+                                            while len(byte_buf) >= MULAW_FRAME_BYTES:
+                                                pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
+                                                del byte_buf[:MULAW_FRAME_BYTES]
+
+                                        # Keep last frame as tail; send earlier pending frames
+                                        tail_frame = pending_frames[-1] if pending_frames else bytes([0xFF]) * MULAW_FRAME_BYTES
+                                        frames_to_send = pending_frames[:-1]
+                                        for out in frames_to_send:
+                                            if fade_needed and out:
+                                                out = apply_micro_fade_in(out, duration_ms=25.0)
+                                                fade_needed = False
+                                            await send_frame(out, pace=True, state=pace_state)
+                                        self._prev_tts_tail = tail_frame
+
+                                    self._twilio_buffer_primed = True
+
+                                # Use Google StreamingSynthesize (bidirectional streaming) to reduce time-to-first-audio
+                                # NEVER send SSML to streaming synthesize; strip tags to prevent them being spoken.
+                                streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
+
+                                # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
+                                # Keep this subtle to avoid uncanny/unstable cadence.
+                                emo = detect_emotion(streaming_text)
+                                speaking_rate = 1.0
+                                if emo == "happy":
+                                    speaking_rate = 1.03
+                                elif emo == "sad":
+                                    speaking_rate = 0.97
+                                elif emo == "uncertain":
+                                    speaking_rate = 0.98
+                                elif emo == "confident":
+                                    speaking_rate = 1.01
+
+                                audio_iter = google_tts_service.stream_text_to_speech(
+                                    text=streaming_text,
+                                    language=lang,
+                                    voice_type=voice,
+                                    speaking_rate=speaking_rate,
+                                    output_format="mulaw",
+                                    use_chirp3_hd=True,
+                                    sample_rate_hz=8000,
+                                )
+
+                                await stream_mulaw_from_audio_iter(audio_iter)
+                                return  # streaming path complete
+                            except Exception as e:
+                                logger.warning(f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}")
+
+                                # If call ended / barge-in occurred, never fall back to batch TTS.
                                 if self._tts_cancel.is_set() or not self.stream_sid:
+                                    self._prev_tts_tail = b""
                                     return
-                                payload = base64.b64encode(frame).decode("utf-8")
-                                try:
-                                    await self.websocket.send_json({
-                                        "event": "media",
-                                        "streamSid": self.stream_sid,
-                                        "media": {"payload": payload}
-                                    })
-                                except RuntimeError:
-                                    # WebSocket already closed (hangup). Stop sending immediately.
-                                    self._tts_cancel.set()
-                                    return
-                                if not pace:
-                                    return
-                                # Pacing with drift correction (shared state)
-                                if state is None:
-                                    return
-                                if state["first"]:
-                                    state["first"] = False
-                                    state["next_send"] = time.perf_counter() + state["send_interval"]
-                                    return
-                                state["next_send"] += state["send_interval"]
-                                now = time.perf_counter()
-                                sleep_dur = state["next_send"] - now
-                                if sleep_dur > 0:
-                                    await asyncio.sleep(sleep_dur)
-                                elif sleep_dur < -0.03:
-                                    state["next_send"] = time.perf_counter()
+                        elif tts_provider == "elevenlabs":
+                            try:
+                                # ElevenLabs HTTP /stream with output_format=ulaw_8000.
+                                # We wrap it as an async iterator and feed into the same
+                                # 20ms frame pipeline for low-latency playback.
+                                el_voice_id = tts_voice_id or "21m00Tcm4TlvDq8ikWAM"
+                                language_code = lang
+                                audio_iter = elevenlabs_service.stream_mulaw_8000_iter(
+                                    text=clean,
+                                    voice_id=el_voice_id,
+                                    model_id="eleven_multilingual_v2",
+                                    language_code=language_code,
+                                )
+                                from app.utils.audio_utils import MULAW_FRAME_BYTES  # for priming / pacing in helper
 
-                            async def stream_mulaw_from_audio_iter(audio_iter):
-                                """
-                                Consume an async iterator of MULAW bytes and stream as 20ms frames.
-                                Uses:
-                                - Optional jitter-buffer priming (first speak only)
-                                - Single crossfade bridge at chunk boundary (prev tail + next head)
-                                - Tail holdback (20ms) between chunks to avoid clicks/distortion
-                                """
-                                # Prime Twilio jitter buffer once per utterance
+                                async def send_frame_el(frame: bytes, pace: bool = True, state: dict = None):
+                                    if not frame or self._tts_cancel.is_set() or not self.stream_sid:
+                                        return
+                                    payload = base64.b64encode(frame).decode("utf-8")
+                                    try:
+                                        await self.websocket.send_json({
+                                            "event": "media",
+                                            "streamSid": self.stream_sid,
+                                            "media": {"payload": payload}
+                                        })
+                                    except RuntimeError:
+                                        self._tts_cancel.set()
+
+                                # Reuse the optimized MULAW 20ms streaming helper for ElevenLabs
+                                # by forwarding the async iterator directly.
+                                from app.utils.audio_utils import iter_mulaw_20ms_frames
+
+                                # Simple adapter: consume async chunks, frame to 20ms and send
+                                pace_state = {"send_interval": 0.02, "first": True, "next_send": time.perf_counter()}
+
                                 if not self._twilio_buffer_primed:
                                     silent = bytes([0xFF]) * MULAW_FRAME_BYTES
                                     for _ in range(5):
                                         if self._tts_cancel.is_set():
                                             return
-                                        await send_frame(silent, pace=False)
-
-                                pace_state = {"send_interval": 0.02, "first": True, "next_send": time.perf_counter()}
-
-                                # Frame buffers
-                                byte_buf = bytearray()
-                                pending_frames = []
-
-                                # Boundary crossfade with previous chunk tail (if any)
-                                need_bridge = bool(self._prev_tts_tail)
-                                bridge_sent = False
-
-                                # Whether we've applied fade-in for this utterance
-                                fade_needed = not self._twilio_buffer_primed
+                                        await send_frame_el(silent, pace=False)
+                                    self._twilio_buffer_primed = True
 
                                 async for chunk_bytes in audio_iter:
                                     if self._tts_cancel.is_set():
                                         return
                                     if not chunk_bytes:
                                         continue
-                                    byte_buf.extend(chunk_bytes)
+                                    for frame in iter_mulaw_20ms_frames(chunk_bytes):
+                                        await send_frame_el(frame, pace=True, state=pace_state)
 
-                                    # Build and send boundary bridge once we have enough head audio
-                                    if need_bridge and not bridge_sent and len(byte_buf) >= overlap_bytes:
-                                        head = bytes(byte_buf[:overlap_bytes])
-                                        bridge = build_crossfade_bridge(self._prev_tts_tail, head, overlap_bytes=overlap_bytes)
-                                        self._prev_tts_tail = b""
-                                        # Drop head overlap from normal stream (bridge already covers it)
-                                        del byte_buf[:overlap_bytes]
-                                        need_bridge = False
-                                        bridge_sent = True
-
-                                        # bridge length == overlap_bytes => exactly one frame
-                                        if fade_needed and bridge:
-                                            bridge = apply_micro_fade_in(bridge, duration_ms=25.0)
-                                            fade_needed = False
-                                        if bridge:
-                                            await send_frame(bridge[:MULAW_FRAME_BYTES], pace=True, state=pace_state)
-
-                                    # Convert bytes to 20ms frames
-                                    while len(byte_buf) >= MULAW_FRAME_BYTES:
-                                        frame = bytes(byte_buf[:MULAW_FRAME_BYTES])
-                                        del byte_buf[:MULAW_FRAME_BYTES]
-                                        pending_frames.append(frame)
-
-                                        # Hold back 1 frame for crossfade tail unless final
-                                        if not is_final and len(pending_frames) <= 1:
-                                            continue
-
-                                        # Send oldest frame
-                                        out = pending_frames.pop(0)
-                                        if fade_needed and out:
-                                            out = apply_micro_fade_in(out, duration_ms=25.0)
-                                            fade_needed = False
-                                        await send_frame(out, pace=True, state=pace_state)
-
-                                # End of streaming responses: handle remainder
-                                if self._tts_cancel.is_set():
-                                    return
-
-                                # If we never had a chance to build a bridge but still had prev tail,
-                                # clear it to avoid carrying stale audio forward.
-                                if need_bridge and self._prev_tts_tail:
-                                    self._prev_tts_tail = b""
-
-                                if is_final:
-                                    # Flush any partial remainder (pad with silence)
-                                    if byte_buf:
-                                        pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
-                                        if pad != MULAW_FRAME_BYTES:
-                                            byte_buf.extend(b"\xFF" * pad)
-                                        while len(byte_buf) >= MULAW_FRAME_BYTES:
-                                            pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
-                                            del byte_buf[:MULAW_FRAME_BYTES]
-
-                                    # Send all remaining frames
-                                    for out in pending_frames:
-                                        if fade_needed and out:
-                                            out = apply_micro_fade_in(out, duration_ms=25.0)
-                                            fade_needed = False
-                                        await send_frame(out, pace=True, state=pace_state)
-                                    pending_frames.clear()
-                                    self._prev_tts_tail = b""
-                                else:
-                                    # Keep exactly 1 frame as tail (pad remainder into tail if needed)
-                                    if byte_buf:
-                                        pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
-                                        if pad != MULAW_FRAME_BYTES:
-                                            byte_buf.extend(b"\xFF" * pad)
-                                        while len(byte_buf) >= MULAW_FRAME_BYTES:
-                                            pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
-                                            del byte_buf[:MULAW_FRAME_BYTES]
-
-                                    # Keep last frame as tail; send earlier pending frames
-                                    tail_frame = pending_frames[-1] if pending_frames else bytes([0xFF]) * MULAW_FRAME_BYTES
-                                    frames_to_send = pending_frames[:-1]
-                                    for out in frames_to_send:
-                                        if fade_needed and out:
-                                            out = apply_micro_fade_in(out, duration_ms=25.0)
-                                            fade_needed = False
-                                        await send_frame(out, pace=True, state=pace_state)
-                                    self._prev_tts_tail = tail_frame
-
-                                self._twilio_buffer_primed = True
-
-                            # Use Google StreamingSynthesize (bidirectional streaming) to reduce time-to-first-audio
-                            # NEVER send SSML to streaming synthesize; strip tags to prevent them being spoken.
-                            streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
-
-                            # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
-                            # Keep this subtle to avoid uncanny/unstable cadence.
-                            emo = detect_emotion(streaming_text)
-                            speaking_rate = 1.0
-                            if emo == "happy":
-                                speaking_rate = 1.03
-                            elif emo == "sad":
-                                speaking_rate = 0.97
-                            elif emo == "uncertain":
-                                speaking_rate = 0.98
-                            elif emo == "confident":
-                                speaking_rate = 1.01
-
-                            audio_iter = google_tts_service.stream_text_to_speech(
-                                text=streaming_text,
-                                language=lang,
-                                voice_type=voice,
-                                speaking_rate=speaking_rate,
-                                output_format="mulaw",
-                                use_chirp3_hd=True,
-                                sample_rate_hz=8000,
-                            )
-
-                            await stream_mulaw_from_audio_iter(audio_iter)
-                            return  # streaming path complete
-                        except Exception as e:
-                            logger.warning(f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}")
-
-                            # If call ended / barge-in occurred, never fall back to batch TTS.
-                            if self._tts_cancel.is_set() or not self.stream_sid:
-                                self._prev_tts_tail = b""
                                 return
+                            except Exception as e:
+                                logger.warning(f"⚠️ ElevenLabs streaming failed, falling back to batch TTS: {e}")
+                                if self._tts_cancel.is_set() or not self.stream_sid:
+                                    self._prev_tts_tail = b""
+                                    return
                     
-                    # Generate TTS audio (Google TTS auto-detects SSML)
+                    # Generate TTS audio (provider-specific)
                     # Note: add_office_bg=False because mixing is handled during streaming
                     if self._tts_cancel.is_set() or not self.stream_sid:
                         self._prev_tts_tail = b""
                         return
-                    audio_bytes = await generate_mulaw_tts(
-                        text=clean,
-                        lang=lang,
-                        voice=voice,
-                        use_chirp3_hd=True,
-                        speaking_rate=1.0,
-                        use_ssml=use_ssml,
-                        add_office_bg=False  # Background mixing handled separately
-                    )
+
+                    if tts_provider == "elevenlabs":
+                        # ElevenLabs: request 8kHz μ-law directly for Twilio
+                        # Use agent-configured voice id if available; otherwise default voice.
+                        el_voice_id = tts_voice_id or "21m00Tcm4TlvDq8ikWAM"
+                        # ElevenLabs expects ISO 639-1 (en, es, etc.) which matches our agent.language
+                        language_code = lang
+                        audio_bytes = elevenlabs_service.stream_mulaw_8000(
+                            text=clean,
+                            voice_id=el_voice_id,
+                            model_id="eleven_multilingual_v2",
+                            language_code=language_code,
+                        )
+                    else:
+                        # Default / Google path: use existing Google TTS helper
+                        audio_bytes = await generate_mulaw_tts(
+                            text=clean,
+                            lang=lang,
+                            voice=voice,
+                            use_chirp3_hd=True,
+                            speaking_rate=1.0,
+                            use_ssml=use_ssml,
+                            add_office_bg=False,  # Background mixing handled separately
+                        )
                     
                     if self._tts_cancel.is_set():
                         self._prev_tts_tail = b""
@@ -2017,9 +2114,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in _process_transcript() when confident transcript is detected
             
-            # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
-            # Delay prevents cold start issues and gives call time to establish
-            if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
+            # 🎵 START BACKGROUND AUDIO LOOP (Google-only)
+            # Delay prevents cold start issues and gives call time to establish.
+            # We only run our synthetic background loop for Google TTS; ElevenLabs
+            # agents use agent.tts_background_preset_id (el_office_1, el_cafe_1, none) when supported by their API.
+            tts_provider = getattr(self.agent, "tts_provider", None) or "google"
+            if (
+                tts_provider != "elevenlabs"
+                and self._use_background_audio
+                and self._bg_audio_mulaw
+                and not self._bg_audio_task
+            ):
                 asyncio.create_task(self._start_background_audio_with_delay())
         
         except Exception as e:
