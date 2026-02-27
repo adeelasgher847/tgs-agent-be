@@ -762,7 +762,7 @@ class BidirectionalStreamHandler:
                 except:
                     conversation_history = []
             
-            # Build history text - FULL FILTERED HISTORY (for better long-call memory)
+            # Build history text - bounded filtered history for stable long-call memory
             history_text = ""
             if conversation_history:
                 try:
@@ -779,7 +779,12 @@ class BidirectionalStreamHandler:
                             if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
                                 filtered.append((role, content))
 
-                    # Use all filtered messages (full context) so the agent remembers long conversations
+                    # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
+                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
+                    if len(filtered) > max_msgs:
+                        filtered = filtered[-max_msgs:]
+
+                    # Build history text from the bounded window
                     for role, content in filtered:
                         history_lines.append(f"{role.capitalize()}: {content}")
 
