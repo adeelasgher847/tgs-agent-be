@@ -440,11 +440,15 @@ class BidirectionalStreamHandler:
             # Prepare prompts and context
             system_prompt = self._build_system_prompt()
             
+            model_name = "gemini-1.5-flash"
+            if self.agent and self.agent.model:
+                model_name = self.agent.model.model_name
+                
             # Start LLM stream
             llm_stream = gemini_service.stream_text(
                 prompt=user_text,
                 system_prompt=system_prompt,
-                model_name=self.agent.model if self.agent and self.agent.model else "gemini-1.5-flash"
+                model_name=model_name
             )
 
             # Collect tokens and stream to TTS
@@ -832,7 +836,8 @@ Speak only in {agent_language}.
         try:
             #👋 HANDLE AUTO-GREETING
             if is_greeting:
-                text = self.agent.first_message if self.agent and self.agent.first_message else "Hello, how can I help you today?"
+                # Use getattr safely as first_message is not in the model but may be used in code
+                text = getattr(self.agent, "first_message", "Hello, how can I help you today?")
                 await self._add_to_transcript("agent", text, "greeting")
                 await self.tts_queue.put({"text": text, "is_greeting": True})
                 return

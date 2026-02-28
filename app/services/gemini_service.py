@@ -41,21 +41,11 @@ class GeminiService:
         
         # Only recreate client if the API key has changed
         if self._current_api_key != key_to_use:
+            # Use the official google-genai SDK
             self._client = genai.Client(api_key=key_to_use)
             self._current_api_key = key_to_use
-            self._model_cache = {}  # Clear model cache when API key changes
         
         return self._client
-    
-    def get_model(self, model_name: str = "gemini-1.5-flash", api_key: str = None):
-        """Get or create Gemini model instance with specific API key"""
-        client = self.get_client(api_key)
-        cache_key = f"{model_name}_{api_key or 'default'}"
-        
-        if cache_key not in self._model_cache:
-            self._model_cache[cache_key] = client.get_model(model_name)
-        
-        return self._model_cache[cache_key]
     
     def generate_text(self, prompt: str, system_prompt: str = None, 
                      model_name: str = "gemini-1.5-flash", 
@@ -64,36 +54,24 @@ class GeminiService:
                      api_key: str = None) -> Dict[str, Any]:
         """
         Generate text using Gemini API
-        
-        Args:
-            prompt: The input prompt for text generation
-            system_prompt: System prompt to set the context
-            model_name: Gemini model to use
-            temperature: Temperature setting (0.0 to 1.0)
-            max_tokens: Maximum tokens for response
-            api_key: Model-specific API key (optional)
-            
-        Returns:
-            Dictionary with response content and metadata
         """
         try:
             start_time = time.time()
+            client = self.get_client(api_key)
             
-            # Get model instance with specific API key
-            model = self.get_model(model_name, api_key)
-            
-            # Prepare the full prompt
-            full_prompt = prompt
+            # Prepare config
+            config = {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
             if system_prompt:
-                full_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
-            
-            # Generate content using new API
-            response = model.generate_content(
-                contents=full_prompt,
-                config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_tokens,
-                }
+                 config["system_instruction"] = system_prompt
+
+            # Generate content using correct SDK v1 pattern
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=config
             )
             
             end_time = time.time()
@@ -106,14 +84,15 @@ class GeminiService:
                 "model": model_name,
                 "response_time": response_time,
                 "usage": {
-                    "prompt_tokens": len(full_prompt.split()),  # Approximate
-                    "completion_tokens": len(response_text.split()),  # Approximate
-                    "total_tokens": len(full_prompt.split()) + len(response_text.split())
+                    "prompt_tokens": 0, # SDK doesn't always return this immediately
+                    "completion_tokens": len(response_text.split()),
+                    "total_tokens": len(response_text.split())
                 },
-                "finish_reason": "stop"  # Gemini doesn't provide this directly
+                "finish_reason": "stop"
             }
             
         except Exception as e:
+            logger.error(f"Error in Gemini text generation: {e}")
             raise Exception(f"Error in Gemini text generation: {str(e)}")
 
     async def stream_text(self, prompt: str, system_prompt: str = None,
@@ -121,33 +100,31 @@ class GeminiService:
                           temperature: float = 0.7,
                           max_tokens: int = 1000,
                           api_key: str = None):
-        """Yield text chunks from Gemini as they arrive (streaming).
-        Optimized for ultra-low latency with immediate queue flushing.
-        """
+        """Yield text chunks from Gemini as they arrive (streaming)."""
         import asyncio
         import threading
         from queue import Queue
 
-        # Prepare prompt
-        full_prompt = prompt
+        client = self.get_client(api_key)
+        
+        # Prepare config
+        config = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+        }
         if system_prompt:
-            full_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
+            config["system_instruction"] = system_prompt
 
-        # Get model instance (thread-safe via global client)
-        model = self.get_model(model_name, api_key)
-
-        q: Queue = Queue(maxsize=100)  # Limit queue size to prevent memory buildup
+        q: Queue = Queue(maxsize=100)
         SENTINEL = object()
 
         def producer():
             try:
-                # Use generate_content_stream for real-time response
-                response = model.generate_content_stream(
-                    contents=full_prompt,
-                    config={
-                        "temperature": temperature,
-                        "max_output_tokens": max_tokens,
-                    }
+                # Use models.generate_content_stream for real-time response
+                response = client.models.generate_content_stream(
+                    model=model_name,
+                    contents=prompt,
+                    config=config
                 )
                 for chunk in response:
                     try:
@@ -158,22 +135,19 @@ class GeminiService:
                             text = chunk.candidates[0].content.parts[0].text if chunk.candidates[0].content.parts else None
                         
                         if text:
-                            # Immediate put to queue for low latency
                             q.put(text)
                     except Exception:
                         continue
             except Exception as e:
+                logger.error(f"Gemini Streaming Producer Error: {e}")
                 q.put(("__error__", str(e)))
             finally:
                 q.put(SENTINEL)
 
-        # Run producer in a daemon thread to keep event loop free
         threading.Thread(target=producer, daemon=True).start()
-
         loop = asyncio.get_event_loop()
 
         while True:
-            # Non-blocking check of the queue via run_in_executor
             chunk = await loop.run_in_executor(None, q.get)
             if chunk is SENTINEL:
                 break
@@ -203,46 +177,34 @@ class GeminiService:
         """
         try:
             start_time = time.time()
+            client = self.get_client(api_key)
             
-            # Get model instance with specific API key
-            model = self.get_model(model_name, api_key)
+            # Prepare the conversation for SDK v1
+            # Note: SDK v1 uses a slightly different structure for contents
+            # For simplicity in this refactor, we'll format as a single string prompt 
+            # if it's meant to be a simple conversion or use the proper structure.
             
-            # Prepare the conversation with system prompt
-            # For chat completion, we'll build a conversation history
-            conversation_parts = []
+            formatted_prompt = ""
             if system_prompt:
-                conversation_parts.append({"role": "system", "parts": [{"text": system_prompt}]})
+                formatted_prompt += f"System: {system_prompt}\n\n"
             
-            # Add all messages to conversation
             for message in messages:
-                role = "user" if message["role"] == "user" else "model"
-                conversation_parts.append({"role": role, "parts": [{"text": message["content"]}]})
+                role = "User" if message["role"] == "user" else "Assistant"
+                formatted_prompt += f"{role}: {message['content']}\n\n"
             
-            # Generate response using chat completion
-            # Note: If the API doesn't support conversation_parts directly, we'll use a formatted prompt
-            if conversation_parts:
-                # Format as a single prompt for compatibility
-                formatted_prompt = ""
-                for part in conversation_parts:
-                    role = part["role"]
-                    text = part["parts"][0]["text"]
-                    formatted_prompt += f"{role.capitalize()}: {text}\n\n"
-                
-                response = model.generate_content(
-                    contents=formatted_prompt,
-                    config={
-                        "temperature": temperature,
-                        "max_output_tokens": max_tokens,
-                    }
-                )
-            else:
-                response = model.generate_content(
-                    contents="",
-                    config={
-                        "temperature": temperature,
-                        "max_output_tokens": max_tokens,
-                    }
-                )
+            # Prepare config
+            config = {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
+            if system_prompt:
+                 config["system_instruction"] = system_prompt
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=formatted_prompt,
+                config=config
+            )
             
             end_time = time.time()
             response_time = end_time - start_time
@@ -254,14 +216,15 @@ class GeminiService:
                 "model": model_name,
                 "response_time": response_time,
                 "usage": {
-                    "prompt_tokens": len(" ".join([msg["content"] for msg in messages]).split()),
+                    "prompt_tokens": len(formatted_prompt.split()),
                     "completion_tokens": len(response_text.split()),
-                    "total_tokens": len(" ".join([msg["content"] for msg in messages]).split()) + len(response_text.split())
+                    "total_tokens": len(formatted_prompt.split()) + len(response_text.split())
                 },
                 "finish_reason": "stop"
             }
             
         except Exception as e:
+            logger.error(f"Error in Gemini chat completion: {e}")
             raise Exception(f"Error in Gemini chat completion: {str(e)}")
     
     def process_agent_conversation(self, user_input: str, 
@@ -280,9 +243,7 @@ class GeminiService:
             import json
 
             start_time = time.time()
-
-            # 🧠 Get model instance
-            model = self.get_model(model_name, api_key)
+            client = self.get_client(api_key)
 
             # 📜 Load previous transcript (if any)
             conversation_history = []
@@ -303,19 +264,24 @@ class GeminiService:
             history_text = "\n".join(history_lines)
 
             full_prompt = (
-                f"System: {agent_system_prompt}\n\n"
                 f"Previous conversation:\n{history_text}\n\n"
                 f"User: {user_input}\n\n"
                 f"Note: Never repeat any question already asked. Be human-like and polite."
             )
 
+            # Prepare config
+            config = {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
+            if agent_system_prompt:
+                 config["system_instruction"] = agent_system_prompt
+
             # 💬 Generate model response
-            response = model.generate_content(
+            response = client.models.generate_content(
+                model=model_name,
                 contents=full_prompt,
-                config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_tokens,
-                }
+                config=config
             )
 
             # ⏱️ Timing
@@ -344,6 +310,7 @@ class GeminiService:
             }
 
         except Exception as e:
+            logger.error(f"Error in Gemini agent conversation: {e}")
             raise Exception(f"Error in Gemini agent conversation: {str(e)}")
         
 # Create a singleton instance
