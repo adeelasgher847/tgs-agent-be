@@ -1,19 +1,21 @@
 """
 Bidirectional WebSocket for Real-time Voice AI
 Handles both STT (incoming audio) and TTS (outgoing audio) simultaneously
-Optimized for ultra-low latency (<3s response time)
+Target latency: 400–500ms (Vapi-style).
 
-ULTRA-AGGRESSIVE INTERIM PROCESSING:
-- Processes interim STT results with 40% confidence
-- Starts LLM generation immediately (100ms throttle)
-- Minimal latency for fastest possible response
+STT → LLM → TTS FLOW:
+- Twilio sends audio every 20ms (MULAW 8kHz). We push each chunk to Google STT.
+- As soon as ~30ms of STT stream produces interim result → send to LLM (30ms throttle).
+- LLM streams response → each flush (sentence/time ~200ms) → TTS chunk.
+- When VAD detects user silent (final): the TTS we built from interim is already playing/queued;
+  we do NOT start a second response (one response per turn = gapless, no duplicate).
 
 PARALLEL TTS PIPELINE (Vapi-style):
 - User Speech → STT Interim → LLM Chunk 1 → TTS Chunk 1 Playing
                              ↓ LLM Chunk 2 → TTS Chunk 2 Generating (parallel)
                              ↓ LLM Chunk 3 → TTS Chunk 3 Queued
-- TTS generation and playback happen in parallel
-- Significantly reduces total response time
+- TTS generation and playback happen in parallel; new TTS patches embed with current
+  playback via crossfade (build_crossfade_bridge) — no distortion, no sudden buffer noise.
 
 NATURAL CONVERSATION FEATURES (Vapi-Style):
 1. SSML Support:
@@ -93,6 +95,15 @@ CACHING & LOW-LATENCY STRATEGIES:
 4. TTS Client Pre-warming:
    - Google TTS client initialized at startup
    - Avoids first-call penalty (~500ms saved)
+
+TTS GAPLESS / NO DISTORTION (Vapi-style):
+- Micro fade-in (25ms) on first frame to avoid clicks/pops.
+- Crossfade at chunk boundaries (build_crossfade_bridge) so new TTS embeds with
+  currently playing audio — no tak-tak, no network delay spikes.
+- Jitter buffer primed with 3×20ms silence (60ms) once per utterance; no sudden
+  buffer underrun noise.
+- Google TTS streaming: https://cloud.google.com/text-to-speech/docs/create-audio-text-streaming
+  (Chirp 3: HD, MULAW 8kHz, StreamingSynthesizeConfig.)
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -158,7 +169,10 @@ router = APIRouter()
 
 
 class BidirectionalStreamHandler:
-    """Handles real-time bidirectional voice streaming"""
+    """Handles real-time bidirectional voice streaming (400–500ms target, Vapi-style gapless TTS)."""
+
+    # STT → LLM trigger: as soon as we have ~this much STT stream, send to LLM (Twilio sends 20ms frames)
+    STT_INTERIM_INTERVAL_MS = 30  # 30ms throttle between interim triggers for 400–500ms latency
 
     # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
     QUICK_ACK_MIN_WORDS = 5
@@ -198,7 +212,7 @@ class BidirectionalStreamHandler:
         self._last_interim_sent_ts = 0.0
         self._min_interim_words = 1  # speak sooner on shorter interim
         self._min_interim_confidence = 0.40  # ULTRA-AGGRESSIVE: process 40% confidence
-        self._min_interim_interval_sec = 0.10  # ULTRA-AGGRESSIVE: 100ms throttle (was 200ms)
+        self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0  # 30ms: STT stream → LLM (400–500ms target)
         
         # TTS (Output) state - Parallel Pipeline
         self.tts_queue = asyncio.Queue()     # Queue for parallel TTS processing
@@ -247,6 +261,9 @@ class BidirectionalStreamHandler:
         
         # Goodbye detection state
         self._call_ended = False  # Track if call has been ended due to goodbye detection
+
+        # One response per turn (Vapi-style): when we start LLM from interim, final only commits
+        self._turn_response_started = False  # True after first interim triggers LLM for this turn
         
         # Background audio state (embedded MP3)
         self._bg_audio_task = None
@@ -549,11 +566,17 @@ class BidirectionalStreamHandler:
             # Reset interim state (user finished, ready for new response)
             self._tts_cancel.clear()
             self._last_interim_text = ""
-            
-            # Add to transcript
+
+            # Add to transcript (always)
             await self._add_to_transcript("client", transcript, "speech", confidence)
-            
-            # Generate and stream response
+
+            # One response per turn: if we already started LLM from interim, TTS is already playing/queued
+            # When VAD detects user silent (final), we do NOT start a second response — gapless playback
+            if self._turn_response_started:
+                self._turn_response_started = False
+                return  # TTS built from interim continues; no duplicate response
+
+            # Generate and stream response (no interim was used for this turn, e.g. very short utterance)
             await self.generate_and_stream_response(transcript, confidence)
             
         except Exception as e:
@@ -659,9 +682,10 @@ class BidirectionalStreamHandler:
                 if not advanced:
                     return
             
-            # Passed heuristics → process immediately to start LLM generation
+            # Passed heuristics → process immediately to start LLM generation (30ms-style trigger)
             self._last_interim_text = transcript
             self._last_interim_sent_ts = now
+            self._turn_response_started = True  # One response per turn; final will not start a second one
             await self.generate_and_stream_response(transcript, confidence)
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
@@ -1026,10 +1050,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
-                    # If punctuation-based flush isn't available, do a time-based flush (~300ms)
+                    # If punctuation-based flush isn't available, do a time-based flush (~200ms for 400–500ms latency)
                     if flush_idx is None:
                         now_ts = time.perf_counter()
-                        if (now_ts - last_flush_ts) >= 0.30:
+                        if (now_ts - last_flush_ts) >= 0.20:
                             flush_idx = _find_time_flush_index(tts_buffer)
                     if flush_idx is not None and not self._tts_cancel.is_set():
                         flush_text = tts_buffer[:flush_idx].strip()
@@ -1233,10 +1257,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 - Single crossfade bridge at chunk boundary (prev tail + next head)
                                 - Tail holdback (20ms) between chunks to avoid clicks/distortion
                                 """
-                                # Prime Twilio jitter buffer once per utterance
+                                # Prime Twilio jitter buffer once per utterance (3 frames = 60ms for 400–500ms latency, no sudden noise)
                                 if not self._twilio_buffer_primed:
                                     silent = bytes([0xFF]) * MULAW_FRAME_BYTES
-                                    for _ in range(5):
+                                    for _ in range(3):
                                         if self._tts_cancel.is_set():
                                             return
                                         await send_frame(silent, pace=False)
@@ -1432,8 +1456,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             to_stream = apply_micro_fade_in(to_stream, duration_ms=25.0)
                             logger.debug("🔊 Applied micro fade-in to first TTS audio (25ms)")
                         
-                        # Prime Twilio's jitter buffer with 100ms (5 frames) of silence for the very first speak only
-                        prime_frames = 0 if self._twilio_buffer_primed else 5
+                        # Prime Twilio jitter buffer (3 frames = 60ms) for first speak only — no sudden buffer noise
+                        prime_frames = 0 if self._twilio_buffer_primed else 3
                         
                         # Always stream clean TTS - background loop handles background separately
                         # Background loop pauses automatically when is_speaking=True
@@ -1625,7 +1649,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             audio_bytes=prefix_main,
                             pace_20ms=True,
                             cancel=self._tts_cancel,
-                            prime_frames=0 if self._twilio_buffer_primed else 5,
+                            prime_frames=0 if self._twilio_buffer_primed else 3,
                         )
                         self._twilio_buffer_primed = True
 
@@ -2228,13 +2252,13 @@ async def tts_only_websocket(
                             from app.utils.audio_utils import apply_micro_fade_in
                             audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
 
-                            # Stream in 20ms chunks with 100ms jitter buffer priming
+                            # Stream in 20ms chunks with 60ms jitter buffer priming (low latency, no buffer noise)
                             await stream_mulaw_bytes_over_twilio(
                                 websocket=websocket,
                                 stream_sid=stream_sid,
                                 audio_bytes=audio_bytes,
                                 pace_20ms=True,
-                                prime_frames=5
+                                prime_frames=3
                             )
                             
                             # Clear pending TTS
@@ -2262,13 +2286,13 @@ async def tts_only_websocket(
                     from app.utils.audio_utils import apply_micro_fade_in
                     audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
 
-                    # Stream in 20ms chunks with 100ms jitter buffer priming
+                    # Stream in 20ms chunks with 60ms jitter buffer priming
                     await stream_mulaw_bytes_over_twilio(
                         websocket=websocket,
                         stream_sid=stream_sid,
                         audio_bytes=audio_bytes,
                         pace_20ms=True,
-                        prime_frames=5
+                        prime_frames=3
                     )
                     
                     # Send completion event

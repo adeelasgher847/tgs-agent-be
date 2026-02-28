@@ -1,6 +1,11 @@
 """
 Google Cloud Text-to-Speech Service Module
-Handles text-to-speech operations using Google Cloud TTS API
+Handles text-to-speech operations using Google Cloud TTS API.
+
+Streaming (low latency): https://cloud.google.com/text-to-speech/docs/create-audio-text-streaming
+- Bidirectional streaming: send text and receive audio simultaneously.
+- Only compatible with Chirp 3: HD voices.
+- StreamingAudioConfig: PCM, ALAW, MULAW, OGG_OPUS; sampleRateHertz; speakingRate [0.25, 2.0].
 """
 
 from google.cloud import texttospeech
