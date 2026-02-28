@@ -122,7 +122,7 @@ class GeminiService:
                           max_tokens: int = 1000,
                           api_key: str = None):
         """Yield text chunks from Gemini as they arrive (streaming).
-        This returns an async iterator of strings.
+        Optimized for ultra-low latency with immediate queue flushing.
         """
         import asyncio
         import threading
@@ -136,11 +136,12 @@ class GeminiService:
         # Get model instance (thread-safe via global client)
         model = self.get_model(model_name, api_key)
 
-        q: Queue = Queue()
+        q: Queue = Queue(maxsize=100)  # Limit queue size to prevent memory buildup
         SENTINEL = object()
 
         def producer():
             try:
+                # Use generate_content_stream for real-time response
                 response = model.generate_content_stream(
                     contents=full_prompt,
                     config={
@@ -150,34 +151,34 @@ class GeminiService:
                 )
                 for chunk in response:
                     try:
-                        # Extract text from chunk
-                        if hasattr(chunk, 'text'):
+                        text = None
+                        if hasattr(chunk, 'text') and chunk.text:
                             text = chunk.text
                         elif hasattr(chunk, 'candidates') and chunk.candidates:
                             text = chunk.candidates[0].content.parts[0].text if chunk.candidates[0].content.parts else None
-                        else:
-                            text = None
+                        
                         if text:
+                            # Immediate put to queue for low latency
                             q.put(text)
                     except Exception:
-                        # Skip malformed events
                         continue
             except Exception as e:
                 q.put(("__error__", str(e)))
             finally:
                 q.put(SENTINEL)
 
+        # Run producer in a daemon thread to keep event loop free
         threading.Thread(target=producer, daemon=True).start()
 
         loop = asyncio.get_event_loop()
 
         while True:
+            # Non-blocking check of the queue via run_in_executor
             chunk = await loop.run_in_executor(None, q.get)
-            if isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "__error__":
-                # Raise so caller can handle fallback logic instead of speaking error text
-                raise Exception(chunk[1])
             if chunk is SENTINEL:
                 break
+            if isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "__error__":
+                raise Exception(chunk[1])
             yield str(chunk)
     
     def chat_completion(self, messages: List[Dict[str, str]], 

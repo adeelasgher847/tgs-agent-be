@@ -160,20 +160,24 @@ router = APIRouter()
 class BidirectionalStreamHandler:
     """Handles real-time bidirectional voice streaming"""
 
-    # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
-    QUICK_ACK_MIN_WORDS = 5
-    QUICK_ACK_PROBABILITY = 0.38  # Only ~38% of eligible turns get "Got it" — more human-like
-    QUICK_ACK_SKIP_PHRASES = (  # Never say "Got it" to emotional/serious content
+    # ULTRA-AGGRESSIVE INTERIM PROCESSING:
+    # Processes interim STT results with 30% confidence (Vapi-style)
+    # Starts LLM generation immediately (immediate throttle)
+    # Minimal latency for fastest possible response
+    
+    # Quick acknowledgement: 3-word rule + probability
+    QUICK_ACK_MIN_WORDS = 3
+    QUICK_ACK_PROBABILITY = 0.25  # More subtle acknowledgement
+    QUICK_ACK_SKIP_PHRASES = (
         "help", "emergency", "urgent", "problem", "issue", "sad", "angry",
-        "please help", "asap", "critical", "wrong", "broken", "not working", "complaint",
+        "please help", "asap", "critical", "wrong", "broken"
     )
 
-    # Conversation context: keep the prompt small for latency (voice calls)
-    HISTORY_MAX_MESSAGES = 12  # last N client/agent messages only (not full transcript)
+    # Conversation context: keep the prompt small
+    HISTORY_MAX_MESSAGES = 10 
 
-    # Incremental TTS: flush when we have a complete thought/sentence
-    TTS_FLUSH_MIN_WORDS = 2
-    TTS_FLUSH_MAX_WORDS = 12  # keep chunks short for fast TTS start
+    # True Streaming: Flush tokens as they arrive
+    TTS_FLUSH_MIN_WORDS = 1 
     
     def __init__(
         self,
@@ -187,29 +191,32 @@ class BidirectionalStreamHandler:
         self.agent_id = agent_id
         self.db = db
         
-        # STT (Input) state - Google streaming_recognize with built-in VAD
+        # STT (Input) state
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
         self._stt_session = None
         self._stt_task = None
-        # Ultra-aggressive interim processing state (40% confidence)
+        
+        # Aggressive interim state
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
-        self._min_interim_words = 1  # speak sooner on shorter interim
-        self._min_interim_confidence = 0.40  # ULTRA-AGGRESSIVE: process 40% confidence
-        self._min_interim_interval_sec = 0.10  # ULTRA-AGGRESSIVE: 100ms throttle (was 200ms)
+        self._min_interim_words = 1 
+        self._min_interim_confidence = 0.30  # EXTREMELY AGGRESSIVE
+        self._min_interim_interval_sec = 0.05  # 50ms throttle
         
-        # TTS (Output) state - Parallel Pipeline
-        self.tts_queue = asyncio.Queue()     # Queue for parallel TTS processing
+        # TTS (Output) state - True Streaming Pipeline
+        self.tts_queue = asyncio.Queue()
         self.is_speaking = False
-        self._tts_cancel = asyncio.Event()   # barge-in cancel signal
-        self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._tts_worker_task = None         # Background TTS worker
-        self._tts_generation_tasks = []      # Track parallel TTS generation
-        self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
-        self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
-        self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
+        self._tts_cancel = asyncio.Event() 
+        self._tts_lock = asyncio.Lock()
+        self._tts_worker_task = None
+        self._prev_tts_tail = b""
+        self._twilio_buffer_primed = False
+        
+        # Streaming context
+        self._active_llm_stream = None
+        self._active_tts_stream = None
         
         # Natural conversation state (backchannels & persona)
         self._user_speech_duration = 0.0    # Track user monologue duration
@@ -376,55 +383,139 @@ class BidirectionalStreamHandler:
     
     async def _tts_pipeline_worker(self):
         """
-        Background worker for parallel TTS pipeline (Vapi-style).
+        Background worker for True Streaming Pipeline (Vapi-style).
         
-        Processes TTS chunks from queue while new chunks are being generated:
-        - LLM Chunk 1 → TTS generates → plays
-        - LLM Chunk 2 → TTS generates (parallel) → queued
-        - LLM Chunk 3 → TTS generates (parallel) → queued
+        Pipes LLM tokens directly into Google TTS Streaming and then to Twilio.
         """
         try:
             while True:
-                # Get next TTS task from queue
+                # Get next task from queue (triggered by STT interim/final)
                 task = await self.tts_queue.get()
                 
-                # Check for shutdown signal
                 if task is None:
                     break
                 
-                # Check if cancelled (barge-in)
+                # Check for barge-in
                 if self._tts_cancel.is_set():
                     self.tts_queue.task_done()
                     continue
                 
                 try:
-                    text = task.get("text", "")
-                    use_ssml = task.get("use_ssml", False)
-                    is_final = task.get("is_final", False)
-                    end_call_after = task.get("end_call_after", False)
+                    text_input = task.get("text", "")
+                    is_greeting = task.get("is_greeting", False)
+                    is_acknowledgement = task.get("is_acknowledgement", False)
                     
-                    if not text or not text.strip():
+                    if not text_input and not is_greeting:
                         self.tts_queue.task_done()
                         continue
-                    
-                    # Generate and stream TTS (this is the blocking part)
-                    await self._stream_tts_chunk(text, use_ssml=use_ssml, is_final=is_final)
-                    
-                    # If agent response contained [END_CALL], end call after this TTS has played
-                    if end_call_after:
-                        await self._end_call_after_agent_request()
-                    
+
+                    # Mark as speaking
+                    self.is_speaking = True
+                    self._tts_cancel.clear()
+
+                    # Greeting and Acknowledgements use pre-cached static TTS for speed
+                    if is_greeting or is_acknowledgement:
+                        await self._stream_static_tts(text_input)
+                    else:
+                        # Full response uses True Streaming Pipeline
+                        await self._run_true_streaming_pipeline(text_input)
+                
                 except Exception as e:
-                    logger.error(f"Error in TTS pipeline worker loop: {e}", exc_info=True)
+                    logger.error(f"Error in True Streaming worker: {e}", exc_info=True)
                 finally:
+                    self.is_speaking = False
                     self.tts_queue.task_done()
         
         except Exception as e:
-            logger.error(f"TTS pipeline worker error: {e}", exc_info=True)
-    
-    
-    
-    async def handle_media_message(self, message: dict):
+            logger.error(f"True Streaming worker error: {e}", exc_info=True)
+
+    async def _run_true_streaming_pipeline(self, user_text: str):
+        """
+        The Core "Vapi Style" Pipeline:
+        1. Gemini Stream (LLM) -> Text Tokens
+        2. Text Tokens -> Google TTS StreamingSynthesize
+        3. TTS Audio Chunks -> Twilio WebSocket
+        """
+        try:
+            # Prepare prompts and context
+            system_prompt = self._build_system_prompt()
+            
+            # Start LLM stream
+            llm_stream = gemini_service.stream_text(
+                prompt=user_text,
+                system_prompt=system_prompt,
+                model_name=self.agent.model if self.agent and self.agent.model else "gemini-1.5-flash"
+            )
+
+            # Collect tokens and stream to TTS
+            # Note: We group tokens into small words for more natural TTS chunks if needed,
+            # but for "True Streaming" we send as soon as possible.
+            
+            current_sentence = ""
+            async for token in llm_stream:
+                if self._tts_cancel.is_set():
+                    break
+                
+                current_sentence += token
+                
+                # If we have a complete thought or enough words, stream to TTS
+                # (Google's StreamingSynthesize handles incremental text well)
+                if any(p in token for p in ".!?\n") or len(current_sentence.split()) >= self.TTS_FLUSH_MIN_WORDS:
+                    await self._stream_tts_chunk(current_sentence)
+                    current_sentence = ""
+            
+            # Flush remaining
+            if current_sentence and not self._tts_cancel.is_set():
+                await self._stream_tts_chunk(current_sentence)
+
+        except Exception as e:
+            logger.error(f"Pipeline error: {e}")
+
+    async def _stream_tts_chunk(self, text: str, is_final: bool = False):
+        """Stream a text chunk through Google TTS Streaming to Twilio"""
+        try:
+            if not text or not text.strip():
+                return
+
+            # Use Google TTS Bidirectional Streaming
+            tts_stream = google_tts_service.stream_text_to_speech(
+                text=text,
+                language=self.agent.language if self.agent else "en",
+                voice_type=self.agent.voice_type if self.agent else "female"
+            )
+
+            async for audio_chunk in tts_stream:
+                if self._tts_cancel.is_set():
+                    break
+                
+                # Send to Twilio
+                await stream_mulaw_bytes_over_twilio(
+                    self.websocket,
+                    self.stream_sid,
+                    audio_chunk,
+                    pace_20ms=True,
+                    cancel=self._tts_cancel
+                )
+        except Exception as e:
+            logger.error(f"TTS chunk streaming error: {e}")
+
+    async def _stream_static_tts(self, text: str):
+        """Stream static pre-cached TTS audio (for greetings/acks)"""
+        try:
+            audio = await generate_mulaw_tts(
+                text=text,
+                lang=self.agent.language if self.agent else "en",
+                voice=self.agent.voice_type if self.agent else "female"
+            )
+            await stream_mulaw_bytes_over_twilio(
+                self.websocket,
+                self.stream_sid,
+                audio,
+                pace_20ms=True,
+                cancel=self._tts_cancel
+            )
+        except Exception as e:
+            logger.error(f"Static TTS streaming error: {e}")
         """Handle incoming audio from Twilio and feed to Google streaming STT"""
         try:
             import time
@@ -706,228 +797,132 @@ class BidirectionalStreamHandler:
             "is_final": False
         })
     
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt for the LLM based on agent configuration and history"""
+        agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
+        agent_language = self.agent.language if self.agent and self.agent.language else "en"
+        
+        # Base prompt for phone conversations
+        base_prompt = f"""# ROLE
+You are {agent_name}, a friendly and helpful phone assistant. 
+You are speaking with a user over a real-time phone call.
+
+# GUIDELINES
+1. BE CONCISE: User is on a phone call. Keep responses short (1-3 sentences max).
+2. BE NATURAL: Use natural conversational fillers like "um", "uh", "I see", "got it" occasionally.
+3. NO SPECIAL CHARACTERS: Do not use markdown (bold, italics, lists, etc.). Speak in plain text only.
+4. HANDLE INTERRUPTIONS: If the user interrupts, stop your current thought and address them.
+5. NO REPETITION: Don't repeat what the user just said unless for confirmation.
+
+# AGENT PERSONALITY/TASK
+{self.agent.system_prompt if self.agent and self.agent.system_prompt else "Assist the user with their request politely."}
+
+# LANGUAGE
+Speak only in {agent_language}.
+"""
+        return base_prompt
+
     async def generate_and_stream_response(self, user_text: str, confidence: float, is_greeting: bool = False):
         """
-        Generate AI response and stream TTS in real-time WITH conversation history.
-        Uses PARALLEL TTS PIPELINE (Vapi-style) for ultra-low latency.
-        
-        Args:
-            user_text: User's input text (empty for greeting)
-            confidence: STT confidence score
-            is_greeting: If True, uses agent's first_message instead of calling LLM
+        Generate AI response and stream TTS in real-time.
+        Uses TRUE STREAMING PIPELINE for ultra-low latency.
         """
+        try:
+            #👋 HANDLE AUTO-GREETING
+            if is_greeting:
+                text = self.agent.first_message if self.agent and self.agent.first_message else "Hello, how can I help you today?"
+                await self._add_to_transcript("agent", text, "greeting")
+                await self.tts_queue.put({"text": text, "is_greeting": True})
+                return
+
+            # Reset cancel flag for new response
+            self._tts_cancel.clear()
+            self._twilio_buffer_primed = False
+            
+            # 🎯 Aggressive Response: Put the task in the queue immediately!
+            # The tts_pipeline_worker will start the LLM stream and TTS stream.
+            await self.tts_queue.put({"text": user_text, "is_final": True})
+
+            # Send quick acknowledgement for longer queries
+            asyncio.create_task(self._send_quick_acknowledgement(user_text))
+
+        except Exception as e:
+            logger.error(f"Error triggering response generation: {e}")
+    async def _send_quick_acknowledgement(self, user_text: str):
+        """Send a quick 'Got it' or 'I see' for longer user queries to reduce perceived latency"""
+        import random
+        
+        # Criteria: Not a greeting, longer than N words
+        words = user_text.split()
+        if len(words) < self.QUICK_ACK_MIN_WORDS:
+            return
+            
+        # Probability check
+        if random.random() > self.QUICK_ACK_PROBABILITY:
+            return
+            
+        # Skip for emotional/serious phrases
+        lower_text = user_text.lower()
+        if any(skip in lower_text for skip in self.QUICK_ACK_SKIP_PHRASES):
+            return
+            
+        # Select random ack
+        acks = ["Got it.", "I see.", "Okay.", "Right.", "Understood."]
+        selected_ack = random.choice(acks)
+        
+        # Queue as a priority (is_acknowledgement=True skips LLM)
+        await self.tts_queue.put({"text": selected_ack, "is_acknowledgement": True})
+    async def _add_to_transcript(self, role: str, content: str, message_type: str = "chat"):
+        """Add a message to the call transcript in the database"""
         try:
             from datetime import datetime, timezone
             import json
             
-            # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
-            if is_greeting:
-                # Get greeting from agent or use default
-                if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
-                    greeting_text = self.agent.first_message
-                else:
-                    greeting_text = "hello how are you"
-                
-                # Add greeting to transcript
-                await self._add_to_transcript("agent", greeting_text, "greeting")
-                
-                # Queue greeting TTS directly (skip LLM!)
-                await self.tts_queue.put({
-                    "text": greeting_text,
-                    "chunk_id": "greeting",
-                    "use_ssml": self._use_ssml,
-                    "is_final": True
-                })
-                
-                # Mark as not primed for the greeting
-                self._twilio_buffer_primed = False
-                
-                return  # Done! No LLM needed for greeting
+            # Build message object
+            message = {
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "message_type": message_type
+            }
             
-            # Reset cancel flag for new response generation
-            self._tts_cancel.clear()
-            # Reset crossfade state so new response starts clean
-            self._prev_tts_tail = b""
-            # Reset priming flag for new utterance to ensure micro-fade and buffer priming
-            self._twilio_buffer_primed = False
-            
-            # Send quick acknowledgement for longer queries (instant from cache!)
-            await self._send_quick_acknowledgement(user_text)
-            
-            # Build conversation context from transcript
-            conversation_history = []
-            if self.call_session and self.call_session.call_transcript:
-                try:
-                    conversation_history = json.loads(self.call_session.call_transcript) if isinstance(self.call_session.call_transcript, str) else self.call_session.call_transcript
-                except:
-                    conversation_history = []
-            
-            # Build history text - bounded filtered history for stable long-call memory
-            history_text = ""
-            if conversation_history:
-                try:
-                    history_lines = []
-                    filtered = []
-                    for msg in conversation_history:
-                        if isinstance(msg, dict):
-                            # Handle both 'content' and 'message' keys
-                            role = msg.get('role', 'unknown')
-                            content = msg.get('content') or msg.get('message', '')
-                            message_type = msg.get('message_type', '')
-                            
-                            # Filter: Only include client and agent messages (skip system/greeting/status messages)
-                            if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
-                                filtered.append((role, content))
-
-                    # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
-                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
-                    if len(filtered) > max_msgs:
-                        filtered = filtered[-max_msgs:]
-
-                    # Build history text from the bounded window
-                    for role, content in filtered:
-                        history_lines.append(f"{role.capitalize()}: {content}")
-
-                    history_text = "\n".join(history_lines)
-                except Exception:
-                    history_text = ""
-            
-            # Build system prompt with agent personality + history
-            agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
-            agent_language = self.agent.language if self.agent and self.agent.language else "en"
-            
-            # Base prompt for phone conversations (voice-first, plain text only, no SSML)
-            base_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call with a human.
-
-# STYLE & TONE
-- VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-- CONCISE: Max 20 words per response unless explaining something complex.
-- NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. Prosody is handled by the system.
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
-
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-# CRITICAL RULES
-1. NO REPETITION: If the history shows you asked a question, move to the next point.
-2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
-3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
-
-# GOAL
-Continue the conversation based on the history above. Be {agent_name}."""
-            
-            # Use agent's custom system prompt if available, otherwise use base prompt
-            if self.agent and self.agent.system_prompt:
-                # Agent has custom system prompt - use it with context (voice-first, plain text)
-                system_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
-
-# CUSTOM INSTRUCTIONS
-{self.agent.system_prompt}
-
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
-
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-# CRITICAL RULES
-1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
-2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
-
-# GOAL
-Follow your custom instructions. Continue from the history above. Be {agent_name}."""
-            elif self.agent and self.agent.model and self.agent.model.system_prompt:
-                # Model has system prompt - use it (voice-first, plain text)
-                system_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
-
-# MODEL INSTRUCTIONS
-{self.agent.model.system_prompt}
-
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
-
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-# CRITICAL RULES
-1. NO REPETITION: Do not repeat questions. Move to the next point.
-2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
-
-# GOAL
-Follow the model instructions. Continue from the history above. Be {agent_name}."""
-            else:
-                # Use base prompt
-                system_prompt = base_prompt
-            
-            # Get agent's configured model and provider
-            llm_service = None
-            model_name = "gemini-1.5-flash"  # Default fallback
-            api_key = None
-            temperature = 0.5
-            max_tokens = 100
-            
-            if self.agent and self.agent.model:
-                model_name = self.agent.model.model_name
-                
-                # Decrypt API key if available
-                if self.agent.model.api_key:
+            # Update session transcript
+            if self.call_session:
+                transcript = []
+                if self.call_session.call_transcript:
                     try:
-                        from app.core.security import decrypt_api_key
-                        api_key = decrypt_api_key(self.agent.model.api_key)
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt agent API key: {e}")
-                        api_key = None  # Will fallback to settings.OPENAI_API_KEY or settings.GOOGLE_API_KEY
-                else:
-                    api_key = None  # Will use global key from .env
+                        transcript = json.loads(self.call_session.call_transcript) if isinstance(self.call_session.call_transcript, str) else self.call_session.call_transcript
+                    except:
+                        transcript = []
                 
-                # Use agent-specific config if available
-                if self.agent.agent_temperature is not None:
-                    temperature = self.agent.agent_temperature / 100.0  # Convert 0-100 to 0-1
-                elif self.agent.model.temperature is not None:
-                    temperature = self.agent.model.temperature / 100.0
+                transcript.append(message)
+                self.call_session.call_transcript = json.dumps(transcript)
+                self.db.commit()
                 
-                if self.agent.agent_max_tokens:
-                    max_tokens = self.agent.agent_max_tokens
-                elif self.agent.model.max_tokens:
-                    max_tokens = self.agent.model.max_tokens
-                
-                # Select service based on provider
-                if self.agent.provider:
-                    provider_name = self.agent.provider.name.lower()
-                    if "openai" in provider_name:
-                        llm_service = openai_service
-                    elif "gemini" in provider_name or "google" in provider_name:
-                        llm_service = gemini_service
-                    elif "groq" in provider_name:
-                        llm_service = groq_service
-                    else:
-                        # Default to Gemini
-                        llm_service = gemini_service
-                else:
-                    llm_service = gemini_service
-            else:
-                # Fallback to Gemini
-                llm_service = gemini_service
+        except Exception as e:
+            logger.error(f"Error adding to transcript: {e}")
+
+    async def _handle_barge_in(self):
+        """Handle user barge-in (interruption)"""
+        try:
+            # 1. Signal all active streams to stop
+            self._tts_cancel.set()
             
+            # 2. Stop Twilio playback immediately
+            await self.websocket.send_json({
+                "event": "clear",
+                "streamSid": self.stream_sid
+            })
+            
+            # 3. Log interruption
+            logger.info("🚫 Barge-in detected: Clearing streams and playback")
+            
+        except Exception as e:
+            logger.error(f"Error handling barge-in: {e}")
+
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
-            logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
+            logger.info(f"🧠 Calling LLM ({llm_service.__name__ if hasattr(llm_service, '__name__') else 'Service'}) for response to: '{user_text[:20]}...'")
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
                 nonlocal chunk_counter
@@ -937,65 +932,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 response_accum = ""
                 tts_buffer = ""
                 end_call_after = False
-                first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
 
                 def _strip_control_tokens(text: str) -> str:
-                    # These are backend/system markers and must NEVER be spoken.
-                    if not text:
-                        return ""
+                    if not text: return ""
                     text = text.replace("[END_CALL]", "")
                     text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
                     return text
 
                 def _find_flush_index(buf: str):
-                    """
-                    Return an index (end-exclusive) where we can safely flush.
-                    Prefer sentence boundaries. Fallback to comma/semicolon if buffer is getting long.
-                    """
-                    if not buf:
-                        return None
-
-                    # Prefer sentence boundaries: ., !, ? followed by whitespace/newline/end
+                    if not buf: return None
                     last_boundary = None
                     for m in re.finditer(r"([.!?])(\s+|$)", buf):
                         last_boundary = m.end(1)
-
                     if last_boundary is not None:
                         prefix = buf[:last_boundary].strip()
-                        if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
-                            return last_boundary
-
-                    # If the buffer is getting long, allow a softer boundary split
-                    words = buf.split()
-                    if len(words) >= self.TTS_FLUSH_MAX_WORDS:
-                        last_soft = None
-                        for m in re.finditer(r"([,;:])(\s+|$)", buf):
-                            last_soft = m.end(1)
-                        if last_soft is not None:
-                            prefix = buf[:last_soft].strip()
-                            if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
-                                return last_soft
-
+                        if len(prefix.split()) >= 3: return last_boundary
                     return None
-
-                def _find_time_flush_index(buf: str):
-                    """
-                    Time-based flush (Vapi-style): if punctuation is delayed, flush on a safe word boundary
-                    so we can start speaking fast. Returns an index (end-exclusive) or None.
-                    """
-                    if not buf:
-                        return None
-                    words = buf.split()
-                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 5):
-                        return None
-
-                    # Flush around ~6-8 words to start speaking quickly.
-                    target_words = min(8, len(words))
-                    m = re.match(rf"^(?:\\S+\\s+){{{target_words - 1}}}\\S+", buf)
-                    if not m:
-                        return None
-                    return m.end()
 
                 async for chunk in service.stream_text(
                     prompt=user_text,
@@ -1005,141 +958,62 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     max_tokens=max_tokens,
                     api_key=api_key_override
                 ):
-                    if not chunk:
-                        continue
-                    # If barge-in requested, stop generating
-                    if self._tts_cancel.is_set():
-                        break
-
+                    if self._tts_cancel.is_set(): break
                     response_accum += chunk
                     tts_buffer += chunk
 
-                    # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
                     if "[END_CALL]" in response_accum:
                         end_call_after = True
-                        # Remove it from TTS buffer immediately so it never gets spoken
                         tts_buffer = _strip_control_tokens(tts_buffer)
 
-                    # Remove OUTCOME tokens from any in-flight buffer (never spoken)
-                    if "[OUTCOME:" in tts_buffer:
-                        tts_buffer = _strip_control_tokens(tts_buffer)
-
-                    # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
-                    # If punctuation-based flush isn't available, do a time-based flush (~300ms)
-                    if flush_idx is None:
-                        now_ts = time.perf_counter()
-                        if (now_ts - last_flush_ts) >= 0.30:
-                            flush_idx = _find_time_flush_index(tts_buffer)
+                    if flush_idx is None and (time.perf_counter() - last_flush_ts) >= 0.4:
+                        # Time-based flush
+                        words = tts_buffer.split()
+                        if len(words) >= 5:
+                            m = re.match(r"^(?:\S+\s+){4}\S+", tts_buffer)
+                            if m: flush_idx = m.end()
+
                     if flush_idx is not None and not self._tts_cancel.is_set():
-                        flush_text = tts_buffer[:flush_idx].strip()
+                        flush_text = _strip_control_tokens(tts_buffer[:flush_idx]).strip()
                         tts_buffer = tts_buffer[flush_idx:].lstrip()
-
-                        flush_text = _strip_control_tokens(flush_text).strip()
                         if flush_text:
-                            if self._use_ssml:
-                                clean_text = strip_ssml_tags(flush_text)
-                                enhanced_text = preprocess_for_tts(
-                                    clean_text,
-                                    start_break_ms=0,
-                                    between_sentence_break_ms=100,
-                                )
-                            else:
-                                enhanced_text = quick_clean(flush_text)
-
                             chunk_counter += 1
                             await self.tts_queue.put({
-                                "text": enhanced_text,
+                                "text": flush_text,
                                 "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
                                 "is_final": False,
                             })
-                            first_tts_chunk = False
                             last_flush_ts = time.perf_counter()
 
-                # Flush any remaining text as the FINAL chunk
-                full_response = response_accum.strip()
-                end_call_after = end_call_after or ("[END_CALL]" in full_response)
-
-                # Never speak control tokens
+                # Final flush
                 tts_buffer = _strip_control_tokens(tts_buffer).strip()
-
                 if tts_buffer and not self._tts_cancel.is_set():
-                    if self._use_ssml:
-                        clean_text = strip_ssml_tags(tts_buffer)
-                        enhanced_text = preprocess_for_tts(
-                            clean_text,
-                            start_break_ms=0,
-                            between_sentence_break_ms=150,
-                        )
-                    else:
-                        enhanced_text = quick_clean(tts_buffer)
-
                     chunk_counter += 1
                     await self.tts_queue.put({
-                        "text": enhanced_text,
+                        "text": tts_buffer,
                         "chunk_id": chunk_counter,
-                        "use_ssml": self._use_ssml,
                         "is_final": True,
                         "end_call_after": end_call_after,
                     })
-
                 return response_accum.strip()
 
-            final_text = None
-            try:
-                # Use agent's configured model and service
-                final_text = await try_stream(llm_service, model_name, api_key)
-            except Exception as e:
-                logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
-                # Fallback: try alternate service
-                try:
-                    if llm_service == openai_service:
-                        # Fallback to Gemini
-                        final_text = await try_stream(gemini_service, "gemini-1.5-flash", None)
-                    else:
-                        # Fallback to OpenAI
-                        final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
-                except Exception as e:
-                    logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
-                    # Last fallback: non-streaming fast response via VoiceLoggingService
-                    try:
-                        final_text = await VoiceLoggingService.generate_agent_response(
-                            speech_text=user_text,
-                            confidence=confidence,
-                            agent=self.agent,
-                            db=self.db,
-                            call_session_id=self.call_session.id if self.call_session else None
-                        )
-                        # Queue fallback response
-                        if final_text and not self._tts_cancel.is_set():
-                            chunk_counter += 1
-                            await self.tts_queue.put({
-                                "text": final_text,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": True
-                            })
-                    except Exception as e:
-                        logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
-                        # Ultimate fallback response
-                        final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
-                        chunk_counter += 1
-                        await self.tts_queue.put({
-                            "text": final_text,
-                            "chunk_id": chunk_counter,
-                            "use_ssml": self._use_ssml,
-                            "is_final": True
-                        })
+            final_text = await try_stream(llm_service, model_name, api_key)
+            return final_text
 
+        except Exception as e:
+            logger.error(f"Error in generate_and_stream_response: {e}")
+            return "I'm sorry, I'm having trouble responding right now."
             if final_text:
                 # Strip [END_CALL] from transcript so saved conversation is clean
                 transcript_text = final_text.replace("[END_CALL]", "").strip()
                 if transcript_text:
                     await self._add_to_transcript("agent", transcript_text, "agent_response")
-        
+            return final_text
+
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+            return "I'm sorry, I'm having trouble responding right now."
     
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
