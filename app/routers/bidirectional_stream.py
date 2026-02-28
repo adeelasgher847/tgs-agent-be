@@ -516,6 +516,8 @@ class BidirectionalStreamHandler:
             )
         except Exception as e:
             logger.error(f"Static TTS streaming error: {e}")
+
+    async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio and feed to Google streaming STT"""
         try:
             import time
@@ -920,100 +922,6 @@ Speak only in {agent_language}.
         except Exception as e:
             logger.error(f"Error handling barge-in: {e}")
 
-            # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
-            chunk_counter = 0
-            logger.info(f"🧠 Calling LLM ({llm_service.__name__ if hasattr(llm_service, '__name__') else 'Service'}) for response to: '{user_text[:20]}...'")
-            
-            async def try_stream(service, model: str, api_key_override: str = None) -> str:
-                nonlocal chunk_counter
-                import re
-                import time
-
-                response_accum = ""
-                tts_buffer = ""
-                end_call_after = False
-                last_flush_ts = time.perf_counter()
-
-                def _strip_control_tokens(text: str) -> str:
-                    if not text: return ""
-                    text = text.replace("[END_CALL]", "")
-                    text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
-                    return text
-
-                def _find_flush_index(buf: str):
-                    if not buf: return None
-                    last_boundary = None
-                    for m in re.finditer(r"([.!?])(\s+|$)", buf):
-                        last_boundary = m.end(1)
-                    if last_boundary is not None:
-                        prefix = buf[:last_boundary].strip()
-                        if len(prefix.split()) >= 3: return last_boundary
-                    return None
-
-                async for chunk in service.stream_text(
-                    prompt=user_text,
-                    system_prompt=system_prompt,
-                    model_name=model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    api_key=api_key_override
-                ):
-                    if self._tts_cancel.is_set(): break
-                    response_accum += chunk
-                    tts_buffer += chunk
-
-                    if "[END_CALL]" in response_accum:
-                        end_call_after = True
-                        tts_buffer = _strip_control_tokens(tts_buffer)
-
-                    flush_idx = _find_flush_index(tts_buffer)
-                    if flush_idx is None and (time.perf_counter() - last_flush_ts) >= 0.4:
-                        # Time-based flush
-                        words = tts_buffer.split()
-                        if len(words) >= 5:
-                            m = re.match(r"^(?:\S+\s+){4}\S+", tts_buffer)
-                            if m: flush_idx = m.end()
-
-                    if flush_idx is not None and not self._tts_cancel.is_set():
-                        flush_text = _strip_control_tokens(tts_buffer[:flush_idx]).strip()
-                        tts_buffer = tts_buffer[flush_idx:].lstrip()
-                        if flush_text:
-                            chunk_counter += 1
-                            await self.tts_queue.put({
-                                "text": flush_text,
-                                "chunk_id": chunk_counter,
-                                "is_final": False,
-                            })
-                            last_flush_ts = time.perf_counter()
-
-                # Final flush
-                tts_buffer = _strip_control_tokens(tts_buffer).strip()
-                if tts_buffer and not self._tts_cancel.is_set():
-                    chunk_counter += 1
-                    await self.tts_queue.put({
-                        "text": tts_buffer,
-                        "chunk_id": chunk_counter,
-                        "is_final": True,
-                        "end_call_after": end_call_after,
-                    })
-                return response_accum.strip()
-
-            final_text = await try_stream(llm_service, model_name, api_key)
-            return final_text
-
-        except Exception as e:
-            logger.error(f"Error in generate_and_stream_response: {e}")
-            return "I'm sorry, I'm having trouble responding right now."
-            if final_text:
-                # Strip [END_CALL] from transcript so saved conversation is clean
-                transcript_text = final_text.replace("[END_CALL]", "").strip()
-                if transcript_text:
-                    await self._add_to_transcript("agent", transcript_text, "agent_response")
-            return final_text
-
-        except Exception as e:
-            logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
-            return "I'm sorry, I'm having trouble responding right now."
     
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
@@ -1865,15 +1773,22 @@ Speak only in {agent_language}.
             logger.error(f"Error in _add_to_transcript: {e}", exc_info=True)
     
     async def handle_start_message(self, message: dict):
-        """Handle stream start - Just WebSocket connection (NOT user pickup!)"""
+        """Handle stream start"""
         try:
             self.stream_sid = message.get("streamSid")
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
             
-            # DO NOT start credit monitoring or greeting here!
-            # Wait for first media packet (user actually picks up - VAPI-style)
-        
+            logger.info(f"🚀 Stream started: StreamSid={self.stream_sid}, CallSid={self.call_sid}")
+            
+            # 🔥 IMMEDIATE GREETING for outbound engagement
+            # This ensures the user hears the bot as soon as they pick up.
+            await self.generate_and_stream_response("", 1.0, is_greeting=True)
+            
+            # Start background audio if enabled
+            if self._use_background_audio and self._bg_audio_mulaw:
+                 asyncio.create_task(self._start_background_audio_with_delay())
+                 
         except Exception as e:
             logger.error(f"Error in handle_start_message: {e}", exc_info=True)
     

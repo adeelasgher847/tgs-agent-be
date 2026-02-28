@@ -83,12 +83,13 @@ def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
 
     edge = getattr(settings, "TWILIO_EDGE", None)  # e.g., "ashburn", "singapore", "dublin"
     vr = VoiceResponse()
-    with vr.start() as s:
-        stream = Stream(url=ws_url, name=f"tts-stream-{agent_id}")
-        # Forward region hint to your WS (for observability); set real Twilio edge via account/call config.
-        if edge:
-            stream.parameter(Parameter(name="edge", value=edge))
-        s.append(stream)
+    connect = Connect()
+    stream = Stream(url=ws_url, name=f"tts-stream-{agent_id}")
+    # Forward region hint to your WS (for observability); set real Twilio edge via account/call config.
+    if edge:
+        stream.parameter(Parameter(name="edge", value=edge))
+    connect.append(stream)
+    vr.append(connect)
 
     logger.debug(f"🛠️ Built streaming TwiML for session {call_session_id}")
     return str(vr)
