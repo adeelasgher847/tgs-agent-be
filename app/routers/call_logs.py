@@ -12,13 +12,19 @@ from app.models.call_session import CallSession
 from app.models.call_log import CallLog
 from app.models.agent import Agent
 from app.schemas.call_log import (
-    CallLogResponse, 
-    CallLogFilters, 
-    CallLogStats, 
-    CallLogList
+    CallLogResponse,
+    CallLogFilters,
+    CallLogStats,
+    CallLogList,
 )
+from app.schemas.call_session import CallLogAnalysisEmailRequest
 from app.services.call_log_service import CallLogService
+from app.services.email_service import email_service
+from app.services.openai_service import openai_service
+from app.services.model_service import model_service
+from app.core.security import decrypt_api_key
 from app.utils.response import create_success_response
+from app.schemas.base import SuccessResponse
 
 router = APIRouter()
 
@@ -337,3 +343,153 @@ async def export_call_logs(
     except Exception as e:
         logger.error(f"❌ Error exporting call logs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to export call logs: {str(e)}")
+
+
+@router.post("/call-logs/send-email", response_model=SuccessResponse[dict])
+async def send_call_analysis_email(
+    payload: CallLogAnalysisEmailRequest,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Send a call-related email based on a call session.
+
+    - If transform_prompt is NOT provided: backend generates an analysis and forwards it as the email body.
+    - If transform_prompt IS provided: backend generates an analysis, then uses the prompt to create a custom email.
+
+    Email is sent from the platform's domain sender, with the logged-in user automatically CC'd.
+    """
+    try:
+        # 1) Validate call session belongs to this tenant
+        session = db.query(CallSession).filter(
+            CallSession.id == payload.call_session_id,
+            CallSession.tenant_id == user.current_tenant_id,
+        ).first()
+        if not session:
+            raise HTTPException(status_code=404, detail="Call session not found")
+
+        # 2) Build flat transcript text from JSON transcript (if available)
+        transcript_entries = session.call_transcript or []
+        transcript_lines: list[str] = []
+        for entry in transcript_entries:
+            role = entry.get("role", "unknown").capitalize()
+            content = entry.get("content", "")
+            transcript_lines.append(f"{role}: {content}")
+        transcript_text = "\n".join(transcript_lines) if transcript_lines else "No transcript available."
+
+        # 3) Resolve OpenAI model and API key for gpt-4o-mini
+        model_name = "gpt-4o-mini"
+        api_key: Optional[str] = None
+        try:
+            model = model_service.get_model_by_name(db, model_name)
+            if model and model.api_key:
+                try:
+                    api_key = decrypt_api_key(model.api_key)
+                except Exception as e:
+                    logger.error(f"Failed to decrypt API key for model '{model_name}': {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Failed to load model configuration for '{model_name}': {e}", exc_info=True)
+
+        if not api_key:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=(
+                    "OpenAI API key for model 'gpt-4o-mini' is not configured. "
+                    "Please set an API key on the model in the database or configure OPENAI_API_KEY."
+                ),
+            )
+
+        # 4) Always generate an analysis from the transcript (used directly or as context)
+        analysis_system = (
+            "You are an expert recruiting and call analytics assistant. "
+            "Analyze the following call transcript and produce a concise, bullet-based summary that includes:\n"
+            "- Participant summary (who they are, if known)\n"
+            "- Key topics discussed\n"
+            "- Strengths / concerns or sentiment\n"
+            "- Overall recommendation and next steps."
+        )
+        analysis_user = f"""
+Call transcript:
+\"\"\"{transcript_text}\"\"\"
+"""
+        analysis_res = openai_service.chat_completion(
+            messages=[{"role": "user", "content": analysis_user}],
+            system_prompt=analysis_system,
+            model_name=model_name,
+            temperature=0.3,
+            max_tokens=800,
+            api_key=api_key,
+        )
+        analysis_text = analysis_res["content"]
+
+        # 5) Decide final email body:
+        # - If no transform_prompt: forward analysis as email body
+        # - If transform_prompt provided: let AI create a formatted email
+        if not payload.transform_prompt:
+            email_body_text = analysis_text
+        else:
+            email_system = """
+You are an AI assistant that writes emails based on a call and the user's instructions.
+
+You will receive:
+- A call analysis
+- The raw transcript
+- A custom instruction from the user (prompt)
+- Optional extra context (candidate name, interview time, position, etc.) if provided in the prompt.
+
+FOLLOW THE USER'S INSTRUCTION STRICTLY for style, language and structure.
+- Do NOT copy-paste the raw analysis unless the instruction explicitly asks for it.
+- Use clear paragraphs and punctuation so the email sounds natural when read aloud (TTS-friendly).
+"""
+            email_user = f"""
+User instruction (prompt):
+\"\"\"{payload.transform_prompt}\"\"\"
+
+Call analysis:
+\"\"\"{analysis_text}\"\"\"
+
+Call transcript (for reference):
+\"\"\"{transcript_text}\"\"\"
+"""
+            email_res = openai_service.chat_completion(
+                messages=[{"role": "user", "content": email_user}],
+                system_prompt=email_system,
+                model_name=model_name,
+                temperature=0.4,
+                max_tokens=600,
+                api_key=api_key,
+            )
+            email_body_text = email_res["content"]
+
+        # 6) Simple HTML wrapping for email body
+        html_body = "<html><body>" + "<br/>".join(email_body_text.splitlines()) + "</body></html>"
+
+        # 7) Subject depending on whether we used a custom prompt
+        subject = "Call analysis" if not payload.transform_prompt else "Call follow-up"
+
+        # 8) Send email from domain sender, CC logged-in user
+        success = email_service.send_generic_email(
+            to_email=payload.target_email,
+            subject=subject,
+            html_body=html_body,
+            cc_emails=[user.email],
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to send email")
+
+        return create_success_response(
+            {
+                "sent": True,
+                "target_email": payload.target_email,
+                "cc_email": user.email,
+                "analysis_used": analysis_text,
+                "email_body": email_body_text,
+            },
+            "Call-related email sent successfully",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error sending call analysis email: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to send call analysis email: {str(e)}")

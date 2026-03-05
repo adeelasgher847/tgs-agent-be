@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.tenant import Tenant
 from app.models.agent import Agent
 from app.models.call_session import CallSession
+from app.models.call_log import CallLog
 from typing import Optional, Dict, Any
 import uuid
 import asyncio
@@ -184,6 +185,24 @@ class CreditService:
         # Deduct credits but never allow negative balance
         new_credits = max(0.0, current_credits - amount)
         tenant.credits = new_credits
+
+        # If this deduction is associated with a specific call, accumulate per-call cost
+        if call_session_id is not None:
+            try:
+                call_session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+                if call_session:
+                    # Treat 'cost' as "total credits consumed for this call"
+                    current_call_cost = float(call_session.cost or 0.0)
+                    call_session.cost = current_call_cost + float(amount)
+
+                    # Mirror the same value onto the associated CallLog (for dashboards)
+                    call_log = db.query(CallLog).filter(CallLog.call_session_id == call_session_id).first()
+                    if call_log:
+                        current_log_cost = float(call_log.cost or 0.0)
+                        call_log.cost = current_log_cost + float(amount)
+            except Exception as e:
+                # Do not block credit deduction if cost aggregation fails; just log it.
+                logger.error(f"Failed to track per-call credit cost for session {call_session_id}: {e}", exc_info=True)
         
         # ✅ IMMEDIATE DATABASE UPDATE - Commit right away
         db.commit()

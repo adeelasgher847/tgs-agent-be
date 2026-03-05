@@ -1,4 +1,6 @@
 import logging
+from typing import List, Optional
+
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 from app.core.config import settings
@@ -47,7 +49,13 @@ class EmailService:
             logger.error(f"Error sending password reset email to {email}: {str(e)}")
             return False
     
-    def _send_email(self, to_email: str, subject: str, html_body: str) -> bool:
+    def _send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        cc_emails: Optional[List[str]] = None,
+    ) -> bool:
         """
         Send an email using SendGrid API.
         """
@@ -61,6 +69,11 @@ class EmailService:
                 subject=subject,
                 html_content=html_body,
             )
+            # Optionally add CC recipients
+            if cc_emails:
+                for cc in cc_emails:
+                    if cc:
+                        message.add_cc(cc)
             response = self.sg_client.send(message)
             if 200 <= response.status_code < 300:
                 logger.info(f"Email sent successfully to {to_email}")
@@ -107,6 +120,25 @@ class EmailService:
         except Exception as e:
             logger.error(f"Error sending invite email to {email}: {str(e)}")
             return False
+
+    def send_generic_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        cc_emails: Optional[List[str]] = None,
+    ) -> bool:
+        """
+        Send a generic email, optionally CC'ing additional recipients.
+        Used by features like sending call analyses or AI-generated summaries.
+        """
+        return self._send_email(
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            cc_emails=cc_emails,
+        )
+
 
 # Create a global instance
 email_service = EmailService()
