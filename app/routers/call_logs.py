@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -368,6 +368,13 @@ async def send_call_analysis_email(
         if not session:
             raise HTTPException(status_code=404, detail="Call session not found")
 
+        # 1b) Load agent and its system prompt for additional context
+        agent = db.query(Agent).filter(
+            Agent.id == session.agent_id,
+            Agent.tenant_id == user.current_tenant_id,
+        ).first()
+        agent_system_prompt = agent.system_prompt or "" if agent else ""
+
         # 2) Build flat transcript text from JSON transcript (if available)
         transcript_entries = session.call_transcript or []
         transcript_lines: list[str] = []
@@ -402,11 +409,16 @@ async def send_call_analysis_email(
         # 4) Always generate an analysis from the transcript (used directly or as context)
         analysis_system = (
             "You are an expert recruiting and call analytics assistant. "
-            "Analyze the following call transcript and produce a concise, bullet-based summary that includes:\n"
-            "- Participant summary (who they are, if known)\n"
+            "You are analyzing a call handled by an AI voice agent.\n\n"
+            f"Agent system prompt (how the agent is supposed to behave):\n\"\"\"{agent_system_prompt}\"\"\"\n\n"
+            "Use the agent's prompt as context for tone and scope, but ONLY use facts that are clearly present "
+            "in the transcript or explicitly provided by the user. Do not invent or guess participant names, "
+            "dates, times, positions, companies, or any other specific details.\n\n"
+            "From the following transcript, produce a concise, bullet-based summary that includes:\n"
+            "- Who the caller is (only if clearly stated; otherwise skip this point)\n"
             "- Key topics discussed\n"
-            "- Strengths / concerns or sentiment\n"
-            "- Overall recommendation and next steps."
+            "- Any clear strengths / concerns or sentiment\n"
+            "- A realistic recommendation and next steps based only on what is actually said."
         )
         analysis_user = f"""
 Call transcript:
@@ -428,18 +440,31 @@ Call transcript:
         if not payload.transform_prompt:
             email_body_text = analysis_text
         else:
-            email_system = """
-You are an AI assistant that writes emails based on a call and the user's instructions.
-
-You will receive:
+            email_system = f"""
+You are an AI assistant that writes emails based on:
 - A call analysis
-- The raw transcript
-- A custom instruction from the user (prompt)
-- Optional extra context (candidate name, interview time, position, etc.) if provided in the prompt.
+- The raw call transcript
+- The agent's system prompt
+- The user's email instruction (prompt)
 
-FOLLOW THE USER'S INSTRUCTION STRICTLY for style, language and structure.
-- Do NOT copy-paste the raw analysis unless the instruction explicitly asks for it.
-- Use clear paragraphs and punctuation so the email sounds natural when read aloud (TTS-friendly).
+Agent system prompt (how the agent is supposed to behave):
+\"\"\"{agent_system_prompt}\"\"\"
+
+STRICT RULES ABOUT DATA:
+- You MUST NOT invent specific details (name, date, time, company, position) if they are not clearly present
+  in the analysis, transcript, the agent prompt, or the user's instruction.
+- If the candidate's name is NOT clearly known, use a generic greeting like "Hi there," and DO NOT use any placeholder.
+- If the position title is NOT clearly known, do NOT add a "Position:" line.
+- If the company name is clearly specified in the agent prompt or user instruction, you MAY use it;
+  otherwise do NOT invent a company name.
+- If interview date/time is NOT clearly provided (in the user instruction, analysis, or transcript),
+  do NOT fabricate a date or time. You may refer to "your upcoming interview" in general, but no fake specifics.
+- NEVER output placeholder markers like [Candidate's Name], [Insert Date], [Your Company], etc.
+
+STYLE & TTS:
+- Follow the user's instruction for tone and language.
+- Use short paragraphs and clear punctuation so that the email sounds natural when read aloud by text-to-speech.
+- Keep it professional and aligned with the agent's tone (from the agent system prompt).
 """
             email_user = f"""
 User instruction (prompt):
@@ -461,7 +486,9 @@ Call transcript (for reference):
             )
             email_body_text = email_res["content"]
 
-        # 6) Simple HTML wrapping for email body
+        # 6) Append CC information to the plain text body and wrap as simple HTML
+        footer_cc_line = f"\n\n(CC: {user.email})"
+        email_body_text = email_body_text + footer_cc_line
         html_body = "<html><body>" + "<br/>".join(email_body_text.splitlines()) + "</body></html>"
 
         # 7) Subject depending on whether we used a custom prompt
