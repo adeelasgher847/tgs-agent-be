@@ -23,6 +23,7 @@ from app.services.email_service import email_service
 from app.services.openai_service import openai_service
 from app.services.model_service import model_service
 from app.core.security import decrypt_api_key
+from app.services.transcript_service import transcript_service
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
 
@@ -375,13 +376,32 @@ async def send_call_analysis_email(
         ).first()
         agent_system_prompt = agent.system_prompt or "" if agent else ""
 
-        # 2) Build flat transcript text from JSON transcript (if available)
-        transcript_entries = session.call_transcript or []
+        # 2) Build flat transcript text
+        # Prefer detailed TranscriptMessage records (via transcript_service).
         transcript_lines: list[str] = []
-        for entry in transcript_entries:
-            role = entry.get("role", "unknown").capitalize()
-            content = entry.get("content", "")
-            transcript_lines.append(f"{role}: {content}")
+        try:
+            messages = transcript_service.get_messages_by_session(db, session.id)
+            if messages:
+                for msg in messages:
+                    # Normalize roles for readability
+                    role = msg.role.capitalize() if msg.role else "Unknown"
+                    transcript_lines.append(f"{role}: {msg.message}")
+            else:
+                # Fallback to legacy JSON transcript on CallSession if present
+                session_transcript = session.call_transcript or []
+                for entry in session_transcript:
+                    role = entry.get("role", "unknown").capitalize()
+                    content = entry.get("content", "")
+                    transcript_lines.append(f"{role}: {content}")
+        except Exception as e:
+            logger.error(f"Failed to load transcript messages for session {session.id}: {e}", exc_info=True)
+            # As a final fallback, still try call_transcript
+            session_transcript = session.call_transcript or []
+            for entry in session_transcript:
+                role = entry.get("role", "unknown").capitalize()
+                content = entry.get("content", "")
+                transcript_lines.append(f"{role}: {content}")
+
         transcript_text = "\n".join(transcript_lines) if transcript_lines else "No transcript available."
 
         # 3) Resolve OpenAI model and API key for gpt-4o-mini
