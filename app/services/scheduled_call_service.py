@@ -861,7 +861,7 @@ Output ONLY valid JSON, no markdown or explanation."""
             transcript_lines = []
             for entry in transcript_entries:
                 role = (entry.get("role") or "unknown").capitalize()
-                content = entry.get("content") or ""
+                content = entry.get("content") or entry.get("message") or ""
                 transcript_lines.append(f"{role}: {content}")
             transcript_text = "\n".join(transcript_lines) if transcript_lines else ""
             schedule_req = await ScheduledCallService._extract_schedule_from_transcript(db, transcript_text)
@@ -878,7 +878,8 @@ Output ONLY valid JSON, no markdown or explanation."""
                 status_code=400,
                 detail="Missing date or time in scheduling information.",
             )
-        phone_number = schedule_req.get("phone_number") or session.customer_phone_number
+        # Use the same phone number that was used as the "from" number in the original call session
+        phone_number = session.from_number
         if not phone_number:
             raise HTTPException(
                 status_code=400,
