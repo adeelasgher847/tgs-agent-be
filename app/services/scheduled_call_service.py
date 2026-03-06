@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.agent import Agent
 from app.models.call_session import CallSession
+from app.models.phone_number import PhoneNumber
 from app.models.scheduled_call import ScheduledCall
 from app.models.tenant import Tenant
 from app.schemas.scheduled_call import CSVUploadResponse
@@ -947,6 +948,18 @@ Output ONLY valid JSON, no markdown or explanation."""
                 detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to a plan for this CRM.",
             )
 
+        # Resolve phone_number_id from DB: same tenant, number = session.from_number
+        pn = db.query(PhoneNumber).filter(
+            PhoneNumber.phone_number == phone_number,
+            PhoneNumber.tenant_id == session.tenant_id,
+        ).first()
+        if not pn:
+            raise HTTPException(
+                status_code=404,
+                detail="Phone number ID not found. The number used in this call is not registered in your tenant's phone numbers.",
+            )
+        phone_number_id = str(pn.id)
+
         result = await ScheduledCallService.create_single_scheduled_call(
             db=db,
             tenant_id=session.tenant_id,
@@ -955,7 +968,7 @@ Output ONLY valid JSON, no markdown or explanation."""
             agent_id=agent_id,
             call_time_utc=scheduled_time_utc.isoformat(),
             crm_config_id=board_record.tenant_crm_config_id,
-            phone_number_id=None,
+            phone_number_id=phone_number_id,
         )
         logger.info(
             f"✅ Created scheduled call in CRM from session {call_session_id} at {scheduled_time_utc.isoformat()} UTC"
