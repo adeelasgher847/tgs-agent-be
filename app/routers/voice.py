@@ -369,8 +369,9 @@ async def initiate_call(
         )
         
         if not has_sufficient:
-            logger.warning(f"❌ Insufficient credits: {current_credits} < {required_credits}")
-            error_message = f"Insufficient credits to initiate call. Current balance: {current_credits} credits, Required: {required_credits} credits. Model: {model_name}"
+            # Log full details for debugging, but return a simple message to the client
+            logger.warning(f"❌ Insufficient credits: {current_credits} < {required_credits} for model {model_name}")
+            error_message = "Insufficient credits to initiate call."
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=error_message
