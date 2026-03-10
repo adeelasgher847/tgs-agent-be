@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.schemas.plan import PlanOut, PlanCreate, PlanUpdate
 from app.schemas.base import SuccessResponse
 from app.models.plan import Plan
-from app.api.deps import get_db, get_current_user_jwt, require_admin
+from app.api.deps import get_db, get_current_user_jwt, require_admin_or_owner
 from app.utils.response import create_success_response
 from typing import List, Optional
 import uuid
@@ -87,9 +87,9 @@ def get_plan_by_name_public(
 def create_plan(
     plan_data: PlanCreate,
     db: Session = Depends(get_db),
-    current_user = Depends(require_admin)
+    current_user = Depends(require_admin_or_owner)
 ):
-    """Create a new plan (admin only)"""
+    """Create a new plan (admin or owner only)"""
     # Check if plan with same name already exists
     existing_plan = db.query(Plan).filter(Plan.name == plan_data.name).first()
     if existing_plan:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Boolean, DateTime, Float
+from sqlalchemy import Column, String, Integer, Boolean, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -13,15 +13,11 @@ class Plan(Base):
     
     # Simple Pricing (like Vapi)
     price_monthly = Column(Integer, nullable=True)  # Price in cents (0 for free)
-    price_per_minute = Column(Float, default=0.05)  # $0.05 per minute (Vapi's rate)
-    
-    # Simple Limits
-    agent_limit = Column(Integer, default=0)  # Max agents
-    monthly_calls_limit = Column(Integer, default=0)  # Keep existing column
-    included_minutes = Column(Integer, default=0)  # Free minutes per month
     
     # Stripe
     stripe_price_id = Column(String, nullable=True)
+    # CRM plan: monday, clickup, jira, trello (nullable for non-CRM plans)
+    crm_type = Column(String(50), nullable=True, index=True)
     
     # Status
     is_active = Column(Boolean, default=True)

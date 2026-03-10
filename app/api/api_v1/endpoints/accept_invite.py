@@ -11,6 +11,9 @@ from app.models.refresh_token import RefreshToken
 from app.utils.response import create_success_response
 from datetime import datetime, timezone
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -25,7 +28,7 @@ def accept_invite(
     
     Args:
         token: The invitation token
-        password: User's chosen password (only required for new users)
+        password: User's chosen password (required for new users, optional for existing users - will reset password if provided)
     
     Returns:
         User details and access token
@@ -54,10 +57,18 @@ def accept_invite(
     
     # Check if user already exists with this email
     existing_user = db.query(User).filter(User.email == invite.email).first()
+    password_reset = False  # Track if password was reset for existing user
     
     if existing_user:
-        # User already exists, just add them to the new tenant
+        # User already exists, add them to the new tenant and update password if provided
         user = existing_user
+        
+        # Update password if provided (reset password for existing user)
+        if password:
+            hashed_password = get_password_hash(password)
+            user.hashed_password = hashed_password
+            password_reset = True
+            logger.info(f"Password reset for existing user {user.email} via invitation acceptance")
         
         # Check if user is already in this tenant
         from sqlalchemy import text
@@ -104,6 +115,9 @@ def accept_invite(
         )
     )
     
+    # Update user's current_tenant_id to the invited tenant
+    user.current_tenant_id = invite.tenant_id
+    
     # Update invitation status
     invite.status = "ACCEPTED"
     invite.accepted_at = datetime.now(timezone.utc)
@@ -143,7 +157,10 @@ def accept_invite(
     
     # Determine response message based on whether user was new or existing
     if existing_user:
-        message = "Invitation accepted successfully. You have been added to the tenant."
+        if password_reset:
+            message = "Invitation accepted successfully. You have been added to the tenant and your password has been reset."
+        else:
+            message = "Invitation accepted successfully. You have been added to the tenant."
     else:
         message = "Invitation accepted successfully. You are now a member of the tenant."
     

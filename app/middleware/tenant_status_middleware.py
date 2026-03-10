@@ -11,6 +11,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from typing import Callable
 import uuid
+from app.core.logger import logger
 
 class TenantStatusMiddleware:
     """Middleware to check tenant status and block access for pending_payment tenants"""
@@ -65,7 +66,7 @@ class TenantStatusMiddleware:
             
         except Exception as e:
             # If there's an error in tenant status middleware, log it but don't block the request
-            print(f"Tenant status middleware error: {str(e)}")
+            logger.error(f"Tenant status middleware error: {str(e)}", exc_info=True)
             await self.app(scope, receive, send)
 
 def check_tenant_status(db: Session, tenant_id: uuid.UUID) -> dict:
@@ -82,7 +83,7 @@ def check_tenant_status(db: Session, tenant_id: uuid.UUID) -> dict:
         else:
             return {"status": tenant.status, "active": False}
     except Exception as e:
-        print(f"Error checking tenant status: {str(e)}")
+        logger.error(f"Error checking tenant status: {str(e)}", exc_info=True)
         return {"status": "error", "active": False}
 
 def require_active_tenant(func: Callable) -> Callable:

@@ -7,6 +7,7 @@ from twilio.rest import Client
 from twilio.base.exceptions import TwilioException
 from app.core.config import settings
 from typing import List, Dict, Optional, Any
+from app.core.logger import logger
 
 class TwilioService:
     """Service class for handling Twilio operations"""
@@ -27,12 +28,17 @@ class TwilioService:
         
         return self._client
     
+    def get_client_with_credentials(self, account_sid: str, auth_token: str):
+        """Get Twilio client with custom credentials"""
+        return Client(account_sid, auth_token)
+    
     def make_call(self, to_number, from_number, webhook_url, status_callback_url, record=True):
         """Make an outbound call with improved reliability and optional recording"""
         client = self.get_client()
         
-        # Set up recording status callback URL
-        recording_status_callback_url = f"{webhook_url.split('/webhook/')[0]}/webhook/recording-status"
+        # Set up recording status callback URL (use settings for correct base URL)
+        from app.core.config import settings
+        recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
         
         call = client.calls.create(
             to=to_number,
@@ -44,10 +50,41 @@ class TwilioService:
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
-            # Add timeout settings for better reliability
-            # timeout=30,  # Wait up to 30 seconds for answer
-            # Add webhook timeout
-            # webhook_timeout=60  # Wait up to 10 seconds for webhook response
+            timeout=30,  # Answer timeout (30 seconds)
+            
+            # NO AMD - Fast webhook response prevents Twilio announcements naturally!
+            # Instant TwiML (< 10ms) + Auto-greeting = No "Please hold" messages
+        )
+        
+        return call
+    
+    def make_call_with_credentials(
+        self, 
+        to_number: str, 
+        from_number: str, 
+        webhook_url: str, 
+        status_callback_url: str,
+        account_sid: str,
+        auth_token: str,
+        record: bool = True
+    ):
+        """Make call with custom Twilio credentials"""
+        client = self.get_client_with_credentials(account_sid, auth_token)
+        
+        from app.core.config import settings
+        recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
+        
+        call = client.calls.create(
+            to=to_number,
+            from_=from_number,
+            url=webhook_url,
+            status_callback=status_callback_url,
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_method='POST',
+            record=record,
+            recording_channels='dual',
+            recording_status_callback=recording_status_callback_url,
+            timeout=30,
         )
         
         return call
@@ -244,7 +281,7 @@ class TwilioService:
             results = []
             for number in incoming_phone_numbers:
                 results.append({
-                    'sid': number.sid,
+                    # 'sid': number.sid,
                     'phone_number': number.phone_number,
                     'friendly_name': number.friendly_name,
                     # 'voice_url': number.voice_url,
@@ -385,6 +422,54 @@ class TwilioService:
             
         except TwilioException as e:
             raise Exception(f"Error fetching account info: {str(e)}")
+    
+    def end_call(self, call_sid: str) -> bool:
+        """
+        End a call programmatically using Twilio API
+        
+        Args:
+            call_sid: The SID of the call to end
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        client = self.get_client()
+        
+        try:
+            call = client.calls(call_sid).update(status='completed')
+            logger.info(f"✅ Call {call_sid} ended successfully")
+            return True
+            
+        except TwilioException as e:
+            logger.error(f"❌ Error ending call {call_sid}: {str(e)}")
+            return False
+    
+    def redirect_call(self, call_sid: str, redirect_url: str, method: str = "POST") -> bool:
+        """
+        Redirect an in-progress call to a new TwiML URL
+        This is useful for interrupting media streams to play responses
+        
+        Args:
+            call_sid: The SID of the call to redirect
+            redirect_url: The URL to fetch new TwiML from
+            method: HTTP method to use (POST or GET)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        client = self.get_client()
+        
+        try:
+            call = client.calls(call_sid).update(
+                url=redirect_url,
+                method=method
+            )
+            logger.info(f"✅ Call {call_sid} redirected to {redirect_url}")
+            return True
+            
+        except TwilioException as e:
+            logger.error(f"❌ Error redirecting call {call_sid}: {str(e)}")
+            return False
 
 # Global instance
 twilio_service = TwilioService()

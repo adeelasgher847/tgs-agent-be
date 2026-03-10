@@ -1,10 +1,11 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
 
 class Settings(BaseSettings):
     
     ADMIN_ROLE: str = "admin"
     
-    DATABASE_URL: str = "postgresql+psycopg2://postgres:1234@localhost:5432/voiceagentdb"
+    DATABASE_URL: str = "postgresql+psycopg2://postgres:admin@localhost:5432/voiceagent"
     SECRET_KEY: str = "supersecretkey"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
@@ -22,14 +23,13 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     
     # Webhook Configuration
-    WEBHOOK_BASE_URL: str = "https://voiceagentapi.site"
-    # Email settings for password reset
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USERNAME: str = "mubeenhussain8@gmail.com"
-    SMTP_PASSWORD: str = "luse tpvz rsqb ahij"
-    SMTP_TLS: bool = True
-    SMTP_SSL: bool = False
+    WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
+    N8N_WEBHOOK_URL: str = ""  # n8n webhook URL for scheduled calls
+    N8N_WEBHOOK_SECRET: str = ""  # Secret for verifying n8n webhook requests
+    # Email settings (SendGrid)
+    SENDGRID_API_KEY: str = ""
+    SENDGRID_SENDER_EMAIL: str = ""
+    # Legacy SMTP settings (no longer used)
     
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
@@ -42,6 +42,22 @@ class Settings(BaseSettings):
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
     
+    # Google Cloud Speech-to-Text Configuration
+    GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file
+    GOOGLE_CLOUD_PROJECT_ID: str = ""
+    GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
+    GOOGLE_STT_SAMPLE_RATE: int = 8000  # Twilio uses 8kHz for MULAW
+    GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
+
+    # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
+    # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
+    CLOUD_TTS_ENDPOINT: str = ""  # e.g. https://us-texttospeech.googleapis.com
+    GOOGLE_TTS_VOICE_NAME: str = ""  # Optional exact voice name override (e.g. en-US-Chirp3-HD-Achernar)
+    
+    # Voice Conversation Settings - VAPI-STYLE REAL-TIME STREAMING
+    USE_GATHER_APPROACH: bool = False  # Using real-time bidirectional streaming
+    USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with Adaptive VAD
+    USE_WEBSOCKET_TTS: bool = True  # ✅ ENABLED - 20ms chunk streaming (MULAW 8kHz)
     
     FRONTEND_URL: str = "http://localhost:3000"  
     
@@ -84,6 +100,14 @@ class Settings(BaseSettings):
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+    
+    # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
+    TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
+    
+    # Monday.com Configuration
+    MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
+    MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
+    MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

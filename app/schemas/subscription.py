@@ -11,8 +11,9 @@ class SubscriptionBase(BaseModel):
     cancel_at_period_end: bool = False
 
 class SubscriptionCreate(SubscriptionBase):
-    tenant_id: uuid.UUID
+    user_id: uuid.UUID
     plan_id: uuid.UUID
+    crm_type: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
     stripe_customer_id: Optional[str] = None
 
@@ -27,8 +28,9 @@ class SubscriptionUpdate(BaseModel):
 
 class SubscriptionOut(SubscriptionBase):
     id: uuid.UUID
-    tenant_id: uuid.UUID
+    user_id: uuid.UUID
     plan_id: uuid.UUID
+    crm_type: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
     stripe_customer_id: Optional[str] = None
     canceled_at: Optional[datetime] = None
@@ -40,3 +42,13 @@ class SubscriptionOut(SubscriptionBase):
 
 class SubscriptionWithUsage(SubscriptionOut):
     current_usage: Optional[dict] = None  # Will be populated with current month usage
+
+
+class UserSubscriptionSummary(BaseModel):
+    """Minimal subscription info for current user: status, period start/end, crm_type."""
+    status: str
+    current_period_start: Optional[datetime] = None
+    current_period_end: Optional[datetime] = None
+    crm_type: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)

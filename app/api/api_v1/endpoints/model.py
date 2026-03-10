@@ -15,7 +15,7 @@ import uuid
 router = APIRouter()
 
 
-@router.post("/", response_model=SuccessResponse[ModelResponse],include_in_schema=False)
+@router.post("/", response_model=SuccessResponse[ModelResponse])
 async def create_model(
     model_data: ModelCreate,
     user = Depends(require_tenant),
@@ -25,13 +25,13 @@ async def create_model(
     Create a new AI model
     
     - **provider_id**: ID of the provider this model belongs to
-    - **model_name**: Name of the model (e.g., gpt-4, gemini-pro)
-    - **api_key**: Model-specific API key for authentication
-    - **description**: Model description including free tokens, efficiency, pricing details
+    - **model_name**: Name of the model (e.g., gpt-4, gpt-3.5-turbo, gemini-1.5-flash)
+    - **api_key**: Model-specific API key for authentication (optional, encrypted in DB)
+    - **description**: Model description including capabilities, use cases, pricing details
     - **system_prompt**: Default system prompt for the model
-    - **temperature**: Temperature setting (0-100)
+    - **temperature**: Temperature setting (0-100, will be converted to 0.0-1.0)
     - **max_tokens**: Maximum tokens for responses
-    - **archive**: Whether the model is archived (default: True)
+    - **archive**: Whether the model is archived (default: false for active, true for inactive)
     """
     try:
         model = model_service.create_model(db, model_data)
@@ -83,7 +83,7 @@ async def get_models(
         raise HTTPException(status_code=500, detail=f"Failed to get models: {str(e)}")
 
 
-@router.get("/{model_id}", response_model=SuccessResponse[ModelResponse],include_in_schema=False)
+@router.get("/{model_id}", response_model=SuccessResponse[ModelResponse])
 async def get_model(
     model_id: uuid.UUID,
     user = Depends(require_tenant),
@@ -102,7 +102,7 @@ async def get_model(
     )
 
 
-@router.put("/{model_id}", response_model=SuccessResponse[ModelResponse],include_in_schema=False)
+@router.put("/{model_id}", response_model=SuccessResponse[ModelResponse])
 async def update_model(
     model_id: uuid.UUID,
     model_data: ModelUpdate,
@@ -113,12 +113,12 @@ async def update_model(
     Update a model
     
     - **model_name**: New model name (optional)
-    - **api_key**: New API key (optional)
+    - **api_key**: New API key (optional, will be encrypted)
     - **description**: New description (optional)
     - **system_prompt**: New system prompt (optional)
-    - **temperature**: New temperature setting (optional)
+    - **temperature**: New temperature setting 0-100 (optional)
     - **max_tokens**: New max tokens setting (optional)
-    - **archive**: New archive status (optional)
+    - **archive**: New archive status - false for active, true for inactive (optional)
     """
     try:
         model = model_service.update_model(db, model_id, model_data)
@@ -133,7 +133,7 @@ async def update_model(
         raise HTTPException(status_code=500, detail=f"Failed to update model: {str(e)}")
 
 
-@router.delete("/{model_id}", response_model=SuccessResponse[dict],include_in_schema=False)
+@router.delete("/{model_id}", response_model=SuccessResponse[dict])
 async def delete_model(
     model_id: uuid.UUID,
     hard_delete: bool = Query(False, description="Perform hard delete instead of soft delete"),
@@ -163,14 +163,14 @@ async def delete_model(
         raise HTTPException(status_code=500, detail=f"Failed to delete model: {str(e)}")
 
 
-@router.get("/provider/{provider_id}", response_model=SuccessResponse[ModelList],include_in_schema=False)
+@router.get("/provider/{provider_id}", response_model=SuccessResponse[ModelList])
 async def get_models_by_provider(
     provider_id: uuid.UUID,
     user = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
-    Get all models for a specific provider
+    Get all models for a specific provider (e.g., all OpenAI models or all Gemini models)
     """
     try:
         models = model_service.get_models_by_provider_safe(db, provider_id)

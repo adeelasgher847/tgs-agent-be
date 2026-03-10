@@ -19,10 +19,11 @@ class VoiceTypeEnum(str, Enum):
     
 class AgentBase(BaseModel):
     name: str =  Field(..., min_length=1, max_length=100)
-    system_prompt: Optional[str] = Field(None, max_length=1000)
+    system_prompt: Optional[str] = None
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
-    fallback_response: Optional[str] = Field(None, max_length=1000)
+    fallback_response: Optional[str] = None
+    provider_id: Optional[uuid.UUID] = Field(None, description="Provider ID for filtering models")
     # Agent-specific model configuration
     agent_temperature: Optional[int] = Field(None, ge=0, le=100, description="Agent-specific temperature (0-100)")
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
@@ -36,11 +37,12 @@ class AgentCreate(AgentBase):
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
-    system_prompt: Optional[str] = Field(None, max_length=1000)
+    system_prompt: Optional[str] = None 
     language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
-    fallback_response: Optional[str] = Field(None, max_length=1000)
+    fallback_response: Optional[str] = None
     model_id: Optional[uuid.UUID] = None
+    provider_id: Optional[uuid.UUID] = Field(None, description="Provider ID for filtering models")
     # Agent-specific model configuration
     agent_temperature: Optional[int] = Field(None, ge=0, le=100, description="Agent-specific temperature (0-100)")
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
@@ -49,6 +51,7 @@ class AgentOut(AgentBase):
     id: uuid.UUID
     tenant_id: uuid.UUID
     model_id: Optional[uuid.UUID] = None
+    provider_id: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     created_by: uuid.UUID

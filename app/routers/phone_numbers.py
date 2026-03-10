@@ -8,12 +8,14 @@ from app.models.user import User
 from app.schemas.phone_number import (
     PhoneNumberResponse, PhoneNumberList,
     CreatePhoneNumberRequest, CreatePhoneNumberResponse,
-    PhoneNumberUpdate
+    PhoneNumberUpdate,
+    ImportTwilioPhoneNumberRequest, ImportTwilioPhoneNumberResponse
 )
 from app.schemas.base import SuccessResponse
 from app.services.phone_number_service import phone_number_service
 from app.services.twilio_service import twilio_service
 from app.utils.response import create_success_response
+from app.core.logger import logger
 
 router = APIRouter()
 
@@ -28,6 +30,8 @@ async def get_phone_numbers(
         
         phone_number_responses = []
         for pn in phone_numbers:
+            # Don't return encrypted credentials in response (security)
+            account_sid_display = "***encrypted***" if pn.twilio_account_sid else None
             phone_number_responses.append(PhoneNumberResponse(
                 id=pn.id,
                 tenant_id=pn.tenant_id,
@@ -36,6 +40,7 @@ async def get_phone_numbers(
                 status=pn.status,
                 assistant_id=pn.assistant_id,
                 twilio_phone_number_sid=pn.twilio_phone_number_sid,
+                twilio_account_sid=account_sid_display,  # ✅ Don't expose encrypted value
                 created_at=pn.created_at,
                 updated_at=pn.updated_at
             ))
@@ -102,8 +107,52 @@ async def create_phone_number(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/import", response_model=SuccessResponse[ImportTwilioPhoneNumberResponse])
+async def import_twilio_phone_number(
+    request: ImportTwilioPhoneNumberRequest,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+):
+    """
+    Import a Twilio phone number with custom Account SID and Auth Token.
+    User can use their own Twilio account credentials.
+    
+    This allows users to:
+    - Use their own Twilio account for calls
+    - Keep credentials secure (encrypted in database)
+    - Assign the number to an agent for automatic use
+    """
+    try:
+        # Import phone number
+        phone_number = phone_number_service.import_twilio_phone_number(
+            db=db,
+            phone_number=request.phone_number,
+            label=request.label,
+            tenant_id=user.current_tenant_id,
+            twilio_account_sid=request.twilio_account_sid,
+            twilio_auth_token=request.twilio_auth_token
+        )
+        
+        return create_success_response(
+            ImportTwilioPhoneNumberResponse(
+                id=phone_number.id,
+                phone_number=phone_number.phone_number,
+                label=phone_number.label,
+                status=phone_number.status,
+                twilio_account_sid="***encrypted***",  # ✅ Don't expose encrypted value
+                created_at=phone_number.created_at,
+                message="Twilio phone number imported successfully"
+            ),
+            "Twilio phone number imported successfully"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to import phone number: {str(e)}")
+
 # Specific routes must come before parameterized routes
-@router.get("/twilio/available", include_in_schema=False)
+@router.get("/available-numbers", include_in_schema=False)
 async def get_available_phone_numbers(
     country_code: str = Query(default="US", description="Country code (e.g., US, CA, GB)"),
     area_code: Optional[str] = Query(default=None, description="Specific area code to search for"),
@@ -115,9 +164,9 @@ async def get_available_phone_numbers(
 ):
     """Get available phone numbers from Twilio"""
     try:
-        print(f"🔍 Searching for available phone numbers")
-        print(f"📞 Country: {country_code}, Area Code: {area_code}")
-        print(f"🔍 Contains: {contains}, Voice: {voice_enabled}, SMS: {sms_enabled}")
+        logger.info(f"🔍 Searching for available phone numbers")
+        logger.debug(f"📞 Country: {country_code}, Area Code: {area_code}")
+        logger.debug(f"🔍 Contains: {contains}, Voice: {voice_enabled}, SMS: {sms_enabled}")
         
         available_numbers = twilio_service.search_available_numbers(
             country_code=country_code,
@@ -128,7 +177,7 @@ async def get_available_phone_numbers(
             limit=limit
         )
         
-        print(f"✅ Found {len(available_numbers)} available numbers")
+        logger.info(f"✅ Found {len(available_numbers)} available numbers")
         
         return create_success_response(
             {
@@ -147,21 +196,21 @@ async def get_available_phone_numbers(
         )
         
     except Exception as e:
-        print(f"❌ Error searching for available numbers: {e}")
+        logger.error(f"❌ Error searching for available numbers: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to search for available numbers: {str(e)}")
 
-@router.get("/twilio-owned-number")
+@router.get("/available-number")
 async def get_owned_phone_numbers(
     limit: int = Query(default=50, ge=1, le=100, description="Maximum number of results to return"),
     user: User = Depends(require_tenant)
 ):
     """Get all phone numbers owned by your Twilio account"""
     try:
-        print(f"📱 Fetching owned phone numbers from Twilio")
+        logger.info(f"📱 Fetching owned phone numbers from Twilio")
         
         owned_numbers = twilio_service.list_owned_numbers(limit=limit)
         
-        print(f"✅ Found {len(owned_numbers)} owned numbers")
+        logger.info(f"✅ Found {len(owned_numbers)} owned numbers")
         
         return create_success_response(
             {
@@ -172,7 +221,7 @@ async def get_owned_phone_numbers(
         )
         
     except Exception as e:
-        print(f"❌ Error fetching owned numbers: {e}")
+        logger.error(f"❌ Error fetching owned numbers: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch owned numbers: {str(e)}")
 
 @router.get("/twilio/account-info", include_in_schema=False)
@@ -181,11 +230,11 @@ async def get_twilio_account_info(
 ):
     """Get Twilio account information"""
     try:
-        print(f"🏦 Fetching Twilio account information")
+        logger.info(f"🏦 Fetching Twilio account information")
         
         account_info = twilio_service.get_account_info()
         
-        print(f"✅ Account info retrieved: {account_info.get('friendly_name', 'Unknown')}")
+        logger.info(f"✅ Account info retrieved: {account_info.get('friendly_name', 'Unknown')}")
         
         return create_success_response(
             {
@@ -195,7 +244,7 @@ async def get_twilio_account_info(
         )
         
     except Exception as e:
-        print(f"❌ Error fetching account info: {e}")
+        logger.error(f"❌ Error fetching account info: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch account info: {str(e)}")
 
 @router.post("/twilio/purchase", include_in_schema=False)
@@ -207,7 +256,7 @@ async def purchase_phone_number(
 ):
     """Purchase a phone number from Twilio"""
     try:
-        print(f"💰 Purchasing phone number: {phone_number}")
+        logger.info(f"💰 Purchasing phone number: {phone_number}")
         
         # Build webhook URLs if not provided
         if not webhook_url:
@@ -224,7 +273,7 @@ async def purchase_phone_number(
             status_callback_url=status_callback_url
         )
         
-        print(f"✅ Phone number purchased successfully: {purchase_result['phone_number']}")
+        logger.info(f"✅ Phone number purchased successfully: {purchase_result['phone_number']}")
         
         return create_success_response(
             {
@@ -234,7 +283,7 @@ async def purchase_phone_number(
         )
         
     except Exception as e:
-        print(f"❌ Error purchasing phone number: {e}")
+        logger.error(f"❌ Error purchasing phone number: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to purchase phone number: {str(e)}")
 
 @router.get("/twilio/verified", include_in_schema=False)
@@ -243,7 +292,7 @@ async def get_verified_phone_numbers(
 ):
     """Get verified phone numbers from Twilio (for outbound calls)"""
     try:
-        print(f"✅ Fetching verified phone numbers from Twilio")
+        logger.info(f"✅ Fetching verified phone numbers from Twilio")
         
         # Get owned numbers (these are verified for outbound calls)
         owned_numbers = twilio_service.list_owned_numbers(limit=100)
@@ -260,7 +309,7 @@ async def get_verified_phone_numbers(
                     'date_created': number['date_created']
                 })
         
-        print(f"✅ Found {len(verified_numbers)} verified phone numbers")
+        logger.info(f"✅ Found {len(verified_numbers)} verified phone numbers")
         
         return create_success_response(
             {
@@ -271,7 +320,7 @@ async def get_verified_phone_numbers(
         )
         
     except Exception as e:
-        print(f"❌ Error fetching verified numbers: {e}")
+        logger.error(f"❌ Error fetching verified numbers: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch verified numbers: {str(e)}")
 
 @router.get("/{phone_number_id}", response_model=SuccessResponse[PhoneNumberResponse])

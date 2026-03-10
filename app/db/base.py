@@ -6,6 +6,7 @@ from app.models.agent import Agent
 from app.models.password_reset import PasswordResetToken
 from app.models.call_session import CallSession
 from app.models.call_log import CallLog
+from app.models.transcript_message import TranscriptMessage
 from app.models.phone_number import PhoneNumber
 from app.models.refresh_token import RefreshToken
 from app.models.invite import Invite
@@ -15,3 +16,5 @@ from app.models.usage_record import UsageRecord
 from app.models.usage_record import UsageRecord
 from app.models.provider import Provider
 from app.models.model import Model
+from app.models.scheduled_call import ScheduledCall
+from app.models.tenant_crm_config import CRMConfig

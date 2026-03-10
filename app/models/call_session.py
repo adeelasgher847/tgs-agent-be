@@ -53,6 +53,7 @@ class CallSession(Base):
     agent = relationship("Agent", back_populates="call_sessions")
     tenant = relationship("Tenant", back_populates="call_sessions")
     call_logs = relationship("CallLog", back_populates="call_session", cascade="all, delete-orphan")
+    transcript_messages = relationship("TranscriptMessage", back_populates="call_session", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<CallSession(id={self.id}, status={self.status})>"

@@ -62,6 +62,15 @@ def get_current_user_jwt(
 
     return user
 
+# In-memory store to track credited Stripe Checkout sessions
+_credited_session_ids: set[str] = set()
+
+def is_session_already_credited(session_id: str) -> bool:
+    return session_id in _credited_session_ids
+
+def mark_session_credited(session_id: str) -> None:
+    _credited_session_ids.add(session_id)
+
 
 def require_tenant(
     user: User = Depends(get_current_user_jwt), 
@@ -92,6 +101,42 @@ def require_tenant(
         )
     
     return user
+
+
+def get_optional_tenant_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """Try to get user with tenant, but return None if authentication fails.
+    Used for endpoints that support both JWT and webhook secret authentication."""
+    if not credentials:
+        return None
+    
+    try:
+        payload = verify_token(credentials.credentials)
+        if not payload:
+            return None
+        
+        tenant_id = payload.get("tenant_id")
+        if not tenant_id:
+            return None
+        
+        user_id_str = payload.get("user_id")
+        if not user_id_str:
+            return None
+        
+        try:
+            user_id = uuid.UUID(user_id_str)
+            tenant_uuid = uuid.UUID(tenant_id)
+        except ValueError:
+            return None
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.current_tenant_id = tenant_uuid
+        return user
+    except:
+        return None
 
 
 def require_admin(
@@ -200,12 +245,43 @@ def require_active_tenant(
     if tenant.status == "pending_payment":
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Payment required. Please complete your subscription to access this feature."
+            detail="Insufficient credits. Please complete your payment to access this feature."
         )
     elif tenant.status != "active":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Tenant is {tenant.status}. Please contact support."
+        )
+    
+    return user
+
+
+def require_owner(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+) -> User:
+    """Ensure user is owner (only) in their current tenant."""
+    if not user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant."
+        )
+    
+    # Get user's role in the current tenant
+    from app.services.role_service import get_user_role_in_tenant
+    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+    
+    if not role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this tenant"
+        )
+    
+    # Check if user is owner (only)
+    if role.name != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner access required for this operation"
         )
     
     return user
@@ -277,3 +353,17 @@ def issue_tokens_for_user(
         role=role_info,
         refresh_token=rt_value
     )
+
+
+def require_active_subscription(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db)
+) -> User:
+    """Ensure user has at least one active paid CRM subscription with valid period."""
+    from app.services.billing_service import BillingService
+    if not BillingService.has_active_paid_subscription(db, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Access to CRM features requires an active paid subscription. Please subscribe to a plan for your CRM."
+        )
+    return user

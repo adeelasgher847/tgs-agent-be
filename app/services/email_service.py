@@ -1,16 +1,17 @@
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import logging
+from typing import List, Optional
+
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
 
 class EmailService:
     def __init__(self):
-        self.smtp_host = settings.SMTP_HOST
-        self.smtp_port = settings.SMTP_PORT
-        self.smtp_username = settings.SMTP_USERNAME
-        self.smtp_password = settings.SMTP_PASSWORD
-        self.smtp_tls = settings.SMTP_TLS
-        self.smtp_ssl = settings.SMTP_SSL
+        self.sg_client = SendGridAPIClient(settings.SENDGRID_API_KEY) if settings.SENDGRID_API_KEY else None
+        self.sender_email = settings.SENDGRID_SENDER_EMAIL
     
     def send_password_reset_email(self, email: str, reset_token: str, user_name: str) -> bool:
         """
@@ -25,16 +26,8 @@ class EmailService:
             bool: True if email sent successfully, False otherwise
         """
         try:
-            # Create message
-            msg = MIMEMultipart()
-            msg['From'] = self.smtp_username
-            msg['To'] = email
-            msg['Subject'] = "Password Reset Request - Voice Agent Platform"
-            
-            # Create reset link
+            subject = "Password Reset Request - Voice Agent Platform"
             reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
-            
-            # Email body
             body = f"""
             <html>
             <body>
@@ -51,47 +44,44 @@ class EmailService:
             </body>
             </html>
             """
-            
-            msg.attach(MIMEText(body, 'html'))
-            
-            # Send email
-            return self._send_email(msg)
-            
+            return self._send_email(to_email=email, subject=subject, html_body=body)
         except Exception as e:
-            print(f"Error sending password reset email to {email}: {str(e)}")
+            logger.error(f"Error sending password reset email to {email}: {str(e)}")
             return False
     
-    def _send_email(self, msg: MIMEMultipart) -> bool:
+    def _send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        cc_emails: Optional[List[str]] = None,
+    ) -> bool:
         """
-        Send email using SMTP
-        
-        Args:
-            msg: MIME message to send
-            
-        Returns:
-            bool: True if email sent successfully, False otherwise
+        Send an email using SendGrid API.
         """
         try:
-            if self.smtp_ssl:
-                server = smtplib.SMTP_SSL(self.smtp_host, self.smtp_port)
-            else:
-                server = smtplib.SMTP(self.smtp_host, self.smtp_port)
-            
-            if self.smtp_tls:
-                server.starttls()
-            
-            if self.smtp_username and self.smtp_password:
-                server.login(self.smtp_username, self.smtp_password)
-            
-            text = msg.as_string()
-            server.sendmail(msg['From'], msg['To'], text)
-            server.quit()
-            
-            print(f"Email sent successfully to {msg['To']}")
-            return True
-            
+            if not self.sg_client:
+                logger.error("SendGrid client is not configured. Missing SENDGRID_API_KEY.")
+                return False
+            message = Mail(
+                from_email=self.sender_email,
+                to_emails=to_email,
+                subject=subject,
+                html_content=html_body,
+            )
+            # Optionally add CC recipients
+            if cc_emails:
+                for cc in cc_emails:
+                    if cc:
+                        message.add_cc(cc)
+            response = self.sg_client.send(message)
+            if 200 <= response.status_code < 300:
+                logger.info(f"Email sent successfully to {to_email}")
+                return True
+            logger.error(f"Failed to send email to {to_email}. Status: {response.status_code}")
+            return False
         except Exception as e:
-            print(f"Error sending email: {str(e)}")
+            logger.error(f"Error sending email via SendGrid: {str(e)}")
             return False
     
     def send_invite_email(self, email: str, invite_token: str, inviter_name: str, tenant_name: str) -> bool:
@@ -108,13 +98,8 @@ class EmailService:
             bool: True if email sent successfully, False otherwise
         """
         try:
-            msg = MIMEMultipart()
-            msg['From'] = self.smtp_username
-            msg['To'] = email
-            msg['Subject'] = f"You're invited to join {tenant_name} on Voice Agent Platform"
-            
+            subject = f"You're invited to join {tenant_name} on Voice Agent Platform"
             invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={invite_token}"
-            
             body = f"""
             <html>
             <body>
@@ -131,13 +116,29 @@ class EmailService:
             </body>
             </html>
             """
-            
-            msg.attach(MIMEText(body, 'html'))
-            return self._send_email(msg)
-            
+            return self._send_email(to_email=email, subject=subject, html_body=body)
         except Exception as e:
             logger.error(f"Error sending invite email to {email}: {str(e)}")
             return False
+
+    def send_generic_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        cc_emails: Optional[List[str]] = None,
+    ) -> bool:
+        """
+        Send a generic email, optionally CC'ing additional recipients.
+        Used by features like sending call analyses or AI-generated summaries.
+        """
+        return self._send_email(
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            cc_emails=cc_emails,
+        )
+
 
 # Create a global instance
 email_service = EmailService()

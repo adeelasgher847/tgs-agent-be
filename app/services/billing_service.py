@@ -8,30 +8,30 @@ from app.models.agent import Agent
 from app.core.config import settings
 from app.services.stripe_service import StripeService
 from typing import Optional, Dict, Any, List
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import uuid
 
 class BillingService:
     
+    # Default subscription period in days (e.g. 1 month)
+    DEFAULT_PERIOD_DAYS = 30
+
     @staticmethod
-    def get_or_create_subscription(db: Session, tenant_id: uuid.UUID) -> Subscription:
-        """Get existing subscription or create a free one"""
+    def get_or_create_subscription(db: Session, user_id: uuid.UUID, crm_type: Optional[str] = None) -> Subscription:
+        """Get existing subscription for user (and optional crm_type) or create a free one for default usage."""
         subscription = db.query(Subscription).filter(
-            Subscription.tenant_id == tenant_id
+            Subscription.user_id == user_id,
+            (Subscription.crm_type == crm_type) if crm_type is not None else (Subscription.crm_type.is_(None))
         ).first()
         
         if not subscription:
-            # Create free plan subscription
             free_plan = db.query(Plan).filter(Plan.name == "free").first()
             if not free_plan:
-                # Create default free plan if it doesn't exist
                 free_plan = Plan(
                     name="free",
                     display_name="Free Plan",
                     description="Free tier with limited features",
                     price_monthly=0,
-                    agent_limit=settings.FREE_PLAN_AGENT_LIMIT,
-                    monthly_calls_limit=settings.FREE_PLAN_MONTHLY_CALLS,
                     is_active=True
                 )
                 db.add(free_plan)
@@ -39,354 +39,192 @@ class BillingService:
                 db.refresh(free_plan)
             
             subscription = Subscription(
-                tenant_id=tenant_id,
+                user_id=user_id,
                 plan_id=free_plan.id,
-                status="active"
+                status="active",
+                crm_type=crm_type
             )
             db.add(subscription)
             db.commit()
             db.refresh(subscription)
         
         return subscription
-    
+
     @staticmethod
-    def get_current_usage(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
-        """Get current month usage for a tenant"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        current_date = datetime.now()
-        
-        # Get current month usage record
-        usage_record = db.query(UsageRecord).filter(
-            and_(
-                UsageRecord.subscription_id == subscription.id,
-                UsageRecord.month == current_date.month,
-                UsageRecord.year == current_date.year
-            )
-        ).first()
-        
-        if not usage_record:
-            usage_record = UsageRecord(
-                subscription_id=subscription.id,
-                month=current_date.month,
-                year=current_date.year,
-                calls_used=0,
-                agents_created=0
-            )
-            db.add(usage_record)
-            db.commit()
-            db.refresh(usage_record)
-        
-        # Get actual agent count
-        agent_count = db.query(Agent).filter(Agent.tenant_id == tenant_id).count()
-        
-        return {
-            'subscription_id': subscription.id,
-            'plan_name': subscription.plan.name,
-            'plan_display_name': subscription.plan.display_name,
-            'agent_limit': subscription.plan.agent_limit,
-            'monthly_calls_limit': subscription.plan.monthly_calls_limit,
-            'agents_used': agent_count,
-            'calls_used': usage_record.calls_used,
-            'agents_created_this_month': usage_record.agents_created,
-            'usage_percentage': {
-                'agents': (agent_count / subscription.plan.agent_limit * 100) if subscription.plan.agent_limit > 0 else 0,
-                'calls': (usage_record.calls_used / subscription.plan.monthly_calls_limit * 100) if subscription.plan.monthly_calls_limit > 0 else 0
-            }
-        }
-    
-    @staticmethod
-    def check_agent_limit(db: Session, tenant_id: uuid.UUID) -> bool:
-        """Check if tenant can create more agents"""
-        usage = BillingService.get_current_usage(db, tenant_id)
-        return usage['agents_used'] < usage['agent_limit']
-    
-    @staticmethod
-    def check_calls_limit(db: Session, tenant_id: uuid.UUID, additional_calls: int = 1) -> bool:
-        """Check if tenant can make more calls"""
-        usage = BillingService.get_current_usage(db, tenant_id)
-        return (usage['calls_used'] + additional_calls) <= usage['monthly_calls_limit']
-    
-    @staticmethod
-    def increment_agent_usage(db: Session, tenant_id: uuid.UUID) -> None:
+    def increment_agent_usage(db: Session, user_id: uuid.UUID) -> None:
         """Increment agent creation count for current month"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        current_date = datetime.now()
-        
-        usage_record = db.query(UsageRecord).filter(
-            and_(
-                UsageRecord.subscription_id == subscription.id,
-                UsageRecord.month == current_date.month,
-                UsageRecord.year == current_date.year
-            )
-        ).first()
-        
-        if usage_record:
-            usage_record.agents_created += 1
-        else:
-            usage_record = UsageRecord(
-                subscription_id=subscription.id,
-                month=current_date.month,
-                year=current_date.year,
-                calls_used=0,
-                agents_created=1
-            )
-            db.add(usage_record)
-        
-        db.commit()
-    
+        pass
+
     @staticmethod
-    def increment_calls_usage(db: Session, tenant_id: uuid.UUID, calls_count: int = 1) -> None:
-        """Increment calls usage for current month"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        current_date = datetime.now()
-        
-        usage_record = db.query(UsageRecord).filter(
-            and_(
-                UsageRecord.subscription_id == subscription.id,
-                UsageRecord.month == current_date.month,
-                UsageRecord.year == current_date.year
-            )
-        ).first()
-        
-        if usage_record:
-            usage_record.calls_used += calls_count
-        else:
-            usage_record = UsageRecord(
-                subscription_id=subscription.id,
-                month=current_date.month,
-                year=current_date.year,
-                calls_used=calls_count,
-                agents_created=0
-            )
-            db.add(usage_record)
-        
-        db.commit()
-    
-    @staticmethod
-    def downgrade_to_free_plan(db: Session, tenant_id: uuid.UUID) -> None:
-        """Downgrade tenant to free plan (used for payment failures)"""
-        subscription = db.query(Subscription).filter(
-            Subscription.tenant_id == tenant_id
-        ).first()
-        
-        if subscription:
-            free_plan = db.query(Plan).filter(Plan.name == "free").first()
-            if free_plan:
-                subscription.plan_id = free_plan.id
-                subscription.status = "active"
-                subscription.stripe_subscription_id = None
-                subscription.stripe_customer_id = None
-                db.commit()
-    
-    @staticmethod
-    def enforce_limits(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
-        """Enforce plan limits and return status"""
-        usage = BillingService.get_current_usage(db, tenant_id)
-        
-        # Check if over limits
-        over_agent_limit = usage['agents_used'] > usage['agent_limit']
-        over_calls_limit = usage['calls_used'] > usage['monthly_calls_limit']
-        
-        return {
-            'within_limits': not (over_agent_limit or over_calls_limit),
-            'over_agent_limit': over_agent_limit,
-            'over_calls_limit': over_calls_limit,
-            'usage': usage
-        }
-    
-    @staticmethod
-    def get_tenant_subscription_status(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
-        """Get comprehensive subscription status for a tenant"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        usage = BillingService.get_current_usage(db, tenant_id)
-        
-        return {
-            'subscription': {
-                'id': subscription.id,
-                'status': subscription.status,
-                'current_period_start': subscription.current_period_start,
-                'current_period_end': subscription.current_period_end,
-                'cancel_at_period_end': subscription.cancel_at_period_end,
-                'stripe_subscription_id': subscription.stripe_subscription_id,
-                'stripe_customer_id': subscription.stripe_customer_id
-            },
-            'plan': {
-                'id': subscription.plan.id,
-                'name': subscription.plan.name,
-                'display_name': subscription.plan.display_name,
-                'description': subscription.plan.description,
-                'price_monthly': subscription.plan.price_monthly,
-                'agent_limit': subscription.plan.agent_limit,
-                'monthly_calls_limit': subscription.plan.monthly_calls_limit
-            },
-            'usage': usage,
-            'limits_enforcement': BillingService.enforce_limits(db, tenant_id)
-        }
-    
-    @staticmethod
-    def get_usage_history(db: Session, tenant_id: uuid.UUID, months: int = 12) -> List[Dict[str, Any]]:
-        """Get usage history for the past N months"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        current_date = datetime.now()
-        
-        usage_history = []
-        for i in range(months):
-            target_date = current_date - timedelta(days=30 * i)
-            month = target_date.month
-            year = target_date.year
-            
-            usage_record = db.query(UsageRecord).filter(
-                and_(
-                    UsageRecord.subscription_id == subscription.id,
-                    UsageRecord.month == month,
-                    UsageRecord.year == year
-                )
-            ).first()
-            
-            if usage_record:
-                usage_history.append({
-                    'month': month,
-                    'year': year,
-                    'calls_used': usage_record.calls_used,
-                    'agents_created': usage_record.agents_created,
-                    'created_at': usage_record.created_at
-                })
-            else:
-                usage_history.append({
-                    'month': month,
-                    'year': year,
-                    'calls_used': 0,
-                    'agents_created': 0,
-                    'created_at': None
-                })
-        
-        return usage_history
-    
-    @staticmethod
-    def get_usage_analytics(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
-        """Get usage analytics and trends"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        current_usage = BillingService.get_current_usage(db, tenant_id)
-        usage_history = BillingService.get_usage_history(db, tenant_id, 6)
-        
-        # Calculate trends
-        if len(usage_history) >= 2:
-            current_month = usage_history[0]
-            previous_month = usage_history[1]
-            
-            calls_trend = ((current_month['calls_used'] - previous_month['calls_used']) / 
-                          max(previous_month['calls_used'], 1)) * 100
-            agents_trend = ((current_month['agents_created'] - previous_month['agents_created']) / 
-                           max(previous_month['agents_created'], 1)) * 100
-        else:
-            calls_trend = 0
-            agents_trend = 0
-        
-        # Calculate average usage
-        total_calls = sum(record['calls_used'] for record in usage_history)
-        total_agents = sum(record['agents_created'] for record in usage_history)
-        avg_calls = total_calls / len(usage_history) if usage_history else 0
-        avg_agents = total_agents / len(usage_history) if usage_history else 0
-        
-        return {
-            'current_usage': current_usage,
-            'usage_history': usage_history,
-            'trends': {
-                'calls_trend_percentage': calls_trend,
-                'agents_trend_percentage': agents_trend
-            },
-            'averages': {
-                'monthly_calls': avg_calls,
-                'monthly_agents': avg_agents
-            },
-            'projections': {
-                'estimated_monthly_calls': avg_calls,
-                'estimated_monthly_agents': avg_agents
-            }
-        }
-    
-    @staticmethod
-    def sync_usage_with_stripe(db: Session, tenant_id: uuid.UUID) -> None:
-        """Sync usage data with Stripe for metered billing"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        
-        if not subscription.stripe_subscription_id:
-            return
-        
+    def sync_payment_status(db: Session, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Verify Stripe session and update subscription. No credits added for plan_purchase.
+        Returns result dict or None if session not paid/valid.
+        """
+        from app.api.deps import is_session_already_credited, mark_session_credited
+        from app.core.config import settings
+        from app.core.logger import logger
+
+        if is_session_already_credited(session_id):
+            logger.info(f"Session {session_id} already processed.")
+            return {"status": "already_processed"}
+
+        import stripe
+        stripe.api_key = settings.STRIPE_SECRET_KEY
         try:
-            # Get current usage
-            current_usage = BillingService.get_current_usage(db, tenant_id)
-            
-            # Get Stripe subscription to find subscription items
-            stripe_subscription = StripeService.get_subscription(subscription.stripe_subscription_id)
-            
-            # Update usage for each subscription item
-            for item in stripe_subscription['items']['data']:
-                # Assuming we have a metered price for calls
-                if 'calls' in item['price']['nickname'].lower():
-                    StripeService.create_usage_record(
-                        item['id'],
-                        current_usage['calls_used']
-                    )
-                
-                # Assuming we have a metered price for agents
-                elif 'agents' in item['price']['nickname'].lower():
-                    StripeService.create_usage_record(
-                        item['id'],
-                        current_usage['agents_used']
-                    )
-        
-        except Exception as e:
-            print(f"Error syncing usage with Stripe: {str(e)}")
-    
-    @staticmethod
-    def check_and_enforce_limits(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
-        """Check limits and return enforcement status"""
-        limits = BillingService.enforce_limits(db, tenant_id)
-        
-        if not limits['within_limits']:
-            # Log the violation
-            print(f"Tenant {tenant_id} exceeded limits: {limits}")
-            
-            # Optionally downgrade to free plan if over limits
-            if limits['over_calls_limit'] and limits['usage']['plan_name'] != 'free':
-                print(f"Downgrading tenant {tenant_id} to free plan due to overage")
-                BillingService.downgrade_to_free_plan(db, tenant_id)
-        
-        return limits
-    
-    @staticmethod
-    def get_billing_summary(db: Session, tenant_id: uuid.UUID) -> Dict[str, Any]:
-        """Get comprehensive billing summary"""
-        subscription = BillingService.get_or_create_subscription(db, tenant_id)
-        usage_analytics = BillingService.get_usage_analytics(db, tenant_id)
-        limits = BillingService.enforce_limits(db, tenant_id)
-        
-        # Get upcoming invoice if customer exists
-        upcoming_invoice = None
-        if subscription.stripe_customer_id:
-            try:
-                upcoming_invoice = StripeService.get_upcoming_invoice(subscription.stripe_customer_id)
-            except:
-                pass
-        
-        return {
-            'subscription': {
-                'id': subscription.id,
-                'status': subscription.status,
-                'plan_name': subscription.plan.name,
-                'plan_display_name': subscription.plan.display_name,
-                'current_period_end': subscription.current_period_end,
-                'cancel_at_period_end': subscription.cancel_at_period_end
-            },
-            'usage': usage_analytics['current_usage'],
-            'analytics': usage_analytics,
-            'limits': limits,
-            'upcoming_invoice': upcoming_invoice,
-            'billing_status': {
-                'is_active': subscription.status == 'active',
-                'is_past_due': subscription.status == 'past_due',
-                'is_canceled': subscription.status == 'canceled',
-                'has_stripe_customer': bool(subscription.stripe_customer_id)
+            session = stripe.checkout.Session.retrieve(session_id)
+            if session.payment_status != "paid":
+                logger.warning(f"Session {session_id} not paid yet (status: {session.payment_status})")
+                return None
+
+            metadata = session.get('metadata') or {}
+            user_id_str = metadata.get('user_id')
+            tenant_id_str = metadata.get('tenant_id')
+            plan_id_str = metadata.get('plan_id')
+            purchase_type = metadata.get('purchase_type') or 'credit_purchase'
+            crm_type = metadata.get('crm_type')
+
+            if not tenant_id_str:
+                logger.warning(f"Session {session_id} missing tenant_id in metadata")
+                return None
+
+            tenant_id = uuid.UUID(tenant_id_str)
+            user_id = uuid.UUID(user_id_str) if user_id_str else None
+            plan_id = uuid.UUID(plan_id_str) if plan_id_str else None
+
+            # Plan purchase: update subscription only, NO credits
+            if purchase_type == 'plan_purchase' and user_id and plan_id:
+                # If crm_type missing/empty in metadata, get from plan so we create correct subscription row
+                if not crm_type and plan_id:
+                    plan_row = db.query(Plan).filter(Plan.id == plan_id).first()
+                    if plan_row and plan_row.crm_type:
+                        crm_type = plan_row.crm_type
+                stripe_sub_id = session.get('subscription')  # present when mode=subscription
+                period_start, period_end = None, None
+                if stripe_sub_id:
+                    try:
+                        sub = stripe.Subscription.retrieve(stripe_sub_id)
+                        if sub.current_period_start:
+                            period_start = datetime.fromtimestamp(sub.current_period_start, tz=timezone.utc)
+                        if sub.current_period_end:
+                            period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc)
+                    except Exception:
+                        pass
+                BillingService.update_subscription(
+                    db=db,
+                    user_id=user_id,
+                    plan_id=plan_id,
+                    status="active",
+                    stripe_subscription_id=stripe_sub_id,
+                    stripe_customer_id=session.get('customer'),
+                    stripe_session_id=session_id,
+                    crm_type=crm_type,
+                    current_period_start=period_start,
+                    current_period_end=period_end
+                )
+                logger.info(f"Subscription updated for user {user_id} (crm_type={crm_type}) via sync - no credits added")
+                mark_session_credited(session_id)
+                return {
+                    "status": "success",
+                    "credits_added": 0,
+                    "crm_type": crm_type,
+                    "purchase_type": purchase_type,
+                    "message": "Plan subscription updated. No credits added for plan purchase."
+                }
+
+            # Credit purchase: add credits to tenant
+            credits_to_add = 0
+            amount_total_cents = session.get('amount_total') or 0
+            amount_dollars = float(amount_total_cents) / 100.0
+            if purchase_type == 'credit_purchase':
+                credits_to_add = int(amount_dollars * 10)
+
+            if credits_to_add > 0:
+                tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+                if tenant:
+                    tenant.credits = (tenant.credits or 0) + credits_to_add
+                    tenant.status = 'active'
+                    db.commit()
+                    logger.info(f"Added {credits_to_add} credits to tenant {tenant_id} (credit_purchase)")
+
+            mark_session_credited(session_id)
+            return {
+                "status": "success",
+                "credits_added": credits_to_add,
+                "purchase_type": purchase_type
             }
-        }
+        except Exception as e:
+            from app.core.logger import logger
+            logger.error(f"Error syncing payment status for session {session_id}: {str(e)}")
+            return None
+
+    @staticmethod
+    def has_active_paid_subscription(db: Session, user_id: uuid.UUID) -> bool:
+        """Check if user has at least one active paid (CRM) subscription with valid period."""
+        now = datetime.now(timezone.utc)
+        subscription = db.query(Subscription).join(Plan).filter(
+            Subscription.user_id == user_id,
+            Subscription.status == "active",
+            Subscription.crm_type.isnot(None),
+            Plan.price_monthly > 0,
+            (Subscription.current_period_end.is_(None)) | (Subscription.current_period_end > now)
+        ).first()
+        return subscription is not None
+
+    @staticmethod
+    def update_subscription(
+        db: Session,
+        user_id: uuid.UUID,
+        plan_id: uuid.UUID,
+        status: str = "active",
+        stripe_subscription_id: Optional[str] = None,
+        stripe_customer_id: Optional[str] = None,
+        stripe_session_id: Optional[str] = None,
+        crm_type: Optional[str] = None,
+        current_period_start: Optional[datetime] = None,
+        current_period_end: Optional[datetime] = None
+    ) -> Subscription:
+        """Update or create user subscription for this CRM. Sets current_period_start/end from args or default 30 days."""
+        subscription = db.query(Subscription).filter(
+            Subscription.user_id == user_id,
+            (Subscription.crm_type == crm_type) if crm_type is not None else Subscription.crm_type.is_(None)
+        ).first()
+
+        now = datetime.now(timezone.utc)
+        period_start = current_period_start if current_period_start is not None else now
+        period_end = current_period_end if current_period_end is not None else (now + timedelta(days=BillingService.DEFAULT_PERIOD_DAYS))
+
+        if not subscription:
+            subscription = Subscription(user_id=user_id, crm_type=crm_type)
+            db.add(subscription)
+
+        subscription.plan_id = plan_id
+        subscription.status = status
+        subscription.current_period_start = period_start
+        subscription.current_period_end = period_end
+        if stripe_subscription_id:
+            subscription.stripe_subscription_id = stripe_subscription_id
+        if stripe_customer_id:
+            subscription.stripe_customer_id = stripe_customer_id
+        if stripe_session_id:
+            subscription.stripe_session_id = stripe_session_id
+        if crm_type is not None:
+            subscription.crm_type = crm_type
+        subscription.updated_at = now
+
+        db.commit()
+        db.refresh(subscription)
+        return subscription
+
+    @staticmethod
+    def has_crm_access(db: Session, user_id: uuid.UUID, crm_type: str) -> bool:
+        """Check if user has active subscription for this CRM type and period has not ended."""
+        now = datetime.now(timezone.utc)
+        subscription = db.query(Subscription).join(Plan).filter(
+            Subscription.user_id == user_id,
+            Subscription.status == "active",
+            Subscription.crm_type == crm_type,
+            Plan.price_monthly > 0,
+            (Subscription.current_period_end.is_(None)) | (Subscription.current_period_end > now)
+        ).first()
+        return subscription is not None

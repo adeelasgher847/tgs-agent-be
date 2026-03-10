@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, EmailStr
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 import uuid
 
@@ -125,3 +125,23 @@ class CallLogList(BaseModel):
     stats: CallLogStats
     page: int
     per_page: int
+
+
+class CallLogAnalysisEmailRequest(BaseModel):
+    """Request payload for sending a call-related email based on a call session.
+
+    - Backend always generates an analysis from the call transcript.
+    - If transform_prompt is provided, AI uses it to create a custom email.
+    - If transform_prompt is missing, the analysis is forwarded as the email body.
+    """
+
+    call_session_id: uuid.UUID = Field(..., description="Call session whose data will be used.")
+    target_email: EmailStr = Field(..., description="Recipient email address.")
+
+    transform_prompt: Optional[str] = Field(
+        None,
+        description=(
+            "Optional custom instruction for AI. If provided, the model will use the call analysis and this prompt "
+            "to generate the email body. If omitted, the analysis text itself will be sent as the email."
+        ),
+    )

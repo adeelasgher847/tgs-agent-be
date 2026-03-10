@@ -1,4 +1,25 @@
 import sys, os
+from unittest.mock import MagicMock
+
+# Mock google submodules recursively to avoid ImportError
+# We must mock every level that is imported
+sys.modules["google"] = MagicMock()
+sys.modules["google.genai"] = MagicMock()
+sys.modules["google.oauth2"] = MagicMock()
+sys.modules["google.oauth2"].id_token = MagicMock()
+sys.modules["google.auth"] = MagicMock()
+sys.modules["google.auth"].transport = MagicMock()
+sys.modules["google.auth.transport"] = MagicMock()
+sys.modules["google.auth.transport"].requests = MagicMock()
+sys.modules["google.auth.transport.requests"] = MagicMock()
+sys.modules["google.cloud"] = MagicMock()
+sys.modules["google.cloud"].speech = MagicMock()
+sys.modules["google.cloud.speech_v1p1beta1"] = MagicMock()
+sys.modules["google.cloud.speech_v1p1beta1"].types = MagicMock()
+sys.modules["google.api_core"] = MagicMock()
+sys.modules["google.api_core"].exceptions = MagicMock()
+sys.modules["google.api_core.exceptions"] = MagicMock()
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pytest
@@ -22,6 +43,16 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,  # Keep a single in-memory DB across threads
 )
+
+# Fix for JSONB in SQLite
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.types import JSON
+from sqlalchemy.ext.compiler import compiles
+
+@compiles(JSONB, 'sqlite')
+def compile_jsonb_sqlite(type_, compiler, **kw):
+    return "JSON"
+
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Create the test database and tables
@@ -70,8 +101,7 @@ def db():
             email="test@example.com",
             hashed_password="$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4tbQJbqK8O",  # "testpassword123"
             first_name="Test",
-            last_name="User",
-            role_id=user_role.id
+            last_name="User"
         )
         db.add(test_user)
         db.commit()

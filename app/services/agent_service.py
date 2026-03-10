@@ -7,6 +7,7 @@ from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListRespo
 from app.services.billing_service import BillingService
 from fastapi import HTTPException, status
 import uuid
+from app.core.logger import logger
 
 class AgentService:
     """
@@ -17,14 +18,6 @@ class AgentService:
         """
         Create a new agent with tenant context and audit trail
         """
-        # Check billing limits before creating agent
-        if not BillingService.check_agent_limit(db, tenant_id):
-            usage = BillingService.get_current_usage(db, tenant_id)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Agent limit exceeded. You have {usage['agents_used']}/{usage['agent_limit']} agents. Please upgrade your plan."
-            )
-        
         # Validate model_id if provided
         if agent_in.model_id:
             model = db.query(Model).filter(
@@ -37,10 +30,23 @@ class AgentService:
                     detail="Invalid model_id. Model not found or is archived."
                 )
 
+        # 🚨 CHECK AGENT LIMIT (MAX 5 AGENTS PER TENANT)
+        agent_count = db.query(func.count(Agent.id)).filter(
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
+        ).scalar()
+        
+        if agent_count >= 5:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Agent limit reached. You can only create up to 5 agents per tenant."
+            )
+
         # Check for duplicate name within tenant
         existing = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
-            func.lower(Agent.name) == agent_in.name.strip().lower()
+            func.lower(Agent.name) == agent_in.name.strip().lower(),
+            Agent.is_deleted == False
         ).first()
         if existing:
             raise HTTPException(
@@ -81,9 +87,6 @@ class AgentService:
         db.commit()
         db.refresh(db_agent)
         
-        # Increment usage tracking
-        BillingService.increment_agent_usage(db, tenant_id)
-        
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
@@ -93,7 +96,10 @@ class AgentService:
         Returns 404 if agent doesn't exist at all.
         """
         # First, check if agent exists (regardless of tenant)
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        agent = db.query(Agent).filter(
+            Agent.id == agent_id,
+            Agent.is_deleted == False
+        ).first()
         
         if not agent:
             raise HTTPException(
@@ -123,10 +129,13 @@ class AgentService:
         """
         # Calculate offset
         offset = (page - 1) * limit
-        print(tenant_id,'tenant_id')
+        logger.debug(f"List agents for tenant: {tenant_id}")
         # Base query with tenant isolation
-        query = db.query(Agent).filter(Agent.tenant_id == tenant_id)
-        print(query,'query')
+        query = db.query(Agent).filter(
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
+        )
+        logger.debug(f"Query: {query}")
 
         # Apply search filter - handle empty strings and whitespace
         if search and search.strip():
@@ -187,7 +196,8 @@ class AgentService:
             existing = db.query(Agent).filter(
                 Agent.tenant_id == tenant_id,
                 func.lower(Agent.name) == new_name.lower(),
-                Agent.id != agent_id
+                Agent.id != agent_id,
+                Agent.is_deleted == False
             ).first()
             if existing:
                 raise HTTPException(
@@ -230,11 +240,13 @@ class AgentService:
     
     def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
         """
-        Delete agent with tenant isolation
+        Soft delete agent with tenant isolation
         """
         agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
         
-        db.delete(agent)
+        # Soft delete
+        agent.is_deleted = True
+        
         db.commit()
         return True
     
@@ -242,7 +254,10 @@ class AgentService:
         """
         Get all agents for a specific tenant
         """
-        return db.query(Agent).filter(Agent.tenant_id == tenant_id).all()
+        return db.query(Agent).filter(
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
+        ).all()
     
     def search_agents(
         self, 
@@ -259,6 +274,7 @@ class AgentService:
         clean_search_term = search_term.strip().lower()
         return db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False,
             func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
     
@@ -269,7 +285,8 @@ class AgentService:
         """
         agent = db.query(Agent).options(joinedload(Agent.model)).filter(
             Agent.id == agent_id,
-            Agent.tenant_id == tenant_id
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False
         ).first()
         
         if not agent:
@@ -303,4 +320,4 @@ class AgentService:
         
         return effective_config
 
-agent_service = AgentService() 
+agent_service = AgentService()

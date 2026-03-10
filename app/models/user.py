@@ -40,3 +40,9 @@ class User(Base):
     
     # Call sessions
     call_sessions = relationship("CallSession", back_populates="user")
+    transcript_messages = relationship("TranscriptMessage", back_populates="user")
+    
+    # Scheduled calls boards (one per CRM config; user can have multiple CRMs linked)
+    scheduled_calls = relationship("ScheduledCall", back_populates="user", uselist=True)
+    # CRM plan subscriptions (one per crm_type: monday, clickup, jira, trello)
+    subscriptions = relationship("Subscription", back_populates="user", uselist=True)
