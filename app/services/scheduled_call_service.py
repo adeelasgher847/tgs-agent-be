@@ -879,12 +879,12 @@ Output ONLY valid JSON, no markdown or explanation."""
                 status_code=400,
                 detail="Missing date or time in scheduling information.",
             )
-        # Use the same phone number that was used as the "from" number in the original call session
-        phone_number = session.from_number
+        # Destination: who we are calling again (customer) – use the original session's to_number/customer_phone_number
+        phone_number = session.to_number or session.customer_phone_number
         if not phone_number:
             raise HTTPException(
                 status_code=400,
-                detail="No phone number available for the scheduled call (session or transcript).",
+                detail="No destination phone number available for the scheduled call (session).",
             )
 
         tz_name = schedule_req.get("timezone")
@@ -948,15 +948,22 @@ Output ONLY valid JSON, no markdown or explanation."""
                 detail=f"You do not have an active subscription for {crm_config.crm_type}. Please subscribe to a plan for this CRM.",
             )
 
-        # Resolve phone_number_id from DB: same tenant, number = session.from_number
+        # From-line: which number we call from (assistant). Reuse the assistant number from the original call session.
+        assistant_number = session.from_number or session.assistant_phone_number
+        if not assistant_number:
+            raise HTTPException(
+                status_code=400,
+                detail="Assistant phone number not found for this call session.",
+            )
+
         pn = db.query(PhoneNumber).filter(
-            PhoneNumber.phone_number == phone_number,
+            PhoneNumber.phone_number == assistant_number,
             PhoneNumber.tenant_id == session.tenant_id,
         ).first()
         if not pn:
             raise HTTPException(
                 status_code=404,
-                detail="Phone number ID not found. The number used in this call is not registered in your tenant's phone numbers.",
+                detail="Phone number ID not found. The assistant number used in this call is not registered in your tenant's phone numbers.",
             )
         phone_number_id = str(pn.id)
 
