@@ -138,6 +138,8 @@ from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
+from app.voice.stt_pipeline import SttPipeline
+from app.voice.tts_pipeline import TtsPipeline
 
 # Import utilities and services
 from app.utils.audio_utils import (
@@ -284,8 +286,7 @@ class BidirectionalStreamHandler:
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
-        self._stt_session = None
-        self._stt_task = None
+        self._stt_pipeline: Optional[SttPipeline] = None
         # Ultra-aggressive interim processing state (40% confidence)
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
@@ -294,15 +295,15 @@ class BidirectionalStreamHandler:
         self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0  # 30ms: STT stream → LLM (400–500ms target)
         
         # TTS (Output) state - Parallel Pipeline
-        self.tts_queue = asyncio.Queue()     # Queue for parallel TTS processing
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._tts_worker_task = None         # Background TTS worker
-        self._tts_generation_tasks = []      # Track parallel TTS generation
+        self._tts_worker_task = None         # Backwards-compatible handle to pipeline worker
+        self._tts_generation_tasks = []      # Track parallel TTS generation (reserved)
         self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
         self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
+        self._tts_pipeline: Optional[TtsPipeline] = None
         
         # Natural conversation state (backchannels & persona)
         self._user_speech_duration = 0.0    # Track user monologue duration
@@ -357,8 +358,9 @@ class BidirectionalStreamHandler:
         # FFmpeg conversion can take 2-5 seconds on cold start, so we do it async
         asyncio.create_task(self._load_background_audio_async())
 
-        # Start parallel TTS pipeline worker
-        self._tts_worker_task = asyncio.create_task(self._tts_pipeline_worker())
+        # Start parallel TTS pipeline worker via TtsPipeline facade
+        self._tts_pipeline = TtsPipeline(self)
+        self._tts_worker_task = self._tts_pipeline._worker_task
         
         # Pre-cache common phrases in background for instant responses
         asyncio.create_task(self._precache_common_phrases())
@@ -470,56 +472,6 @@ class BidirectionalStreamHandler:
         except Exception as e:
             logger.error(f"Error in precache_common_phrases: {e}")
     
-    async def _tts_pipeline_worker(self):
-        """
-        Background worker for parallel TTS pipeline (Vapi-style).
-        
-        Processes TTS chunks from queue while new chunks are being generated:
-        - LLM Chunk 1 → TTS generates → plays
-        - LLM Chunk 2 → TTS generates (parallel) → queued
-        - LLM Chunk 3 → TTS generates (parallel) → queued
-        """
-        try:
-            while True:
-                # Get next TTS task from queue
-                task = await self.tts_queue.get()
-                
-                # Check for shutdown signal
-                if task is None:
-                    break
-                
-                # Check if cancelled (barge-in)
-                if self._tts_cancel.is_set():
-                    self.tts_queue.task_done()
-                    continue
-                
-                try:
-                    text = task.get("text", "")
-                    use_ssml = task.get("use_ssml", False)
-                    is_final = task.get("is_final", False)
-                    end_call_after = task.get("end_call_after", False)
-                    
-                    if not text or not text.strip():
-                        self.tts_queue.task_done()
-                        continue
-                    
-                    # Generate and stream TTS (this is the blocking part)
-                    await self._stream_tts_chunk(text, use_ssml=use_ssml, is_final=is_final)
-                    
-                    # If agent response contained [END_CALL], end call after this TTS has played
-                    if end_call_after:
-                        await self._end_call_after_agent_request()
-                    
-                except Exception as e:
-                    logger.error(f"Error in TTS pipeline worker loop: {e}", exc_info=True)
-                finally:
-                    self.tts_queue.task_done()
-        
-        except Exception as e:
-            logger.error(f"TTS pipeline worker error: {e}", exc_info=True)
-    
-    
-    
     async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio and feed to Google streaming STT"""
         try:
@@ -571,48 +523,17 @@ class BidirectionalStreamHandler:
                 return  # Don't send to STT - this is likely system message/ringing
 
             # (Removed first-media DB marker for outbound gating)
-            # Lazily create a streaming session
-            if self._stt_session is None:
-                self._stt_session = google_stt_service.create_streaming_session(
-                    language_code=(self.agent.language + "-US") if getattr(self.agent, "language", None) == "en" else None,
-                    encoding="MULAW",
-                    sample_rate=8000,
-                    interim_results=True,
-                    single_utterance=False,
+            # Lazily create STT pipeline and push audio
+            if self._stt_pipeline is None:
+                language = getattr(self.agent, "language", None)
+                language_code = (language + "-US") if language == "en" else language
+                self._stt_pipeline = SttPipeline(
+                    language_code=language_code,
+                    on_interim=self._maybe_process_interim,
+                    on_final=self._process_transcript,
                 )
 
-                async def consume_results():
-                    try:
-                        # Start underlying blocking stream in executor
-                        await self._stt_session.start()
-                    except Exception as e:
-                        logger.error(f"STT session start error: {e}", exc_info=True)
-                
-                # Start the session in background and concurrently read results
-                async def reader_loop():
-                    while True:
-                        result = await self._stt_session.get_result()
-                        if not result:
-                            continue
-                        if result.get("error"):
-                            continue
-                        transcript = (result.get("transcript") or "").strip()
-                        if not transcript:
-                            continue
-                        is_final = bool(result.get("is_final"))
-                        confidence = float(result.get("confidence") or 0.0)
-                        if is_final:
-                            await self._process_transcript(transcript, confidence)
-                        else:
-                            # Process interim for ultra-low latency (Vapi-like)
-                            await self._maybe_process_interim(transcript, confidence)
-
-                # kick off background readers
-                self._stt_task = asyncio.create_task(reader_loop())
-                asyncio.create_task(consume_results())
-
-            # Push audio to Google
-            self._stt_session.push_audio(audio_data)
+            await self._stt_pipeline.feed_audio_chunk(audio_data)
         
         except Exception as e:
             logger.error(f"Error handling media message: {e}", exc_info=True)
@@ -723,22 +644,9 @@ class BidirectionalStreamHandler:
             # Detection: 2+ words, agent currently speaking
             # NOTE: We check this BEFORE interim gate because barge-in should work
             # even with low confidence (Google interim often returns 0.00 confidence)
-            if self.is_speaking and word_count >= 2:
-                if not self._tts_cancel.is_set():
-                    # Set cancel flag to stop streaming
-                    self._tts_cancel.set()
-                    
-                    # 🆕 CLEAR TTS QUEUE - Remove ALL pending audio chunks!
-                    # This prevents old audio from resuming after user finishes speaking
-                    while not self.tts_queue.empty():
-                        try:
-                            self.tts_queue.get_nowait()
-                            self.tts_queue.task_done()
-                        except asyncio.QueueEmpty:
-                            break
-                    
-                    # Mark agent as no longer speaking
-                    self.is_speaking = False
+            if self._tts_pipeline and self._tts_pipeline.is_speaking and word_count >= 2:
+                # Set cancel flag, clear queue, and mark agent as not speaking
+                await self._tts_pipeline.cancel_current_and_clear_queue()
                 
                 # Don't process interim during barge-in - wait for final transcript
                 return
@@ -799,7 +707,9 @@ class BidirectionalStreamHandler:
             "Let me check that",
         ]
         ack = random.choice(acks)
-        await self.tts_queue.put({
+        if not self._tts_pipeline:
+            return
+        await self._tts_pipeline.queue_tts({
             "text": ack,
             "chunk_id": "quick_ack",
             "use_ssml": False,
@@ -833,7 +743,9 @@ class BidirectionalStreamHandler:
                 await self._add_to_transcript("agent", greeting_text, "greeting")
                 
                 # Queue greeting TTS directly (skip LLM!)
-                await self.tts_queue.put({
+                if not self._tts_pipeline:
+                    return
+                await self._tts_pipeline.queue_tts({
                     "text": greeting_text,
                     "chunk_id": "greeting",
                     "use_ssml": self._use_ssml,
@@ -845,12 +757,10 @@ class BidirectionalStreamHandler:
                 
                 return  # Done! No LLM needed for greeting
             
-            # Reset cancel flag for new response generation
+            # Reset TTS state for new response generation
             self._tts_cancel.clear()
-            # Reset crossfade state so new response starts clean
-            self._prev_tts_tail = b""
-            # Reset priming flag for new utterance to ensure micro-fade and buffer priming
-            self._twilio_buffer_primed = False
+            self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
+            self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
             
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
@@ -1149,7 +1059,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 enhanced_text = quick_clean(flush_text)
 
                             chunk_counter += 1
-                            await self.tts_queue.put({
+                            if self._tts_pipeline:
+                                await self._tts_pipeline.queue_tts({
                                 "text": enhanced_text,
                                 "chunk_id": chunk_counter,
                                 "use_ssml": self._use_ssml,
@@ -1177,7 +1088,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         enhanced_text = quick_clean(tts_buffer)
 
                     chunk_counter += 1
-                    await self.tts_queue.put({
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
                         "text": enhanced_text,
                         "chunk_id": chunk_counter,
                         "use_ssml": self._use_ssml,
@@ -1226,7 +1138,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         # Ultimate fallback response
                         final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
                         chunk_counter += 1
-                        await self.tts_queue.put({
+                        if self._tts_pipeline:
+                            await self._tts_pipeline.queue_tts({
                             "text": final_text,
                             "chunk_id": chunk_counter,
                             "use_ssml": self._use_ssml,
@@ -2146,9 +2059,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             # Stop TTS pipeline worker
             try:
-                if self._tts_worker_task:
-                    await self.tts_queue.put(None)  # Shutdown signal
-                    await asyncio.wait_for(self._tts_worker_task, timeout=2.0)
+                if self._tts_pipeline:
+                    await self._tts_pipeline.shutdown()
             except (asyncio.TimeoutError, Exception):
                 pass
             
@@ -2165,10 +2077,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             
             # Close STT session
             try:
-                if self._stt_session:
-                    self._stt_session.finish()
-                if self._stt_task:
-                    await asyncio.sleep(0)  # yield
+                if self._stt_pipeline:
+                    self._stt_pipeline.finish_session()
             except Exception:
                 pass
         
