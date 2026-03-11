@@ -111,13 +111,14 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Optional, Dict, Iterable
+from typing import Optional, Dict, Iterable, Tuple
 import time
 from datetime import datetime, timezone
 import uuid
 import sys
 import math
 import re
+from dataclasses import dataclass
 from app.core.logger import logger
 
 # Google built-in endpointing (VAD) will be used via streaming_recognize
@@ -165,29 +166,107 @@ from app.services.bidirectional_stream_service import (
     build_tts_only_twiml
 )
 
+
+# ---------------------------------------------------------------------------
+# Configuration structures (tunable parameters for STT, TTS, and conversation)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class QuickAckConfig:
+    """Config for quick acknowledgement behaviour."""
+    min_words: int
+    probability: float
+    skip_phrases: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VoiceTunables:
+    """High-level tunables for the bidirectional stream behaviour."""
+    # STT → LLM trigger: as soon as we have ~this much STT stream, send to LLM
+    stt_interim_interval_ms: int = 30  # 30ms throttle for 400–500ms latency
+
+    # Conversation context: keep the prompt small for latency (voice calls)
+    history_max_messages: int = 12  # last N client/agent messages only
+
+    # Incremental TTS: flush when we have a complete thought/sentence
+    tts_flush_min_words: int = 2
+    tts_flush_max_words: int = 12  # keep chunks short for fast TTS start
+
+    # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
+    quick_ack: QuickAckConfig = QuickAckConfig(
+        min_words=5,
+        probability=0.38,  # Only ~38% of eligible turns get "Got it" — more human-like
+        skip_phrases=(
+            # Never say "Got it" to emotional/serious content
+            "help",
+            "emergency",
+            "urgent",
+            "problem",
+            "issue",
+            "sad",
+            "angry",
+            "please help",
+            "asap",
+            "critical",
+            "wrong",
+            "broken",
+            "not working",
+            "complaint",
+        ),
+    )
+
+
+VOICE_TUNABLES = VoiceTunables()
+
+
+# ---------------------------------------------------------------------------
+# Small pure helpers (no side effects, easy to reason about)
+# ---------------------------------------------------------------------------
+
+def should_send_quick_ack(user_text: str, config: QuickAckConfig) -> bool:
+    """
+    Decide whether a quick acknowledgement is eligible for a given user text.
+
+    This only answers the eligibility question (length / emotional filters),
+    leaving probabilistic sampling to the caller.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return False
+
+    words = text.split()
+    if len(words) < config.min_words:
+        return False
+
+    lower = text.lower()
+    for phrase in config.skip_phrases:
+        if phrase in lower:
+            return False
+
+    return True
+
+
 router = APIRouter()
 
 
 class BidirectionalStreamHandler:
     """Handles real-time bidirectional voice streaming (400–500ms target, Vapi-style gapless TTS)."""
 
-    # STT → LLM trigger: as soon as we have ~this much STT stream, send to LLM (Twilio sends 20ms frames)
-    STT_INTERIM_INTERVAL_MS = 30  # 30ms throttle between interim triggers for 400–500ms latency
+    # Expose tunables on the class so they remain easy to discover in-context,
+    # while the actual values live in VOICE_TUNABLES above.
+    STT_INTERIM_INTERVAL_MS = VOICE_TUNABLES.stt_interim_interval_ms
 
     # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
-    QUICK_ACK_MIN_WORDS = 5
-    QUICK_ACK_PROBABILITY = 0.38  # Only ~38% of eligible turns get "Got it" — more human-like
-    QUICK_ACK_SKIP_PHRASES = (  # Never say "Got it" to emotional/serious content
-        "help", "emergency", "urgent", "problem", "issue", "sad", "angry",
-        "please help", "asap", "critical", "wrong", "broken", "not working", "complaint",
-    )
+    QUICK_ACK_MIN_WORDS = VOICE_TUNABLES.quick_ack.min_words
+    QUICK_ACK_PROBABILITY = VOICE_TUNABLES.quick_ack.probability
+    QUICK_ACK_SKIP_PHRASES = VOICE_TUNABLES.quick_ack.skip_phrases
 
     # Conversation context: keep the prompt small for latency (voice calls)
-    HISTORY_MAX_MESSAGES = 12  # last N client/agent messages only (not full transcript)
+    HISTORY_MAX_MESSAGES = VOICE_TUNABLES.history_max_messages
 
     # Incremental TTS: flush when we have a complete thought/sentence
-    TTS_FLUSH_MIN_WORDS = 2
-    TTS_FLUSH_MAX_WORDS = 12  # keep chunks short for fast TTS start
+    TTS_FLUSH_MIN_WORDS = VOICE_TUNABLES.tts_flush_min_words
+    TTS_FLUSH_MAX_WORDS = VOICE_TUNABLES.tts_flush_max_words  # keep chunks short for fast TTS start
     
     def __init__(
         self,
@@ -700,14 +779,12 @@ class BidirectionalStreamHandler:
         import random
         
         text = (user_text or "").strip()
-        words = text.split()
-        if len(words) < self.QUICK_ACK_MIN_WORDS:
+        # First check if this text is even eligible for a quick acknowledgement
+        if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
             return
-        lower = text.lower()
-        for phrase in self.QUICK_ACK_SKIP_PHRASES:
-            if phrase in lower:
-                return
-        if random.random() >= self.QUICK_ACK_PROBABILITY:
+
+        # Apply probability filter so we don't say "Got it" every single time
+        if random.random() >= VOICE_TUNABLES.quick_ack.probability:
             return
         acks = [
             "Got it",
