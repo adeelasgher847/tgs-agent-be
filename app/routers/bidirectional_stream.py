@@ -111,14 +111,13 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Optional, Dict, Iterable, Tuple
+from typing import Optional, Dict, Iterable
 import time
 from datetime import datetime, timezone
 import uuid
 import sys
 import math
 import re
-from dataclasses import dataclass
 from app.core.logger import logger
 
 # Google built-in endpointing (VAD) will be used via streaming_recognize
@@ -128,9 +127,6 @@ from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
-from app.services.gemini_service import gemini_service
-from app.services.openai_service import openai_service
-from app.services.groq_service import groq_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.services.google_tts_service import google_tts_service
@@ -140,6 +136,10 @@ from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
+from app.voice.conversation_orchestrator import (
+    VOICE_TUNABLES,
+    ConversationOrchestrator,
+)
 
 # Import utilities and services
 from app.utils.audio_utils import (
@@ -167,85 +167,6 @@ from app.services.bidirectional_stream_service import (
     build_streaming_twiml,
     build_tts_only_twiml
 )
-
-
-# ---------------------------------------------------------------------------
-# Configuration structures (tunable parameters for STT, TTS, and conversation)
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class QuickAckConfig:
-    """Config for quick acknowledgement behaviour."""
-    min_words: int
-    probability: float
-    skip_phrases: Tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class VoiceTunables:
-    """High-level tunables for the bidirectional stream behaviour."""
-    # STT → LLM trigger: as soon as we have ~this much STT stream, send to LLM
-    stt_interim_interval_ms: int = 30  # 30ms throttle for 400–500ms latency
-
-    # Conversation context: keep the prompt small for latency (voice calls)
-    history_max_messages: int = 12  # last N client/agent messages only
-
-    # Incremental TTS: flush when we have a complete thought/sentence
-    tts_flush_min_words: int = 2
-    tts_flush_max_words: int = 12  # keep chunks short for fast TTS start
-
-    # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
-    quick_ack: QuickAckConfig = QuickAckConfig(
-        min_words=5,
-        probability=0.38,  # Only ~38% of eligible turns get "Got it" — more human-like
-        skip_phrases=(
-            # Never say "Got it" to emotional/serious content
-            "help",
-            "emergency",
-            "urgent",
-            "problem",
-            "issue",
-            "sad",
-            "angry",
-            "please help",
-            "asap",
-            "critical",
-            "wrong",
-            "broken",
-            "not working",
-            "complaint",
-        ),
-    )
-
-
-VOICE_TUNABLES = VoiceTunables()
-
-
-# ---------------------------------------------------------------------------
-# Small pure helpers (no side effects, easy to reason about)
-# ---------------------------------------------------------------------------
-
-def should_send_quick_ack(user_text: str, config: QuickAckConfig) -> bool:
-    """
-    Decide whether a quick acknowledgement is eligible for a given user text.
-
-    This only answers the eligibility question (length / emotional filters),
-    leaving probabilistic sampling to the caller.
-    """
-    text = (user_text or "").strip()
-    if not text:
-        return False
-
-    words = text.split()
-    if len(words) < config.min_words:
-        return False
-
-    lower = text.lower()
-    for phrase in config.skip_phrases:
-        if phrase in lower:
-            return False
-
-    return True
 
 
 router = APIRouter()
@@ -364,6 +285,9 @@ class BidirectionalStreamHandler:
         
         # Pre-cache common phrases in background for instant responses
         asyncio.create_task(self._precache_common_phrases())
+
+        # Conversation orchestrator encapsulating LLM + policy rules
+        self._conversation = ConversationOrchestrator(self)
     
     def _load_session_data(self):
         """Load call session and agent data"""
