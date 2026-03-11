@@ -2064,8 +2064,14 @@ async def analyze_call_transcript(
             role_label = "Agent" if msg.role == "agent" else "Customer"
             transcript_text += f"{role_label}: {msg.message}\n"
         
-        # Create analysis prompts
+        # Create analysis prompts (include agent prompt for context where available)
         summary_prompt = f"""
+        You are analyzing a phone call handled by an AI voice agent.
+        Agent's system prompt / instructions (for context about purpose and tone):
+        \"\"\"
+        {agent_prompt or "No specific agent prompt provided."}
+        \"\"\"
+        
         Analyze this call transcript and provide a brief summary in 2-3 sentences.
         
         Call Transcript:
@@ -2080,6 +2086,12 @@ async def analyze_call_transcript(
         """
         
         sentiment_prompt = f"""
+        You are analyzing a phone call handled by an AI voice agent.
+        Agent's system prompt / instructions (for context about purpose and tone):
+        \"\"\"
+        {agent_prompt or "No specific agent prompt provided."}
+        \"\"\"
+        
         Analyze the sentiment of this call transcript and provide a brief assessment.
         
         Call Transcript:
