@@ -1978,7 +1978,7 @@ async def analyze_call_transcript(
         - recommendations: Actionable recommendations based on agent's prompt/instructions (if agent has custom prompt)
     """
     try:
-        # Validate call session ID
+        # Validate call session Id
         try:
             session_uuid = uuid.UUID(call_session_id)
         except ValueError:
