@@ -122,9 +122,9 @@ class TtsPipeline:
                     ):
                         await self._handler._end_call_after_agent_request()
                 except Exception as e:
-                    logger.error(f"Error in TTS pipeline worker loop: {e}", exc_info=True)
+                    logger.error(f"[TTS] pipeline worker loop error: {e}", exc_info=True)
                 finally:
                     self._queue.task_done()
         except Exception as e:
-            logger.error(f"TTS pipeline worker error: {e}", exc_info=True)
+            logger.error(f"[TTS] pipeline worker error: {e}", exc_info=True)
 

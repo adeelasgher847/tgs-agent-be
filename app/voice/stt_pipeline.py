@@ -49,14 +49,14 @@ class SttPipeline:
                 # Start underlying blocking stream in executor
                 await self._stt_session.start()
             except Exception as e:
-                logger.error(f"STT session start error: {e}", exc_info=True)
+                logger.error(f"[STT] session start error: {e}", exc_info=True)
 
         async def reader_loop():
             while True:
                 try:
                     result = await self._stt_session.get_result()
                 except Exception as e:
-                    logger.error(f"STT reader loop error: {e}", exc_info=True)
+                    logger.error(f"[STT] reader loop error: {e}", exc_info=True)
                     continue
 
                 if not result:
@@ -77,7 +77,7 @@ class SttPipeline:
                     else:
                         await self._on_interim(transcript, confidence)
                 except Exception as cb_err:
-                    logger.error(f"STT callback error: {cb_err}", exc_info=True)
+                    logger.error(f"[STT] callback error: {cb_err}", exc_info=True)
 
         # Kick off background readers
         self._reader_task = asyncio.create_task(reader_loop())

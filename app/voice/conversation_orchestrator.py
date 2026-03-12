@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.logger import logger
+from app.core.config import settings
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
@@ -31,19 +32,19 @@ class VoiceTunables:
     """High-level tunables for the bidirectional stream behaviour."""
 
     # STT → LLM trigger: as soon as we have ~this much STT stream, send to LLM
-    stt_interim_interval_ms: int = 30  # 30ms throttle for 400–500ms latency
+    stt_interim_interval_ms: int = settings.VOICE_STT_INTERIM_INTERVAL_MS
 
     # Conversation context: keep the prompt small for latency (voice calls)
-    history_max_messages: int = 12  # last N client/agent messages only
+    history_max_messages: int = settings.VOICE_HISTORY_MAX_MESSAGES
 
     # Incremental TTS: flush when we have a complete thought/sentence
-    tts_flush_min_words: int = 2
-    tts_flush_max_words: int = 12  # keep chunks short for fast TTS start
+    tts_flush_min_words: int = settings.VOICE_TTS_FLUSH_MIN_WORDS
+    tts_flush_max_words: int = settings.VOICE_TTS_FLUSH_MAX_WORDS
 
     # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
     quick_ack: QuickAckConfig = QuickAckConfig(
-        min_words=5,
-        probability=0.38,  # Only ~38% of eligible turns get "Got it" — more human-like
+        min_words=settings.VOICE_QUICK_ACK_MIN_WORDS,
+        probability=settings.VOICE_QUICK_ACK_PROBABILITY,
         skip_phrases=(
             # Never say "Got it" to emotional/serious content
             "help",
@@ -608,4 +609,46 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+
+    # ---- High-level entrypoint ----------------------------------------------
+
+    async def on_user_speech(
+        self,
+        text: str,
+        is_final: bool,
+        audio_stats: Optional[Dict[str, Any]] = None,
+        timestamps: Optional[Dict[str, Any]] = None,
+    ) -> ConversationActions:
+        """
+        High-level decision point for a user speech event.
+
+        Returns a ConversationActions description while also performing
+        the underlying side effects (quick-acks, backchannels, LLM/TTS)
+        so the existing handler flow keeps working unchanged.
+        """
+        actions = ConversationActions()
+
+        if not text:
+            return actions
+
+        confidence = float(audio_stats.get("confidence", 0.0)) if audio_stats else 0.0
+
+        if not is_final:
+            # Interim path: barge-in, backchannels, early LLM start.
+            await self.process_interim(text, confidence)
+            # Reflect whether we decided to start an interim-driven response.
+            actions.start_llm_response = bool(getattr(self._h, "_turn_response_started", False))
+            return actions
+
+        # Final user utterance: quick-ack + full response.
+        # Quick-ack (if any) is enqueued internally; we still mark that we *may* have sent one.
+        await self.send_quick_acknowledgement(text)
+        actions.quick_ack_text = None  # selection is handled internally for now
+
+        # Full LLM response (streamed into TTS pipeline).
+        await self.generate_and_stream_response(text, confidence, is_greeting=False)
+        actions.start_llm_response = True
+        actions.should_persist_history = True
+
+        return actions
 
