@@ -22,6 +22,7 @@ app = FastAPI()
 # Initialize rate limiter on startup (temporarily disabled due to Redis connection issues)
 @app.on_event("startup")
 async def startup_event():
+    logger.info("Application startup initiated")
     try:
         await init_rate_limiter()
         logger.info("Rate limiter initialized successfully")
