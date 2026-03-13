@@ -326,10 +326,76 @@ def get_current_user_subscriptions(
             current_period_start=s.current_period_start,
             current_period_end=s.current_period_end,
             crm_type=s.crm_type,
+            cancel_at_period_end=s.cancel_at_period_end,
+            canceled_at=s.canceled_at,
         )
         for s in subscriptions
     ]
     return create_success_response(data, "User subscriptions retrieved successfully")
+
+
+@router.post("/subscription/{crm_type}/cancel", response_model=SuccessResponse[dict])
+def cancel_current_user_subscription(
+    crm_type: str,
+    immediately: bool = Query(False, description="Cancel immediately instead of at period end"),
+    current_user: User = Depends(get_current_user_jwt),
+    owner_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel the authenticated owner's CRM subscription for the given CRM type.
+    """
+    subscription = (
+        db.query(Subscription)
+        .filter(
+            Subscription.user_id == current_user.id,
+            Subscription.crm_type == crm_type,
+            Subscription.stripe_subscription_id.isnot(None),
+        )
+        .first()
+    )
+    if not subscription:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No active Stripe subscription found for CRM '{crm_type}'",
+        )
+
+    try:
+        from app.services.stripe_service import StripeService
+        from app.services.billing_service import BillingService
+
+        stripe_subscription = StripeService.cancel_subscription(
+            subscription.stripe_subscription_id,
+            at_period_end=not immediately,
+        )
+        synced_subscription = BillingService.sync_subscription_from_stripe(
+            db,
+            stripe_subscription,
+        )
+        if not synced_subscription:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Subscription was canceled in Stripe but could not be synchronized locally",
+            )
+
+        return create_success_response(
+            {
+                "crm_type": synced_subscription.crm_type,
+                "status": synced_subscription.status,
+                "cancel_at_period_end": synced_subscription.cancel_at_period_end,
+                "canceled_at": synced_subscription.canceled_at,
+                "current_period_end": synced_subscription.current_period_end,
+            },
+            "Subscription canceled successfully" if immediately else "Subscription will cancel at period end",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
 @router.post("/start-checkout", response_model=SuccessResponse[dict])

@@ -45,7 +45,7 @@ class TwilioService:
             from_=from_number,
             url=webhook_url,
             status_callback=status_callback_url,
-            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_event=['initiated', 'ringing', 'answered', 'in-progress', 'completed'],
             status_callback_method='POST',
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
@@ -79,7 +79,7 @@ class TwilioService:
             from_=from_number,
             url=webhook_url,
             status_callback=status_callback_url,
-            status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
+            status_callback_event=['initiated', 'ringing', 'answered', 'in-progress', 'completed'],
             status_callback_method='POST',
             record=record,
             recording_channels='dual',

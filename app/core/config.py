@@ -1,15 +1,18 @@
+from typing import Any, Optional
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Optional
 
 class Settings(BaseSettings):
     
     ADMIN_ROLE: str = "admin"
     
     DATABASE_URL: str = "postgresql+psycopg2://postgres:admin@localhost:5432/voiceagent"
-    SECRET_KEY: str = "supersecretkey"
+    SECRET_KEY: str = ""
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    APP_ENV: str = "development"
     
     # Twilio Configuration
     TWILIO_ACCOUNT_SID: str = ""
@@ -34,6 +37,15 @@ class Settings(BaseSettings):
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
     FRONTEND_URL: str = "http://localhost:3000"
+    BACKEND_CORS_ORIGINS: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:3000",
+        ]
+    )
+    CORS_ALLOW_CREDENTIALS: bool = True
     
     GEMINI_API_KEY: str = ""
     # OpenAI Configuration
@@ -67,8 +79,6 @@ class Settings(BaseSettings):
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     VOICE_QUICK_ACK_PROBABILITY: float = 0.38
     
-    FRONTEND_URL: str = "http://localhost:3000"  
-    
     # Stripe settings
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
@@ -82,13 +92,6 @@ class Settings(BaseSettings):
     PRO_PLAN_AGENT_LIMIT: int = 50
     PRO_PLAN_MONTHLY_CALLS: int = 10000
     
-    # Twilio settings
-    TWILIO_ACCOUNT_SID: str = ""
-    TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_PHONE_NUMBER: str = ""
-    
-    # Webhook settings
-    ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
     # Rate limiting settings
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True
@@ -116,6 +119,53 @@ class Settings(BaseSettings):
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
     MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def validate_cors_origins(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                import json
+
+                parsed = json.loads(raw)
+                return [str(origin).strip() for origin in parsed if str(origin).strip()]
+            return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+        if isinstance(value, (list, tuple, set)):
+            return [str(origin).strip() for origin in value if str(origin).strip()]
+
+        raise ValueError("BACKEND_CORS_ORIGINS must be a comma-separated string or list")
+
+    @model_validator(mode="after")
+    def validate_production_settings(self) -> "Settings":
+        app_env = (self.APP_ENV or "").strip().lower()
+        is_production = app_env in {"production", "prod"} or not self.DEBUG
+        secret_key = (self.SECRET_KEY or "").strip()
+        cors_origins = [origin.strip() for origin in self.BACKEND_CORS_ORIGINS if origin.strip()]
+        frontend_url = (self.FRONTEND_URL or "").strip().rstrip("/")
+
+        if frontend_url and frontend_url not in cors_origins:
+            cors_origins.append(frontend_url)
+
+        if self.CORS_ALLOW_CREDENTIALS and "*" in cors_origins:
+            raise ValueError("Wildcard CORS origins cannot be used when credentials are enabled")
+
+        if is_production:
+            if not secret_key or secret_key == "supersecretkey":
+                raise ValueError("SECRET_KEY must be set to a non-default value in production")
+            if not cors_origins:
+                raise ValueError("BACKEND_CORS_ORIGINS must be configured in production")
+            if "*" in cors_origins:
+                raise ValueError("BACKEND_CORS_ORIGINS must use explicit domains in production")
+
+        self.BACKEND_CORS_ORIGINS = cors_origins
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

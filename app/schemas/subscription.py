@@ -50,5 +50,7 @@ class UserSubscriptionSummary(BaseModel):
     current_period_start: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     crm_type: Optional[str] = None
+    cancel_at_period_end: bool = False
+    canceled_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)

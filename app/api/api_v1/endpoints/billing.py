@@ -44,6 +44,24 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             if result:
                 return {**result, "message": "Webhook processed successfully"}
             return {"status": "failed", "reason": "sync_failed"}
+
+        if event_type in {'customer.subscription.updated', 'customer.subscription.deleted'}:
+            logger.info(f"STRIPE WEBHOOK: {event_type}")
+            subscription_payload = event.get('data', {}).get('object', {}) or {}
+
+            from app.services.billing_service import BillingService
+
+            updated_subscription = BillingService.sync_subscription_from_stripe(
+                db,
+                subscription_payload,
+            )
+            if updated_subscription:
+                return {
+                    "status": "success",
+                    "subscription_id": str(updated_subscription.id),
+                    "message": "Subscription state synchronized",
+                }
+            return {"status": "ignored", "reason": "subscription_not_found"}
         
         logger.info(f"Unhandled event type: {event_type}")
         return {"status": "success"}

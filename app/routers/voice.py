@@ -206,14 +206,11 @@ async def handle_call_events_webhook(
         
         # Status broadcasts will be handled in the main status update section below
         
-        # Update call session status if we have a call session and status
-        # ⚠️ SKIP automatic update for "answered" and "in-progress" - handled in specific handlers below
-        # "in-progress" will ONLY be set when media streaming actually starts (first media packet in bidirectional_stream.py)
-        if call_session and call_status and call_status not in ["answered", "in-progress"]:
+        # Update call session status if we have a call session and status.
+        # "completed" is handled separately below because it also sets duration/end metadata.
+        if call_session and call_status and call_status not in ["completed"]:
             logger.info(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             call_session.status = call_status
-        elif call_session and call_status in ["answered", "in-progress"]:
-            logger.debug(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - will be set when media streaming starts")
         
         # Set end time and calculate duration when call completes
         if call_session and call_status == "completed":
@@ -367,25 +364,63 @@ async def handle_call_events_webhook(
             return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "answered" and direction == "outbound-api":
-            # ⚠️ IGNORE - We use first media packet detection instead (VAPI-style)
-            logger.info(f"ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug(f"🔍 DEBUG: Will wait for first media packet from WebSocket stream")
-            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
-            
-            # Don't start credit monitoring or update status here
-            # Wait for first media packet event from WebSocket stream
-            
+            logger.info("☎️ ANSWERED STATUS RECEIVED FROM TWILIO")
+
+            if call_session:
+                call_session_service.update_call_session_status(
+                    db,
+                    call_session.id,
+                    "answered",
+                )
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status="answered",
+                    metadata={
+                        "call_sid": call_sid,
+                        "direction": direction,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "source": "twilio_status_callback",
+                    }
+                )
+
             return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "in-progress":
-            # ⚠️ IGNORE - This is Twilio's media-active notification
-            # We use first media packet detection instead (VAPI-style)
-            logger.info(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug(f"🔍 DEBUG: Media stream status from Twilio (not user pickup)")
-            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
-            
-            # Don't do anything - first media packet will handle it
-            
+            logger.info("✅ IN-PROGRESS STATUS RECEIVED FROM TWILIO")
+
+            if call_session:
+                updated_session = call_session_service.update_call_session_status(
+                    db,
+                    call_session.id,
+                    "in-progress",
+                )
+                if updated_session and not updated_session.start_time:
+                    updated_session.start_time = datetime.now(timezone.utc)
+                    db.commit()
+
+                await broadcast_call_status_update(
+                    call_session_id=str(call_session.id),
+                    status="in-progress",
+                    metadata={
+                        "call_sid": call_sid,
+                        "direction": direction,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message": "connected",
+                        "source": "twilio_status_callback",
+                    }
+                )
+
+                try:
+                    if str(call_session.id) not in credit_service._active_monitors:
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=db,
+                            call_session_id=call_session.id,
+                            tenant_id=call_session.tenant_id,
+                            agent_id=call_session.agent_id
+                        ))
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to start credit monitoring (non-critical): {e}")
+
             return HTMLResponse("", media_type="application/xml")
         elif call_status == "completed":
             # Call completed

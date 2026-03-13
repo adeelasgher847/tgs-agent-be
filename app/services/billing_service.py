@@ -17,6 +17,12 @@ class BillingService:
     DEFAULT_PERIOD_DAYS = 30
 
     @staticmethod
+    def _stripe_timestamp_to_datetime(timestamp: Optional[int]) -> Optional[datetime]:
+        if not timestamp:
+            return None
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
+    @staticmethod
     def get_or_create_subscription(db: Session, user_id: uuid.UUID, crm_type: Optional[str] = None) -> Subscription:
         """Get existing subscription for user (and optional crm_type) or create a free one for default usage."""
         subscription = db.query(Subscription).filter(
@@ -120,7 +126,9 @@ class BillingService:
                     stripe_session_id=session_id,
                     crm_type=crm_type,
                     current_period_start=period_start,
-                    current_period_end=period_end
+                    current_period_end=period_end,
+                    cancel_at_period_end=False,
+                    canceled_at=None,
                 )
                 logger.info(f"Subscription updated for user {user_id} (crm_type={crm_type}) via sync - no credits added")
                 mark_session_credited(session_id)
@@ -182,7 +190,9 @@ class BillingService:
         stripe_session_id: Optional[str] = None,
         crm_type: Optional[str] = None,
         current_period_start: Optional[datetime] = None,
-        current_period_end: Optional[datetime] = None
+        current_period_end: Optional[datetime] = None,
+        cancel_at_period_end: Optional[bool] = None,
+        canceled_at: Optional[datetime] = None,
     ) -> Subscription:
         """Update or create user subscription for this CRM. Sets current_period_start/end from args or default 30 days."""
         subscription = db.query(Subscription).filter(
@@ -210,7 +220,51 @@ class BillingService:
             subscription.stripe_session_id = stripe_session_id
         if crm_type is not None:
             subscription.crm_type = crm_type
+        if cancel_at_period_end is not None:
+            subscription.cancel_at_period_end = cancel_at_period_end
+        subscription.canceled_at = canceled_at
         subscription.updated_at = now
+
+        db.commit()
+        db.refresh(subscription)
+        return subscription
+
+    @staticmethod
+    def sync_subscription_from_stripe(
+        db: Session,
+        stripe_subscription: Dict[str, Any],
+    ) -> Optional[Subscription]:
+        stripe_subscription_id = stripe_subscription.get("id")
+        if not stripe_subscription_id:
+            return None
+
+        subscription = db.query(Subscription).filter(
+            Subscription.stripe_subscription_id == stripe_subscription_id
+        ).first()
+        if not subscription:
+            return None
+
+        status = stripe_subscription.get("status") or subscription.status
+        canceled_at = BillingService._stripe_timestamp_to_datetime(
+            stripe_subscription.get("canceled_at")
+        )
+        current_period_start = BillingService._stripe_timestamp_to_datetime(
+            stripe_subscription.get("current_period_start")
+        )
+        current_period_end = BillingService._stripe_timestamp_to_datetime(
+            stripe_subscription.get("current_period_end")
+        )
+
+        subscription.status = "canceled" if status == "canceled" else status
+        subscription.cancel_at_period_end = bool(
+            stripe_subscription.get("cancel_at_period_end", False)
+        )
+        subscription.canceled_at = canceled_at
+        if current_period_start is not None:
+            subscription.current_period_start = current_period_start
+        if current_period_end is not None:
+            subscription.current_period_end = current_period_end
+        subscription.updated_at = datetime.now(timezone.utc)
 
         db.commit()
         db.refresh(subscription)

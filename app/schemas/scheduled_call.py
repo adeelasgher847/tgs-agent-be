@@ -74,3 +74,4 @@ class JiraBatchAnalysisRequest(BaseModel):
     total_scheduled: int = Field(..., description="Total scheduled calls")
     item_ids: List[str] = Field(default_factory=list, description="Item IDs for CRM update (e.g., issue_keys for Jira)")
     container_id: Optional[str] = Field(None, description="Container ID (project_key for Jira, optional)")
+    crm_config_id: Optional[str] = Field(None, description="CRM configuration ID (UUID) for multi-CRM users")

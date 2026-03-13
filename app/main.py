@@ -1,9 +1,5 @@
-from fastapi import FastAPI, Request, HTTPException, Query, Depends
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
-from twilio.twiml.voice_response import VoiceResponse
-from sqlalchemy.orm import Session
 
 from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
@@ -12,6 +8,7 @@ from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
 from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
 
+from app.core.config import settings
 from app.core.logger import setup_logging, logger
 
 # Initialize centralized logging
@@ -41,16 +38,8 @@ async def shutdown_event():
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Your frontend dev server
-        "http://localhost:3000",  # Alternative frontend port
-        "http://127.0.0.1:5173",  # Alternative localhost
-        "http://127.0.0.1:3000",  # Alternative localhost
-        "http://192.168.0.121:5173",  # Your IP with frontend port
-        "http://192.168.15.129:5173",
-        "*"  # Allow all origins (for development only)
-    ],
-    allow_credentials=True,
+    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],  # Allow all HTTP methods
     allow_headers=["*"],  # Allow all headers
 )

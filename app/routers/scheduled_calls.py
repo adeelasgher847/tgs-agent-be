@@ -50,6 +50,38 @@ model_service = ModelService()
 crm_config_service = CRMConfigService()
 
 
+def _parse_crm_config_uuid(crm_config_id: Optional[str]) -> Optional[uuid.UUID]:
+    if not crm_config_id:
+        return None
+    try:
+        return uuid.UUID(crm_config_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid crm_config_id format")
+
+
+def _get_scoped_board_for_user(
+    db: Session,
+    user_id: uuid.UUID,
+    crm_config_id: Optional[str] = None,
+) -> ScheduledCall:
+    crm_config_uuid = _parse_crm_config_uuid(crm_config_id)
+    if crm_config_uuid:
+        board_record = scheduled_call_service.get_board_for_user(db, user_id, crm_config_uuid)
+        if not board_record:
+            raise HTTPException(status_code=404, detail="Board not found for the specified CRM")
+        return board_record
+
+    board_records = scheduled_call_service.get_all_boards_for_user(db, user_id)
+    if not board_records:
+        raise HTTPException(status_code=404, detail="Board not found for user")
+    if len(board_records) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="crm_config_id is required when multiple CRMs are linked",
+        )
+    return board_records[0]
+
+
 async def analyze_call_transcript_internal(
     db: Session,
     call_session: CallSession,
@@ -872,6 +904,7 @@ async def get_batch_analysis(
     http_request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
     user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    crm_config_id: Optional[str] = Query(None, description="CRM configuration ID (required for multi-CRM users)"),
     user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
@@ -946,10 +979,8 @@ async def get_batch_analysis(
                     detail="Authentication required: JWT token or n8n webhook secret"
                 )
         
-        # Get user's board
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        if not board_record:
-            raise HTTPException(status_code=404, detail="Board not found for user")
+        # Get the correct board for this batch. Multi-CRM users must scope the request.
+        board_record = _get_scoped_board_for_user(db, user.id, crm_config_id)
         
         # Get CRM type and container ID
         crm_type = board_record.crm_type or "monday"  # Default to monday for backward compatibility
@@ -1217,6 +1248,7 @@ async def get_batch_analysis_jira(
         total_scheduled = request_body.total_scheduled
         item_ids = request_body.item_ids or []
         container_id = request_body.container_id
+        crm_config_id = request_body.crm_config_id
         
         if not call_session_ids:
             raise HTTPException(
@@ -1255,8 +1287,8 @@ async def get_batch_analysis_jira(
         field_map = {}
         if container_id:
             try:
-                # Get user's board to find CRM config
-                board_record = scheduled_call_service.get_board_for_user(db, user.id)
+                # Resolve the correct Jira board/config instead of defaulting to the user's first board.
+                board_record = _get_scoped_board_for_user(db, user.id, crm_config_id)
                 if board_record and board_record.tenant_crm_config_id:
                     crm_config = crm_config_service.get_crm_config_by_id(db, board_record.tenant_crm_config_id)
                     if crm_config and crm_config.crm_type.lower() == "jira":
@@ -1355,6 +1387,7 @@ async def mark_batch_email_sent(
     http_request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
     user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    crm_config_id: Optional[str] = Query(None, description="CRM configuration ID (required for multi-CRM users)"),
     user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
@@ -1413,10 +1446,7 @@ async def mark_batch_email_sent(
                     detail="Authentication required: JWT token or n8n webhook secret"
                 )
         
-        # Get user's board
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        if not board_record:
-            raise HTTPException(status_code=404, detail="Board not found for user")
+        board_record = _get_scoped_board_for_user(db, user.id, crm_config_id)
         
         # Get CRM config and service (uses database API key)
         crm_config = None
@@ -1502,6 +1532,7 @@ async def mark_batch_email_sent_clickup(
     http_request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
     user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    crm_config_id: Optional[str] = Query(None, description="CRM configuration ID (required for multi-CRM users)"),
     user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
@@ -1559,10 +1590,7 @@ async def mark_batch_email_sent_clickup(
                     detail="Authentication required: JWT token or n8n webhook secret"
                 )
         
-        # Get user's board
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        if not board_record:
-            raise HTTPException(status_code=404, detail="Board not found for user")
+        board_record = _get_scoped_board_for_user(db, user.id, crm_config_id)
         
         # Verify CRM type is ClickUp
         crm_type = board_record.crm_type or "monday"
@@ -1639,6 +1667,7 @@ async def mark_batch_email_sent_trello(
     http_request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
     user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    crm_config_id: Optional[str] = Query(None, description="CRM configuration ID (required for multi-CRM users)"),
     user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
@@ -1696,10 +1725,7 @@ async def mark_batch_email_sent_trello(
                     detail="Authentication required: JWT token or n8n webhook secret"
                 )
         
-        # Get user's board
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        if not board_record:
-            raise HTTPException(status_code=404, detail="Board not found for user")
+        board_record = _get_scoped_board_for_user(db, user.id, crm_config_id)
         
         # Get CRM type and container ID
         crm_type = board_record.crm_type or "trello"
@@ -1774,6 +1800,7 @@ async def mark_batch_email_sent_jira(
     http_request: Request,
     tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
     user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    crm_config_id: Optional[str] = Query(None, description="CRM configuration ID (required for multi-CRM users)"),
     user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db),
     issue_keys: List[str] = Body(..., description="List of Jira issue keys to update")
@@ -1835,10 +1862,7 @@ async def mark_batch_email_sent_jira(
                     detail="Authentication required: JWT token or n8n webhook secret"
                 )
         
-        # Get user's board
-        board_record = scheduled_call_service.get_board_for_user(db, user.id)
-        if not board_record:
-            raise HTTPException(status_code=404, detail="Board not found for user")
+        board_record = _get_scoped_board_for_user(db, user.id, crm_config_id)
         
         # Verify CRM type is Jira
         crm_type = board_record.crm_type or "monday"
