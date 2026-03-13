@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     USE_GATHER_APPROACH: bool = False  # Using real-time bidirectional streaming
     USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with Adaptive VAD
     USE_WEBSOCKET_TTS: bool = True  # ✅ ENABLED - 20ms chunk streaming (MULAW 8kHz)
+
+    # Voice streaming tunables (phase 6 centralization)
+    VOICE_STT_INTERIM_INTERVAL_MS: int = 30
+    VOICE_HISTORY_MAX_MESSAGES: int = 12
+    VOICE_TTS_FLUSH_MIN_WORDS: int = 2
+    VOICE_TTS_FLUSH_MAX_WORDS: int = 12
+    VOICE_QUICK_ACK_MIN_WORDS: int = 5
+    VOICE_QUICK_ACK_PROBABILITY: float = 0.38
     
     FRONTEND_URL: str = "http://localhost:3000"  
     

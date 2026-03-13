@@ -4,15 +4,14 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
-import random
 import uuid
 import sys
 import requests
 import asyncio
 import csv
 import io
-from app.core.logger import logger
 
+from app.core.logger import logger
 from app.api.deps import get_db, require_tenant, get_optional_tenant_user
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse, CallInitiateErrorResponse
 from app.schemas.base import SuccessResponse
@@ -34,231 +33,32 @@ from app.routers.general_websocket import (
     broadcast_call_event,
     broadcast_system_notification
 )
-from app.services.transcript_service import transcript_service
 from app.services.model_service import ModelService
+from app.services.transcript_service import transcript_service
 from app.services.gemini_service import gemini_service
 from app.services.credit_service import credit_service
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.services.phone_number_service import phone_number_service
+from app.services.voice_twilio_utils import get_twilio_credentials_for_call
+from app.services.voice_phrase_service import (
+    get_random_didnt_catch_response,
+    get_random_follow_up_response,
+)
+from app.services.voice_conversation_service import (
+    add_to_transcript,
+    get_conversation_state,
+    update_conversation_state,
+)
+from app.services.voice_language_service import get_gather_language, get_agent_voice
+from app.services.voice_analysis_service import voice_analysis_service
+from app.services.voice_call_service import initiate_call as initiate_call_service
+from app.services.voice_analytics_service import voice_analytics_service
 
 router = APIRouter()
 
 # Initialize services
 model_service = ModelService()
-
-def get_twilio_credentials_for_call(db: Session, call_session: CallSession):
-    """
-    Get Twilio credentials for a call session.
-    Priority: DB phone number credentials > Env credentials
-    
-    Returns:
-        tuple: (account_sid, auth_token)
-    """
-    from app.models.phone_number import PhoneNumber
-    from app.core.security import decrypt_api_key
-    
-    # Check if call was made with DB phone number
-    if call_session.from_number:
-        phone_number_obj = db.query(PhoneNumber).filter(
-            PhoneNumber.phone_number == call_session.from_number,
-            PhoneNumber.tenant_id == call_session.tenant_id,
-            PhoneNumber.status == "active"
-        ).first()
-        
-        if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
-            # ✅ Use DB credentials (decrypt both)
-            account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
-            auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
-            logger.info(f"✅ Using DB credentials for recording (phone: {call_session.from_number})")
-            return account_sid, auth_token
-    
-    # ✅ Fallback to env credentials
-    client = twilio_service.get_client()
-    account_sid = client.username
-    auth_token = client.password
-    logger.info(f"✅ Using env credentials for recording")
-    return account_sid, auth_token
-
-# Array of human-like "didn't catch that" response phrases
-DIDNT_CATCH_RESPONSES = [
-    "Hmm, I missed that—mind saying it again?",
-    "Didn't quite get that, can you repeat?",
-    "I didn't hear you clearly, would you mind repeating?",
-    "Can you say that again real quick?",
-    "I might've misheard—could you repeat that?"
-]
-
-# Array of follow-up phrases for when the agent didn't catch something
-FOLLOW_UP_RESPONSES = [
-    "Could you repeat that for me?",
-    "Mind saying that one more time?",
-    "Can you try that again?",
-    "Would you mind repeating that?",
-    "Could you say that again?"
-]
-
-
-def _get_random_didnt_catch_response() -> str:
-    """Get a random 'didn't catch that' response to make interactions feel more human"""
-    return random.choice(DIDNT_CATCH_RESPONSES)
-
-
-def _get_random_follow_up_response() -> str:
-    """Get a random follow-up response to make interactions feel more human"""
-    return random.choice(FOLLOW_UP_RESPONSES)
-
-
-async def _add_to_transcript(
-    call_session, 
-    role: str, 
-    message: str, 
-    db: Session, 
-    message_type: str = "speech",
-    agent_id: Optional[uuid.UUID] = None,
-    user_id: Optional[uuid.UUID] = None,
-    confidence: Optional[float] = None,
-    duration: Optional[float] = None,
-    response_time: Optional[float] = None,
-    metadata: Optional[dict] = None
-):
-    """Add a message to the transcript using the new transcript service
-    
-    Args:
-        call_session: The call session object
-        role: Either "agent" or "client" 
-        message: The message content
-        db: Database session for committing changes
-        message_type: Type of message (speech, timeout, error, etc.)
-        confidence: Speech recognition confidence (0.0-1.0)
-        duration: Message duration in seconds
-        response_time: Time taken to generate response
-        metadata: Additional message metadata
-    """
-    
-    logger.debug(f"📝 Adding to transcript: {role} - {message[:50]}...")
-    
-    try:
-        # Use the new transcript service
-        transcript_message = await transcript_service.add_and_broadcast_message(
-            db=db,
-            call_session_id=call_session.id,
-            role=role,
-            message=message,
-            message_type=message_type,
-            agent_id=agent_id,
-            user_id=user_id,
-            confidence=confidence,
-            duration=duration,
-            response_time=response_time,
-            metadata=metadata
-        )
-        
-        logger.debug(f"✅ Added transcript message {transcript_message.id} for session {call_session.id}")
-        
-        # Also update the legacy call_transcript field for backward compatibility
-        conversation = transcript_service.get_conversation_array(db, call_session.id)
-        call_session.call_transcript = conversation
-        db.commit()
-        
-        return transcript_message
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to add transcript message: {e}", exc_info=True)
-        raise
-
-
-def _get_conversation_state(call_session):
-    """Helper function to get conversation state"""
-    if not call_session.call_metadata:
-        call_session.call_metadata = {}
-    if "conversation_state" not in call_session.call_metadata:
-        call_session.call_metadata["conversation_state"] = {}
-    return call_session.call_metadata["conversation_state"]
-
-
-def _update_conversation_state(call_session, key: str, value):
-    """Helper function to update conversation state"""
-    state = _get_conversation_state(call_session)
-    state[key] = value
-    call_session.call_metadata["conversation_state"] = state
-
-
-def get_gather_language(agent) -> str:
-    """Get language code for Twilio Gather based on agent language"""
-    if not agent or not agent.language:
-        return "en-US"
-    
-    # Map agent language to Twilio supported languages
-    language_map = {
-        "en": "en-US",
-        "es": "es-ES",
-        "hi": "hi-IN",
-        "ar": "ar-SA",
-        "zh": "zh-CN",
-        "ur": "ur-PK"
-    }
-    
-    return language_map.get(agent.language, "en-US")
-
-
-def get_agent_voice(agent) -> str:
-    """Get the appropriate Twilio voice based on agent's voice type and language"""
-    if not agent:
-        return "Polly.Joanna"  # Default female voice
-    
-    # Get voice type and language from agent
-    voice_type = agent.voice_type
-    language = agent.language
-    
-    # Voice mapping based on language and gender using correct Twilio voice names
-    voice_map = {
-        # English voices
-        "en": {
-            "male": "Polly.Matthew",
-            "female": "Polly.Joanna"
-        },
-        # Spanish voices
-        "es": {
-            "male": "Polly.Miguel",
-            "female": "Polly.Penelope"
-        },
-        # Hindi voices
-        "hi": {
-            "male": "Polly.Aditi",
-            "female": "Polly.Aditi"
-        },
-        # Arabic voices
-        "ar": {
-            "male": "Polly.Zeina",
-            "female": "Polly.Zeina"
-        },
-        # Chinese voices
-        "zh": {
-            "male": "Polly.Zhiyu",
-            "female": "Polly.Zhiyu"
-        },
-        # Urdu voices
-        "ur": {
-            "male": "Polly.Aditi",
-            "female": "Polly.Aditi"
-        }
-    }
-    
-    # Default to English if language not specified
-    if not language:
-        language = "en"
-    
-    # Default to female if voice type not specified
-    if not voice_type:
-        voice_type = "female"
-    
-    # Get the voice from the mapping
-    selected_voice = voice_map.get(language, voice_map["en"]).get(voice_type, "Polly.Joanna")
-    
-    logger.debug(f"🎤 Agent voice selection: language={language}, voice_type={voice_type}, selected_voice={selected_voice}")
-    
-    return selected_voice
 
 @router.post("/call/initiate", response_model=SuccessResponse[CallInitiateResponse])
 async def initiate_call(
@@ -269,349 +69,9 @@ async def initiate_call(
 ):
     """
     Endpoint to initiate a voice call using Twilio.
-    
-    Authentication: Either JWT token OR n8n webhook secret (X-N8N-Webhook-Secret header).
-    If using webhook secret, provide tenant_id (and optionally user_id) in request body.
-    
-    Request Payload (JWT auth - Normal Call):
-    {
-        "agentId": "agent_12345",
-        "userPhoneNumber": "+1234567890"
-    }
-    
-    Request Payload (n8n webhook - Scheduled Call):
-    {
-        "agentId": "agent_12345",
-        "userPhoneNumber": "+1234567890",
-        "tenant_id": "tenant-uuid",
-        "user_id": "user-uuid" (optional),
-        
-        // Legacy Monday.com fields (for backward compatibility)
-        "board_id": "board_123",
-        "monday_item_id": "item_456",
-        "status_column_id": "status_col_789",
-        "call_session_id_column_id": "session_col_012",
-        
-        // OR Generic CRM fields (for multi-CRM support)
-        "crm_container_id": "board_123",  // board_id/list_id/project_id
-        "crm_item_id": "item_456",  // item_id/task_id/issue_id/card_id
-        "status_field_id": "status_col_789",  // status field ID
-        "call_session_id_field_id": "session_col_012",  // call_session_id field ID
-        "crm_type": "monday"  // "monday" | "clickup" | "jira" | "trello"
-    }
-    
-    Response (includes both legacy and generic fields for n8n compatibility):
-    {
-        "callId": "call_abc123",
-        "twilioCallSid": "CAxxxxxxx",
-        "status": "initiated",
-        "board_id": "board_123",  // Legacy field (if provided)
-        "monday_item_id": "item_456",  // Legacy field (if provided)
-        "crm_container_id": "board_123",  // Generic field (if provided)
-        "crm_item_id": "item_456",  // Generic field (if provided)
-        "crm_type": "monday"  // Generic field (if provided)
-    }
-    
-    Note: Normal calls (JWT auth) don't need CRM fields. Only n8n scheduled calls need them.
+    Thin wrapper around `voice_call_service.initiate_call`.
     """
-    try:
-        # Verify authentication: either JWT token OR webhook secret
-        is_webhook = await verify_n8n_webhook_secret_async(http_request)
-        
-        if is_webhook:
-            # Webhook authentication - get tenant_id and user_id from request body
-            if not call_request.tenant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="tenant_id is required in request body when using webhook secret"
-                )
-            try:
-                tenant_uuid = uuid.UUID(call_request.tenant_id)
-                user_uuid = uuid.UUID(call_request.user_id) if call_request.user_id else None
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid UUID format for tenant_id or user_id"
-                )
-            tenant_id_filter = tenant_uuid
-            user_id_filter = user_uuid
-        else:
-            # JWT authentication - get from user token
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required: JWT token or n8n webhook secret"
-                )
-            tenant_id_filter = user.current_tenant_id
-            user_id_filter = user.id
-        
-        # Validate agent exists in database
-        try:
-            agent_id = uuid.UUID(call_request.agentId)
-            agent = agent_service.get_agent_by_id(db, agent_id, tenant_id_filter)
-        except (ValueError, HTTPException):
-            raise HTTPException(status_code=404, detail=f"Agent {call_request.agentId} not found")
-        
-        # Validate phone number format
-        if not twilio_service.validate_phone_number(call_request.userPhoneNumber):
-            raise HTTPException(status_code=400, detail="Invalid phone number format. Must start with +")
-        
-        # Check credits before initiating call
-        if not agent.model:
-            raise HTTPException(status_code=400, detail="Agent does not have a model configured")
-        
-        model_name = agent.model.model_name
-        has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
-            db=db,
-            tenant_id=tenant_id_filter,
-            model_name=model_name,
-            estimated_minutes=1  # Check for at least 1 minute
-        )
-        
-        if not has_sufficient:
-            # Log full details for debugging, but return a simple message to the client
-            logger.warning(f"❌ Insufficient credits: {current_credits} < {required_credits} for model {model_name}")
-            error_message = "Insufficient credits to initiate call."
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=error_message
-            )
-        
-        logger.info(f"✅ Credit check passed: {current_credits} credits available, {required_credits} required for model {model_name}")
-        
-        # Get phone number and credentials - Priority: User Selected > Agent Assigned > Env
-        from app.models.phone_number import PhoneNumber
-        
-        phone_number_obj = None
-        from_number = None
-        use_custom_credentials = False
-        account_sid = None
-        auth_token = None
-        
-        # Priority 1: Check if user explicitly selected a phone number (VAPI style)
-        if call_request.phone_number_id:
-            try:
-                phone_number_uuid = uuid.UUID(call_request.phone_number_id)
-                phone_number_obj = phone_number_service.get_phone_number_by_id(
-                    db=db,
-                    phone_number_id=phone_number_uuid,
-                    tenant_id=tenant_id_filter
-                )
-                if phone_number_obj and phone_number_obj.status == "active":
-                    logger.info(f"✅ Using user selected phone number: {phone_number_obj.phone_number} (ID: {phone_number_uuid})")
-                elif phone_number_obj and phone_number_obj.status != "active":
-                    # ✅ Phone number exists but is inactive - raise error
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Phone number {call_request.phone_number_id} is not active."
-                    )
-                else:
-                    # ✅ Phone number not found or belongs to different tenant - raise error
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Phone number {call_request.phone_number_id} not found in your account."
-                    )
-            except HTTPException:
-                raise
-            except (ValueError, Exception) as e:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid phone_number_id format: {str(e)}"
-                )
-        
-        # Priority 2: Check if agent has assigned phone number in DB
-        if not phone_number_obj and agent.id:
-            phone_number_obj = db.query(PhoneNumber).filter(
-                PhoneNumber.assistant_id == agent.id,
-                PhoneNumber.tenant_id == tenant_id_filter,
-                PhoneNumber.status == "active"
-            ).first()
-            if phone_number_obj:
-                logger.info(f"✅ Using agent's assigned phone number: {phone_number_obj.phone_number}")
-        
-        # Use selected phone number with credentials if available
-        if phone_number_obj and phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
-            # ✅ Use DB phone number with custom credentials (decrypt both)
-            from_number = phone_number_obj.phone_number
-            from app.core.security import decrypt_api_key
-            account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
-            auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
-            use_custom_credentials = True
-            logger.info(f"✅ Using DB phone number: {from_number} with custom credentials")
-        else:
-            # ✅ No fallback - user must have a phone number in DB
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No phone number found. Please create and assign a phone number in your account before making calls."
-            )
-        
-        # Get base URL for webhooks
-        base_url = settings.WEBHOOK_BASE_URL
-        
-        # Create call session first so we can include the ID in webhook URLs
-        call_session = call_session_service.create_call_session(
-            db=db,
-            user_id=user_id_filter,
-            agent_id=agent.id,
-            tenant_id=tenant_id_filter,
-            twilio_call_sid="",  # Will be updated after call is made
-            from_number=from_number,  # ✅ Use selected phone number
-            to_number=call_request.userPhoneNumber,
-            call_type="outbound"  # Agent is initiating the call, so it's outbound
-        )
-        
-        # Direct WebSocket streaming connection (Vapi-style - no intermediate messages!)
-        # User speaks first, agent responds naturally
-        webhook_url = f"{base_url}/api/v1/voice/gather/streaming?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
-        status_callback_url = f"{base_url}/api/v1/voice/webhook/call-events?agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
-        
-        logger.info(f"Making call with webhook_url: {webhook_url}")
-        logger.info(f"Making call with status_callback_url: {status_callback_url}")
-        
-        # Optional WebSocket broadcast
-        try:
-            await broadcast_call_status_update(
-                call_session_id=str(call_session.id),
-                status="initiating",
-                metadata={
-                    "agent_id": str(agent.id),
-                    "agent_name": agent.name,
-                    "to_number": call_request.userPhoneNumber,
-                    "from_number": from_number,  # ✅ Use selected phone number
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-            logger.info(f"✅ WebSocket: Call initiating event sent")
-        except Exception as e:
-            logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
-        
-        # Make call with appropriate credentials
-        if use_custom_credentials:
-            # ✅ Use custom credentials from DB
-            call = twilio_service.make_call_with_credentials(
-                to_number=call_request.userPhoneNumber,
-                from_number=from_number,
-                webhook_url=webhook_url,
-                status_callback_url=status_callback_url,
-                account_sid=account_sid,
-                auth_token=auth_token
-            )
-        else:
-            # ✅ Use env credentials (current behavior)
-            call = twilio_service.make_call(
-                to_number=call_request.userPhoneNumber,
-                from_number=from_number,
-                webhook_url=webhook_url,
-                status_callback_url=status_callback_url
-            )
-        logger.info(f"✅ Call initiated successfully")
-        
-        # Update call session with Twilio SID
-        call_session.twilio_call_sid = call.sid
-        db.commit()
-        logger.info(f"✅ Updated call session {call_session.id} with Twilio SID: {call.sid}")
-        
-        # Broadcast call initiated event AFTER Twilio confirms
-        try:
-            await broadcast_call_status_update(
-                call_session_id=str(call_session.id),
-                status="initiated",
-                metadata={
-                    "call_sid": call.sid,
-                    "agent_id": str(agent.id),
-                    "agent_name": agent.name,
-                    "to_number": request.userPhoneNumber,
-                    "from_number": twilio_service.get_phone_number(),
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-            )
-            logger.info(f"✅ Call initiated event sent for session {call_session.id}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to send call initiated event (non-critical): {e}")
-        
-        # Generate call ID
-        call_id = f"call_{call.sid[-8:]}"
-        
-        # Determine which fields to echo back (prioritize generic fields, fallback to legacy)
-        crm_container_id = call_request.crm_container_id or call_request.board_id
-        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
-        status_field_id = call_request.status_field_id or call_request.status_column_id
-        call_session_id_field_id = call_request.call_session_id_field_id or call_request.call_session_id_column_id
-        
-        return create_success_response(
-            CallInitiateResponse(
-                callId=call_id,
-                twilioCallSid=call.sid,
-                callSessionId=str(call_session.id),
-                status="initiated",
-                # Legacy Monday.com fields (for backward compatibility)
-                board_id=call_request.board_id,  # Echo back if provided by n8n
-                monday_item_id=call_request.monday_item_id,  # Echo back if provided by n8n
-                status_column_id=call_request.status_column_id,  # Echo back if provided by n8n
-                call_session_id_column_id=call_request.call_session_id_column_id,  # Echo back if provided by n8n
-                # Generic CRM fields (for multi-CRM support)
-                crm_container_id=crm_container_id,  # Echo back generic container ID
-                crm_item_id=crm_item_id,  # Echo back generic item ID
-                status_field_id=status_field_id,  # Echo back generic status field ID
-                call_session_id_field_id=call_session_id_field_id,  # Echo back generic call_session_id field ID
-                crm_type=call_request.crm_type  # Echo back CRM type if provided
-            ),
-            "Call initiated successfully"
-        )
-        
-    except HTTPException as e:
-        # Return error response with CRM metadata (same format as success response)
-        # This allows n8n workflow to access CRM fields even on errors
-        # Prioritize generic fields, fallback to legacy
-        crm_container_id = call_request.crm_container_id or call_request.board_id
-        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
-        status_field_id = call_request.status_field_id or call_request.status_column_id
-        call_session_id_field_id = call_request.call_session_id_field_id or call_request.call_session_id_column_id
-        
-        error_response = CallInitiateErrorResponse(
-            detail=e.detail,
-            # Legacy Monday.com fields (for backward compatibility)
-            board_id=call_request.board_id,
-            monday_item_id=call_request.monday_item_id,
-            status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id,
-            # Generic CRM fields (for multi-CRM support)
-            crm_container_id=crm_container_id,
-            crm_item_id=crm_item_id,
-            status_field_id=status_field_id,
-            call_session_id_field_id=call_session_id_field_id,
-            crm_type=call_request.crm_type
-        )
-        # Return JSONResponse with same status code as HTTPException
-        return JSONResponse(
-            status_code=e.status_code,
-            content=error_response.dict(exclude_none=True)
-        )
-    except Exception as e:
-        # Handle unexpected errors - also include metadata if available
-        crm_container_id = call_request.crm_container_id or call_request.board_id
-        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
-        status_field_id = call_request.status_field_id or call_request.status_column_id
-        call_session_id_field_id = call_request.call_session_id_field_id or call_request.call_session_id_column_id
-        
-        error_response = CallInitiateErrorResponse(
-            detail=str(e),
-            # Legacy Monday.com fields (for backward compatibility)
-            board_id=call_request.board_id,
-            monday_item_id=call_request.monday_item_id,
-            status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id,
-            # Generic CRM fields (for multi-CRM support)
-            crm_container_id=crm_container_id,
-            crm_item_id=crm_item_id,
-            status_field_id=status_field_id,
-            call_session_id_field_id=call_session_id_field_id,
-            crm_type=call_request.crm_type
-        )
-        return JSONResponse(
-            status_code=500,
-            content=error_response.dict(exclude_none=True)
-        )
+    return await initiate_call_service(call_request, http_request, user, db)
 @router.post("/webhook/call-events", response_class=HTMLResponse,include_in_schema=False)
 async def handle_call_events_webhook(
     request: Request,
@@ -1087,121 +547,36 @@ async def get_dashboard_analytics(
     db: Session = Depends(get_db)
 ):
     """
-    Get dashboard analytics for the current tenant.
-    Returns call statistics including number of calls and average duration.
-    Optionally filter by specific agent ID.
+    Thin wrapper that delegates to `voice_analytics_service`.
     """
     try:
         tenant_id = user.current_tenant_id
-        
-        # Build base query for call sessions
-        base_query = db.query(CallSession).filter(CallSession.tenant_id == tenant_id)
-        
-        # Apply agent filter if provided
+
         if agent_id:
             try:
-                agent_uuid = uuid.UUID(agent_id)
-                base_query = base_query.filter(CallSession.agent_id == agent_uuid)
+                uuid.UUID(agent_id)
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid agent ID format")
-        
-        # Get all call sessions for the tenant (with optional agent filter)
-        call_sessions = base_query.all()
-        
-        # Calculate statistics
-        total_calls = len(call_sessions)
-        
-        # Filter completed calls for duration calculation
-        completed_calls = [call for call in call_sessions if call.status == "completed" and call.duration is not None]
-        
-        # Calculate average duration
-        if completed_calls:
-            total_duration = sum(call.duration for call in completed_calls)
-            average_duration = total_duration / len(completed_calls)
-        else:
-            average_duration = 0
-        
-        # Get calls by status
-        status_counts = {}
-        for call in call_sessions:
-            status = call.status
-            status_counts[status] = status_counts.get(status, 0) + 1
-        
-        # Get calls by type
-        type_counts = {}
-        for call in call_sessions:
-            call_type = call.call_type
-            type_counts[call_type] = type_counts.get(call_type, 0) + 1
-        
-        # Get agent-wise statistics (only if not filtering by specific agent)
-        agent_stats = {}
-        if not agent_id:
-            # Get all agents for this tenant
-            agents = db.query(Agent).filter(Agent.tenant_id == tenant_id).all()
-            
-            for agent in agents:
-                agent_calls = [call for call in call_sessions if call.agent_id == agent.id]
-                agent_completed = [call for call in agent_calls if call.status == "completed" and call.duration is not None]
-                
-                agent_avg_duration = 0
-                if agent_completed:
-                    agent_total_duration = sum(call.duration for call in agent_completed)
-                    agent_avg_duration = agent_total_duration / len(agent_completed)
-                
-                agent_stats[str(agent.id)] = {
-                    "agent_name": agent.name,
-                    "total_calls": len(agent_calls),
-                    "completed_calls": len(agent_completed),
-                    "average_duration_seconds": round(agent_avg_duration, 2),
-                    "average_duration_minutes": round(agent_avg_duration / 60, 2)
-                }
-        
-        # Get recent calls (last 10)
-        recent_calls = base_query.order_by(CallSession.created_at.desc()).limit(10).all()
-        
-        # Format recent calls data
-        recent_calls_data = []
-        for call in recent_calls:
-            recent_calls_data.append({
-                "id": str(call.id),
-                "call_sid": call.twilio_call_sid,
-                "agent_name": call.agent.name if call.agent else "Unknown",
-                "status": call.status,
-                "call_type": call.call_type,
-                "duration": call.duration,
-                "start_time": call.start_time.isoformat() if call.start_time else None,
-                "end_time": call.end_time.isoformat() if call.end_time else None,
-                "from_number": call.from_number,
-                "to_number": call.to_number,
-                "cost": call.cost,
-                "recording_url": call.recording_url,
-                "has_recording": call.recording_url is not None
-            })
-        
-        # Prepare analytics data
-        analytics_data = {
-            "tenant_id": str(tenant_id),
-            "filtered_by_agent": agent_id is not None,
-            "agent_id": agent_id,
-            "total_calls": total_calls,
-            "completed_calls": len(completed_calls),
-            "average_duration_seconds": round(average_duration, 2),
-            "average_duration_minutes": round(average_duration / 60, 2),
-            "status_breakdown": status_counts,
-            "call_type_breakdown": type_counts,
-            "agent_statistics": agent_stats,
-            "recent_calls": recent_calls_data,
-            "generated_at": datetime.now(timezone.utc).isoformat()
-        }
-        
+
+        analytics_data = voice_analytics_service.get_dashboard_analytics(
+            db=db,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
+
         message = f"Retrieved dashboard analytics for tenant {tenant_id}"
         if agent_id:
             message += f" filtered by agent {agent_id}"
-        
+
         return create_success_response(analytics_data, message)
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get dashboard analytics: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get dashboard analytics: {str(e)}",
+        )
 
 
 @router.post("/webhook/recording-callback", response_class=HTMLResponse)
@@ -1335,7 +710,7 @@ async def handle_recording_callback(
                 # If we have a transcript, process it
                 if transcript:
                     # Add user speech to transcript
-                    await _add_to_transcript(
+                    await add_to_transcript(
                         call_session,
                         "client",
                         transcript,
@@ -1373,7 +748,7 @@ async def handle_recording_callback(
                     logger.info(f"✅ Agent response: '{response_text}'")
                     
                     # Add agent response to transcript
-                    await _add_to_transcript(
+                    await add_to_transcript(
                         call_session,
                         "agent",
                         response_text,
@@ -1425,9 +800,9 @@ async def handle_recording_callback(
                     # No transcript - ask user to repeat
                     logger.info(f"⚠️ No transcript from Google STT")
                     response = VoiceResponse()
-                    
+
                     # Natural "didn't catch that" response
-                    text = _get_random_didnt_catch_response()
+                    text = get_random_didnt_catch_response()
                     lang = agent.language if agent and agent.language else "en"
                     voice = agent.voice_type if agent and agent.voice_type else "female"
                     tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
@@ -1621,7 +996,7 @@ async def handle_gather_speech_webhook(
                 
                 if final_transcript:
                     # Add to transcript
-                    await _add_to_transcript(
+                    await add_to_transcript(
                         call_session, 
                         "client", 
                         final_transcript, 
@@ -1640,7 +1015,7 @@ async def handle_gather_speech_webhook(
                     )
                     
                     # Add agent response to transcript
-                    await _add_to_transcript(
+                    await add_to_transcript(
                         call_session,
                         "agent",
                         response_text,
@@ -1846,7 +1221,7 @@ async def end_call(
         
         # Add goodbye message to transcript
         if goodbye_message:
-            await _add_to_transcript(
+            await add_to_transcript(
                 call_session,
                 "agent",
                 goodbye_message,
@@ -1962,20 +1337,9 @@ async def analyze_call_transcript(
     call_session_id: str,
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
-):
+    ):
     """
     Analyze call transcript using LLM for summary, sentiment, and recommendations.
-    
-    Args:
-        call_session_id: UUID of the call session
-        user: Current authenticated user
-        db: Database session
-        
-    Returns:
-        Analysis results including:
-        - summary: Brief call overview (2-3 sentences)
-        - sentiment: Sentiment analysis with score
-        - recommendations: Actionable recommendations based on agent's prompt/instructions (if agent has custom prompt)
     """
     try:
         # Validate call session ID
@@ -1983,336 +1347,34 @@ async def analyze_call_transcript(
             session_uuid = uuid.UUID(call_session_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid call session ID format")
-        
+
         # Get call session
         call_session = call_session_service.get_call_session_by_id(db, session_uuid)
         if not call_session:
             raise HTTPException(status_code=404, detail="Call session not found")
-        
+
         # Check if user has access to this call session
-        if call_session.user_id != user.id and call_session.tenant_id != user.current_tenant_id:
-            raise HTTPException(status_code=403, detail="Access denied to this call session")
-        
-        # 🎯 FLEXIBLE MODEL SELECTION WITH FALLBACK
-        # Priority: 1. Call's model, 2. Gemini 2.0 Flash, 3. Llama, 4. GPT-4o Mini
-        
-        # Try to use call's model first and get agent's prompt
-        preferred_model = None
-        agent = None
-        agent_prompt = None
-        if call_session.agent_id:
-            try:
-                agent = agent_service.get_agent_by_id(db, call_session.agent_id, call_session.tenant_id)
-                if agent:
-                    # Get agent's system prompt (priority: agent.system_prompt > model.system_prompt)
-                    if agent.system_prompt:
-                        agent_prompt = agent.system_prompt
-                        logger.debug(f"📝 Using agent's custom system prompt ({len(agent_prompt)} chars)")
-                    elif agent.model and agent.model.system_prompt:
-                        agent_prompt = agent.model.system_prompt
-                        logger.debug(f"📝 Using model's system prompt ({len(agent_prompt)} chars)")
-                    
-                    if agent and agent.model:
-                        preferred_model = agent.model.model_name
-                        logger.debug(f"🔍 Found call's model: {preferred_model}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not get call's model or agent prompt: {e}")
-        
-        # Fallback models in priority order
-        fallback_models = [
-            preferred_model,  # Call's model (if available)
-            "gemini-2.0-flash",  # Preferred for analysis
-            "llama-3.3-70b-versatile",  # Llama fallback
-            "gpt-4o-mini"  # GPT fallback
-        ]
-        
-        # Remove None values
-        fallback_models = [m for m in fallback_models if m]
-        
-        model = None
-        last_error = None
-        
-        # Try each model until one works
-        for model_name in fallback_models:
-            try:
-                logger.debug(f"🔄 Trying model: {model_name}")
-                model = model_service.get_model_by_name(db, model_name)
-                if model:
-                    logger.debug(f"✅ Model found: {model.model_name}, Provider: {model.provider.name}")
-                    break
-            except Exception as e:
-                logger.warning(f"⚠️ Model {model_name} not available: {e}")
-                last_error = e
-                continue
-        
-        if not model:
+        if (
+            call_session.user_id != user.id
+            and call_session.tenant_id != user.current_tenant_id
+        ):
             raise HTTPException(
-                status_code=404, 
-                detail=f"No available model found. Tried: {', '.join(fallback_models)}"
+                status_code=403, detail="Access denied to this call session"
             )
-        
-        # Get transcript messages
-        transcript_messages = transcript_service.get_messages_by_session(db, session_uuid)
-        logger.debug(f"🔍 Found {len(transcript_messages)} transcript messages for session {call_session_id}")
-        
-        if not transcript_messages:
-            raise HTTPException(status_code=404, detail="No transcript messages found for this call session")
-        
-        # Format transcript for analysis
-        transcript_text = ""
-        for msg in transcript_messages:
-            role_label = "Agent" if msg.role == "agent" else "Customer"
-            transcript_text += f"{role_label}: {msg.message}\n"
-        
-        # Create analysis prompts (include agent prompt for context where available)
-        summary_prompt = f"""
-        You are analyzing a phone call handled by an AI voice agent.
-        Agent's system prompt / instructions (for context about purpose and tone):
-        \"\"\"
-        {agent_prompt or "No specific agent prompt provided."}
-        \"\"\"
-        
-        Analyze this call transcript and provide a brief summary in 2-3 sentences.
-        
-        Call Transcript:
-        {transcript_text}
-        
-        Provide only:
-        - Brief call overview
-        - Main topic/issue
-        - Outcome/resolution
-        
-        Keep it concise and to the point.
-        """
-        
-        sentiment_prompt = f"""
-        You are analyzing a phone call handled by an AI voice agent.
-        Agent's system prompt / instructions (for context about purpose and tone):
-        \"\"\"
-        {agent_prompt or "No specific agent prompt provided."}
-        \"\"\"
-        
-        Analyze the sentiment of this call transcript and provide a brief assessment.
-        
-        Call Transcript:
-        {transcript_text}
-        
-        Provide only:
-        - Overall sentiment (positive/negative/neutral)
-        - Sentiment score (0-100)
-        - Customer satisfaction level (high/medium/low)
-        
-        Keep it brief and concise.
-        """
-        
-        # Create recommendations prompt based on agent's instructions
-        recommendations_prompt = f"""
-Analyze this call transcript and provide 2-3 brief, actionable recommendations for the agent.
 
-Call Transcript:
-{transcript_text}
+        analysis_result = voice_analysis_service.analyze_call_transcript(
+            db=db,
+            call_session=call_session,
+            user_id=user.id,
+        )
 
-Agent's Instructions/Purpose:
-{agent_prompt if agent_prompt else "No specific instructions provided. Use general best practices for customer service calls."}
-
-IMPORTANT - Keep recommendations BRIEF and CONCISE:
-- Provide only 2-3 recommendations maximum
-- Each recommendation should be 1 sentence only (brief and to the point)
-- Be specific and actionable
-- Use friendly, conversational tone
-
-Format your response as:
-1. [Brief recommendation in 1 sentence]
-2. [Next brief recommendation in 1 sentence]
-3. [Optional third recommendation in 1 sentence]
-
-Keep it concise - similar to summary format. Maximum 1 sentence per recommendation.
-"""
-        
-        # Helper function to call appropriate service based on provider
-        def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
-            """Generate text using the appropriate service based on provider"""
-            provider_name = (current_model.provider.name or "").strip().lower()
-            
-            if provider_name in ("gemini", "google", "google-ai", "google ai", "gemini-1.5-flash", "gemini-2.0-flash"):
-                # Use Gemini service
-                from app.services.gemini_service import GeminiService
-                service = GeminiService()
-                return service.generate_text(
-                    prompt=prompt,
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key
-                )
-            elif provider_name in ("openai", "gpt", "gpt-4o-mini", "gpt-4o", "gpt-4"):
-                # Use OpenAI service
-                from app.services.openai_service import OpenAIService
-                service = OpenAIService()
-                return service.generate_text(
-                    prompt=prompt,
-                    system_prompt="You are an AI assistant that analyzes call transcripts.",
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key
-                )
-            elif provider_name in ("groq", "llama", "llama-3.3-70b-versatile"):
-                # Use Groq service (for Llama)
-                from app.services.groq_service import GroqService
-                service = GroqService()
-                return service.generate_text(
-                    prompt=prompt,
-                    system_prompt="You are an AI assistant that analyzes call transcripts.",
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key
-                )
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported provider for analysis: {provider_name}"
-                )
-        
-        # Perform analysis with automatic fallback on quota errors
-        summary_result = None
-        sentiment_result = None
-        recommendations_result = None
-        used_model = None
-        last_error = None
-        
-        # Try each model until one succeeds
-        for model_name in fallback_models:
-            try:
-                # Get model
-                current_model = model_service.get_model_by_name(db, model_name)
-                if not current_model:
-                    continue
-                
-                # Get API key
-                current_api_key = None
-                if current_model.api_key:
-                    from app.core.security import decrypt_api_key
-                    current_api_key = decrypt_api_key(current_model.api_key)
-                
-                logger.debug(f"🔄 Attempting analysis with {current_model.model_name}...")
-                
-                # Generate summary
-                summary_result = generate_analysis_text(current_model, current_api_key, summary_prompt, max_tokens=200)
-                
-                # Generate sentiment analysis
-                sentiment_result = generate_analysis_text(current_model, current_api_key, sentiment_prompt, max_tokens=150)
-                
-                # Generate recommendations (only if agent has a prompt/instructions)
-                if agent_prompt:
-                    try:
-                        recommendations_result = generate_analysis_text(
-                            current_model, 
-                            current_api_key, 
-                            recommendations_prompt, 
-                            max_tokens=300
-                        )
-                        logger.debug(f"✅ Recommendations generated")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to generate recommendations: {e}")
-                        # Continue even if recommendations fail
-                
-                used_model = current_model.model_name
-                logger.info(f"✅ Analysis successful with {used_model}")
-                break
-                
-            except Exception as e:
-                error_str = str(e)
-                logger.warning(f"⚠️ Error with {model_name}: {e}")
-                
-                # Check if it's a quota error - try next model
-                if "429" in error_str or "quota" in error_str.lower() or "exceeded" in error_str.lower():
-                    logger.warning(f"⚠️ Quota exceeded for {model_name}, trying next model...")
-                    last_error = e
-                    continue
-                else:
-                    # Other errors - try next model anyway
-                    last_error = e
-                    continue
-        
-        # Check if we got required results
-        if not summary_result or not sentiment_result:
-            error_msg = f"Analysis failed with all models. Last error: {str(last_error)}"
-            logger.error(f"❌ {error_msg}")
-            raise HTTPException(status_code=500, detail=error_msg)
-        
-        # Prepare response (hide model_id for security)
-        analysis_data = {
-            "summary": summary_result["content"].strip(),
-            "sentiment": sentiment_result["content"].strip()
-        }
-        
-        # Add recommendations if available - parse into array format
-        if recommendations_result:
-            recommendations_text = recommendations_result["content"].strip()
-            
-            # Parse recommendations into array (extract numbered list items)
-            import re
-            recommendations_list = []
-            
-            # Split by newline and extract numbered items
-            lines = recommendations_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Match patterns like "1. ", "2. ", "1.", "2.", etc.
-                match = re.match(r'^\d+\.\s*(.+)$', line)
-                if match:
-                    recommendations_list.append(match.group(1).strip())
-                # Also handle cases without numbers but with bullet points
-                elif line.startswith('- ') or line.startswith('* '):
-                    recommendations_list.append(line[2:].strip())
-                # If no pattern matches but line is substantial, include it
-                elif len(line) > 20 and not recommendations_list:
-                    # First item might not have number
-                    recommendations_list.append(line)
-            
-            # If parsing failed, use original text as single item
-            if not recommendations_list:
-                recommendations_list = [recommendations_text]
-            
-            analysis_data["recommendations"] = recommendations_list
-            analysis_data["recommendations_text"] = recommendations_text  # Keep original for backward compatibility
-        elif agent_prompt:
-            # If agent has prompt but recommendations failed, indicate it
-            analysis_data["recommendations"] = ["Unable to generate recommendations at this time."]
-            analysis_data["recommendations_text"] = "Unable to generate recommendations at this time."
-        
-        analysis_result = {
-            "call_session_id": call_session_id,
-            "transcript_message_count": len(transcript_messages),
-            "call_duration": call_session.duration,
-            "call_status": call_session.status,
-            "analysis": analysis_data,
-            "model_used": used_model,  # Show which model was actually used
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        
-        logger.info(f"✅ Transcript analysis completed for session {call_session_id} using {used_model}")
         return create_success_response(
             data=analysis_result,
-            message=f"Transcript analysis completed successfully using {used_model}"
+            message=f"Transcript analysis completed successfully using {analysis_result.get('model_used')}",
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error in transcript analysis endpoint: {e}", exc_info=True)
+        logger.error("❌ Error in transcript analysis endpoint: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-# def _generate_default_response() -> str:
-#     """Generate default TwiML response"""
-#     response = VoiceResponse()
-#     response.say("Thank you for calling. An agent will be with you shortly.", voice="")
-#     response.pause(length=2)
-#     response.say("Please hold while we connect you.", voice="")
-#     return str(response)

@@ -137,6 +137,15 @@ from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
+from app.voice.stt_pipeline import SttPipeline
+from app.voice.tts_pipeline import TtsPipeline
+from app.voice.background_audio import BackgroundAudioManager
+from app.voice.conversation_orchestrator import (
+    VOICE_TUNABLES,
+    ConversationOrchestrator,
+    should_send_quick_ack,
+)
+from app.voice.tts_only_session import TtsOnlySession
 
 # Import utilities and services
 from app.utils.audio_utils import (
@@ -165,29 +174,28 @@ from app.services.bidirectional_stream_service import (
     build_tts_only_twiml
 )
 
+
 router = APIRouter()
 
 
 class BidirectionalStreamHandler:
     """Handles real-time bidirectional voice streaming (400–500ms target, Vapi-style gapless TTS)."""
 
-    # STT → LLM trigger: as soon as we have ~this much STT stream, send to LLM (Twilio sends 20ms frames)
-    STT_INTERIM_INTERVAL_MS = 30  # 30ms throttle between interim triggers for 400–500ms latency
+    # Expose tunables on the class so they remain easy to discover in-context,
+    # while the actual values live in VOICE_TUNABLES above.
+    STT_INTERIM_INTERVAL_MS = VOICE_TUNABLES.stt_interim_interval_ms
 
     # Quick acknowledgement: 5-word rule + probability (Vapi+ naturalness)
-    QUICK_ACK_MIN_WORDS = 5
-    QUICK_ACK_PROBABILITY = 0.38  # Only ~38% of eligible turns get "Got it" — more human-like
-    QUICK_ACK_SKIP_PHRASES = (  # Never say "Got it" to emotional/serious content
-        "help", "emergency", "urgent", "problem", "issue", "sad", "angry",
-        "please help", "asap", "critical", "wrong", "broken", "not working", "complaint",
-    )
+    QUICK_ACK_MIN_WORDS = VOICE_TUNABLES.quick_ack.min_words
+    QUICK_ACK_PROBABILITY = VOICE_TUNABLES.quick_ack.probability
+    QUICK_ACK_SKIP_PHRASES = VOICE_TUNABLES.quick_ack.skip_phrases
 
     # Conversation context: keep the prompt small for latency (voice calls)
-    HISTORY_MAX_MESSAGES = 12  # last N client/agent messages only (not full transcript)
+    HISTORY_MAX_MESSAGES = VOICE_TUNABLES.history_max_messages
 
     # Incremental TTS: flush when we have a complete thought/sentence
-    TTS_FLUSH_MIN_WORDS = 2
-    TTS_FLUSH_MAX_WORDS = 12  # keep chunks short for fast TTS start
+    TTS_FLUSH_MIN_WORDS = VOICE_TUNABLES.tts_flush_min_words
+    TTS_FLUSH_MAX_WORDS = VOICE_TUNABLES.tts_flush_max_words  # keep chunks short for fast TTS start
     
     def __init__(
         self,
@@ -205,8 +213,7 @@ class BidirectionalStreamHandler:
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
-        self._stt_session = None
-        self._stt_task = None
+        self._stt_pipeline: Optional[SttPipeline] = None
         # Ultra-aggressive interim processing state (40% confidence)
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
@@ -215,15 +222,15 @@ class BidirectionalStreamHandler:
         self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0  # 30ms: STT stream → LLM (400–500ms target)
         
         # TTS (Output) state - Parallel Pipeline
-        self.tts_queue = asyncio.Queue()     # Queue for parallel TTS processing
         self.is_speaking = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._tts_worker_task = None         # Background TTS worker
-        self._tts_generation_tasks = []      # Track parallel TTS generation
+        self._tts_worker_task = None         # Backwards-compatible handle to pipeline worker
+        self._tts_generation_tasks = []      # Track parallel TTS generation (reserved)
         self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
         self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
+        self._tts_pipeline: Optional[TtsPipeline] = None
         
         # Natural conversation state (backchannels & persona)
         self._user_speech_duration = 0.0    # Track user monologue duration
@@ -265,24 +272,26 @@ class BidirectionalStreamHandler:
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         
-        # Background audio state (embedded MP3)
-        self._bg_audio_task = None
-        self._bg_audio_offset = 0
-        self._bg_audio_mulaw = None
-        self._bg_audio_length = 0
-        self._bg_audio_volume = 0.6  # 60% volume (-4.4dB) - increased for better audibility
-        self._use_background_audio = False
+        # Background audio manager (embedded MP3 / ambient noise)
+        self._background_audio = BackgroundAudioManager(
+            websocket=self.websocket,
+            get_stream_sid=lambda: self.stream_sid,
+            is_speaking_flag=lambda: self.is_speaking,
+        )
         
-        # Load background audio in background (non-blocking for fast initialization)
-        # This prevents cold start delays on first call after deploy/sleep
-        # FFmpeg conversion can take 2-5 seconds on cold start, so we do it async
-        asyncio.create_task(self._load_background_audio_async())
+        # Load background audio in background (non-blocking for fast initialization).
+        # This prevents cold start delays on first call after deploy/sleep.
+        asyncio.create_task(self._background_audio.load_from_base64_async())
 
-        # Start parallel TTS pipeline worker
-        self._tts_worker_task = asyncio.create_task(self._tts_pipeline_worker())
+        # Start parallel TTS pipeline worker via TtsPipeline facade
+        self._tts_pipeline = TtsPipeline(self)
+        self._tts_worker_task = self._tts_pipeline._worker_task
         
         # Pre-cache common phrases in background for instant responses
         asyncio.create_task(self._precache_common_phrases())
+
+        # Conversation orchestrator encapsulating LLM + policy rules
+        self._conversation = ConversationOrchestrator(self)
     
     def _load_session_data(self):
         """Load call session and agent data"""
@@ -299,28 +308,6 @@ class BidirectionalStreamHandler:
                 )
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
-    
-    async def _load_background_audio_async(self):
-        """
-        Load background audio asynchronously to avoid blocking initialization.
-        This prevents cold start delays on first call after deploy/sleep.
-        FFmpeg conversion can take 2-5 seconds on cold start.
-        """
-        try:
-            # Run FFmpeg conversion in thread pool to avoid blocking event loop
-            loop = asyncio.get_event_loop()
-            bg_audio_bytes, bg_audio_len = await loop.run_in_executor(
-                None, 
-                decode_background_audio_from_base64
-            )
-            
-            if bg_audio_bytes and bg_audio_len > 0:
-                self._bg_audio_mulaw = bg_audio_bytes
-                self._bg_audio_length = bg_audio_len
-                self._use_background_audio = True
-        except Exception as e:
-            # Continue without background audio - call won't crash
-            logger.warning(f"Failed to load background audio: {e}")
     
     async def _precache_common_phrases(self):
         """
@@ -391,56 +378,6 @@ class BidirectionalStreamHandler:
         except Exception as e:
             logger.error(f"Error in precache_common_phrases: {e}")
     
-    async def _tts_pipeline_worker(self):
-        """
-        Background worker for parallel TTS pipeline (Vapi-style).
-        
-        Processes TTS chunks from queue while new chunks are being generated:
-        - LLM Chunk 1 → TTS generates → plays
-        - LLM Chunk 2 → TTS generates (parallel) → queued
-        - LLM Chunk 3 → TTS generates (parallel) → queued
-        """
-        try:
-            while True:
-                # Get next TTS task from queue
-                task = await self.tts_queue.get()
-                
-                # Check for shutdown signal
-                if task is None:
-                    break
-                
-                # Check if cancelled (barge-in)
-                if self._tts_cancel.is_set():
-                    self.tts_queue.task_done()
-                    continue
-                
-                try:
-                    text = task.get("text", "")
-                    use_ssml = task.get("use_ssml", False)
-                    is_final = task.get("is_final", False)
-                    end_call_after = task.get("end_call_after", False)
-                    
-                    if not text or not text.strip():
-                        self.tts_queue.task_done()
-                        continue
-                    
-                    # Generate and stream TTS (this is the blocking part)
-                    await self._stream_tts_chunk(text, use_ssml=use_ssml, is_final=is_final)
-                    
-                    # If agent response contained [END_CALL], end call after this TTS has played
-                    if end_call_after:
-                        await self._end_call_after_agent_request()
-                    
-                except Exception as e:
-                    logger.error(f"Error in TTS pipeline worker loop: {e}", exc_info=True)
-                finally:
-                    self.tts_queue.task_done()
-        
-        except Exception as e:
-            logger.error(f"TTS pipeline worker error: {e}", exc_info=True)
-    
-    
-    
     async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio and feed to Google streaming STT"""
         try:
@@ -492,48 +429,17 @@ class BidirectionalStreamHandler:
                 return  # Don't send to STT - this is likely system message/ringing
 
             # (Removed first-media DB marker for outbound gating)
-            # Lazily create a streaming session
-            if self._stt_session is None:
-                self._stt_session = google_stt_service.create_streaming_session(
-                    language_code=(self.agent.language + "-US") if getattr(self.agent, "language", None) == "en" else None,
-                    encoding="MULAW",
-                    sample_rate=8000,
-                    interim_results=True,
-                    single_utterance=False,
+            # Lazily create STT pipeline and push audio
+            if self._stt_pipeline is None:
+                language = getattr(self.agent, "language", None)
+                language_code = (language + "-US") if language == "en" else language
+                self._stt_pipeline = SttPipeline(
+                    language_code=language_code,
+                    on_interim=self._maybe_process_interim,
+                    on_final=self._process_transcript,
                 )
 
-                async def consume_results():
-                    try:
-                        # Start underlying blocking stream in executor
-                        await self._stt_session.start()
-                    except Exception as e:
-                        logger.error(f"STT session start error: {e}", exc_info=True)
-                
-                # Start the session in background and concurrently read results
-                async def reader_loop():
-                    while True:
-                        result = await self._stt_session.get_result()
-                        if not result:
-                            continue
-                        if result.get("error"):
-                            continue
-                        transcript = (result.get("transcript") or "").strip()
-                        if not transcript:
-                            continue
-                        is_final = bool(result.get("is_final"))
-                        confidence = float(result.get("confidence") or 0.0)
-                        if is_final:
-                            await self._process_transcript(transcript, confidence)
-                        else:
-                            # Process interim for ultra-low latency (Vapi-like)
-                            await self._maybe_process_interim(transcript, confidence)
-
-                # kick off background readers
-                self._stt_task = asyncio.create_task(reader_loop())
-                asyncio.create_task(consume_results())
-
-            # Push audio to Google
-            self._stt_session.push_audio(audio_data)
+            await self._stt_pipeline.feed_audio_chunk(audio_data)
         
         except Exception as e:
             logger.error(f"Error handling media message: {e}", exc_info=True)
@@ -644,22 +550,9 @@ class BidirectionalStreamHandler:
             # Detection: 2+ words, agent currently speaking
             # NOTE: We check this BEFORE interim gate because barge-in should work
             # even with low confidence (Google interim often returns 0.00 confidence)
-            if self.is_speaking and word_count >= 2:
-                if not self._tts_cancel.is_set():
-                    # Set cancel flag to stop streaming
-                    self._tts_cancel.set()
-                    
-                    # 🆕 CLEAR TTS QUEUE - Remove ALL pending audio chunks!
-                    # This prevents old audio from resuming after user finishes speaking
-                    while not self.tts_queue.empty():
-                        try:
-                            self.tts_queue.get_nowait()
-                            self.tts_queue.task_done()
-                        except asyncio.QueueEmpty:
-                            break
-                    
-                    # Mark agent as no longer speaking
-                    self.is_speaking = False
+            if self._tts_pipeline and self._tts_pipeline.is_speaking and word_count >= 2:
+                # Set cancel flag, clear queue, and mark agent as not speaking
+                await self._tts_pipeline.cancel_current_and_clear_queue()
                 
                 # Don't process interim during barge-in - wait for final transcript
                 return
@@ -700,14 +593,12 @@ class BidirectionalStreamHandler:
         import random
         
         text = (user_text or "").strip()
-        words = text.split()
-        if len(words) < self.QUICK_ACK_MIN_WORDS:
+        # First check if this text is even eligible for a quick acknowledgement
+        if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
             return
-        lower = text.lower()
-        for phrase in self.QUICK_ACK_SKIP_PHRASES:
-            if phrase in lower:
-                return
-        if random.random() >= self.QUICK_ACK_PROBABILITY:
+
+        # Apply probability filter so we don't say "Got it" every single time
+        if random.random() >= VOICE_TUNABLES.quick_ack.probability:
             return
         acks = [
             "Got it",
@@ -722,7 +613,9 @@ class BidirectionalStreamHandler:
             "Let me check that",
         ]
         ack = random.choice(acks)
-        await self.tts_queue.put({
+        if not self._tts_pipeline:
+            return
+        await self._tts_pipeline.queue_tts({
             "text": ack,
             "chunk_id": "quick_ack",
             "use_ssml": False,
@@ -756,7 +649,9 @@ class BidirectionalStreamHandler:
                 await self._add_to_transcript("agent", greeting_text, "greeting")
                 
                 # Queue greeting TTS directly (skip LLM!)
-                await self.tts_queue.put({
+                if not self._tts_pipeline:
+                    return
+                await self._tts_pipeline.queue_tts({
                     "text": greeting_text,
                     "chunk_id": "greeting",
                     "use_ssml": self._use_ssml,
@@ -768,12 +663,10 @@ class BidirectionalStreamHandler:
                 
                 return  # Done! No LLM needed for greeting
             
-            # Reset cancel flag for new response generation
+            # Reset TTS state for new response generation
             self._tts_cancel.clear()
-            # Reset crossfade state so new response starts clean
-            self._prev_tts_tail = b""
-            # Reset priming flag for new utterance to ensure micro-fade and buffer priming
-            self._twilio_buffer_primed = False
+            self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
+            self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
             
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
@@ -1072,7 +965,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 enhanced_text = quick_clean(flush_text)
 
                             chunk_counter += 1
-                            await self.tts_queue.put({
+                            if self._tts_pipeline:
+                                await self._tts_pipeline.queue_tts({
                                 "text": enhanced_text,
                                 "chunk_id": chunk_counter,
                                 "use_ssml": self._use_ssml,
@@ -1100,7 +994,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         enhanced_text = quick_clean(tts_buffer)
 
                     chunk_counter += 1
-                    await self.tts_queue.put({
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
                         "text": enhanced_text,
                         "chunk_id": chunk_counter,
                         "use_ssml": self._use_ssml,
@@ -1149,7 +1044,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         # Ultimate fallback response
                         final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
                         chunk_counter += 1
-                        await self.tts_queue.put({
+                        if self._tts_pipeline:
+                            await self._tts_pipeline.queue_tts({
                             "text": final_text,
                             "chunk_id": chunk_counter,
                             "use_ssml": self._use_ssml,
@@ -1484,69 +1380,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as e:
             logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
     
-    async def _stream_background_audio_loop(self):
-        """
-        Continuously stream background audio in a loop.
-        PAUSES when TTS is speaking to avoid conflicts.
-        Uses proper pacing with drift correction for smooth playback.
-        """
-        if not self._bg_audio_mulaw or self._bg_audio_length == 0:
-            return
-        
-        send_interval = 0.02  # 20ms per frame
-        frame_bytes = MULAW_FRAME_BYTES  # 160 bytes at 8kHz
-        first = True
-        next_send = time.perf_counter()
-        
-        try:
-            while True:
-                if not self.stream_sid:
-                    await asyncio.sleep(0.1)
-                    continue
-                
-                # PAUSE background audio when TTS is speaking (no noise when AI speaks)
-                if self.is_speaking:
-                    # Reset timing when pausing so resume is smooth
-                    first = True
-                    next_send = time.perf_counter()
-                    await asyncio.sleep(0.01)  # High-frequency check (10ms) for instant pause
-                    continue
-                
-                bg_chunk = get_background_audio_chunk(
-                    self._bg_audio_offset,
-                    frame_bytes,
-                    self._bg_audio_mulaw,
-                    self._bg_audio_length
-                )
-                
-                self._bg_audio_offset = (self._bg_audio_offset + frame_bytes) % self._bg_audio_length
-                
-                payload = base64.b64encode(bg_chunk).decode("utf-8")
-                await self.websocket.send_json({
-                    "event": "media",
-                    "streamSid": self.stream_sid,
-                    "media": {"payload": payload}
-                })
-                
-                # Proper pacing with drift correction (same as TTS streaming)
-                if not first:
-                    next_send += send_interval
-                    now = time.perf_counter()
-                    sleep_dur = next_send - now
-                    if sleep_dur > 0:
-                        await asyncio.sleep(sleep_dur)
-                    elif sleep_dur < -0.03:
-                        # We're late by >30ms; reset schedule to avoid cumulative jitter
-                        next_send = time.perf_counter()
-                else:
-                    first = False
-                    next_send = time.perf_counter() + send_interval
-                
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Error in _stream_background_audio_loop: {e}")
-    
     async def _stream_mulaw_with_background(
         self,
         audio_bytes: bytes,
@@ -1556,46 +1389,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         Stream TTS audio mixed with continuous background audio.
         Uses proper pacing with drift correction to prevent stuttering.
         """
-        send_interval = 0.02  # 20ms
-        first = True
-        next_send = time.perf_counter()
-        
-        for frame in iter_mulaw_20ms_frames(audio_bytes):
-            if cancel and cancel.is_set():
-                break
-            
-            if self._bg_audio_mulaw and self._bg_audio_length > 0:
-                mixed_frame = mix_audio_with_background(
-                    tts_audio=frame,
-                    bg_audio=self._bg_audio_mulaw,
-                    bg_length=self._bg_audio_length,
-                    bg_offset=self._bg_audio_offset,
-                    volume_level=self._bg_audio_volume
-                )
-                self._bg_audio_offset = (self._bg_audio_offset + len(frame)) % self._bg_audio_length
-            else:
-                mixed_frame = frame
-            
-            payload = base64.b64encode(mixed_frame).decode("utf-8")
-            await self.websocket.send_json({
-                "event": "media",
-                "streamSid": self.stream_sid,
-                "media": {"payload": payload}
-            })
-            
-            # Proper pacing with drift correction (same as stream_mulaw_bytes_over_twilio)
-            if not first:
-                next_send += send_interval
-                now = time.perf_counter()
-                sleep_dur = next_send - now
-                if sleep_dur > 0:
-                    await asyncio.sleep(sleep_dur)
-                elif sleep_dur < -0.03:
-                    # We're late by >30ms; reset schedule to avoid cumulative jitter
-                    next_send = time.perf_counter()
-            else:
-                first = False
-                next_send = time.perf_counter() + send_interval
+        # Delegate mixing to BackgroundAudioManager, then reuse Twilio helper
+        mixed_bytes = self._background_audio.mix_with_background(audio_bytes)
+        await stream_mulaw_bytes_over_twilio(
+            websocket=self.websocket,
+            stream_sid=self.stream_sid,
+            audio_bytes=mixed_bytes,
+            pace_20ms=True,
+            cancel=cancel,
+        )
     
     async def stream_tts_response(self, text: str):
         """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy.
@@ -2042,9 +1844,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Status will be sent in _process_transcript() when confident transcript is detected
             
             # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
-            # Delay prevents cold start issues and gives call time to establish
-            if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
-                asyncio.create_task(self._start_background_audio_with_delay())
+            # Handler only decides *when* to start; manager owns implementation.
+            asyncio.create_task(self._start_background_audio_with_delay())
         
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
@@ -2055,12 +1856,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         This prevents cold start issues and ensures call is fully connected before background audio starts.
         """
         try:
-            # Wait 3 seconds for call to fully establish
-            await asyncio.sleep(3.0)
-            
-            # Check again if background audio is ready and not already started
-            if self._use_background_audio and self._bg_audio_mulaw and not self._bg_audio_task:
-                self._bg_audio_task = asyncio.create_task(self._stream_background_audio_loop())
+            # Delegate to BackgroundAudioManager, preserving the 3-second delay
+            await self._background_audio.start_loop_if_enabled(delay_seconds=3.0)
         except Exception as e:
             logger.error(f"Error in _start_background_audio_with_delay: {e}", exc_info=True)
     
@@ -2069,29 +1866,21 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             # Stop TTS pipeline worker
             try:
-                if self._tts_worker_task:
-                    await self.tts_queue.put(None)  # Shutdown signal
-                    await asyncio.wait_for(self._tts_worker_task, timeout=2.0)
+                if self._tts_pipeline:
+                    await self._tts_pipeline.shutdown()
             except (asyncio.TimeoutError, Exception):
                 pass
             
             # Stop background audio streaming
             try:
-                if self._bg_audio_task:
-                    self._bg_audio_task.cancel()
-                    try:
-                        await self._bg_audio_task
-                    except asyncio.CancelledError:
-                        pass
+                await self._background_audio.stop_loop()
             except Exception:
                 pass
             
             # Close STT session
             try:
-                if self._stt_session:
-                    self._stt_session.finish()
-                if self._stt_task:
-                    await asyncio.sleep(0)  # yield
+                if self._stt_pipeline:
+                    self._stt_pipeline.finish_session()
             except Exception:
                 pass
         
@@ -2177,146 +1966,29 @@ async def tts_only_websocket(
     agentId: str
 ):
     """
-    TTS-ONLY WebSocket for streaming audio playback
-    
-    Used with recording-based STT:
-    - Recording callback sends TTS text via custom event
-    - WebSocket streams audio in 20ms MULAW chunks
-    - No STT handling (recording handles that)
-    
-    Flow:
-    1. Connect to WebSocket
-    2. Receive custom {"event": "play_tts", "text": "...", "lang": "en", "voice": "female"}
-    3. Generate MULAW TTS
-    4. Stream in 20ms chunks
-    5. Send {"event": "tts_complete"} when done
+    TTS-ONLY WebSocket for streaming audio playback.
+    Thin composition layer that delegates to TtsOnlySession.
     """
     try:
         await websocket.accept()
     except Exception:
         return
-    
-    # Get database session
+
     from app.db.session import SessionLocal
+
     db = SessionLocal()
-    
-    # Get agent info for voice settings
-    agent = None
-    call_session = None
-    stream_sid = None
-    
-    try:
-        session_uuid = uuid.UUID(callSessionId)
-        call_session = call_session_service.get_call_session_by_id(db, session_uuid)
-        
-        if call_session and agentId:
-            agent_uuid = uuid.UUID(agentId)
-            agent = agent_service.get_agent_by_id(db, agent_uuid, call_session.tenant_id)
-    except Exception as e:
-        logger.error(f"Error loading session data for tts-only: {e}")
-    
-    try:
-        while True:
-            # Receive message
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            event = message.get("event")
-            
-            if event == "connected":
-                pass
-            
-            elif event == "start":
-                stream_sid = message.get("streamSid")
-                
-                # Auto-retrieve and play pending TTS from call session metadata
-                if call_session and call_session.call_metadata:
-                    pending_tts = call_session.call_metadata.get("pending_tts")
-                    if pending_tts:
-                        text = pending_tts.get("text", "")
-                        lang = pending_tts.get("lang", agent.language if agent else "en")
-                        voice = pending_tts.get("voice", agent.voice_type if agent else "female")
-                        
-                        if text:
-                            # Generate MULAW TTS with Chirp 3: HD
-                            audio_bytes = await generate_mulaw_tts(
-                                text=text,
-                                lang=lang,
-                                voice=voice,
-                                use_chirp3_hd=True,
-                                speaking_rate=1.0,
-                                add_office_bg=True
-                            )
-                            
-                            # Apply audio optimizations
-                            from app.utils.audio_utils import apply_micro_fade_in
-                            audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
+    session = TtsOnlySession(
+        websocket=websocket,
+        call_session_id=callSessionId,
+        agent_id=agentId,
+        db=db,
+    )
 
-                            # Stream in 20ms chunks with 60ms jitter buffer priming (low latency, no buffer noise)
-                            await stream_mulaw_bytes_over_twilio(
-                                websocket=websocket,
-                                stream_sid=stream_sid,
-                                audio_bytes=audio_bytes,
-                                pace_20ms=True,
-                                prime_frames=3
-                            )
-                            
-                            # Clear pending TTS
-                            call_session.call_metadata.pop("pending_tts", None)
-                            db.commit()
-            
-            elif event == "play_tts":
-                # Custom event to trigger TTS playback
-                text = message.get("text", "")
-                lang = message.get("lang", agent.language if agent else "en")
-                voice = message.get("voice", agent.voice_type if agent else "female")
-                
-                if text and stream_sid:
-                    # Generate MULAW TTS with Chirp 3: HD
-                    audio_bytes = await generate_mulaw_tts(
-                        text=text,
-                        lang=lang,
-                        voice=voice,
-                        use_chirp3_hd=True,
-                        speaking_rate=1.0,
-                        add_office_bg=True
-                    )
-                    
-                    # Apply audio optimizations
-                    from app.utils.audio_utils import apply_micro_fade_in
-                    audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
-
-                    # Stream in 20ms chunks with 60ms jitter buffer priming
-                    await stream_mulaw_bytes_over_twilio(
-                        websocket=websocket,
-                        stream_sid=stream_sid,
-                        audio_bytes=audio_bytes,
-                        pace_20ms=True,
-                        prime_frames=3
-                    )
-                    
-                    # Send completion event
-                    await websocket.send_json({
-                        "event": "tts_complete",
-                        "text_length": len(text),
-                        "audio_bytes": len(audio_bytes)
-                    })
-            
-            elif event == "media":
-                # Ignore incoming media (we're TTS-only)
-                pass
-            
-            elif event == "stop":
-                break
-            
-            elif event == "mark":
-                pass  # Synchronization marks
-    
+    try:
+        await session.run()
     except WebSocketDisconnect:
-        logger.info(f"🔌 TTS-only WebSocket disconnected for session {callSessionId}")
-    
+        logger.info(f"🔌 TTS-ONLY WebSocket disconnected for session {callSessionId}")
     except Exception as e:
-        logger.error(f"Unexpected error in TTS-only WebSocket: {e}", exc_info=True)
-    
+        logger.error(f"Unexpected error in TTS-ONLY WebSocket: {e}", exc_info=True)
     finally:
         db.close()
