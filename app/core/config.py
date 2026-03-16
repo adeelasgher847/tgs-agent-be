@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+
+    # Vector database (RAG) configuration
+    # Separate Postgres / pgvector instance for knowledge base
+    VECTOR_DB_URL: str = ""  # e.g. postgresql+psycopg2://user:pass@host:port/dbname
+    VECTOR_DIMENSION: int = 1536  # default for OpenAI text-embedding-3-small; can be overridden per deployment
     
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
