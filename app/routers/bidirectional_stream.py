@@ -133,9 +133,10 @@ from app.services.groq_service import groq_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.services.google_tts_service import google_tts_service
+from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
-from app.utils.tts_preprocessing import quick_clean
+from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
 from app.voice.background_audio import BackgroundAudioManager
@@ -259,6 +260,7 @@ class BidirectionalStreamHandler:
         # User pickup detection (VAPI-style: actual user audio = user picked up)
         self._user_picked_up = False
         self._first_media_received = False
+        self._in_progress_sent = False  # Track if in-progress status has been sent
         self._skip_audio_until = None  # Timestamp until which to skip audio (system messages)
         self._audio_level_samples = []  # Track audio levels to detect actual user audio
         self._min_audio_level_threshold = 100  # Minimum audio level to consider as user audio (not silence/system noise)
@@ -457,6 +459,12 @@ class BidirectionalStreamHandler:
             # 🎯 Check for voicemail detection - end call if detected
             if await self._check_and_end_call_if_voicemail(transcript):
                 return  # Stop processing - call is ending
+            
+            # 🎯 Send "in-progress" status when confident word is detected (like "hello")
+            # Only send once when we get a confident transcript with meaningful words
+            if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
+                await self._send_in_progress_status(transcript, confidence)
+                self._in_progress_sent = True
             
             # Reset user speech timer (user finished speaking)
             self._last_user_speech_start = 0.0
@@ -946,7 +954,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                         flush_text = _strip_control_tokens(flush_text).strip()
                         if flush_text:
-                            enhanced_text = quick_clean(flush_text)
+                            if self._use_ssml:
+                                clean_text = strip_ssml_tags(flush_text)
+                                enhanced_text = preprocess_for_tts(
+                                    clean_text,
+                                    start_break_ms=0,
+                                    between_sentence_break_ms=100,
+                                )
+                            else:
+                                enhanced_text = quick_clean(flush_text)
 
                             chunk_counter += 1
                             if self._tts_pipeline:
@@ -967,7 +983,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 tts_buffer = _strip_control_tokens(tts_buffer).strip()
 
                 if tts_buffer and not self._tts_cancel.is_set():
-                    enhanced_text = quick_clean(tts_buffer)
+                    if self._use_ssml:
+                        clean_text = strip_ssml_tags(tts_buffer)
+                        enhanced_text = preprocess_for_tts(
+                            clean_text,
+                            start_break_ms=0,
+                            between_sentence_break_ms=150,
+                        )
+                    else:
+                        enhanced_text = quick_clean(tts_buffer)
 
                     chunk_counter += 1
                     if self._tts_pipeline:
@@ -1241,13 +1265,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 self._twilio_buffer_primed = True
 
                             # Use Google StreamingSynthesize (bidirectional streaming) to reduce time-to-first-audio
+                            # NEVER send SSML to streaming synthesize; strip tags to prevent them being spoken.
                             streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
+
+                            # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
+                            # Keep this subtle to avoid uncanny/unstable cadence.
+                            emo = detect_emotion(streaming_text)
+                            speaking_rate = 1.0
+                            if emo == "happy":
+                                speaking_rate = 1.03
+                            elif emo == "sad":
+                                speaking_rate = 0.97
+                            elif emo == "uncertain":
+                                speaking_rate = 0.98
+                            elif emo == "confident":
+                                speaking_rate = 1.01
 
                             audio_iter = google_tts_service.stream_text_to_speech(
                                 text=streaming_text,
                                 language=lang,
                                 voice_type=voice,
-                                speaking_rate=1.0,
+                                speaking_rate=speaking_rate,
                                 output_format="mulaw",
                                 use_chirp3_hd=True,
                                 sample_rate_hz=8000,
@@ -1481,6 +1519,59 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         
         except Exception as e:
             logger.error(f"Error in send_audio_to_twilio: {e}")
+    
+    async def _send_in_progress_status(self, transcript: str, confidence: float):
+        """Send in-progress status when confident word is detected"""
+        try:
+            if not self.call_session:
+                return
+            
+            try:
+                if self.call_session.status != "in-progress":
+                    self.call_session.status = "in-progress"
+                    
+                    # Set start time when confident speech is detected
+                    if not self.call_session.start_time:
+                        self.call_session.start_time = datetime.now(timezone.utc)
+                    
+                    self.db.commit()
+                
+                # Broadcast "in-progress" event (confident word detected)
+                await broadcast_call_status_update(
+                    call_session_id=str(self.call_session.id),
+                    status="in-progress",
+                    metadata={
+                        "call_sid": self.call_sid,
+                        "stream_sid": self.stream_sid,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message": "connected",
+                        "event": "confident_speech_detected",
+                        "detected_word": transcript,
+                        "confidence": confidence
+                    }
+                )
+                
+                # 🎯 START CREDIT MONITORING - Start billing when connected status is sent (first media packet + connected status)
+                try:
+                    if self.call_session and str(self.call_session.id) not in credit_service._active_monitors:
+                        # Pass current DB session (credit service will create its own for async task)
+                        asyncio.create_task(credit_service.start_credit_monitoring(
+                            db=self.db,
+                            call_session_id=self.call_session.id,
+                            tenant_id=self.call_session.tenant_id,
+                            agent_id=self.call_session.agent_id
+                        ))
+                except Exception as e:
+                    logger.debug(f"Could not start credit monitoring: {e}")
+                    
+            except Exception as e:
+                logger.error(f"Error in _send_in_progress_status inner loop: {e}")
+                    
+            except Exception as e:
+                logger.error(f"Error updating call status in _send_in_progress_status: {e}")
+        
+        except Exception as e:
+            logger.error(f"Error in _send_in_progress_status: {e}", exc_info=True)
     
     async def _check_and_end_call_if_goodbye(self, transcript: str):
         """
@@ -1745,6 +1836,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 return  # Already handled
             
             self._user_picked_up = True
+            
+            # ❌ Credit monitoring moved to _send_in_progress_status() 
+            # Credit deduction will start when connected status is sent (first media packet + connected status)
+            
+            # Don't send in-progress status here - wait for confident word detection
+            # Status will be sent in _process_transcript() when confident transcript is detected
             
             # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
             # Handler only decides *when* to start; manager owns implementation.
