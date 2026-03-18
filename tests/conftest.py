@@ -18,6 +18,8 @@ sys.modules["google.cloud.speech_v1p1beta1"] = MagicMock()
 sys.modules["google.cloud.speech_v1p1beta1"].types = MagicMock()
 sys.modules["google.api_core"] = MagicMock()
 sys.modules["google.api_core"].exceptions = MagicMock()
+sys.modules["google.api_core.client_options"] = MagicMock()
+sys.modules["google.api_core.client_options"].ClientOptions = MagicMock()
 sys.modules["google.api_core.exceptions"] = MagicMock()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

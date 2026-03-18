@@ -125,6 +125,28 @@ class Settings(BaseSettings):
     
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
+
+    # RAG behavior tuning (voice-first defaults)
+    # These defaults are intentionally conservative to avoid prompt bloat/latency.
+    RAG_TOP_K: int = 5
+    RAG_SCORE_THRESHOLD: float = 0.4
+    # Hard cap for the size of the rendered context block injected into prompts.
+    # This is character-based (approx). For token-accurate sizing, you would need a tokenizer.
+    RAG_MAX_CONTEXT_CHARS: int = 6000
+
+    # Voice latency guardrails
+    # If Pinecone or embedding generation is slow, we must fail fast and
+    # return an empty knowledge context to avoid breaking the voice UX.
+    RAG_RETRIEVAL_TIMEOUT_SEC: float = 2.0
+    # Prevent extremely large STT transcripts from being embedded.
+    RAG_MAX_QUERY_CHARS: int = 3000
+
+    # Optional retrieval reranking (lexical overlap).
+    # Keep disabled by default to avoid changing retrieval semantics unexpectedly.
+    RAG_ENABLE_RERANK: bool = False
+    # Weight for Pinecone vector similarity vs lexical overlap.
+    # Higher means more trust in vector similarity.
+    RAG_RERANK_VECTOR_WEIGHT: float = 0.8
     
     # Monday.com Configuration
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token

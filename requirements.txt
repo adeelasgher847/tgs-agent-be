@@ -23,6 +23,7 @@ websockets
 aiohttp
 google-genai
 pinecone>=6.0.0
+pypdf
 bcrypt==4.1.2
 authlib
 google-auth
