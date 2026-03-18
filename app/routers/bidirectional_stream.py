@@ -130,6 +130,7 @@ from app.services.transcript_service import transcript_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
+from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.services.google_tts_service import google_tts_service
@@ -145,6 +146,7 @@ from app.voice.conversation_orchestrator import (
     ConversationOrchestrator,
     should_send_quick_ack,
 )
+from app.voice.rag_context import build_rag_context_block
 from app.voice.tts_only_session import TtsOnlySession
 
 # Import utilities and services
@@ -670,6 +672,16 @@ class BidirectionalStreamHandler:
             
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
+
+            # ------- RAG: build knowledge base context in voice layer -------
+            tenant_uuid = self.call_session.tenant_id if self.call_session else None
+            agent_uuid = self.agent.id if self.agent else None
+
+            rag_context_block = build_rag_context_block(
+                user_text=user_text,
+                tenant_id=tenant_uuid,
+                agent_id=agent_uuid,
+            )
             
             # Build conversation context from transcript
             conversation_history = []
@@ -729,6 +741,8 @@ You are {agent_name}, having a real-time phone call with a human.
 Previous conversation:
 {history_text}
 
+{rag_context_block}
+
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
@@ -757,6 +771,8 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 Previous conversation:
 {history_text}
 
+{rag_context_block}
+
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
@@ -780,6 +796,8 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
+
+{rag_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.

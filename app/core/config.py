@@ -109,10 +109,19 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
 
-    # Vector database (RAG) configuration
-    # Separate Postgres / pgvector instance for knowledge base
-    VECTOR_DB_URL: str = ""  # e.g. postgresql+psycopg2://user:pass@host:port/dbname
-    VECTOR_DIMENSION: int = 1536  # default for OpenAI text-embedding-3-small; can be overridden per deployment
+    # Vector / RAG configuration
+    # Optional generic vector DB URL (used as a fallback host for Pinecone).
+    VECTOR_DB_URL: Optional[str] = None
+    # Default embedding dimension for text-embedding models
+    VECTOR_DIMENSION: int = 1536  # e.g. OpenAI text-embedding-3-small
+
+    # Pinecone (preferred vector store for RAG)
+    PINECONE_API_KEY: str = ""
+    # Optional: direct index host, if you copy it from Pinecone console.
+    # Example: "your-index-host.svc.us-east-1-aws.pinecone.io"
+    PINECONE_INDEX_HOST: Optional[str] = None
+    # Optional: index name; if host is not provided, we can resolve host from this.
+    PINECONE_INDEX_NAME: Optional[str] = None
     
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"

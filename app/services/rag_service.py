@@ -1,27 +1,24 @@
 from __future__ import annotations
 
 """
-RAG service: ingestion + retrieval on top of a pgvector-backed Postgres database.
+RAG service: ingestion + retrieval on top of a vector store.
+
+Concrete backend: Pinecone (cloud vector DB) with per-tenant/agent metadata.
 
 Design goals:
 - Keep infra concerns (vector DB, chunking, embeddings) separate from voice flow.
 - Allow Person B to inject their own embedding function based on Model/provider config.
-- Never touch existing tables or migrations; all RAG tables live in a separate DB.
 """
 
 from dataclasses import dataclass
-from typing import Callable, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence
 import uuid
+import importlib
 
-from sqlalchemy import asc
-from sqlalchemy.orm import Session
+import pinecone
 
 from app.core.logger import logger
-from app.services.rag_vector_db import (
-    RagDocument,
-    RagChunk,
-    get_vector_session,
-)
+from app.core.config import settings
 
 
 EmbeddingFunc = Callable[[str], Sequence[float]]
@@ -46,8 +43,56 @@ class RagService:
     """
 
     def __init__(self):
-        # No heavy work in __init__; vector DB connection is lazy.
-        pass
+        # Pinecone client + index are created lazily and cached.
+        # We avoid importing Pinecone at module import time so that the
+        # rest of the app can still start even if the local pinecone
+        # package is misconfigured. Any issues are surfaced when RAG
+        # is actually used via _get_index().
+        self._pc: Optional[object] = None
+        self._index = None
+
+    def _get_index(self):
+        """
+        Lazily initialise and cache the Pinecone client and index handle.
+        Host resolution priority:
+        1) settings.PINECONE_INDEX_HOST (explicit host from console)
+        2) settings.VECTOR_DB_URL (if you've stored the host URL there)
+        3) settings.PINECONE_INDEX_NAME via describe_index(...)
+        """
+        if self._index is not None:
+            return self._index
+
+        if not settings.PINECONE_API_KEY:
+            raise RuntimeError("PINECONE_API_KEY is not configured; cannot use RAG.")
+
+        # We expect the official pinecone SDK (>=6.x) which exposes a
+        # Pinecone client class. If it's missing, we fail fast with a
+        # clear error instead of an import-time crash.
+        PineconeClient = getattr(pinecone, "Pinecone", None)
+        if PineconeClient is None:
+            raise RuntimeError(
+                "The installed 'pinecone' package does not expose a 'Pinecone' client. "
+                "Please ensure you have the official SDK installed (e.g. `pip install 'pinecone>=6.0.0'`) "
+                "and that any legacy 'pinecone-client' package has been removed."
+            )
+
+        pc = PineconeClient(api_key=settings.PINECONE_API_KEY)
+
+        host = settings.PINECONE_INDEX_HOST or settings.VECTOR_DB_URL
+        if not host:
+            if not settings.PINECONE_INDEX_NAME:
+                raise RuntimeError(
+                    "Neither PINECONE_INDEX_HOST nor VECTOR_DB_URL nor PINECONE_INDEX_NAME "
+                    "is set; cannot resolve Pinecone index host."
+                )
+            desc = pc.describe_index(settings.PINECONE_INDEX_NAME)
+            host = desc.host
+
+        index = pc.Index(host=host)
+        self._pc = pc
+        self._index = index
+        logger.info(f"Connected to Pinecone index host: {host}")
+        return self._index
 
     # -------- Ingestion --------
 
@@ -97,58 +142,55 @@ class RagService:
         overlap_chars: int = 100,
     ) -> uuid.UUID:
         """
-        Ingest a single logical document:
-        - create RagDocument
+        Ingest a single logical document into the vector store:
         - chunk text
         - generate embeddings for each chunk
-        - store RagChunk rows
+        - upsert vectors with rich metadata (tenant/agent/source info)
 
-        Returns the created document_id.
+        Returns a synthetic document_id (UUID) for reference.
         """
         chunks = self.chunk_text(full_text, max_chars=max_chars, overlap_chars=overlap_chars)
         if not chunks:
             raise ValueError("Cannot ingest empty document text")
 
-        session: Session = get_vector_session()
-        try:
-            doc = RagDocument(
-                tenant_id=tenant_id,
-                agent_id=agent_id,
-                title=title,
-                source_type=source_type,
-                source_ref=source_ref,
+        index = self._get_index()
+
+        # Synthetic document id, just for grouping in metadata / vector IDs
+        document_id = uuid.uuid4()
+
+        vectors = []
+        for idx, chunk_text in enumerate(chunks):
+            try:
+                embedding = list(embedding_func(chunk_text))
+            except Exception as e:
+                logger.error(f"Failed to generate embedding for chunk {idx}: {e}", exc_info=True)
+                raise
+
+            vector_id = f"{tenant_id}:{agent_id or 'all'}:{document_id}:{idx}"
+            metadata = {
+                "tenant_id": str(tenant_id),
+                "agent_id": str(agent_id) if agent_id else None,
+                "title": title,
+                "source_type": source_type,
+                "source_ref": source_ref,
+                "chunk_index": idx,
+                "text": chunk_text,
+            }
+            vectors.append(
+                {
+                    "id": vector_id,
+                    "values": embedding,
+                    "metadata": metadata,
+                }
             )
-            session.add(doc)
-            session.flush()  # populate doc.id
 
-            for idx, chunk_text in enumerate(chunks):
-                try:
-                    embedding = list(embedding_func(chunk_text))
-                except Exception as e:
-                    logger.error(f"Failed to generate embedding for chunk {idx}: {e}", exc_info=True)
-                    raise
-
-                chunk = RagChunk(
-                    document_id=doc.id,
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    chunk_index=idx,
-                    text=chunk_text,
-                    embedding=embedding,
-                )
-                session.add(chunk)
-
-            session.commit()
-            logger.info(
-                f"Ingested document into RAG store: title='{title}', "
-                f"tenant_id={tenant_id}, agent_id={agent_id}, chunks={len(chunks)}"
-            )
-            return doc.id  # type: ignore[return-value]
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+        # Batch upsert into Pinecone
+        index.upsert(vectors=vectors)
+        logger.info(
+            f"Ingested document into Pinecone RAG index: title='{title}', "
+            f"tenant_id={tenant_id}, agent_id={agent_id}, chunks={len(chunks)}"
+        )
+        return document_id
 
     # -------- Retrieval --------
 
@@ -161,9 +203,8 @@ class RagService:
         top_k: int = 5,
     ) -> List[RagChunkDTO]:
         """
-        Retrieve top-k chunks for a user query, filtered by tenant/agent.
-
-        NOTE: We rely on pgvector's distance operators via SQLAlchemy's Vector type.
+        Retrieve top-k chunks for a user query, filtered by tenant/agent,
+        using Pinecone vector similarity search with metadata filters.
         """
         query_text = (user_text or "").strip()
         if not query_text:
@@ -175,48 +216,53 @@ class RagService:
             logger.error(f"Failed to generate embedding for query: {e}", exc_info=True)
             return []
 
-        session: Session = get_vector_session()
+        index = self._get_index()
+
+        # Build metadata filter: tenant is mandatory; agent-specific or shared
+        pinecone_filter: dict = {"tenant_id": str(tenant_id)}
+        if agent_id is not None:
+            pinecone_filter["$or"] = [
+                {"agent_id": str(agent_id)},
+                {"agent_id": None},
+            ]
+
         try:
-            # Use pgvector distance; smaller is closer
-            # Vector type exposes .l2_distance() helper
-            distance_expr = RagChunk.embedding.l2_distance(query_embedding)
-
-            q = (
-                session.query(RagChunk, RagDocument, distance_expr.label("distance"))
-                .join(RagDocument, RagChunk.document_id == RagDocument.id)
-                .filter(RagChunk.tenant_id == tenant_id)
+            res = index.query(
+                vector=query_embedding,
+                top_k=top_k,
+                include_metadata=True,
+                filter=pinecone_filter,
             )
+        except Exception as e:
+            logger.error(f"Pinecone query failed: {e}", exc_info=True)
+            return []
 
-            if agent_id is not None:
-                # Either agent-specific or tenant-shared (agent_id IS NULL)
-                q = q.filter(
-                    (RagChunk.agent_id == agent_id) | (RagChunk.agent_id.is_(None))
-                )
-
-            q = q.order_by(asc("distance")).limit(top_k)
-
-            rows: Iterable[Tuple[RagChunk, RagDocument, float]] = q.all()
-
-            results: List[RagChunkDTO] = []
-            for chunk, doc, distance in rows:
+        results: List[RagChunkDTO] = []
+        try:
+            matches = getattr(res, "matches", []) or []
+            for match in matches:
+                md = getattr(match, "metadata", None) or {}
+                text = md.get("text") or ""
+                if not text:
+                    continue
                 score = None
                 try:
-                    # Convert distance to a similarity-like score in (0, 1]; best effort
-                    score = 1.0 / (1.0 + float(distance))
+                    raw_score = getattr(match, "score", None)
+                    score = float(raw_score) if raw_score is not None else None
                 except Exception:
                     score = None
 
                 results.append(
                     RagChunkDTO(
-                        text=chunk.text,
-                        source_title=doc.title,
-                        source_ref=doc.source_ref,
+                        text=text,
+                        source_title=md.get("title"),
+                        source_ref=md.get("source_ref"),
                         score=score,
                     )
                 )
 
             logger.debug(
-                "RAG retrieve: tenant_id=%s agent_id=%s text_len=%d results=%d",
+                "RAG retrieve (Pinecone): tenant_id=%s agent_id=%s text_len=%d results=%d",
                 tenant_id,
                 agent_id,
                 len(query_text),
@@ -224,10 +270,8 @@ class RagService:
             )
             return results
         except Exception as e:
-            logger.error(f"RAG retrieval failed: {e}", exc_info=True)
+            logger.error(f"Error processing Pinecone results: {e}", exc_info=True)
             return []
-        finally:
-            session.close()
 
     # -------- Formatting for prompts --------
 
