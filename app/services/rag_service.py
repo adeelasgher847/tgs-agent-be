@@ -303,6 +303,7 @@ class RagService:
         agent_id: Optional[uuid.UUID],
         embedding_func: EmbeddingFunc,
         top_k: int = 5,
+        trace: Optional[dict] = None,
     ) -> List[RagChunkDTO]:
         """
         Retrieve top-k chunks for a user query, filtered by tenant/agent,
@@ -327,6 +328,9 @@ class RagService:
                 {"agent_id": str(agent_id)},
                 {"agent_id": None},
             ]
+        if trace is not None:
+            trace.setdefault("pinecone_tenant_id", str(tenant_id))
+            trace.setdefault("pinecone_agent_id", str(agent_id) if agent_id is not None else None)
 
         try:
             res = index.query(
@@ -337,6 +341,10 @@ class RagService:
             )
         except Exception as e:
             logger.error(f"Pinecone query failed: {e}", exc_info=True)
+            if trace is not None:
+                trace["retrieve_error"] = "pinecone_query_failed"
+                trace["retrieve_error_type"] = type(e).__name__
+                trace["retrieve_error_msg"] = str(e)[:200]
             return []
 
         results: List[RagChunkDTO] = []
@@ -392,6 +400,12 @@ class RagService:
                     return (vector_weight * vec_score) + ((1.0 - vector_weight) * lex_score)
 
                 results = sorted(results, key=combined_rank, reverse=True)
+                if trace is not None:
+                    trace["reranked"] = True
+                    trace["rerank_vector_weight"] = vector_weight
+            else:
+                if trace is not None:
+                    trace["reranked"] = False
 
             logger.debug(
                 "RAG retrieve (Pinecone): tenant_id=%s agent_id=%s text_len=%d results=%d",
@@ -400,9 +414,15 @@ class RagService:
                 len(query_text),
                 len(results),
             )
+            if trace is not None:
+                trace["pinecone_results_count"] = len(results)
             return results
         except Exception as e:
             logger.error(f"Error processing Pinecone results: {e}", exc_info=True)
+            if trace is not None:
+                trace["retrieve_error"] = "pinecone_results_processing_failed"
+                trace["retrieve_error_type"] = type(e).__name__
+                trace["retrieve_error_msg"] = str(e)[:200]
             return []
 
     # -------- Formatting for prompts --------

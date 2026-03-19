@@ -712,6 +712,20 @@ class BidirectionalStreamHandler:
                 )
                 rag_trace["status"] = "failure"
                 rag_trace["error"] = str(e)
+
+            # One-line RAG summary (safe: no chunk text, no secrets)
+            try:
+                logger.info(
+                    "RAG trace summary: status=%s timeout=%s initial=%s filtered=%s retrieve_error=%s",
+                    rag_trace.get("status"),
+                    rag_trace.get("timeout"),
+                    rag_trace.get("initial_retrieved_count"),
+                    rag_trace.get("filtered_count"),
+                    rag_trace.get("retrieve_error"),
+                )
+            except Exception:
+                # Logging must never break voice calls.
+                pass
             
             # Build conversation context from transcript
             conversation_history = []

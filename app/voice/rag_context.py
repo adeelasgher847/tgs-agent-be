@@ -71,6 +71,7 @@ respond that this information is not available instead of guessing or inventing 
             agent_id=agent_id,
             embedding_func=embedding_func,
             top_k=settings.RAG_TOP_K,
+            trace=trace,
         )
 
         trace["initial_retrieved_count"] = len(rag_chunks)
