@@ -13,7 +13,7 @@ from app.db.session import SessionLocal
 from app.models.agent import Agent
 from app.core.config import settings
 from app.services.rag_service import rag_service
-from app.services.openai_service import openai_service
+from app.services.embedding_service import embed_text_for_rag
 from app.voice.rag_context import build_rag_context_block
 
 
@@ -44,12 +44,7 @@ def main() -> None:
 
         # --- 1) Ingest a small test document into RAG for this tenant/agent ---
         def embedding_func(text: str):
-            # Uses settings.OPENAI_API_KEY under the hood
-            return openai_service.embed_text(
-                text=text,
-                model_name="text-embedding-3-small",
-                api_key=None,
-            )
+            return embed_text_for_rag(text)
 
         doc_text = (
             "Our company support hours are 9am to 5pm, Monday to Friday. "

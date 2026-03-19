@@ -99,7 +99,13 @@ class RagService:
         index = pc.Index(host=host)
         self._pc = pc
         self._index = index
-        logger.info(f"Connected to Pinecone index host: {host}")
+        # Log resolved target so ingestion/retrieval across environments can be verified.
+        # (Avoid logging secrets; host/index name are safe.)
+        logger.info(
+            "Connected to Pinecone index: host=%s index_name=%s",
+            host,
+            settings.PINECONE_INDEX_NAME,
+        )
         return self._index
 
     def delete_vectors(self, vector_ids: List[str]) -> None:
@@ -225,7 +231,9 @@ class RagService:
             vector_id = f"{tenant_id}:{agent_id or 'all'}:{document_id}:{idx}"
             metadata = {
                 "tenant_id": str(tenant_id),
-                "agent_id": str(agent_id) if agent_id else None,
+                # Pinecone metadata filters can behave unexpectedly with null.
+                # Represent shared KB scope deterministically.
+                "agent_id": str(agent_id) if agent_id else "all",
                 "title": title,
                 "source_type": source_type,
                 "source_ref": source_ref,
@@ -268,6 +276,17 @@ class RagService:
 
         # Batch upsert into Pinecone
         index.upsert(vectors=vectors)
+        # Best-effort confirmation that vectors actually landed in Pinecone.
+        try:
+            stats = index.describe_index_stats()
+            total = (
+                stats.get("total_vector_count")
+                or stats.get("totalCount")
+                or stats.get("vector_count")
+            )
+            logger.info("Pinecone upsert complete. total_vector_count=%s", total)
+        except Exception as e:
+            logger.debug("Pinecone describe_index_stats failed: %s", e, exc_info=True)
         logger.info(
             f"Ingested document into Pinecone RAG index: title='{title}', "
             f"tenant_id={tenant_id}, agent_id={agent_id}, chunks={len(chunks)}"
@@ -326,7 +345,7 @@ class RagService:
         if agent_id is not None:
             pinecone_filter["$or"] = [
                 {"agent_id": str(agent_id)},
-                {"agent_id": None},
+                {"agent_id": "all"},
             ]
         if trace is not None:
             trace.setdefault("pinecone_tenant_id", str(tenant_id))

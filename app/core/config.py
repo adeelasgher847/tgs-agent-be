@@ -128,6 +128,13 @@ class Settings(BaseSettings):
 
     # RAG behavior tuning (voice-first defaults)
     # These defaults are intentionally conservative to avoid prompt bloat/latency.
+    # Primary embedding model (OpenAI by default).
+    # Make embedding model configurable because some OpenAI projects do not
+    # have access to all embedding models.
+    RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # Fallback embedding model/provider used when the primary embedding call fails.
+    RAG_FALLBACK_EMBEDDING_PROVIDER: str = "gemini"
+    RAG_FALLBACK_EMBEDDING_MODEL: str = "gemini-embedding-001"
     RAG_TOP_K: int = 5
     RAG_SCORE_THRESHOLD: float = 0.4
     # Hard cap for the size of the rendered context block injected into prompts.

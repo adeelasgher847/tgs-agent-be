@@ -5,7 +5,7 @@ from typing import Optional
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.services.openai_service import openai_service
+from app.services.embedding_service import embed_text_for_rag
 from app.services.rag_service import rag_service
 
 
@@ -59,11 +59,7 @@ respond that this information is not available instead of guessing or inventing 
 
     try:
         def embedding_func(chunk_text: str):
-            return openai_service.embed_text(
-                text=chunk_text,
-                model_name="text-embedding-3-small",
-                api_key=None,  # use settings.OPENAI_API_KEY from config
-            )
+            return embed_text_for_rag(chunk_text)
 
         rag_chunks = rag_service.retrieve(
             user_text=text,

@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.models.agent import Agent
 from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.models.knowledge_base_chunk import KnowledgeBaseChunk
-from app.services.openai_service import openai_service
+from app.services.embedding_service import embed_text_for_rag
 from app.services.rag_service import rag_service
 from app.utils.response import create_success_response
 
@@ -65,11 +65,7 @@ def ingest_text_document(
         raise HTTPException(status_code=400, detail="PINECONE_API_KEY is not configured")
 
     def embedding_func(text: str):
-        return openai_service.embed_text(
-            text=text,
-            model_name="text-embedding-3-small",
-            api_key=None,  # uses settings.OPENAI_API_KEY
-        )
+        return embed_text_for_rag(text)
 
     document_id = rag_service.ingest_document(
         tenant_id=tenant_id,
@@ -153,11 +149,7 @@ def retrieve_preview(
         raise HTTPException(status_code=403, detail="No tenant selected")
 
     def embedding_func(text: str):
-        return openai_service.embed_text(
-            text=text,
-            model_name="text-embedding-3-small",
-            api_key=None,
-        )
+        return embed_text_for_rag(text)
 
     rag_chunks = rag_service.retrieve(
         user_text=request.user_text,

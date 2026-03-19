@@ -26,7 +26,7 @@ from app.db.session import SessionLocal
 from app.models.agent import Agent
 from app.core.config import settings
 from app.services.rag_service import rag_service, EmbeddingFunc
-from app.services.openai_service import openai_service
+from app.services.embedding_service import embed_text_for_rag
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -124,7 +124,11 @@ def main() -> None:
     parser.add_argument("--agent-id", default=None, help="Agent UUID (optional). If omitted, tenant-only/shared ingest.")
     parser.add_argument("--version", default=None, help="Document version label (for future extensions)")
     parser.add_argument("--source-type", default="kb_dir", help="Metadata source_type")
-    parser.add_argument("--embedding-model", default="text-embedding-3-small", help="Embedding model name")
+    parser.add_argument(
+        "--embedding-model",
+        default=settings.RAG_EMBEDDING_MODEL,
+        help="Embedding model name",
+    )
     parser.add_argument("--chunk-max-chars", type=int, default=1000, help="Chunk max chars")
     parser.add_argument("--chunk-overlap-chars", type=int, default=100, help="Chunk overlap chars")
     args = parser.parse_args()
@@ -151,11 +155,16 @@ def main() -> None:
 
         def embedding_func(text: str) -> Sequence[float]:
             # rag_service.ingest_document expects an embedding vector.
-            return openai_service.embed_text(
-                text=text,
-                model_name=args.embedding_model,
-                api_key=None,  # use settings.OPENAI_API_KEY
-            )
+            if args.embedding_model != settings.RAG_EMBEDDING_MODEL:
+                # Explicit CLI override keeps backwards compatibility.
+                from app.services.openai_service import openai_service
+
+                return openai_service.embed_text(
+                    text=text,
+                    model_name=args.embedding_model,
+                    api_key=None,
+                )
+            return embed_text_for_rag(text)
 
         # Ingest supported files under the directory.
         exts = {".txt", ".md", ".html", ".htm", ".pdf", ".faq"}

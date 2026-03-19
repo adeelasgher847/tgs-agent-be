@@ -109,6 +109,38 @@ class GeminiService:
         except Exception as e:
             raise Exception(f"Error in Gemini text generation: {str(e)}")
 
+    def embed_text(
+        self,
+        text: str,
+        model_name: str = "gemini-embedding-001",
+        output_dimensionality: Optional[int] = None,
+        api_key: str = None,
+    ) -> List[float]:
+        """
+        Generate an embedding vector using Gemini embeddings API.
+        """
+        client = self.get_client(api_key)
+        config = {}
+        if output_dimensionality is not None and output_dimensionality > 0:
+            config["output_dimensionality"] = int(output_dimensionality)
+
+        response = client.models.embed_content(
+            model=model_name,
+            contents=text,
+            config=config or None,
+        )
+
+        embedding_obj = None
+        if hasattr(response, "embeddings") and response.embeddings:
+            embedding_obj = response.embeddings[0]
+        elif hasattr(response, "embedding"):
+            embedding_obj = response.embedding
+
+        values = getattr(embedding_obj, "values", None) if embedding_obj is not None else None
+        if not values:
+            raise Exception("Gemini embedding response did not contain vector values.")
+        return list(values)
+
     async def stream_text(self, prompt: str, system_prompt: str = None,
                           model_name: str = "gemini-1.5-flash",
                           temperature: float = 0.7,
