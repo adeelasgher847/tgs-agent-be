@@ -59,10 +59,13 @@ def ingest_text_document(
                 detail="agent_id not found or does not belong to your tenant",
             )
 
-    if not settings.OPENAI_API_KEY:
-        raise HTTPException(status_code=400, detail="OPENAI_API_KEY is not configured")
     if not settings.PINECONE_API_KEY:
         raise HTTPException(status_code=400, detail="PINECONE_API_KEY is not configured")
+    if not settings.GEMINI_API_KEY and not settings.OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one embedding provider key must be configured (GEMINI_API_KEY or OPENAI_API_KEY)",
+        )
 
     def embedding_func(text: str):
         return embed_text_for_rag(text)

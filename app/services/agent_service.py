@@ -3,6 +3,7 @@ from sqlalchemy import func
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
 from app.models.model import Model
+from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
@@ -67,6 +68,35 @@ class AgentService:
                 e,
                 exc_info=True,
             )
+
+    def ensure_agent_prompt_ingested(self, db: Session, agent: Agent) -> None:
+        """
+        Lazy safety net for existing agents: if auto KB doc is missing, ingest now.
+        Best-effort and non-blocking for call/runtime flows.
+        """
+        if not agent:
+            return
+
+        source_ref = f"agent-system-prompt:{agent.id}"
+        exists = (
+            db.query(KnowledgeBaseDocument.id)
+            .filter(
+                KnowledgeBaseDocument.tenant_id == agent.tenant_id,
+                KnowledgeBaseDocument.agent_id == agent.id,
+                KnowledgeBaseDocument.source_type == "agent_system_prompt_auto",
+                KnowledgeBaseDocument.source_ref == source_ref,
+                KnowledgeBaseDocument.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if exists:
+            return
+
+        logger.info(
+            "Auto KB document missing for agent_id=%s; triggering lazy ingest",
+            agent.id,
+        )
+        self._auto_ingest_agent_system_prompt(db, agent)
 
     def create_agent(self, db: Session, agent_in: AgentCreate, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Agent:
         """

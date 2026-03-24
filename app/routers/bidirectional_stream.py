@@ -308,6 +308,9 @@ class BidirectionalStreamHandler:
                     agent_uuid,
                     self.call_session.tenant_id
                 )
+                # Lazy safety net: ensure prompt KB exists for older agents
+                # created before auto-ingest rollout.
+                agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
     
