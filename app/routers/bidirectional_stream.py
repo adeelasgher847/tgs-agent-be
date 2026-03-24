@@ -130,6 +130,7 @@ from app.services.transcript_service import transcript_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
+from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.services.google_tts_service import google_tts_service
@@ -145,6 +146,7 @@ from app.voice.conversation_orchestrator import (
     ConversationOrchestrator,
     should_send_quick_ack,
 )
+from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
 
 # Import utilities and services
@@ -306,6 +308,9 @@ class BidirectionalStreamHandler:
                     agent_uuid,
                     self.call_session.tenant_id
                 )
+                # Lazy safety net: ensure prompt KB exists for older agents
+                # created before auto-ingest rollout.
+                agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
     
@@ -670,6 +675,60 @@ class BidirectionalStreamHandler:
             
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
+
+            # ------- RAG: build knowledge base context in voice layer -------
+            tenant_uuid = self.call_session.tenant_id if self.call_session else None
+            agent_uuid = self.agent.id if self.agent else None
+
+            # Build KB context for the LLM with an explicit timeout so the voice
+            # pipeline never hangs on embeddings/Pinecone.
+            rag_context_block = ""
+            rag_trace: dict = {}
+            try:
+                loop = asyncio.get_running_loop()
+
+                def _build_rag():
+                    return build_rag_context_block_with_trace(
+                        user_text=user_text,
+                        tenant_id=tenant_uuid,
+                        agent_id=agent_uuid,
+                    )
+
+                rag_context_block, rag_trace = await asyncio.wait_for(
+                    loop.run_in_executor(None, _build_rag),
+                    timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
+                )
+            except asyncio.TimeoutError:
+                rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                    user_text="",
+                    tenant_id=tenant_uuid,
+                    agent_id=agent_uuid,
+                )
+                rag_trace["status"] = "timeout"
+                rag_trace["timeout"] = True
+            except Exception as e:
+                logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
+                rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                    user_text="",
+                    tenant_id=tenant_uuid,
+                    agent_id=agent_uuid,
+                )
+                rag_trace["status"] = "failure"
+                rag_trace["error"] = str(e)
+
+            # One-line RAG summary (safe: no chunk text, no secrets)
+            try:
+                logger.info(
+                    "RAG trace summary: status=%s timeout=%s initial=%s filtered=%s retrieve_error=%s",
+                    rag_trace.get("status"),
+                    rag_trace.get("timeout"),
+                    rag_trace.get("initial_retrieved_count"),
+                    rag_trace.get("filtered_count"),
+                    rag_trace.get("retrieve_error"),
+                )
+            except Exception:
+                # Logging must never break voice calls.
+                pass
             
             # Build conversation context from transcript
             conversation_history = []
@@ -729,6 +788,8 @@ You are {agent_name}, having a real-time phone call with a human.
 Previous conversation:
 {history_text}
 
+{rag_context_block}
+
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
@@ -757,6 +818,8 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 Previous conversation:
 {history_text}
 
+{rag_context_block}
+
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
@@ -780,6 +843,8 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
+
+{rag_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
@@ -1056,7 +1121,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Strip [END_CALL] from transcript so saved conversation is clean
                 transcript_text = final_text.replace("[END_CALL]", "").strip()
                 if transcript_text:
-                    await self._add_to_transcript("agent", transcript_text, "agent_response")
+                    await self._add_to_transcript(
+                        "agent",
+                        transcript_text,
+                        "agent_response",
+                        message_metadata={
+                            "user_text": user_text,
+                            "rag_trace": rag_trace,
+                        },
+                    )
         
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
@@ -1787,7 +1860,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         role: str,
         message: str,
         message_type: str = "speech",
-        confidence: Optional[float] = None
+        confidence: Optional[float] = None,
+        message_metadata: Optional[dict] = None,
     ):
         """Add message to transcript (SSML tags are automatically stripped)"""
         try:
@@ -1805,7 +1879,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 message_type=message_type,
                 agent_id=self.agent.id if self.agent else None,
                 user_id=self.call_session.user_id,
-                confidence=confidence
+                confidence=confidence,
+                metadata=message_metadata
             )
             
             # Update legacy field

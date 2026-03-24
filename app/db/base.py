@@ -18,3 +18,7 @@ from app.models.provider import Provider
 from app.models.model import Model
 from app.models.scheduled_call import ScheduledCall
 from app.models.tenant_crm_config import CRMConfig
+
+# Knowledge base / RAG
+from app.models.knowledge_base_document import KnowledgeBaseDocument
+from app.models.knowledge_base_chunk import KnowledgeBaseChunk

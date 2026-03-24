@@ -29,6 +29,23 @@ class OpenAIService:
             self._clients[key_to_use] = OpenAI(api_key=key_to_use)
         
         return self._clients[key_to_use]
+
+    def embed_text(
+        self,
+        text: str,
+        model_name: str = "text-embedding-3-small",
+        api_key: str = None,
+    ) -> List[float]:
+        """
+        Generate an embedding vector for a single text input.
+        """
+        client = self.get_client(api_key)
+        response = client.embeddings.create(
+            model=model_name,
+            input=text,
+        )
+        # OpenAI returns a list of data objects; we take the first embedding
+        return list(response.data[0].embedding)
     
     def generate_text(self, prompt: str, system_prompt: str = None, 
                      model_name: str = "gpt-3.5-turbo", 

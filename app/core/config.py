@@ -108,9 +108,52 @@ class Settings(BaseSettings):
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+
+    # Vector / RAG configuration
+    # Optional generic vector DB URL (used as a fallback host for Pinecone).
+    VECTOR_DB_URL: Optional[str] = None
+    # Default embedding dimension for text-embedding models
+    VECTOR_DIMENSION: int = 1536  # e.g. OpenAI text-embedding-3-small
+
+    # Pinecone (preferred vector store for RAG)
+    PINECONE_API_KEY: str = ""
+    # Optional: direct index host, if you copy it from Pinecone console.
+    # Example: "your-index-host.svc.us-east-1-aws.pinecone.io"
+    PINECONE_INDEX_HOST: Optional[str] = None
+    # Optional: index name; if host is not provided, we can resolve host from this.
+    PINECONE_INDEX_NAME: Optional[str] = None
     
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
+
+    # RAG behavior tuning (voice-first defaults)
+    # These defaults are intentionally conservative to avoid prompt bloat/latency.
+    # Primary embedding model (OpenAI by default).
+    # Make embedding model configurable because some OpenAI projects do not
+    # have access to all embedding models.
+    RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # Fallback embedding model/provider used when the primary embedding call fails.
+    RAG_FALLBACK_EMBEDDING_PROVIDER: str = "gemini"
+    RAG_FALLBACK_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    RAG_TOP_K: int = 5
+    RAG_SCORE_THRESHOLD: float = 0.4
+    # Hard cap for the size of the rendered context block injected into prompts.
+    # This is character-based (approx). For token-accurate sizing, you would need a tokenizer.
+    RAG_MAX_CONTEXT_CHARS: int = 6000
+
+    # Voice latency guardrails
+    # If Pinecone or embedding generation is slow, we must fail fast and
+    # return an empty knowledge context to avoid breaking the voice UX.
+    RAG_RETRIEVAL_TIMEOUT_SEC: float = 2.0
+    # Prevent extremely large STT transcripts from being embedded.
+    RAG_MAX_QUERY_CHARS: int = 3000
+
+    # Optional retrieval reranking (lexical overlap).
+    # Keep disabled by default to avoid changing retrieval semantics unexpectedly.
+    RAG_ENABLE_RERANK: bool = False
+    # Weight for Pinecone vector similarity vs lexical overlap.
+    # Higher means more trust in vector similarity.
+    RAG_RERANK_VECTOR_WEIGHT: float = 0.8
     
     # Monday.com Configuration
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
