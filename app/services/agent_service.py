@@ -5,6 +5,9 @@ from app.models.agent import Agent
 from app.models.model import Model
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.services.billing_service import BillingService
+from app.services.embedding_service import embed_text_for_rag
+from app.services.rag_service import rag_service
+from app.core.config import settings
 from fastapi import HTTPException, status
 import uuid
 from app.core.logger import logger
@@ -14,6 +17,57 @@ class AgentService:
     Agent service with business logic for agent operations
     """
     
+    def _auto_ingest_agent_system_prompt(self, db: Session, agent: Agent) -> None:
+        """
+        Automatically ingest agent system_prompt into RAG (best-effort).
+        This keeps KB setup zero-touch for users who only configure an agent prompt.
+        """
+        prompt_text = (agent.system_prompt or "").strip()
+        if not prompt_text:
+            return
+
+        if not settings.PINECONE_API_KEY:
+            logger.info(
+                "Auto KB ingest skipped for agent_id=%s: PINECONE_API_KEY not configured",
+                agent.id,
+            )
+            return
+
+        # We need at least one embedding provider available.
+        if not settings.GEMINI_API_KEY and not settings.OPENAI_API_KEY:
+            logger.info(
+                "Auto KB ingest skipped for agent_id=%s: no embedding provider key configured",
+                agent.id,
+            )
+            return
+
+        try:
+            rag_service.ingest_document(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                title=f"{agent.name} - System Prompt (Auto)",
+                source_type="agent_system_prompt_auto",
+                source_ref=f"agent-system-prompt:{agent.id}",
+                full_text=prompt_text,
+                embedding_func=embed_text_for_rag,
+                version="v1",
+                db_session=db,
+                replace_existing=True,
+            )
+            logger.info(
+                "Auto KB ingest success for agent_id=%s tenant_id=%s",
+                agent.id,
+                agent.tenant_id,
+            )
+        except Exception as e:
+            # Never fail agent create/update because of KB ingestion.
+            logger.warning(
+                "Auto KB ingest failed for agent_id=%s: %s",
+                agent.id,
+                e,
+                exc_info=True,
+            )
+
     def create_agent(self, db: Session, agent_in: AgentCreate, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Agent:
         """
         Create a new agent with tenant context and audit trail
@@ -86,6 +140,7 @@ class AgentService:
         db.add(db_agent)
         db.commit()
         db.refresh(db_agent)
+        self._auto_ingest_agent_system_prompt(db, db_agent)
         
         return db_agent
     
@@ -236,6 +291,7 @@ class AgentService:
         
         db.commit()
         db.refresh(agent)
+        self._auto_ingest_agent_system_prompt(db, agent)
         return agent
     
     def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
