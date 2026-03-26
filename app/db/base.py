@@ -22,3 +22,4 @@ from app.models.tenant_crm_config import CRMConfig
 # Knowledge base / RAG
 from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.models.knowledge_base_chunk import KnowledgeBaseChunk
+from app.models.job_description import JobDescription
