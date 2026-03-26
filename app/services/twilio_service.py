@@ -379,6 +379,53 @@ class TwilioService:
             
         except TwilioException as e:
             raise Exception(f"Error updating number configuration: {str(e)}")
+
+    def update_number_configuration_with_credentials(
+        self,
+        phone_number_sid: str,
+        account_sid: str,
+        auth_token: str,
+        friendly_name: Optional[str] = None,
+        webhook_url: Optional[str] = None,
+        status_callback_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update configuration for a phone number using custom Twilio credentials.
+        """
+        client = self.get_client_with_credentials(account_sid, auth_token)
+
+        try:
+            update_params = {}
+
+            if friendly_name is not None:
+                update_params["friendly_name"] = friendly_name
+            if webhook_url is not None:
+                update_params["voice_url"] = webhook_url
+                update_params["voice_method"] = "POST"
+            if status_callback_url is not None:
+                update_params["status_callback"] = status_callback_url
+                update_params["status_callback_method"] = "POST"
+
+            if not update_params:
+                raise Exception("No parameters provided for update")
+
+            number = client.incoming_phone_numbers(phone_number_sid).update(**update_params)
+
+            return {
+                "sid": number.sid,
+                "phone_number": number.phone_number,
+                "friendly_name": number.friendly_name,
+                "voice_url": number.voice_url,
+                "voice_method": number.voice_method,
+                "status_callback": number.status_callback,
+                "status_callback_method": number.status_callback_method,
+                "capabilities": number.capabilities,
+                "date_created": str(number.date_created),
+                "date_updated": str(number.date_updated),
+            }
+
+        except TwilioException as e:
+            raise Exception(f"Error updating number configuration: {str(e)}")
     
     def release_phone_number(self, phone_number_sid: str) -> bool:
         """

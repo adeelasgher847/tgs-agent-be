@@ -27,6 +27,10 @@ class AgentBase(BaseModel):
     # Agent-specific model configuration
     agent_temperature: Optional[int] = Field(None, ge=0, le=100, description="Agent-specific temperature (0-100)")
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
+    is_inbound_agent: bool = Field(
+        default=False,
+        description="Set true to mark this as the tenant's dedicated inbound entry agent",
+    )
 
 
 class AgentCreate(AgentBase):
@@ -46,6 +50,10 @@ class AgentUpdate(BaseModel):
     # Agent-specific model configuration
     agent_temperature: Optional[int] = Field(None, ge=0, le=100, description="Agent-specific temperature (0-100)")
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
+    is_inbound_agent: Optional[bool] = Field(
+        default=None,
+        description="Set true to mark this as the tenant's dedicated inbound entry agent",
+    )
 
 class AgentOut(AgentBase):
     id: uuid.UUID

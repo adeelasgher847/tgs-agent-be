@@ -145,6 +145,31 @@ def get_agent_model_config(
         )
 
 
+@router.get("/{agent_id}/inbound-knowledge-snapshot", response_model=SuccessResponse[dict])
+def get_inbound_knowledge_snapshot(
+    agent_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns tenant-wide prompt/knowledge snapshot for a dedicated inbound agent.
+    """
+    try:
+        snapshot = agent_service.get_inbound_agent_knowledge_snapshot(
+            db=db,
+            inbound_agent_id=agent_id,
+            tenant_id=user.current_tenant_id,
+        )
+        return create_success_response(snapshot, "Inbound knowledge snapshot retrieved successfully")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get inbound knowledge snapshot: {str(e)}",
+        )
+
+
 @router.get("/{agent_id}/talk")
 async def get_talk_to_assistant_link(
     agent_id: uuid.UUID,

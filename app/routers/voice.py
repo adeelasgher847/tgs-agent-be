@@ -21,6 +21,7 @@ from app.models.agent import Agent
 from app.models.user import User
 from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.call_session import CallSession
+from app.models.phone_number import PhoneNumber
 from app.services.call_session_service import call_session_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
@@ -72,6 +73,119 @@ async def initiate_call(
     Thin wrapper around `voice_call_service.initiate_call`.
     """
     return await initiate_call_service(call_request, http_request, user, db)
+
+
+@router.post("/incoming", response_class=HTMLResponse, include_in_schema=False)
+async def handle_incoming_call(
+    request: Request,
+    body: str = Depends(get_request_body),
+    db: Session = Depends(get_db),
+):
+    """
+    Twilio inbound voice webhook entrypoint.
+    Resolves tenant by called number, routes to tenant's dedicated inbound agent,
+    creates an inbound call session, and returns Connect/Stream TwiML.
+    """
+    def _fallback_twiml(message: str) -> HTMLResponse:
+        response = VoiceResponse()
+        response.say(message)
+        response.hangup()
+        return HTMLResponse(str(response), media_type="application/xml")
+
+    try:
+        if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
+            if not validate_twilio_signature(request, body):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid Twilio signature",
+                )
+
+        form_data = await request.form()
+        call_sid = form_data.get("CallSid", "")
+        from_number = form_data.get("From", "")
+        to_number = form_data.get("To", "")
+
+        if not to_number:
+            logger.warning("Inbound webhook missing 'To' number")
+            return _fallback_twiml("Sorry, we could not identify the destination number for this call.")
+
+        phone_number = (
+            db.query(PhoneNumber)
+            .filter(
+                PhoneNumber.phone_number == to_number,
+                PhoneNumber.status == "active",
+            )
+            .first()
+        )
+        if not phone_number:
+            logger.warning("Inbound number not assigned: %s", to_number)
+            return _fallback_twiml("Sorry, this number is not configured for inbound service.")
+
+        inbound_agent = agent_service.get_inbound_agent_by_tenant(
+            db=db, tenant_id=phone_number.tenant_id
+        )
+        if not inbound_agent:
+            logger.warning(
+                "No inbound agent configured for tenant %s (number=%s)",
+                phone_number.tenant_id,
+                to_number,
+            )
+            return _fallback_twiml(
+                "Sorry, inbound service is temporarily unavailable for this tenant."
+            )
+
+        # Billing guardrail: enforce the same credit gating used in outbound flows.
+        if not inbound_agent.model:
+            logger.warning("Inbound agent %s has no model configured", inbound_agent.id)
+            return _fallback_twiml(
+                "Sorry, this inbound agent is not configured correctly right now."
+            )
+
+        model_name = inbound_agent.model.model_name
+        has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
+            db=db,
+            tenant_id=phone_number.tenant_id,
+            model_name=model_name,
+            estimated_minutes=1,
+        )
+        if not has_sufficient:
+            logger.warning(
+                "Inbound credit check failed for tenant %s: current=%s required=%s model=%s",
+                phone_number.tenant_id,
+                current_credits,
+                required_credits,
+                model_name,
+            )
+            return _fallback_twiml(
+                "Sorry, this service is currently unavailable. Please try again later."
+            )
+
+        call_session = call_session_service.create_call_session(
+            db=db,
+            user_id=inbound_agent.created_by,
+            agent_id=inbound_agent.id,
+            tenant_id=phone_number.tenant_id,
+            twilio_call_sid=call_sid,
+            from_number=from_number,
+            to_number=to_number,
+            call_type="inbound",
+            assistant_phone_number=to_number,
+            customer_phone_number=from_number,
+        )
+
+        twiml = build_streaming_twiml(
+            call_session_id=str(call_session.id),
+            agent_id=str(inbound_agent.id),
+        )
+        return HTMLResponse(twiml, media_type="application/xml")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to handle inbound call webhook: %s", e, exc_info=True)
+        return _fallback_twiml("Sorry, we are unable to connect your call right now.")
+
+
+@router.post("/call-events", response_class=HTMLResponse, include_in_schema=False)
 @router.post("/webhook/call-events", response_class=HTMLResponse,include_in_schema=False)
 async def handle_call_events_webhook(
     request: Request,
@@ -128,7 +242,7 @@ async def handle_call_events_webhook(
         
         logger.info(f"🎤 Speech handling is now managed by Google Cloud STT WebSocket")
         
-        # Get call session using callSessionId from query parameters (OPTIMIZED)
+        # Get call session using callSessionId first, then fallback to Twilio CallSid.
         call_session = None
         agent = None
         
@@ -153,6 +267,21 @@ async def handle_call_events_webhook(
                 logger.warning(f"⚠️ Invalid call session ID format: {callSessionId}")
         else:
             logger.info(f"⚠️ No callSessionId provided in query parameters")
+
+        # Fallback lookup by Twilio SID for inbound and legacy callback URLs
+        if not call_session and call_sid:
+            call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+            if call_session:
+                logger.info(f"✅ Found call session via CallSid fallback: {call_session.id}")
+                if not agent and call_session.agent_id:
+                    try:
+                        agent = agent_service.get_agent_by_id(
+                            db,
+                            call_session.agent_id,
+                            call_session.tenant_id,
+                        )
+                    except Exception:
+                        agent = None
         
         # Validate request (Twilio signature or WebRTC auth)
         is_twilio = 'X-Twilio-Signature' in request.headers
@@ -209,7 +338,14 @@ async def handle_call_events_webhook(
         # Update call session status if we have a call session and status
         # ⚠️ SKIP automatic update for "answered" and "in-progress" - handled in specific handlers below
         # "in-progress" will ONLY be set when media streaming actually starts (first media packet in bidirectional_stream.py)
-        if call_session and call_status and call_status not in ["answered", "in-progress"]:
+        if (
+            call_session
+            and call_status
+            and (
+                call_status not in ["answered", "in-progress"]
+                or direction == "inbound"
+            )
+        ):
             logger.info(f"🔄 Updating call session {call_session.id} status to: {call_status}")
             call_session.status = call_status
         elif call_session and call_status in ["answered", "in-progress"]:
@@ -377,7 +513,7 @@ async def handle_call_events_webhook(
             
             return HTMLResponse("", media_type="application/xml")
 
-        elif call_status == "in-progress":
+        elif call_status == "in-progress" and direction != "inbound":
             # ⚠️ IGNORE - This is Twilio's media-active notification
             # We use first media packet detection instead (VAPI-style)
             logger.info(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
@@ -387,6 +523,10 @@ async def handle_call_events_webhook(
             # Don't do anything - first media packet will handle it
             
             return HTMLResponse("", media_type="application/xml")
+        elif call_status == "in-progress" and direction == "inbound":
+            logger.info(f"📞 INBOUND CALL IN-PROGRESS - SID: {call_sid}")
+            return HTMLResponse("", media_type="application/xml")
+
         elif call_status == "completed":
             # Call completed
             logger.info(f"📞 CALL COMPLETED - SID: {call_sid}")

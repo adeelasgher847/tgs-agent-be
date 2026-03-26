@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -27,6 +27,8 @@ class Agent(Base):
     
     # Soft delete
     is_deleted = Column(Boolean, default=False, nullable=False, server_default='false')
+    # Dedicated inbound entry point agent (max one active per tenant)
+    is_inbound_agent = Column(Boolean, default=False, nullable=False, server_default='false')
     
     # Relationships
     tenant = relationship("Tenant", back_populates="agents")
@@ -36,3 +38,12 @@ class Agent(Base):
     transcript_messages = relationship("TranscriptMessage", back_populates="agent")
     model = relationship("Model")
     provider = relationship("Provider")  # Provider relationship for filtering models
+
+    __table_args__ = (
+        Index(
+            "uq_agent_single_inbound_per_tenant",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_inbound_agent = true AND is_deleted = false"),
+        ),
+    )

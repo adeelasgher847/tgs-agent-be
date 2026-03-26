@@ -273,6 +273,7 @@ class BidirectionalStreamHandler:
 
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
+        self._auto_greeting_sent = False
         
         # Background audio manager (embedded MP3 / ambient noise)
         self._background_audio = BackgroundAudioManager(
@@ -648,7 +649,10 @@ class BidirectionalStreamHandler:
                 if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                     greeting_text = self.agent.first_message
                 else:
-                    greeting_text = "hello how are you"
+                    if self.call_session and self.call_session.call_type == "inbound":
+                        greeting_text = "Thank you for calling. How may I assist you today?"
+                    else:
+                        greeting_text = "hello how are you"
                 
                 # Add greeting to transcript
                 await self._add_to_transcript("agent", greeting_text, "greeting")
@@ -679,6 +683,7 @@ class BidirectionalStreamHandler:
             # ------- RAG: build knowledge base context in voice layer -------
             tenant_uuid = self.call_session.tenant_id if self.call_session else None
             agent_uuid = self.agent.id if self.agent else None
+            rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
 
             # Build KB context for the LLM with an explicit timeout so the voice
             # pipeline never hangs on embeddings/Pinecone.
@@ -691,7 +696,7 @@ class BidirectionalStreamHandler:
                     return build_rag_context_block_with_trace(
                         user_text=user_text,
                         tenant_id=tenant_uuid,
-                        agent_id=agent_uuid,
+                        agent_id=rag_agent_scope,
                     )
 
                 rag_context_block, rag_trace = await asyncio.wait_for(
@@ -702,7 +707,7 @@ class BidirectionalStreamHandler:
                 rag_context_block, rag_trace = build_rag_context_block_with_trace(
                     user_text="",
                     tenant_id=tenant_uuid,
-                    agent_id=agent_uuid,
+                    agent_id=rag_agent_scope,
                 )
                 rag_trace["status"] = "timeout"
                 rag_trace["timeout"] = True
@@ -711,10 +716,36 @@ class BidirectionalStreamHandler:
                 rag_context_block, rag_trace = build_rag_context_block_with_trace(
                     user_text="",
                     tenant_id=tenant_uuid,
-                    agent_id=agent_uuid,
+                    agent_id=rag_agent_scope,
                 )
                 rag_trace["status"] = "failure"
                 rag_trace["error"] = str(e)
+
+            inbound_prompt_context_block = ""
+            inbound_kb_docs_context_block = ""
+            if self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
+                try:
+                    inbound_prompt_context_block = (
+                        agent_service.build_inbound_prompt_context_block(
+                            db=self.db,
+                            inbound_agent_id=agent_uuid,
+                            tenant_id=tenant_uuid,
+                        )
+                    )
+                    inbound_kb_docs_context_block = (
+                        agent_service.build_inbound_kb_documents_context_block(
+                            db=self.db,
+                            inbound_agent_id=agent_uuid,
+                            tenant_id=tenant_uuid,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to build inbound context blocks for agent %s: %s",
+                        agent_uuid,
+                        e,
+                        exc_info=True,
+                    )
 
             # One-line RAG summary (safe: no chunk text, no secrets)
             try:
@@ -789,6 +820,8 @@ Previous conversation:
 {history_text}
 
 {rag_context_block}
+{inbound_prompt_context_block}
+{inbound_kb_docs_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
@@ -819,6 +852,8 @@ Previous conversation:
 {history_text}
 
 {rag_context_block}
+{inbound_prompt_context_block}
+{inbound_kb_docs_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
@@ -845,6 +880,8 @@ Previous conversation:
 {history_text}
 
 {rag_context_block}
+{inbound_prompt_context_block}
+{inbound_kb_docs_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
@@ -1921,6 +1958,21 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
             # Handler only decides *when* to start; manager owns implementation.
             asyncio.create_task(self._start_background_audio_with_delay())
+
+            # 👋 Send one-time immediate greeting after pickup for inbound calls.
+            if (
+                self.call_session
+                and self.call_session.call_type == "inbound"
+                and not self._auto_greeting_sent
+            ):
+                self._auto_greeting_sent = True
+                asyncio.create_task(
+                    self.generate_and_stream_response(
+                        user_text="",
+                        confidence=1.0,
+                        is_greeting=True,
+                    )
+                )
         
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)

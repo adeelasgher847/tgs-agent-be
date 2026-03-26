@@ -1,7 +1,5 @@
-import hmac
-import hashlib
-import base64
-from fastapi import Request, HTTPException
+from fastapi import Request
+from twilio.request_validator import RequestValidator
 from app.core.config import settings
 from app.core.logger import logger
 
@@ -21,17 +19,10 @@ def validate_twilio_signature(request: Request, body: str) -> bool:
         auth_token = settings.TWILIO_AUTH_TOKEN
         if not auth_token:
             return False
-        
-        # Create expected signature
-        expected_signature = base64.b64encode(
-            hmac.new(
-                auth_token.encode('utf-8'),
-                (url + body).encode('utf-8'),
-                hashlib.sha1
-            ).digest()
-        ).decode('utf-8')
-        
-        return hmac.compare_digest(signature, expected_signature)
+
+        # Twilio's canonical validation for voice webhooks.
+        validator = RequestValidator(auth_token)
+        return validator.validate(url, body, signature)
     
     except Exception as e:
         logger.error(f"Error validating Twilio signature: {e}")

@@ -261,11 +261,11 @@ async def purchase_phone_number(
         # Build webhook URLs if not provided
         if not webhook_url:
             from app.core.config import settings
-            webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/call-events"
+            webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/incoming"
         
         if not status_callback_url:
             from app.core.config import settings
-            status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/status"
+            status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/call-events"
         
         purchase_result = twilio_service.purchase_phone_number(
             phone_number=phone_number,

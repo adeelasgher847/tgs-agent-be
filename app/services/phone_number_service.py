@@ -3,25 +3,28 @@ Simple Phone Number Service
 """
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.models.phone_number import PhoneNumber
 from app.schemas.phone_number import PhoneNumberCreate, PhoneNumberUpdate
 from typing import List, Optional
 import uuid
 from datetime import datetime
+from app.core.logger import logger
 
 class PhoneNumberService:
     """Simple phone number service"""
     
     def create_phone_number(self, db: Session, phone_number_data: PhoneNumberCreate) -> PhoneNumber:
         """Create a new phone number with env credentials if available"""
-        # Check if phone number already exists within the same tenant
+        # Enforce global uniqueness: one number can belong to only one tenant.
         existing = db.query(PhoneNumber).filter(
-            PhoneNumber.phone_number == phone_number_data.phone_number,
-            PhoneNumber.tenant_id == phone_number_data.tenant_id
+            PhoneNumber.phone_number == phone_number_data.phone_number
         ).first()
         
         if existing:
-            raise ValueError(f"Phone number {phone_number_data.phone_number} already exists in this tenant")
+            raise ValueError(
+                f"Phone number {phone_number_data.phone_number} is already assigned to another tenant"
+            )
         
         # ✅ Get env credentials and encrypt them (for env-based phone numbers)
         from app.core.config import settings
@@ -46,8 +49,41 @@ class PhoneNumberService:
             twilio_auth_token=encrypted_auth_token    # ✅ From env (encrypted)
         )
         db.add(phone_number)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise ValueError(
+                f"Phone number {phone_number_data.phone_number} is already assigned to another tenant"
+            )
         db.refresh(phone_number)
+
+        # Best-effort: configure inbound webhook in Twilio for env-credential numbers.
+        try:
+            from app.core.config import settings
+            from app.services.twilio_service import twilio_service
+
+            if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
+                client = twilio_service.get_client()
+                owned = client.incoming_phone_numbers.list(
+                    phone_number=phone_number.phone_number,
+                    limit=1,
+                )
+                if owned:
+                    phone_number.twilio_phone_number_sid = owned[0].sid
+                    twilio_service.update_number_configuration(
+                        phone_number_sid=owned[0].sid,
+                        webhook_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/incoming",
+                        status_callback_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/call-events",
+                    )
+                    db.commit()
+                    db.refresh(phone_number)
+        except Exception as e:
+            logger.warning(
+                "Failed to auto-configure inbound webhook for number %s: %s",
+                phone_number.phone_number,
+                e,
+            )
         
         return phone_number
     
@@ -114,14 +150,15 @@ class PhoneNumberService:
         Returns:
             Created PhoneNumber object
         """
-        # Check if phone number already exists within the same tenant
+        # Enforce global uniqueness: one number can belong to only one tenant.
         existing = db.query(PhoneNumber).filter(
-            PhoneNumber.phone_number == phone_number,
-            PhoneNumber.tenant_id == tenant_id
+            PhoneNumber.phone_number == phone_number
         ).first()
         
         if existing:
-            raise ValueError(f"Phone number {phone_number} already exists in this tenant")
+            raise ValueError(
+                f"Phone number {phone_number} is already assigned to another tenant"
+            )
         
         # Encrypt credentials before storing
         from app.core.security import encrypt_api_key
@@ -139,8 +176,46 @@ class PhoneNumberService:
         )
         
         db.add(phone_number_obj)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise ValueError(
+                f"Phone number {phone_number} is already assigned to another tenant"
+            )
         db.refresh(phone_number_obj)
+
+        # Configure Twilio inbound webhook for this tenant number.
+        try:
+            from app.core.config import settings
+            from app.services.twilio_service import twilio_service
+
+            client = twilio_service.get_client_with_credentials(
+                twilio_account_sid, twilio_auth_token
+            )
+            owned = client.incoming_phone_numbers.list(phone_number=phone_number, limit=1)
+            if owned:
+                twilio_sid = owned[0].sid
+                inbound_webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/incoming"
+
+                twilio_service.update_number_configuration_with_credentials(
+                    phone_number_sid=twilio_sid,
+                    account_sid=twilio_account_sid,
+                    auth_token=twilio_auth_token,
+                    webhook_url=inbound_webhook_url,
+                    status_callback_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/call-events",
+                )
+
+                phone_number_obj.twilio_phone_number_sid = twilio_sid
+                db.commit()
+                db.refresh(phone_number_obj)
+        except Exception as e:
+            # Non-blocking: number import should still succeed if webhook auto-config fails.
+            logger.warning(
+                "Failed to auto-configure inbound webhook for imported number %s: %s",
+                phone_number,
+                e,
+            )
         
         return phone_number_obj
 
