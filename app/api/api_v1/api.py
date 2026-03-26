@@ -42,4 +42,4 @@ api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Sch
 api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Configuration"])
 api_router.include_router(clickup_oauth_router, prefix="/auth/clickup", tags=["ClickUp OAuth"],include_in_schema=False)
 api_router.include_router(knowledge_base_router, prefix="/kb", tags=["Knowledge Base"])
-api_router.include_router(job_description_router, prefix="/job-descriptions", tags=["Job Descriptions"])
+api_router.include_router(job_description_router, prefix="/recruiting/job-descriptions", tags=["Recruiting Job Descriptions"])
