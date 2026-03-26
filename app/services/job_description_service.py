@@ -1,8 +1,12 @@
 from typing import Any
 import uuid
+import re
+import zipfile
+from io import BytesIO
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+from pypdf import PdfReader
 
 from app.models.job_description import JobDescription
 from app.schemas.job_description import JobDescriptionCreateManual, JobDescriptionUpdate
@@ -25,6 +29,51 @@ class JobDescriptionService:
         db_jd = JobDescription(
             **data,
             tenant_id=tenant_id,
+            extracted_skills=[],
+            keywords=[],
+            skill_weight_matrix={},
+            matching_criteria={},
+            processing_status="PENDING",
+            version=1,
+            created_by=user_id,
+            updated_by=user_id,
+        )
+        db.add(db_jd)
+        db.commit()
+        db.refresh(db_jd)
+        return db_jd
+
+    def create_upload(
+        self,
+        db: Session,
+        filename: str,
+        file_content: bytes,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> JobDescription:
+        raw_text = self._extract_text_from_upload(filename=filename, file_content=file_content)
+        if not raw_text.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Could not extract readable text from uploaded file",
+            )
+
+        inferred_job_title = self._infer_job_title(raw_text)
+
+        db_jd = JobDescription(
+            tenant_id=tenant_id,
+            job_title=inferred_job_title,
+            required_skills=[],
+            years_experience_min=None,
+            education_requirements=None,
+            location=None,
+            salary_min=None,
+            salary_max=None,
+            currency=None,
+            employment_type=None,
+            key_responsibilities=[],
+            required_certifications=[],
+            raw_text=raw_text,
             extracted_skills=[],
             keywords=[],
             skill_weight_matrix={},
@@ -94,31 +143,39 @@ class JobDescriptionService:
         db.commit()
         db.refresh(jd)
 
-        # Lightweight deterministic enrichment for now.
-        source_text = (jd.raw_text or "").lower()
-        skills = jd.required_skills or self._extract_skills(source_text)
-        keywords = self._extract_keywords(source_text, skills)
-        weight_matrix = self._build_skill_weight_matrix(skills)
-        matching_criteria = {
-            "required_skills": skills,
-            "minimum_years_experience": jd.years_experience_min,
-            "education_requirements": jd.education_requirements,
-            "location": jd.location,
-            "employment_type": jd.employment_type,
-            "keywords": keywords,
-        }
+        try:
+            # Lightweight deterministic enrichment for now.
+            source_text = (jd.raw_text or "").lower()
+            skills = jd.required_skills or self._extract_skills(source_text)
+            keywords = self._extract_keywords(source_text, skills)
+            weight_matrix = self._build_skill_weight_matrix(skills)
+            matching_criteria = {
+                "required_skills": skills,
+                "minimum_years_experience": jd.years_experience_min,
+                "education_requirements": jd.education_requirements,
+                "location": jd.location,
+                "employment_type": jd.employment_type,
+                "keywords": keywords,
+            }
 
-        jd.required_skills = skills
-        jd.extracted_skills = [{"skill": skill, "confidence": 0.85} for skill in skills]
-        jd.keywords = keywords
-        jd.skill_weight_matrix = weight_matrix
-        jd.matching_criteria = matching_criteria
-        jd.processing_status = "READY"
-        jd.version = (jd.version or 1) + 1
-        jd.updated_by = user_id
-        db.commit()
-        db.refresh(jd)
-        return jd
+            jd.required_skills = skills
+            jd.extracted_skills = [{"skill": skill, "confidence": 0.85} for skill in skills]
+            jd.keywords = keywords
+            jd.skill_weight_matrix = weight_matrix
+            jd.matching_criteria = matching_criteria
+            jd.processing_status = "READY"
+            jd.version = (jd.version or 1) + 1
+            jd.updated_by = user_id
+            db.commit()
+            db.refresh(jd)
+            return jd
+        except Exception as e:
+            jd.processing_status = "FAILED"
+            jd.version = (jd.version or 1) + 1
+            jd.updated_by = user_id
+            db.commit()
+            db.refresh(jd)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     def get_status(
         self,
@@ -147,6 +204,40 @@ class JobDescriptionService:
             f"Certifications: {', '.join(data.get('required_certifications') or [])}",
         ]
         return "\n".join(parts).strip()
+
+    @staticmethod
+    def _extract_text_from_upload(filename: str, file_content: bytes) -> str:
+        name = (filename or "").lower()
+
+        if name.endswith(".txt"):
+            return file_content.decode("utf-8", errors="ignore")
+
+        if name.endswith(".pdf"):
+            reader = PdfReader(BytesIO(file_content))
+            pages = [(p.extract_text() or "") for p in reader.pages]
+            return "\n".join(pages).strip()
+
+        if name.endswith(".docx"):
+            with zipfile.ZipFile(BytesIO(file_content)) as docx_zip:
+                xml_content = docx_zip.read("word/document.xml").decode("utf-8", errors="ignore")
+            # Very lightweight stripping; enough for MVP extraction.
+            text = re.sub(r"</w:p>", "\n", xml_content)
+            text = re.sub(r"<[^>]+>", "", text)
+            return re.sub(r"\n{2,}", "\n", text).strip()
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported file type. Allowed: pdf, docx, txt",
+        )
+
+    @staticmethod
+    def _infer_job_title(raw_text: str) -> str:
+        lines = (raw_text or "").strip().splitlines()
+        for line in lines:
+            candidate = line.strip()
+            if candidate:
+                return candidate[:255]
+        return "Uploaded Job Description"
 
     @staticmethod
     def _extract_skills(text: str) -> list[str]:
