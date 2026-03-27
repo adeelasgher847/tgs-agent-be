@@ -73,7 +73,9 @@ celerybeat-schedule
 .pyre/
 
 # Alembic
-alembic/versions/
+# Track migration scripts, ignore only cache artifacts
+alembic/versions/__pycache__/
+alembic/versions/*.pyc
 
 # VS Code
 .vscode/
