@@ -24,7 +24,12 @@ from app.models.call_session import CallSession
 from app.models.phone_number import PhoneNumber
 from app.services.call_session_service import call_session_service
 from app.services.voice_logging_service import VoiceLoggingService
-from app.utils.twilio_validation import validate_twilio_signature, validate_webrtc_auth, get_request_body
+from app.utils.twilio_validation import (
+    validate_twilio_signature,
+    validate_twilio_signature_with_token,
+    validate_webrtc_auth,
+    get_request_body,
+)
 from app.utils.response import create_success_response
 from app.core.config import settings
 from app.routers.general_websocket import (
@@ -93,13 +98,6 @@ async def handle_incoming_call(
         return HTMLResponse(str(response), media_type="application/xml")
 
     try:
-        if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
-            if not validate_twilio_signature(request, body):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Invalid Twilio signature",
-                )
-
         form_data = await request.form()
         call_sid = form_data.get("CallSid", "")
         from_number = form_data.get("From", "")
@@ -120,6 +118,44 @@ async def handle_incoming_call(
         if not phone_number:
             logger.warning("Inbound number not assigned: %s", to_number)
             return _fallback_twiml("Sorry, this number is not configured for inbound service.")
+
+        if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
+            is_valid_signature = False
+
+            # Multi-account support: validate with number-specific token when available.
+            if phone_number.twilio_auth_token:
+                try:
+                    from app.core.security import decrypt_api_key
+
+                    number_auth_token = decrypt_api_key(phone_number.twilio_auth_token)
+                    is_valid_signature = validate_twilio_signature_with_token(
+                        request, body, number_auth_token
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to validate inbound signature with number-specific token "
+                        "(tenant_id=%s, number=%s, call_sid=%s): %s",
+                        phone_number.tenant_id,
+                        to_number,
+                        call_sid,
+                        e,
+                    )
+
+            # Backward-compatible fallback to global token.
+            if not is_valid_signature:
+                is_valid_signature = validate_twilio_signature(request, body)
+
+            if not is_valid_signature:
+                logger.warning(
+                    "Inbound signature validation failed (tenant_id=%s, number=%s, call_sid=%s)",
+                    phone_number.tenant_id,
+                    to_number,
+                    call_sid,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Invalid Twilio signature",
+                )
 
         inbound_agent = agent_service.get_inbound_agent_by_tenant(
             db=db, tenant_id=phone_number.tenant_id

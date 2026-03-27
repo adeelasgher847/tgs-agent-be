@@ -9,7 +9,6 @@ from app.schemas.phone_number import PhoneNumberCreate, PhoneNumberUpdate
 from typing import List, Optional
 import uuid
 from datetime import datetime
-from app.core.logger import logger
 
 class PhoneNumberService:
     """Simple phone number service"""
@@ -58,32 +57,40 @@ class PhoneNumberService:
             )
         db.refresh(phone_number)
 
-        # Best-effort: configure inbound webhook in Twilio for env-credential numbers.
-        try:
-            from app.core.config import settings
-            from app.services.twilio_service import twilio_service
+        # Configure inbound webhooks in Twilio (set + verify + fail-fast).
+        from app.core.config import settings
+        from app.services.twilio_service import twilio_service
 
-            if settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN:
-                client = twilio_service.get_client()
-                owned = client.incoming_phone_numbers.list(
-                    phone_number=phone_number.phone_number,
-                    limit=1,
-                )
-                if owned:
-                    phone_number.twilio_phone_number_sid = owned[0].sid
-                    twilio_service.update_number_configuration(
-                        phone_number_sid=owned[0].sid,
-                        webhook_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/incoming",
-                        status_callback_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/call-events",
-                    )
-                    db.commit()
-                    db.refresh(phone_number)
-        except Exception as e:
-            logger.warning(
-                "Failed to auto-configure inbound webhook for number %s: %s",
-                phone_number.phone_number,
-                e,
+        if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
+            raise ValueError(
+                "Twilio account credentials are required to configure inbound webhooks"
             )
+
+        client = twilio_service.get_client()
+        owned = client.incoming_phone_numbers.list(
+            phone_number=phone_number.phone_number,
+            limit=1,
+        )
+        if not owned:
+            raise ValueError(
+                f"Phone number {phone_number.phone_number} was not found in configured Twilio account"
+            )
+
+        owned_number = owned[0]
+        capabilities = getattr(owned_number, "capabilities", {}) or {}
+        if not capabilities.get("voice", False):
+            raise ValueError(
+                f"Phone number {phone_number.phone_number} does not support voice capability"
+            )
+
+        phone_number.twilio_phone_number_sid = owned_number.sid
+        twilio_service.update_number_configuration(
+            phone_number_sid=owned_number.sid,
+            webhook_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/incoming",
+            status_callback_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/call-events",
+        )
+        db.commit()
+        db.refresh(phone_number)
         
         return phone_number
     
@@ -160,21 +167,58 @@ class PhoneNumberService:
                 f"Phone number {phone_number} is already assigned to another tenant"
             )
         
-        # Encrypt credentials before storing
+        # Verify ownership in Twilio account and configure inbound webhooks strictly.
+        from app.core.config import settings
         from app.core.security import encrypt_api_key
+        from app.services.twilio_service import twilio_service
+
+        client = twilio_service.get_client_with_credentials(
+            twilio_account_sid, twilio_auth_token
+        )
+        owned = client.incoming_phone_numbers.list(phone_number=phone_number, limit=1)
+        if not owned:
+            raise ValueError(
+                f"Phone number {phone_number} was not found in the provided Twilio account"
+            )
+
+        owned_number = owned[0]
+        capabilities = getattr(owned_number, "capabilities", {}) or {}
+        if not capabilities.get("voice", False):
+            raise ValueError(
+                f"Phone number {phone_number} does not support voice capability"
+            )
+
+        twilio_sid = owned_number.sid
+        inbound_webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/incoming"
+        status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/call-events"
+
+        try:
+            twilio_service.update_number_configuration_with_credentials(
+                phone_number_sid=twilio_sid,
+                account_sid=twilio_account_sid,
+                auth_token=twilio_auth_token,
+                webhook_url=inbound_webhook_url,
+                status_callback_url=status_callback_url,
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Failed to configure Twilio webhooks for {phone_number}: {str(e)}"
+            )
+
+        # Persist phone number only after Twilio webhook configuration succeeds.
         encrypted_account_sid = encrypt_api_key(twilio_account_sid)
         encrypted_auth_token = encrypt_api_key(twilio_auth_token)
-        
-        # Create phone number with encrypted Twilio credentials
+
         phone_number_obj = PhoneNumber(
             phone_number=phone_number,
             label=label,
             tenant_id=tenant_id,
             status="active",
-            twilio_account_sid=encrypted_account_sid,  # ✅ Encrypted
-            twilio_auth_token=encrypted_auth_token
+            twilio_phone_number_sid=twilio_sid,
+            twilio_account_sid=encrypted_account_sid,
+            twilio_auth_token=encrypted_auth_token,
         )
-        
+
         db.add(phone_number_obj)
         try:
             db.commit()
@@ -185,38 +229,6 @@ class PhoneNumberService:
             )
         db.refresh(phone_number_obj)
 
-        # Configure Twilio inbound webhook for this tenant number.
-        try:
-            from app.core.config import settings
-            from app.services.twilio_service import twilio_service
-
-            client = twilio_service.get_client_with_credentials(
-                twilio_account_sid, twilio_auth_token
-            )
-            owned = client.incoming_phone_numbers.list(phone_number=phone_number, limit=1)
-            if owned:
-                twilio_sid = owned[0].sid
-                inbound_webhook_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/incoming"
-
-                twilio_service.update_number_configuration_with_credentials(
-                    phone_number_sid=twilio_sid,
-                    account_sid=twilio_account_sid,
-                    auth_token=twilio_auth_token,
-                    webhook_url=inbound_webhook_url,
-                    status_callback_url=f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/call-events",
-                )
-
-                phone_number_obj.twilio_phone_number_sid = twilio_sid
-                db.commit()
-                db.refresh(phone_number_obj)
-        except Exception as e:
-            # Non-blocking: number import should still succeed if webhook auto-config fails.
-            logger.warning(
-                "Failed to auto-configure inbound webhook for imported number %s: %s",
-                phone_number,
-                e,
-            )
-        
         return phone_number_obj
 
 # Create service instance

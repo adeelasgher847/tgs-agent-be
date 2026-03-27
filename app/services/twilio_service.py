@@ -31,6 +31,50 @@ class TwilioService:
     def get_client_with_credentials(self, account_sid: str, auth_token: str):
         """Get Twilio client with custom credentials"""
         return Client(account_sid, auth_token)
+
+    @staticmethod
+    def _normalize_url(url: Optional[str]) -> Optional[str]:
+        if not url:
+            return url
+        return str(url).strip().rstrip("/")
+
+    def _verify_number_webhook_configuration(
+        self,
+        number_obj,
+        expected_voice_url: Optional[str],
+        expected_status_callback_url: Optional[str],
+    ) -> None:
+        """
+        Fail-fast verification for Twilio webhook configuration.
+        """
+        if expected_voice_url:
+            actual_voice_url = self._normalize_url(getattr(number_obj, "voice_url", None))
+            expected_voice_url_normalized = self._normalize_url(expected_voice_url)
+            if actual_voice_url != expected_voice_url_normalized:
+                raise Exception(
+                    f"Webhook verification failed: voice_url mismatch "
+                    f"(expected={expected_voice_url_normalized}, actual={actual_voice_url})"
+                )
+            actual_voice_method = (getattr(number_obj, "voice_method", "") or "").upper()
+            if actual_voice_method != "POST":
+                raise Exception(
+                    f"Webhook verification failed: voice_method must be POST (actual={actual_voice_method})"
+                )
+
+        if expected_status_callback_url:
+            actual_status_url = self._normalize_url(getattr(number_obj, "status_callback", None))
+            expected_status_url_normalized = self._normalize_url(expected_status_callback_url)
+            if actual_status_url != expected_status_url_normalized:
+                raise Exception(
+                    f"Webhook verification failed: status_callback mismatch "
+                    f"(expected={expected_status_url_normalized}, actual={actual_status_url})"
+                )
+            actual_status_method = (getattr(number_obj, "status_callback_method", "") or "").upper()
+            if actual_status_method != "POST":
+                raise Exception(
+                    f"Webhook verification failed: status_callback_method must be POST "
+                    f"(actual={actual_status_method})"
+                )
     
     def make_call(self, to_number, from_number, webhook_url, status_callback_url, record=True):
         """Make an outbound call with improved reliability and optional recording"""
@@ -246,6 +290,10 @@ class TwilioService:
             
             # Purchase the number
             incoming_phone_number = client.incoming_phone_numbers.create(**purchase_params)
+            # Verify webhooks (fail-fast) when requested by caller
+            self._verify_number_webhook_configuration(
+                incoming_phone_number, webhook_url, status_callback_url
+            )
             
             return {
                 'sid': incoming_phone_number.sid,
@@ -363,6 +411,9 @@ class TwilioService:
                 raise Exception("No parameters provided for update")
             
             number = client.incoming_phone_numbers(phone_number_sid).update(**update_params)
+            self._verify_number_webhook_configuration(
+                number, webhook_url, status_callback_url
+            )
             
             return {
                 'sid': number.sid,
@@ -410,6 +461,9 @@ class TwilioService:
                 raise Exception("No parameters provided for update")
 
             number = client.incoming_phone_numbers(phone_number_sid).update(**update_params)
+            self._verify_number_webhook_configuration(
+                number, webhook_url, status_callback_url
+            )
 
             return {
                 "sid": number.sid,
