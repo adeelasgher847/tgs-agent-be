@@ -28,32 +28,34 @@ def build_twilio_validation_url(request: Request) -> str:
     return f"{scheme}://{host}{path}"
 
 
-def validate_twilio_signature_with_token(request: Request, body: str, auth_token: str) -> bool:
-    """Validate Twilio webhook signature with an explicit auth token."""
+def validate_twilio_signature_with_token(
+    request: Request, params: dict, auth_token: str
+) -> bool:
+    """
+    Validate Twilio webhook signature with an explicit auth token.
+    `params` must be a dict of the parsed form fields (not a raw body string).
+    Twilio's RequestValidator signs form params as a sorted key-value dict.
+    """
     try:
-        # Get the signature from headers
-        signature = request.headers.get('X-Twilio-Signature')
+        signature = request.headers.get("X-Twilio-Signature")
         if not signature:
             return False
-        
-        # Build proxy-aware URL for accurate signature validation.
-        url = build_twilio_validation_url(request)
-        
+
         if not auth_token:
             return False
 
-        # Twilio's canonical validation for voice webhooks.
+        url = build_twilio_validation_url(request)
         validator = RequestValidator(auth_token)
-        return validator.validate(url, body, signature)
-    
+        return validator.validate(url, params, signature)
+
     except Exception as e:
         logger.error(f"Error validating Twilio signature: {e}")
         return False
 
 
-def validate_twilio_signature(request: Request, body: str) -> bool:
+def validate_twilio_signature(request: Request, params: dict) -> bool:
     """Validate Twilio webhook signature using global settings token."""
-    return validate_twilio_signature_with_token(request, body, settings.TWILIO_AUTH_TOKEN)
+    return validate_twilio_signature_with_token(request, params, settings.TWILIO_AUTH_TOKEN)
 
 
 def validate_webrtc_auth(request: Request) -> bool:

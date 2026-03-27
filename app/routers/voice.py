@@ -83,7 +83,6 @@ async def initiate_call(
 @router.post("/incoming", response_class=HTMLResponse, include_in_schema=False)
 async def handle_incoming_call(
     request: Request,
-    body: str = Depends(get_request_body),
     db: Session = Depends(get_db),
 ):
     """
@@ -121,6 +120,8 @@ async def handle_incoming_call(
 
         if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
             is_valid_signature = False
+            # Twilio signs form params as a dict — pass parsed fields, not raw body.
+            form_params = dict(form_data)
 
             # Multi-account support: validate with number-specific token when available.
             if phone_number.twilio_auth_token:
@@ -129,7 +130,7 @@ async def handle_incoming_call(
 
                     number_auth_token = decrypt_api_key(phone_number.twilio_auth_token)
                     is_valid_signature = validate_twilio_signature_with_token(
-                        request, body, number_auth_token
+                        request, form_params, number_auth_token
                     )
                 except Exception as e:
                     logger.warning(
@@ -143,7 +144,7 @@ async def handle_incoming_call(
 
             # Backward-compatible fallback to global token.
             if not is_valid_signature:
-                is_valid_signature = validate_twilio_signature(request, body)
+                is_valid_signature = validate_twilio_signature(request, form_params)
 
             if not is_valid_signature:
                 logger.warning(
