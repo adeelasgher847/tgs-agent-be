@@ -1,18 +1,32 @@
-from typing import Any
+from typing import Any, Optional
 import uuid
 import re
 import zipfile
 from io import BytesIO
+import json
+from decimal import Decimal
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from pypdf import PdfReader
 
+from app.core.config import settings
+from app.core.logger import logger
 from app.models.job_description import JobDescription
 from app.schemas.job_description import JobDescriptionCreateManual, JobDescriptionUpdate
+from app.services.openai_service import openai_service
+from app.services.gemini_service import gemini_service
 
 
 class JobDescriptionService:
+    _DEFAULT_SCORING_DIMENSIONS = [
+        {"name": "skills_match", "weight": 0.40, "description": "Core and secondary skills alignment with role requirements."},
+        {"name": "experience", "weight": 0.25, "description": "Relevant years and depth of hands-on experience."},
+        {"name": "education_certifications", "weight": 0.15, "description": "Education and certifications meeting job baseline."},
+        {"name": "location_employment_fit", "weight": 0.10, "description": "Location and employment type compatibility."},
+        {"name": "keyword_context", "weight": 0.10, "description": "Domain keyword and responsibility context relevance."},
+    ]
+
     def create_manual(
         self,
         db: Session,
@@ -144,11 +158,76 @@ class JobDescriptionService:
         db.refresh(jd)
 
         try:
-            # Lightweight deterministic enrichment for now.
-            source_text = (jd.raw_text or "").lower()
-            skills = jd.required_skills or self._extract_skills(source_text)
-            keywords = self._extract_keywords(source_text, skills)
-            weight_matrix = self._build_skill_weight_matrix(skills)
+            source_text = (jd.raw_text or "").strip()
+            source_text_lower = source_text.lower()
+            llm_data = self._extract_with_llm(source_text=source_text, jd=jd)
+
+            # Prefer explicit recruiter-provided values first, then LLM inference, then deterministic fallback.
+            if not jd.job_title and llm_data.get("job_title"):
+                jd.job_title = llm_data.get("job_title")[:255]
+            if jd.years_experience_min is None and llm_data.get("years_experience_min") is not None:
+                jd.years_experience_min = llm_data.get("years_experience_min")
+            if not jd.education_requirements and llm_data.get("education_requirements"):
+                jd.education_requirements = llm_data.get("education_requirements")
+            if not jd.location and llm_data.get("location"):
+                jd.location = llm_data.get("location")
+            if not jd.employment_type and llm_data.get("employment_type"):
+                jd.employment_type = self._normalize_employment_type(llm_data.get("employment_type"))
+            if not jd.required_certifications and llm_data.get("required_certifications"):
+                jd.required_certifications = llm_data.get("required_certifications")
+            if not jd.key_responsibilities and llm_data.get("key_responsibilities"):
+                jd.key_responsibilities = self._dedupe_preserve(llm_data.get("key_responsibilities"))
+            if jd.salary_min is None and llm_data.get("salary_min") is not None:
+                jd.salary_min = self._safe_decimal(llm_data.get("salary_min"))
+            if jd.salary_max is None and llm_data.get("salary_max") is not None:
+                jd.salary_max = self._safe_decimal(llm_data.get("salary_max"))
+            if not jd.currency and llm_data.get("currency"):
+                jd.currency = self._normalize_currency(llm_data.get("currency"))
+
+            # Fallback salary extraction from raw text when LLM did not return salary.
+            if jd.salary_min is None and jd.salary_max is None:
+                s_min, s_max, s_currency = self._extract_salary_from_text(source_text)
+                jd.salary_min = s_min
+                jd.salary_max = s_max
+                if not jd.currency:
+                    jd.currency = s_currency
+
+            # Fallback responsibility extraction from raw text when LLM did not return.
+            if not jd.key_responsibilities:
+                jd.key_responsibilities = self._extract_responsibilities_from_text(source_text)
+
+            llm_skill_objects = llm_data.get("skills") or []
+            llm_skill_names = [
+                (s.get("name") or "").strip().lower()
+                for s in llm_skill_objects
+                if (s.get("name") or "").strip()
+            ]
+            skills = jd.required_skills or llm_skill_names or self._extract_skills(source_text_lower)
+            skills = self._dedupe_preserve(skills)
+
+            keywords = (
+                llm_data.get("keywords")
+                or self._extract_keywords(source_text_lower, skills)
+            )
+            keywords = self._dedupe_preserve(keywords)
+
+            weight_matrix = self._build_skill_weight_matrix(
+                skills=skills,
+                llm_skill_objects=llm_skill_objects,
+                source_text=source_text_lower,
+            )
+
+            extracted_skills = self._build_extracted_skills(
+                skills=skills,
+                llm_skill_objects=llm_skill_objects,
+                source_text=source_text_lower,
+            )
+
+            scoring_dimensions = self._normalize_scoring_dimensions(
+                llm_data.get("scoring_dimensions")
+            )
+            must_have_criteria = llm_data.get("must_have_criteria") or self._build_must_have_criteria(jd, skills)
+            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)
             matching_criteria = {
                 "required_skills": skills,
                 "minimum_years_experience": jd.years_experience_min,
@@ -156,10 +235,16 @@ class JobDescriptionService:
                 "location": jd.location,
                 "employment_type": jd.employment_type,
                 "keywords": keywords,
+                "must_have_criteria": must_have_criteria,
+                "scoring_dimensions": scoring_dimensions,
+                "explainability": {
+                    "weights_reasoning": "Skill weights are based on required/preferred signal, term emphasis in JD text, and semantic extraction confidence.",
+                    "match_formula": "candidate_score = sum(dimension_score * weight) for each scoring dimension.",
+                },
             }
 
             jd.required_skills = skills
-            jd.extracted_skills = [{"skill": skill, "confidence": 0.85} for skill in skills]
+            jd.extracted_skills = extracted_skills
             jd.keywords = keywords
             jd.skill_weight_matrix = weight_matrix
             jd.matching_criteria = matching_criteria
@@ -185,6 +270,123 @@ class JobDescriptionService:
     ) -> str:
         jd = self.get_by_id(db, job_description_id, tenant_id)
         return jd.processing_status
+
+    @staticmethod
+    def _dedupe_preserve(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items or []:
+            norm = (item or "").strip()
+            if not norm:
+                continue
+            key = norm.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(norm)
+        return out
+
+    def _extract_with_llm(self, source_text: str, jd: JobDescription) -> dict[str, Any]:
+        if not source_text:
+            return {}
+
+        system_prompt = (
+            "You are an expert recruiting analyst. Extract structured hiring requirements from a job description. "
+            "Return only valid JSON."
+        )
+        user_prompt = f"""
+Analyze the following job description and return STRICT JSON with this exact structure:
+{{
+  "job_title": string|null,
+  "skills": [
+    {{
+      "name": string,
+      "type": "required"|"preferred",
+      "weight": number,
+      "confidence": number,
+      "rationale": string
+    }}
+  ],
+  "keywords": [string],
+  "years_experience_min": number|null,
+  "education_requirements": string|null,
+  "location": string|null,
+  "employment_type": string|null,
+  "required_certifications": [string],
+  "key_responsibilities": [string],
+  "salary_min": number|null,
+  "salary_max": number|null,
+  "currency": string|null,
+  "must_have_criteria": [string],
+  "scoring_dimensions": [
+    {{"name": string, "weight": number, "description": string}}
+  ],
+  "overall_confidence": number
+}}
+
+Rules:
+- Use confidence and weights in range 0.0 to 1.0.
+- Output concise, clean values.
+- Do not include markdown fences.
+
+JOB DESCRIPTION:
+{source_text[:12000]}
+""".strip()
+
+        # OpenAI first, Gemini fallback (if configured).
+        providers = []
+        if settings.OPENAI_API_KEY:
+            providers.append(("openai", "gpt-4o-mini"))
+        if settings.GEMINI_API_KEY:
+            providers.append(("gemini", "gemini-1.5-flash"))
+
+        for provider, model_name in providers:
+            try:
+                if provider == "openai":
+                    resp = openai_service.chat_completion(
+                        messages=[{"role": "user", "content": user_prompt}],
+                        system_prompt=system_prompt,
+                        model_name=model_name,
+                        temperature=0.1,
+                        max_tokens=1200,
+                    )
+                else:
+                    resp = gemini_service.chat_completion(
+                        messages=[{"role": "user", "content": user_prompt}],
+                        system_prompt=system_prompt,
+                        model_name=model_name,
+                        temperature=0.1,
+                        max_tokens=1200,
+                    )
+                parsed = self._parse_llm_json(resp.get("content", ""))
+                if parsed:
+                    return parsed
+            except Exception as exc:
+                logger.warning("JD LLM extraction failed via %s: %s", provider, exc)
+
+        return {}
+
+    @staticmethod
+    def _parse_llm_json(content: str) -> dict[str, Any]:
+        text = (content or "").strip()
+        if not text:
+            return {}
+        # Handle optional markdown fenced JSON.
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    parsed = json.loads(text[start : end + 1])
+                    return parsed if isinstance(parsed, dict) else {}
+                except Exception:
+                    return {}
+        return {}
 
     @staticmethod
     def _build_raw_text_from_manual_fields(data: dict[str, Any]) -> str:
@@ -277,12 +479,275 @@ class JobDescriptionService:
                 break
         return list(dict.fromkeys([*skills, *top]))
 
-    @staticmethod
-    def _build_skill_weight_matrix(skills: list[str]) -> dict[str, float]:
+    def _build_skill_weight_matrix(
+        self,
+        skills: list[str],
+        llm_skill_objects: Optional[list[dict[str, Any]]] = None,
+        source_text: str = "",
+    ) -> dict[str, float]:
         if not skills:
             return {}
-        total = len(skills)
-        return {skill: round((total - idx) / total, 2) for idx, skill in enumerate(skills)}
+        llm_skill_objects = llm_skill_objects or []
+        llm_map = {}
+        for item in llm_skill_objects:
+            name = (item.get("name") or "").strip()
+            if not name:
+                continue
+            w = item.get("weight")
+            if isinstance(w, (int, float)):
+                llm_map[name.lower()] = float(w)
+
+        # Blend: 70% LLM weight (if present) + 30% textual emphasis prior.
+        raw: dict[str, float] = {}
+        for idx, skill in enumerate(skills):
+            key = skill.lower()
+            llm_weight = llm_map.get(key)
+            emphasis = 1.2 if f"must have {key}" in source_text or f"required: {key}" in source_text else 1.0
+            rank_prior = (len(skills) - idx) / max(1, len(skills))
+            if llm_weight is None:
+                score = rank_prior * emphasis
+            else:
+                score = (0.7 * max(0.0, min(1.0, llm_weight))) + (0.3 * rank_prior * emphasis)
+            raw[skill] = max(0.01, score)
+
+        total = sum(raw.values()) or 1.0
+        return {k: round(v / total, 4) for k, v in raw.items()}
+
+    @staticmethod
+    def _build_extracted_skills(
+        skills: list[str],
+        llm_skill_objects: list[dict[str, Any]],
+        source_text: str,
+    ) -> list[dict[str, Any]]:
+        llm_conf: dict[str, float] = {}
+        for item in llm_skill_objects:
+            name = (item.get("name") or "").strip().lower()
+            conf = item.get("confidence")
+            if name and isinstance(conf, (int, float)):
+                llm_conf[name] = max(0.0, min(1.0, float(conf)))
+
+        out = []
+        for skill in skills:
+            key = skill.lower()
+            if key in llm_conf:
+                confidence = llm_conf[key]
+            else:
+                # Heuristic confidence fallback based on exact occurrences.
+                occurrences = source_text.count(key)
+                confidence = min(0.95, 0.55 + (occurrences * 0.08))
+            out.append({"skill": skill, "confidence": round(confidence, 2)})
+        return out
+
+    def _build_must_have_criteria(self, jd: JobDescription, skills: list[str]) -> list[str]:
+        criteria = []
+        if jd.years_experience_min is not None:
+            criteria.append(f"Minimum {jd.years_experience_min}+ years relevant experience.")
+        for skill in skills[:5]:
+            criteria.append(f"Demonstrated practical experience in {skill}.")
+        for cert in (jd.required_certifications or [])[:3]:
+            criteria.append(f"Must hold certification: {cert}.")
+        return criteria
+
+    def _normalize_scoring_dimensions(self, dims: Any) -> list[dict[str, Any]]:
+        if not isinstance(dims, list) or not dims:
+            return self._DEFAULT_SCORING_DIMENSIONS
+
+        normalized = []
+        for item in dims:
+            if not isinstance(item, dict):
+                continue
+            name = (item.get("name") or "").strip().lower().replace(" ", "_")
+            desc = (item.get("description") or "").strip() or "Scoring factor"
+            weight = item.get("weight")
+            if not name or not isinstance(weight, (int, float)):
+                continue
+            normalized.append({"name": name, "weight": max(0.0, float(weight)), "description": desc})
+
+        if not normalized:
+            return self._DEFAULT_SCORING_DIMENSIONS
+
+        total = sum(d["weight"] for d in normalized)
+        if total <= 0:
+            return self._DEFAULT_SCORING_DIMENSIONS
+        for d in normalized:
+            d["weight"] = round(d["weight"] / total, 4)
+        return normalized
+
+    @staticmethod
+    def _safe_decimal(value: Any) -> Optional[Decimal]:
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_currency(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip().upper()
+        if not text:
+            return None
+        if text in {"$", "USD"}:
+            return "USD"
+        if text in {"PKR", "RS", "RUPEES"}:
+            return "PKR"
+        if text in {"INR", "₹"}:
+            return "INR"
+        if text in {"EUR", "€"}:
+            return "EUR"
+        if text in {"GBP", "£"}:
+            return "GBP"
+        return text[:12]
+
+    def _extract_salary_from_text(self, source_text: str) -> tuple[Optional[Decimal], Optional[Decimal], Optional[str]]:
+        text = source_text or ""
+        if not text:
+            return None, None, None
+
+        # Try to detect explicit currency tokens first.
+        upper = text.upper()
+        currency = None
+        if "PKR" in upper:
+            currency = "PKR"
+        elif "USD" in upper or "$" in text:
+            currency = "USD"
+        elif "INR" in upper or "₹" in text:
+            currency = "INR"
+        elif "EUR" in upper or "€" in text:
+            currency = "EUR"
+        elif "GBP" in upper or "£" in text:
+            currency = "GBP"
+
+        # Range patterns like "60,000 - 90,000" or "$80k to $120k"
+        range_match = re.search(
+            r"(?i)(?:salary|compensation|ctc)?\s*[:\-]?\s*[$€£₹]?\s*([0-9][0-9,]*(?:\.\d+)?)\s*([kKmM]?)\s*(?:to|-)\s*[$€£₹]?\s*([0-9][0-9,]*(?:\.\d+)?)\s*([kKmM]?)",
+            text,
+        )
+        if range_match:
+            min_val = self._scaled_number(range_match.group(1), range_match.group(2))
+            max_val = self._scaled_number(range_match.group(3), range_match.group(4))
+            return min_val, max_val, currency
+
+        # Single-value patterns like "Salary: 120000"
+        single_match = re.search(
+            r"(?i)(?:salary|compensation|ctc)\s*[:\-]?\s*[$€£₹]?\s*([0-9][0-9,]*(?:\.\d+)?)\s*([kKmM]?)",
+            text,
+        )
+        if single_match:
+            value = self._scaled_number(single_match.group(1), single_match.group(2))
+            return value, value, currency
+
+        return None, None, currency
+
+    @staticmethod
+    def _extract_responsibilities_from_text(source_text: str) -> list[str]:
+        text = source_text or ""
+        if not text.strip():
+            return []
+
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return []
+
+        # 1) Try section-based extraction under common headers.
+        header_patterns = (
+            "responsibilities",
+            "key responsibilities",
+            "role responsibilities",
+            "what you'll do",
+            "what you will do",
+            "job responsibilities",
+        )
+        out: list[str] = []
+        capture = False
+        for line in lines:
+            lower = line.lower().rstrip(":")
+            if any(h == lower for h in header_patterns):
+                capture = True
+                continue
+
+            # Stop when another major section starts.
+            if capture and any(
+                lower.startswith(prefix)
+                for prefix in (
+                    "requirements",
+                    "required skills",
+                    "qualifications",
+                    "education",
+                    "experience",
+                    "salary",
+                    "location",
+                    "benefits",
+                )
+            ):
+                break
+
+            if capture:
+                cleaned = re.sub(r"^[\-\*\u2022\d\.\)\(]+\s*", "", line).strip()
+                if cleaned:
+                    out.append(cleaned)
+                if len(out) >= 12:
+                    break
+
+        if out:
+            return out
+
+        # 2) Fallback: collect bullet-style lines from the whole document.
+        bullets = []
+        for line in lines:
+            if re.match(r"^\s*[\-\*\u2022]\s+", line) or re.match(r"^\s*\d+[\.\)]\s+", line):
+                cleaned = re.sub(r"^[\-\*\u2022\d\.\)\(]+\s*", "", line).strip()
+                if cleaned and len(cleaned.split()) >= 3:
+                    bullets.append(cleaned)
+            if len(bullets) >= 12:
+                break
+        return bullets
+
+    @staticmethod
+    def _scaled_number(number_text: str, suffix: str) -> Optional[Decimal]:
+        try:
+            base = Decimal(number_text.replace(",", ""))
+        except Exception:
+            return None
+        s = (suffix or "").lower()
+        if s == "k":
+            return base * Decimal("1000")
+        if s == "m":
+            return base * Decimal("1000000")
+        return base
+
+    @staticmethod
+    def _normalize_employment_type(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip().lower().replace("_", "-")
+        text = re.sub(r"\s+", "-", text)
+        aliases = {
+            "fulltime": "full-time",
+            "full-time": "full-time",
+            "full-time-role": "full-time",
+            "contract": "contract",
+            "contractor": "contract",
+            "remote": "remote",
+            "hybrid": "hybrid",
+        }
+        if text in aliases:
+            return aliases[text]
+        return None
+
+    @staticmethod
+    def _compute_overall_confidence(extracted_skills: list[dict[str, Any]], llm_data: dict[str, Any]) -> float:
+        llm_conf = llm_data.get("overall_confidence")
+        if isinstance(llm_conf, (int, float)):
+            base = max(0.0, min(1.0, float(llm_conf)))
+        else:
+            base = 0.7
+        if not extracted_skills:
+            return round(max(0.45, base - 0.15), 2)
+        avg_skill_conf = sum(float(s.get("confidence", 0.0)) for s in extracted_skills) / len(extracted_skills)
+        return round(max(0.0, min(1.0, (0.6 * base) + (0.4 * avg_skill_conf))), 2)
 
 
 job_description_service = JobDescriptionService()

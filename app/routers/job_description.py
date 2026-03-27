@@ -85,22 +85,6 @@ def get_job_description(
     return create_success_response(jd, "Job description retrieved successfully")
 
 
-@router.post("/{job_description_id}/process", response_model=SuccessResponse[JobDescriptionOut])
-def process_job_description(
-    job_description_id: uuid.UUID,
-    tenant_user: User = Depends(require_tenant),
-    admin_user: User = Depends(require_admin_or_owner),
-    db: Session = Depends(get_db),
-):
-    jd = job_description_service.process(
-        db=db,
-        job_description_id=job_description_id,
-        tenant_id=admin_user.current_tenant_id,
-        user_id=admin_user.id,
-    )
-    return create_success_response(jd, "Job description processed successfully")
-
-
 @router.get("/{job_description_id}/status", response_model=SuccessResponse[dict])
 def get_job_description_status(
     job_description_id: uuid.UUID,
