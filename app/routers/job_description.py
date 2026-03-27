@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
@@ -14,7 +14,6 @@ router = APIRouter()
 
 
 @router.post("", response_model=SuccessResponse[JobDescriptionOut], status_code=status.HTTP_201_CREATED)
-@router.post("/", response_model=SuccessResponse[JobDescriptionOut], status_code=status.HTTP_201_CREATED)
 def create_job_description_manual(
     payload: JobDescriptionCreateManual,
     admin_user: User = Depends(require_admin_or_owner),
@@ -74,22 +73,12 @@ async def upload_job_description(
 
 
 @router.get("", response_model=SuccessResponse[list[JobDescriptionOut]])
-@router.get("/", response_model=SuccessResponse[list[JobDescriptionOut]])
 def list_job_descriptions(
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
-    current_tenant_only: bool = Query(
-        False,
-        description="If true, only job descriptions for the JWT current tenant. "
-        "If false (default), all tenants this user belongs to (fixes missing rows when token tenant ≠ row tenant).",
-    ),
 ):
-    """List job descriptions: database read only. No LLM / OpenAI / Gemini calls."""
-    tenant_ids = (
-        [user.current_tenant_id]
-        if current_tenant_only
-        else job_description_service.tenant_ids_for_user(db, user.id)
-    )
+    """List job descriptions"""
+    tenant_ids = job_description_service.tenant_ids_for_user(db, user.id)
     rows = job_description_service.list_by_tenant_ids(db=db, tenant_ids=tenant_ids)
     out: list[JobDescriptionOut] = []
     for jd in rows:
