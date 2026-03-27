@@ -13,6 +13,7 @@ from pypdf import PdfReader
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.job_description import JobDescription
+from app.models.user import user_tenant_association
 from app.schemas.job_description import JobDescriptionCreateManual, JobDescriptionUpdate
 from app.services.openai_service import openai_service
 from app.services.gemini_service import gemini_service
@@ -115,6 +116,36 @@ class JobDescriptionService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job description not found")
         return jd
 
+    def get_by_id_in_tenants(
+        self,
+        db: Session,
+        job_description_id: uuid.UUID,
+        tenant_ids: list[uuid.UUID],
+    ) -> JobDescription:
+        if not tenant_ids:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job description not found")
+        jd = (
+            db.query(JobDescription)
+            .filter(
+                JobDescription.id == job_description_id,
+                JobDescription.tenant_id.in_(tenant_ids),
+            )
+            .first()
+        )
+        if not jd:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job description not found")
+        return jd
+
+    @staticmethod
+    def tenant_ids_for_user(db: Session, user_id: uuid.UUID) -> list[uuid.UUID]:
+        rows = (
+            db.query(user_tenant_association.c.tenant_id)
+            .filter(user_tenant_association.c.user_id == user_id)
+            .distinct()
+            .all()
+        )
+        return [r[0] for r in rows]
+
     def list_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> list[JobDescription]:
         return (
             db.query(JobDescription)
@@ -122,6 +153,81 @@ class JobDescriptionService:
             .order_by(JobDescription.created_at.desc())
             .all()
         )
+
+    def list_by_tenant_ids(self, db: Session, tenant_ids: list[uuid.UUID]) -> list[JobDescription]:
+        if not tenant_ids:
+            return []
+        return (
+            db.query(JobDescription)
+            .filter(JobDescription.tenant_id.in_(tenant_ids))
+            .order_by(JobDescription.created_at.desc())
+            .all()
+        )
+
+    @staticmethod
+    def _ensure_str_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            out: list[str] = []
+            for x in value:
+                if x is None:
+                    continue
+                s = str(x).strip()
+                if s:
+                    out.append(s)
+            return out
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
+
+    @staticmethod
+    def _normalize_extracted_skills_json(value: Any) -> list[dict[str, Any]]:
+        if not value or not isinstance(value, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, str):
+                s = item.strip()
+                if s:
+                    out.append({"skill": s[:120], "confidence": 0.5})
+                continue
+            if not isinstance(item, dict):
+                continue
+            skill = (item.get("skill") or item.get("name") or "").strip()
+            if not skill:
+                continue
+            conf = item.get("confidence")
+            if not isinstance(conf, (int, float)):
+                conf = 0.5
+            conf = max(0.0, min(1.0, float(conf)))
+            out.append({"skill": skill[:120], "confidence": round(conf, 2)})
+        return out
+
+    def normalize_for_read_response(self, jd: JobDescription) -> None:
+        """In-memory coercion so JobDescriptionOut validates (null JSON, enums, etc.). No LLM, no HTTP to AI providers."""
+        jd.required_skills = self._ensure_str_list(jd.required_skills)
+        jd.key_responsibilities = self._ensure_str_list(jd.key_responsibilities)
+        jd.required_certifications = self._ensure_str_list(jd.required_certifications)
+        jd.keywords = self._ensure_str_list(jd.keywords)
+        jd.extracted_skills = self._normalize_extracted_skills_json(jd.extracted_skills)
+        jd.skill_weight_matrix = jd.skill_weight_matrix if isinstance(jd.skill_weight_matrix, dict) else {}
+        jd.matching_criteria = jd.matching_criteria if isinstance(jd.matching_criteria, dict) else {}
+
+        if jd.currency is not None:
+            c = str(jd.currency).strip().upper()
+            jd.currency = c if len(c) >= 3 else None
+
+        if jd.employment_type is not None:
+            jd.employment_type = self._normalize_employment_type(jd.employment_type)
+
+        title = (jd.job_title or "").strip()
+        jd.job_title = (title[:255] if title else "Untitled")
+
+        ps = str(jd.processing_status or "PENDING").strip().upper()
+        if ps not in ("PENDING", "PROCESSING", "READY", "FAILED"):
+            ps = "PENDING"
+        jd.processing_status = ps
 
     def update(
         self,
@@ -161,10 +267,11 @@ class JobDescriptionService:
             source_text = (jd.raw_text or "").strip()
             source_text_lower = source_text.lower()
             llm_data = self._extract_with_llm(source_text=source_text, jd=jd)
+            llm_enriched = bool(llm_data)
 
             # Prefer explicit recruiter-provided values first, then LLM inference, then deterministic fallback.
-            if not jd.job_title and llm_data.get("job_title"):
-                jd.job_title = llm_data.get("job_title")[:255]
+            if not (jd.job_title or "").strip() and (llm_data.get("job_title") or "").strip():
+                jd.job_title = (llm_data.get("job_title") or "").strip()[:255]
             if jd.years_experience_min is None and llm_data.get("years_experience_min") is not None:
                 jd.years_experience_min = llm_data.get("years_experience_min")
             if not jd.education_requirements and llm_data.get("education_requirements"):
@@ -240,6 +347,7 @@ class JobDescriptionService:
                 "explainability": {
                     "weights_reasoning": "Skill weights are based on required/preferred signal, term emphasis in JD text, and semantic extraction confidence.",
                     "match_formula": "candidate_score = sum(dimension_score * weight) for each scoring dimension.",
+                    "llm_enriched": llm_enriched,
                 },
             }
 
@@ -253,6 +361,7 @@ class JobDescriptionService:
             jd.updated_by = user_id
             db.commit()
             db.refresh(jd)
+            self.normalize_for_read_response(jd)
             return jd
         except Exception as e:
             jd.processing_status = "FAILED"
@@ -269,6 +378,15 @@ class JobDescriptionService:
         tenant_id: uuid.UUID,
     ) -> str:
         jd = self.get_by_id(db, job_description_id, tenant_id)
+        return jd.processing_status
+
+    def get_status_in_tenants(
+        self,
+        db: Session,
+        job_description_id: uuid.UUID,
+        tenant_ids: list[uuid.UUID],
+    ) -> str:
+        jd = self.get_by_id_in_tenants(db, job_description_id, tenant_ids)
         return jd.processing_status
 
     @staticmethod
@@ -339,6 +457,11 @@ JOB DESCRIPTION:
             providers.append(("openai", "gpt-4o-mini"))
         if settings.GEMINI_API_KEY:
             providers.append(("gemini", "gemini-1.5-flash"))
+
+        if not providers:
+            logger.warning(
+                "Job description LLM skipped: set OPENAI_API_KEY and/or GEMINI_API_KEY in the environment."
+            )
 
         for provider, model_name in providers:
             try:
