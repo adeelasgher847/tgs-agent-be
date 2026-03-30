@@ -544,6 +544,21 @@ class TwilioService:
         except TwilioException as e:
             logger.error(f"❌ Error ending call {call_sid}: {str(e)}")
             return False
+
+    def end_call_with_credentials(self, call_sid: str, account_sid: str, auth_token: str) -> bool:
+        """
+        End a call using explicit Twilio credentials.
+        """
+        client = self.get_client_with_credentials(account_sid, auth_token)
+
+        try:
+            client.calls(call_sid).update(status='completed')
+            logger.info(f"✅ Call {call_sid} ended successfully with explicit credentials")
+            return True
+
+        except TwilioException as e:
+            logger.error(f"❌ Error ending call {call_sid} with explicit credentials: {str(e)}")
+            return False
     
     def redirect_call(self, call_sid: str, redirect_url: str, method: str = "POST") -> bool:
         """

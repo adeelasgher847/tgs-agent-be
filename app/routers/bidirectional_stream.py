@@ -133,6 +133,7 @@ from app.services.groq_service import groq_service
 from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
+from app.services.voice_twilio_utils import get_twilio_credentials_for_call
 from app.services.google_tts_service import google_tts_service
 from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
@@ -1740,9 +1741,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         
                         self.db.commit()
                     
-                    # End Twilio call
-                    if self.call_sid:
-                        twilio_service.end_call(self.call_sid)
+                    # End Twilio call with DB-derived credentials (no env fallback).
+                    if self.call_sid and self.call_session:
+                        try:
+                            account_sid, auth_token = get_twilio_credentials_for_call(
+                                self.db, self.call_session
+                            )
+                            twilio_service.end_call_with_credentials(
+                                self.call_sid, account_sid, auth_token
+                            )
+                        except Exception as end_err:
+                            logger.warning(
+                                "Could not end Twilio call with DB credentials "
+                                "(call_sid=%s, session=%s): %s",
+                                self.call_sid,
+                                self.call_session.id if self.call_session else None,
+                                end_err,
+                            )
                     
                     # Broadcast call ended event
                     if self.call_session:
@@ -1786,8 +1801,22 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
                     self.call_session.duration = int(duration)
                 self.db.commit()
-            if self.call_sid:
-                twilio_service.end_call(self.call_sid)
+            if self.call_sid and self.call_session:
+                try:
+                    account_sid, auth_token = get_twilio_credentials_for_call(
+                        self.db, self.call_session
+                    )
+                    twilio_service.end_call_with_credentials(
+                        self.call_sid, account_sid, auth_token
+                    )
+                except Exception as end_err:
+                    logger.warning(
+                        "Could not end Twilio call with DB credentials "
+                        "(call_sid=%s, session=%s): %s",
+                        self.call_sid,
+                        self.call_session.id if self.call_session else None,
+                        end_err,
+                    )
             if self.call_session:
                 try:
                     await broadcast_call_status_update(
@@ -1860,9 +1889,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         
                         self.db.commit()
                     
-                    # End Twilio call immediately
-                    if self.call_sid:
-                        twilio_service.end_call(self.call_sid)
+                    # End Twilio call immediately with DB-derived credentials (no env fallback).
+                    if self.call_sid and self.call_session:
+                        try:
+                            account_sid, auth_token = get_twilio_credentials_for_call(
+                                self.db, self.call_session
+                            )
+                            twilio_service.end_call_with_credentials(
+                                self.call_sid, account_sid, auth_token
+                            )
+                        except Exception as end_err:
+                            logger.warning(
+                                "Could not end Twilio call with DB credentials "
+                                "(call_sid=%s, session=%s): %s",
+                                self.call_sid,
+                                self.call_session.id if self.call_session else None,
+                                end_err,
+                            )
                     
                     # Broadcast call ended event
                     if self.call_session:
