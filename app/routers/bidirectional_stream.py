@@ -275,6 +275,7 @@ class BidirectionalStreamHandler:
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         self._auto_greeting_sent = False
+        self._recording_started = False
         
         # Background audio manager (embedded MP3 / ambient noise)
         self._background_audio = BackgroundAudioManager(
@@ -1977,7 +1978,32 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             self.stream_sid = message.get("streamSid")
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
-            
+
+            # Inbound calls use Connect/Stream, so start recording explicitly here.
+            # This enables recording-status webhook -> call_session.recording_url persistence.
+            if (
+                self.call_sid
+                and self.call_session
+                and self.call_session.call_type == "inbound"
+                and not self._recording_started
+            ):
+                try:
+                    account_sid, auth_token = get_twilio_credentials_for_call(
+                        self.db, self.call_session
+                    )
+                    started = twilio_service.start_recording_with_credentials(
+                        self.call_sid, account_sid, auth_token
+                    )
+                    if started:
+                        self._recording_started = True
+                except Exception as rec_err:
+                    logger.warning(
+                        "Could not start inbound recording (call_sid=%s, session=%s): %s",
+                        self.call_sid,
+                        self.call_session.id if self.call_session else None,
+                        rec_err,
+                    )
+
             # DO NOT start credit monitoring or greeting here!
             # Wait for first media packet (user actually picks up - VAPI-style)
         

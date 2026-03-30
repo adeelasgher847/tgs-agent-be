@@ -559,6 +559,27 @@ class TwilioService:
         except TwilioException as e:
             logger.error(f"❌ Error ending call {call_sid} with explicit credentials: {str(e)}")
             return False
+
+    def start_recording_with_credentials(self, call_sid: str, account_sid: str, auth_token: str) -> bool:
+        """
+        Start call recording using explicit Twilio credentials.
+        Recording status updates are sent to the existing recording-status webhook.
+        """
+        client = self.get_client_with_credentials(account_sid, auth_token)
+        recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
+
+        try:
+            client.calls(call_sid).recordings.create(
+                recording_channels="dual",
+                recording_status_callback=recording_status_callback_url,
+                recording_status_callback_method="POST",
+            )
+            logger.info(f"✅ Recording started for call {call_sid} with explicit credentials")
+            return True
+
+        except TwilioException as e:
+            logger.error(f"❌ Error starting recording for call {call_sid}: {str(e)}")
+            return False
     
     def redirect_call(self, call_sid: str, redirect_url: str, method: str = "POST") -> bool:
         """
