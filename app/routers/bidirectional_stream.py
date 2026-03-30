@@ -526,16 +526,14 @@ class BidirectionalStreamHandler:
         
         if should_backchannel:
             backchannel = random.choice(self._backchannel_phrases)
-            
-            # Queue backchannel with minimal processing
-            await self.tts_queue.put({
-                "text": backchannel,
-                "chunk_id": "backchannel",
-                "is_backchannel": True,
-                "is_final": True,
-                "use_ssml": False
-            })
-            
+
+            if self._tts_pipeline:
+                await self._tts_pipeline.queue_tts({
+                    "text": backchannel,
+                    "is_final": True,
+                    "use_ssml": False,
+                })
+
             self._last_backchannel_time = now
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
@@ -1137,12 +1135,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         # Queue fallback response
                         if final_text and not self._tts_cancel.is_set():
                             chunk_counter += 1
-                            await self.tts_queue.put({
-                                "text": final_text,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": True
-                            })
+                            if self._tts_pipeline:
+                                await self._tts_pipeline.queue_tts({
+                                    "text": final_text,
+                                    "use_ssml": self._use_ssml,
+                                    "is_final": True,
+                                })
                     except Exception as e:
                         logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
                         # Ultimate fallback response
