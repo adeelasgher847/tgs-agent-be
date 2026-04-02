@@ -111,7 +111,7 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Optional, Dict, Iterable
+from typing import Optional, Dict, Iterable, List
 import time
 from datetime import datetime, timezone
 import uuid
@@ -258,6 +258,7 @@ class BidirectionalStreamHandler:
         # Session data
         self.call_session = None
         self.agent = None
+        self._last_offered_calendar_slots: List[datetime] = []
         self._load_session_data()
         
         # User pickup detection (VAPI-style: actual user audio = user picked up)
@@ -829,6 +830,14 @@ Previous conversation:
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
 4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
 
+# APPOINTMENT BOOKING
+- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- Only book one of the slots that was just offered by the system.
+- Never book a slot that is in the past (check CURRENT DATE & TIME above).
+- Speak naturally; the system handles the actual booking silently.
+
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
             
@@ -860,6 +869,13 @@ Previous conversation:
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
+# APPOINTMENT BOOKING
+- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- Only book one of the slots that was just offered by the system.
+- Never book a slot in the past (see CURRENT DATE & TIME).
+
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
@@ -888,12 +904,28 @@ Previous conversation:
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
+# APPOINTMENT BOOKING
+- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- Only book one of the slots that was just offered by the system.
+- Never book a slot in the past (see CURRENT DATE & TIME).
+
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
-            
+
+            # Prepend current date/time so the agent knows what "today", "tomorrow",
+            # and "past slots" mean. Also injected into appointment booking flow.
+            _now_local = datetime.now(timezone.utc)
+            _now_str = _now_local.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+            system_prompt = (
+                f"# CURRENT DATE & TIME\nNow: {_now_str}\n\n"
+                + system_prompt
+            )
+
             # Get agent's configured model and provider
             llm_service = None
             model_name = "gemini-1.5-flash"  # Default fallback
@@ -965,6 +997,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         return ""
                     text = text.replace("[END_CALL]", "")
                     text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
+                    text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", text)
+                    text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", text)
                     return text
 
                 def _find_flush_index(buf: str):
@@ -1155,8 +1189,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         })
 
             if final_text:
-                # Strip [END_CALL] from transcript so saved conversation is clean
-                transcript_text = final_text.replace("[END_CALL]", "").strip()
+                # Strip control tokens from transcript (never saved to history)
+                transcript_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", final_text)
+                transcript_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", transcript_text)
+                transcript_text = transcript_text.replace("[END_CALL]", "").strip()
                 if transcript_text:
                     await self._add_to_transcript(
                         "agent",
@@ -1167,10 +1203,231 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "rag_trace": rag_trace,
                         },
                     )
-        
+
+                # Handle calendar tokens (fire-and-forget after TTS is already queued)
+                if "[CHECK_SLOTS:" in final_text:
+                    asyncio.create_task(self._handle_check_slots_token(final_text))
+                elif "[BOOK_APPOINTMENT:" in final_text:
+                    asyncio.create_task(self._handle_book_appointment_token(final_text))
+
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
     
+    # ── Calendar token handlers ───────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_calendar_slot_key(value: str) -> str:
+        value = (value or "").strip().lower().replace(".", "")
+        return re.sub(r"\s+", " ", value)
+
+    def _cache_calendar_slots(self, slots: List) -> None:
+        self._last_offered_calendar_slots = [slot.slot_start for slot in slots]
+
+    def _resolve_cached_calendar_slot(self, slot_raw: str) -> Optional[datetime]:
+        normalized = self._normalize_calendar_slot_key(slot_raw)
+        if not normalized or not self._last_offered_calendar_slots:
+            return None
+
+        for slot_dt in self._last_offered_calendar_slots:
+            candidates = {
+                slot_dt.isoformat(),
+                slot_dt.strftime("%Y-%m-%d %H:%M"),
+                slot_dt.strftime("%Y-%m-%d %I:%M %p").lstrip("0"),
+                slot_dt.strftime("%I:%M %p").lstrip("0"),
+                slot_dt.strftime("%H:%M"),
+            }
+            if slot_dt.minute == 0:
+                candidates.add(slot_dt.strftime("%I %p").lstrip("0"))
+
+            normalized_candidates = {
+                self._normalize_calendar_slot_key(candidate)
+                for candidate in candidates
+            }
+            if normalized in normalized_candidates:
+                return slot_dt
+
+        try:
+            parsed_dt = datetime.fromisoformat(slot_raw.replace("Z", "+00:00"))
+        except ValueError:
+            parsed_dt = None
+
+        if parsed_dt is not None:
+            for slot_dt in self._last_offered_calendar_slots:
+                if parsed_dt.tzinfo is None:
+                    offered_local = slot_dt.replace(tzinfo=None, second=0, microsecond=0)
+                    parsed_local = parsed_dt.replace(second=0, microsecond=0)
+                    if offered_local == parsed_local:
+                        return slot_dt
+                else:
+                    offered_utc = slot_dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                    parsed_utc = parsed_dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                    if offered_utc == parsed_utc:
+                        return slot_dt
+
+        for fmt in ("%I:%M %p", "%I %p", "%H:%M"):
+            try:
+                parsed_time = datetime.strptime(slot_raw.strip(), fmt).time()
+                matches = [
+                    slot_dt
+                    for slot_dt in self._last_offered_calendar_slots
+                    if slot_dt.hour == parsed_time.hour and slot_dt.minute == parsed_time.minute
+                ]
+                if len(matches) == 1:
+                    return matches[0]
+            except ValueError:
+                continue
+
+        return None
+
+    async def _handle_check_slots_token(self, llm_response: str):
+        """
+        Called when LLM emits [CHECK_SLOTS:date=<value>].
+        Fetches available slots and speaks them directly via TTS (no second LLM call).
+        """
+        try:
+            import re as _re
+            from datetime import date as _date, timedelta as _td, datetime as _dt, timezone as _tz
+            from zoneinfo import ZoneInfo as _ZI
+            from app.services.calendar_service import calendar_service as _cal
+
+            m = _re.search(r"\[CHECK_SLOTS:date=([^\]]+)\]", llm_response)
+            if not m:
+                return
+
+            if not self.call_session:
+                return
+
+            tenant_id = self.call_session.tenant_id
+            agent_id = self.agent.id if self.agent else None
+
+            loop = asyncio.get_running_loop()
+            tenant_tz_str = await loop.run_in_executor(
+                None,
+                lambda: _cal.get_tenant_timezone(self.db, tenant_id),
+            )
+            try:
+                tenant_tz = _ZI(tenant_tz_str)
+            except Exception:
+                tenant_tz = _tz.utc
+
+            today = _dt.now(tenant_tz).date()
+            raw_date = m.group(1).strip().lower()
+
+            if raw_date in ("today", "aaj"):
+                target = today
+            elif raw_date in ("tomorrow", "kal", "tomorrow's"):
+                target = today + _td(days=1)
+            else:
+                try:
+                    target = _date.fromisoformat(raw_date)
+                except ValueError:
+                    target = today + _td(days=1)
+
+            result = await loop.run_in_executor(
+                None,
+                lambda: _cal.get_available_slots(self.db, tenant_id, target, agent_id),
+            )
+            self._cache_calendar_slots(result.slots)
+
+            if not result.slots:
+                msg = f"Sorry, there are no available slots on {target.strftime('%A, %B %d')}. Please try another date."
+            else:
+                slot_labels = ", ".join(s.slot_label for s in result.slots[:6])
+                suffix = f" and {len(result.slots) - 6} more" if len(result.slots) > 6 else ""
+                msg = (
+                    f"On {target.strftime('%A, %B %d')}, these slots are available: "
+                    f"{slot_labels}{suffix}. Which time works for you?"
+                )
+
+            await self._add_to_transcript("agent", msg, "calendar_slots")
+            if self._tts_pipeline:
+                await self._tts_pipeline.queue_tts({
+                    "text": msg,
+                    "chunk_id": "calendar_slots",
+                    "use_ssml": False,
+                    "is_final": True,
+                })
+        except Exception as e:
+            logger.error("Error in _handle_check_slots_token: %s", e, exc_info=True)
+
+    async def _handle_book_appointment_token(self, llm_response: str):
+        """
+        Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,slot=...,reason=...].
+        Books the appointment and speaks the confirmation directly via TTS.
+        """
+        try:
+            import re as _re
+            from datetime import datetime as _dt
+            from app.services.calendar_service import calendar_service as _cal
+
+            m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
+            if not m:
+                return
+            raw = m.group(1)
+
+            def _get(key: str) -> str:
+                km = _re.search(rf"{key}=([^,\]]+)", raw)
+                return km.group(1).strip() if km else ""
+
+            customer_name = _get("name")
+            customer_phone = _get("phone")
+            slot_raw = _get("slot")
+            reason = _get("reason") or None
+
+            if not customer_name or not customer_phone or not slot_raw:
+                logger.warning("BOOK_APPOINTMENT token missing required fields: %s", raw)
+                return
+
+            if not self.call_session:
+                return
+
+            slot_start = self._resolve_cached_calendar_slot(slot_raw)
+            if slot_start is None:
+                try:
+                    slot_start = _dt.fromisoformat(slot_raw.replace("Z", "+00:00"))
+                except ValueError:
+                    logger.warning("BOOK_APPOINTMENT: invalid slot datetime: %s", slot_raw)
+                    return
+
+            tenant_id = self.call_session.tenant_id
+            agent_id = self.agent.id if self.agent else None
+            call_session_id = self.call_session.id
+
+            loop = asyncio.get_running_loop()
+            try:
+                appt = await loop.run_in_executor(
+                    None,
+                    lambda: _cal.book_appointment(
+                        db=self.db,
+                        tenant_id=tenant_id,
+                        customer_name=customer_name,
+                        customer_phone=customer_phone,
+                        slot_start=slot_start,
+                        agent_id=agent_id,
+                        call_session_id=call_session_id,
+                        appointment_reason=reason,
+                        created_via="voice_agent",
+                    ),
+                )
+                msg = (
+                    f"Done! Your appointment is confirmed for "
+                    f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
+                    f"Is there anything else I can help you with?"
+                )
+            except ValueError as ve:
+                msg = f"{ve} Would you like to choose a different time?"
+
+            await self._add_to_transcript("agent", msg, "calendar_booking")
+            if self._tts_pipeline:
+                await self._tts_pipeline.queue_tts({
+                    "text": msg,
+                    "chunk_id": "calendar_booking",
+                    "use_ssml": False,
+                    "is_final": True,
+                })
+        except Exception as e:
+            logger.error("Error in _handle_book_appointment_token: %s", e, exc_info=True)
+
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).

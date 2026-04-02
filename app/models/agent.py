@@ -36,6 +36,7 @@ class Agent(Base):
     updater = relationship("User", foreign_keys=[updated_by], back_populates="updated_agents")
     call_sessions = relationship("CallSession", back_populates="agent")
     transcript_messages = relationship("TranscriptMessage", back_populates="agent")
+    appointments = relationship("Appointment", back_populates="agent")
     model = relationship("Model")
     provider = relationship("Provider")  # Provider relationship for filtering models
 

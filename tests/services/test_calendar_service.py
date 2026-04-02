@@ -1,0 +1,186 @@
+from datetime import datetime, time, timedelta, timezone
+import os
+import sys
+import uuid
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+
+from app.db.base import Base
+from app.models.appointment import Appointment
+from app.models.blocked_slot import BlockedSlot
+from app.models.business_hours import BusinessHours
+from app.models.tenant import Tenant
+from app.services.calendar_service import calendar_service
+
+
+TENANT_TZ = "Asia/Karachi"
+
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+
+engine = create_engine(
+    "sqlite://",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def _to_utc(dt_value: datetime) -> datetime:
+    if dt_value.tzinfo is None:
+        return dt_value.replace(tzinfo=timezone.utc)
+    return dt_value.astimezone(timezone.utc)
+
+
+@pytest.fixture()
+def calendar_db():
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    db = TestingSessionLocal()
+    tenant = Tenant(name="Calendar Tenant", schema_name="calendar_tenant")
+    db.add(tenant)
+    db.commit()
+
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def _tenant(db):
+    return db.query(Tenant).first()
+
+
+def _set_business_hours(db, tenant_id, target_date, *, slot_minutes=30):
+    row = BusinessHours(
+        tenant_id=tenant_id,
+        day_of_week=target_date.weekday(),
+        open_time=time(9, 0),
+        close_time=time(17, 0),
+        is_closed=False,
+        timezone=TENANT_TZ,
+        slot_duration_minutes=slot_minutes,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_booking_uses_tenant_timezone_and_blocks_same_slot(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=1)
+    _set_business_hours(calendar_db, tenant.id, target_date)
+
+    local_slot = datetime.combine(target_date, time(10, 0))
+    appointment = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=local_slot,
+        created_via="web",
+    )
+
+    stored_utc = _to_utc(appointment.slot_start)
+    assert stored_utc.hour == 5
+    assert stored_utc.minute == 0
+
+    with pytest.raises(ValueError, match="no longer available"):
+        calendar_service.book_appointment(
+            db=calendar_db,
+            tenant_id=tenant.id,
+            customer_name="Sara",
+            customer_phone="+923009998887",
+            slot_start=local_slot,
+            agent_id=uuid.uuid4(),
+            created_via="voice_agent",
+        )
+
+
+def test_cancelled_slot_can_be_rebooked(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=2)
+    _set_business_hours(calendar_db, tenant.id, target_date)
+
+    local_slot = datetime.combine(target_date, time(11, 0))
+    first = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=local_slot,
+        created_via="web",
+    )
+
+    cancelled = calendar_service.update_appointment_status(
+        db=calendar_db,
+        appointment_id=first.id,
+        tenant_id=tenant.id,
+        status="cancelled",
+    )
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+
+    second = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Sara",
+        customer_phone="+923009998887",
+        slot_start=local_slot,
+        created_via="voice_agent",
+    )
+    assert second.id != first.id
+
+
+def test_off_grid_start_time_is_rejected(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=3)
+    _set_business_hours(calendar_db, tenant.id, target_date, slot_minutes=30)
+
+    with pytest.raises(ValueError, match="slot boundaries"):
+        calendar_service.book_appointment(
+            db=calendar_db,
+            tenant_id=tenant.id,
+            customer_name="Ali",
+            customer_phone="+923001112233",
+            slot_start=datetime.combine(target_date, time(10, 15)),
+            created_via="web",
+        )
+
+
+def test_availability_hides_booked_slot_for_entire_tenant(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=4)
+    _set_business_hours(calendar_db, tenant.id, target_date, slot_minutes=30)
+
+    booked_local = datetime.combine(target_date, time(9, 30))
+    calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=booked_local,
+        created_via="voice_agent",
+    )
+
+    available = calendar_service.get_available_slots(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        target_date=target_date,
+        agent_id=uuid.uuid4(),
+    )
+
+    labels = [slot.slot_label for slot in available.slots]
+    assert "9:30 AM" not in labels
+    assert "9:00 AM" in labels
