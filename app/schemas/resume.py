@@ -4,7 +4,9 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
+
+from app.utils.fit_score_labels import explain_fit_score
 
 
 class ParseStatusEnum(str, Enum):
@@ -104,7 +106,22 @@ class ResumeListItem(BaseModel):
 class BatchShortlistItem(BaseModel):
     resume_id: UUID
     filename: str = Field(description="Original upload filename (e.g. PDF name)")
-    score: float = Field(ge=0.0, le=1.0, description="Overall match score vs the job description")
+    score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Technical match strength 0–1 (for APIs and sorting)",
+    )
+    match_percent: int = Field(
+        ge=0,
+        le=100,
+        description="Same as score expressed as a simple 0–100 number",
+    )
+    fit_label: str = Field(
+        description='Either "Relevant" or "Irrelevant" (cutoff uses server RELEVANCE_THRESHOLD in fit_score_labels)',
+    )
+    fit_summary: str = Field(
+        description="One short sentence anyone can understand—no jargon",
+    )
 
 
 class BatchShortlistPayload(BaseModel):
@@ -133,10 +150,58 @@ class MatchResponse(BaseModel):
     criteria_breakdown: list[MatchComponentScore]
     missing_required_skills: list[str] = Field(default_factory=list)
     weighted_skill_hits: dict[str, float] = Field(default_factory=dict)
+    match_source: str = Field(
+        default="rules",
+        description="rules | ai | hybrid — how overall_score was produced",
+    )
+    rules_baseline_overall: float | None = Field(
+        default=None,
+        description="Deterministic overall score before LLM blend (hybrid/ai modes)",
+    )
+    ai_rationale: str | None = Field(default=None, description="Short LLM justification when AI ran")
+    ai_red_flags: list[str] = Field(
+        default_factory=list,
+        description="LLM-noted mismatches or risks",
+    )
+    ai_model: str | None = None
+    ai_provider: str | None = None
+
+    @computed_field
+    @property
+    def overall_match_percent(self) -> int:
+        return explain_fit_score(self.overall_score)[0]
+
+    @computed_field
+    @property
+    def overall_fit_label(self) -> str:
+        return explain_fit_score(self.overall_score)[1]
+
+    @computed_field
+    @property
+    def overall_fit_summary(self) -> str:
+        return explain_fit_score(self.overall_score)[2]
+
+    @computed_field
+    @property
+    def skill_match_percent(self) -> int:
+        s = max(0.0, min(1.0, float(self.skill_match_score)))
+        return int(round(s * 100))
+
+
+class MatchMode(str, Enum):
+    """How to combine LLM judgement with deterministic rules."""
+
+    rules = "rules"
+    ai = "ai"
+    hybrid = "hybrid"
 
 
 class MatchRequest(BaseModel):
     parse_mode: ParseMode | None = Field(
         default=None, description="Optional parse mode hint for client workflows"
+    )
+    match_mode: MatchMode | None = Field(
+        default=None,
+        description="rules = heuristics only; ai = LLM primary (rules on parse fail); hybrid = blend (default from server settings)",
     )
 

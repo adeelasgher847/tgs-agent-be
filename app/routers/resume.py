@@ -26,6 +26,7 @@ from app.schemas.base import SuccessResponse
 from app.schemas.resume import (
     BatchShortlistItem,
     BatchShortlistPayload,
+    MatchMode,
     MatchRequest,
     ParseMode,
     ParseStatusEnum,
@@ -35,6 +36,7 @@ from app.schemas.resume import (
 )
 from app.services.resume_matching_service import score_candidate
 from app.services.resume_parse_service import run_parse_for_resume
+from app.utils.fit_score_labels import explain_fit_score
 from app.utils.response import create_success_response
 
 router = APIRouter()
@@ -429,6 +431,10 @@ def shortlist_batch_against_job(
         le=2000,
         description="Safety cap: maximum resumes from this batch to evaluate",
     ),
+    match_mode: MatchMode | None = Query(
+        None,
+        description="rules | ai | hybrid; omit to use server RECRUIT_MATCH_MODE (default hybrid)",
+    ),
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
 ):
@@ -468,12 +474,17 @@ def shortlist_batch_against_job(
             continue
         try:
             parsed = ParsedResume.model_validate(res.parsed_json)
-            result = score_candidate(res.id, job, parsed)
+            mm = match_mode.value if match_mode else None
+            result = score_candidate(res.id, job, parsed, match_mode=mm)
+            pct, fit_label, fit_summary = explain_fit_score(float(result.overall_score))
             items_work.append(
                 BatchShortlistItem(
                     resume_id=res.id,
                     filename=res.original_filename,
                     score=float(result.overall_score),
+                    match_percent=pct,
+                    fit_label=fit_label,
+                    fit_summary=fit_summary,
                 )
             )
         except Exception:
@@ -567,7 +578,8 @@ def match_resume(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
 
     parsed = ParsedResume.model_validate(res.parsed_json)
-    result = score_candidate(res.id, job, parsed)
+    mm = body.match_mode.value if body and body.match_mode else None
+    result = score_candidate(res.id, job, parsed, match_mode=mm)
 
     payload = {
         "match": result.model_dump(mode="json"),
