@@ -43,6 +43,30 @@ router = APIRouter()
 log = logging.getLogger(__name__)
 
 
+def optional_batch_id_query(
+    batch_id: str | None = Query(
+        None,
+        description=(
+            "Optional. Filter by upload batch UUID from multi-upload. "
+            "Omit this parameter or leave it empty to return all resumes for the tenant (up to `limit`)."
+        ),
+    ),
+) -> UUID | None:
+    """Avoid 422 when clients send batch_id= empty; treat as 'no filter'."""
+    if batch_id is None:
+        return None
+    s = batch_id.strip()
+    if not s:
+        return None
+    try:
+        return UUID(s)
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Invalid batch_id: expected a UUID, got {batch_id!r}",
+        ) from None
+
+
 def _ensure_upload_dir() -> Path:
     upload_root = Path(getattr(settings, "RESUME_UPLOAD_DIR", "./uploads/resumes"))
     upload_root.mkdir(parents=True, exist_ok=True)
@@ -259,7 +283,7 @@ async def _upload_resumes_batch_impl(
     "/{resume_id}/parse",
     response_model=SuccessResponse[dict],
 )
-def trigger_parse(
+def parse(
     resume_id: UUID,
     parse_mode: ParseMode = Form(default=ParseMode.hybrid),
     admin_user: User = Depends(require_admin_or_owner),
@@ -283,7 +307,7 @@ def trigger_parse(
     "/parse-batch",
     response_model=SuccessResponse[dict],
 )
-def trigger_parse_batch(
+def parse_batch(
     resume_ids: list[str] = Form(...),
     parse_mode: ParseMode = Form(default=ParseMode.hybrid),
     admin_user: User = Depends(require_admin_or_owner),
@@ -377,10 +401,7 @@ def trigger_parse_batch(
 )
 def list_resumes(
     limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
-    batch_id: UUID | None = Query(
-        None,
-        description="Upload batch id (same UUID returned by multi-upload); omit to list all resumes",
-    ),
+    batch_id: UUID | None = Depends(optional_batch_id_query),
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
 ):
