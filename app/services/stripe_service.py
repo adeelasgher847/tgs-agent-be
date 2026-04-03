@@ -281,9 +281,10 @@ class StripeService:
     @staticmethod
     def handle_checkout_completed(event_data: Dict[str, Any], db: Session) -> None:
         """Handle checkout.session.completed event"""
-        session = event_data['data']['object']
-        tenant_id = session.get("metadata", {}).get("tenant_id")
-        plan_id = session.get("metadata", {}).get("plan_id")
+        session = event_data["data"]["object"]
+        metadata = session["metadata"] or {}
+        tenant_id = metadata.get("tenant_id")
+        plan_id = metadata.get("plan_id")
 
         if not tenant_id or not plan_id:
             logger.warning("Tenant ID or Plan ID not found in checkout session metadata")
