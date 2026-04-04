@@ -14,6 +14,28 @@ from app.core.logger import logger
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
 class StripeService:
+
+    @staticmethod
+    def stripe_metadata_as_dict(metadata: Any) -> Dict[str, Any]:
+        """
+        Normalize Stripe resource metadata to a plain dict.
+
+        In stripe-python v15+, StripeObject no longer subclasses dict; calling
+        metadata.get(...) raises KeyError('get') (shown in logs as just "get").
+        Prefer bracket access on the API object, then convert here when dict
+        methods are needed. See Stripe migration guide for v15.
+        """
+        if metadata is None:
+            return {}
+        if isinstance(metadata, dict):
+            return dict(metadata)
+        to_dict = getattr(metadata, "to_dict", None)
+        if callable(to_dict):
+            return dict(to_dict())
+        try:
+            return dict(metadata)
+        except (TypeError, ValueError):
+            return {}
     
     @staticmethod
     def create_customer(tenant: Tenant, email: str, user: Optional[User] = None) -> str:
@@ -282,7 +304,7 @@ class StripeService:
     def handle_checkout_completed(event_data: Dict[str, Any], db: Session) -> None:
         """Handle checkout.session.completed event"""
         session = event_data["data"]["object"]
-        metadata = session["metadata"] or {}
+        metadata = StripeService.stripe_metadata_as_dict(session["metadata"])
         tenant_id = metadata.get("tenant_id")
         plan_id = metadata.get("plan_id")
 

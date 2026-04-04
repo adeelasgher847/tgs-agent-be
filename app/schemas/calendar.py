@@ -95,6 +95,18 @@ class AppointmentStatusUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class AppointmentReschedule(BaseModel):
+    """Move appointment to a new slot. Optional fields update customer details when provided."""
+
+    slot_start: datetime
+    duration_minutes: Optional[int] = Field(None, ge=15, le=120)
+    customer_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    customer_phone: Optional[str] = Field(None, min_length=5, max_length=50)
+    customer_email: Optional[str] = None
+    appointment_reason: Optional[str] = None
+    notes: Optional[str] = None
+
+
 class AppointmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -16,6 +16,8 @@ from app.models.refresh_token import RefreshToken
 
 from sqlalchemy import update
 from app.core.logger import logger
+from app.services.stripe_service import StripeService
+
 router = APIRouter()
 
 def generate_schema_name(tenant_name: str) -> str:
@@ -333,7 +335,8 @@ def verify_payment(
         session = stripe.checkout.Session.retrieve(session_id)
         
         # Verify this session belongs to the current tenant
-        if session.metadata.get("tenant_id") != str(current_user.current_tenant_id):
+        meta = StripeService.stripe_metadata_as_dict(session["metadata"])
+        if meta.get("tenant_id") != str(current_user.current_tenant_id):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="This payment session does not belong to your tenant"
@@ -345,7 +348,7 @@ def verify_payment(
             "amount_total": session.amount_total,
             "currency": session.currency,
             "payment_intent": session.payment_intent,
-            "metadata": session.metadata
+            "metadata": meta
         }, "Payment verification fetched")
         
     except Exception as e:

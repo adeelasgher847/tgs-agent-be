@@ -10,7 +10,7 @@ from app.schemas.base import SuccessResponse
 from app.schemas.calendar import (
     BusinessHoursUpsert, BusinessHoursOut,
     BlockedSlotCreate, BlockedSlotOut,
-    AppointmentCreate, AppointmentStatusUpdate, AppointmentOut,
+    AppointmentCreate, AppointmentStatusUpdate, AppointmentReschedule, AppointmentOut,
     AppointmentListResponse,
     AvailableSlotsResponse,
 )
@@ -105,6 +105,38 @@ def get_appointment(
     appt = calendar_service.get_appointment_by_id(db, appointment_id, user.current_tenant_id)
     if not appt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+    return create_success_response(data=AppointmentOut.model_validate(appt))
+
+
+@router.patch(
+    "/appointments/{appointment_id}/reschedule",
+    response_model=SuccessResponse[AppointmentOut],
+)
+def reschedule_appointment(
+    appointment_id: uuid.UUID,
+    payload: AppointmentReschedule,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Move a confirmed/pending appointment to a new time. Fails with 409 if the slot is unavailable."""
+    try:
+        appt = calendar_service.reschedule_appointment(
+            db=db,
+            tenant_id=user.current_tenant_id,
+            appointment_id=appointment_id,
+            slot_start=payload.slot_start,
+            duration_minutes=payload.duration_minutes,
+            customer_name=payload.customer_name,
+            customer_phone=payload.customer_phone,
+            customer_email=payload.customer_email,
+            appointment_reason=payload.appointment_reason,
+            notes=payload.notes,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if msg == "Appointment not found.":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg)
     return create_success_response(data=AppointmentOut.model_validate(appt))
 
 

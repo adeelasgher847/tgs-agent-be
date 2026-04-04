@@ -184,3 +184,75 @@ def test_availability_hides_booked_slot_for_entire_tenant(calendar_db):
     labels = [slot.slot_label for slot in available.slots]
     assert "9:30 AM" not in labels
     assert "9:00 AM" in labels
+
+
+def test_reschedule_moves_to_new_slot_and_frees_old(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=5)
+    _set_business_hours(calendar_db, tenant.id, target_date, slot_minutes=30)
+
+    slot_10 = datetime.combine(target_date, time(10, 0))
+    slot_11 = datetime.combine(target_date, time(11, 0))
+
+    first = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=slot_10,
+        created_via="web",
+    )
+
+    orig_start = first.slot_start
+
+    moved = calendar_service.reschedule_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        appointment_id=first.id,
+        slot_start=slot_11,
+    )
+    assert moved.id == first.id
+    assert moved.slot_start != orig_start
+
+    # Old 10:00 slot is free for someone else
+    other = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Sara",
+        customer_phone="+923009998887",
+        slot_start=slot_10,
+        created_via="web",
+    )
+    assert other.id != first.id
+
+
+def test_reschedule_rejects_overlapping_other_appointment(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=6)
+    _set_business_hours(calendar_db, tenant.id, target_date, slot_minutes=30)
+
+    calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Other",
+        customer_phone="+923001112233",
+        slot_start=datetime.combine(target_date, time(11, 0)),
+        created_via="web",
+    )
+
+    mine = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923009998887",
+        slot_start=datetime.combine(target_date, time(10, 0)),
+        created_via="web",
+    )
+
+    with pytest.raises(ValueError, match="no longer available"):
+        calendar_service.reschedule_appointment(
+            db=calendar_db,
+            tenant_id=tenant.id,
+            appointment_id=mine.id,
+            slot_start=datetime.combine(target_date, time(11, 0)),
+        )

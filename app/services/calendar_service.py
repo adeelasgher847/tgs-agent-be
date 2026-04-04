@@ -128,8 +128,9 @@ class CalendarService:
         tenant_id: uuid.UUID,
         slot_start: datetime,
         slot_end: datetime,
+        exclude_appointment_id: Optional[uuid.UUID] = None,
     ) -> Optional[Appointment]:
-        return (
+        q = (
             db.query(Appointment)
             .filter(
                 Appointment.tenant_id == tenant_id,
@@ -137,9 +138,10 @@ class CalendarService:
                 Appointment.slot_start < slot_end,
                 Appointment.slot_end > slot_start,
             )
-            .order_by(Appointment.slot_start.asc())
-            .first()
         )
+        if exclude_appointment_id is not None:
+            q = q.filter(Appointment.id != exclude_appointment_id)
+        return q.order_by(Appointment.slot_start.asc()).first()
 
     def _validate_slot_bookable(
         self,
@@ -372,6 +374,124 @@ class CalendarService:
             logger.info(
                 "Appointment booked: tenant=%s agent=%s slot=%s customer=%s",
                 tenant_id, agent_id, slot_start_utc, customer_name,
+            )
+        except IntegrityError:
+            db.rollback()
+            raise ValueError(
+                f"The {_fmt_slot_label(slot_local)} slot was just taken. "
+                "Please choose another time."
+            )
+        return appt
+
+    def get_active_appointment_for_call_session(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        call_session_id: uuid.UUID,
+    ) -> Optional[Appointment]:
+        """Latest confirmed/pending appointment tied to this call (for in-call reschedule)."""
+        return (
+            db.query(Appointment)
+            .filter(
+                Appointment.tenant_id == tenant_id,
+                Appointment.call_session_id == call_session_id,
+                Appointment.status.in_(["confirmed", "pending"]),
+            )
+            .order_by(Appointment.created_at.desc())
+            .first()
+        )
+
+    def reschedule_appointment(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        appointment_id: uuid.UUID,
+        slot_start: datetime,
+        customer_name: Optional[str] = None,
+        customer_phone: Optional[str] = None,
+        appointment_reason: Optional[str] = None,
+        customer_email: Optional[str] = None,
+        notes: Optional[str] = None,
+        duration_minutes: Optional[int] = None,
+    ) -> Appointment:
+        """
+        Move an existing appointment to a new slot. Same validation as booking;
+        the current appointment is excluded from overlap checks.
+        """
+        appt = self.get_appointment_by_id(db, appointment_id, tenant_id)
+        if not appt:
+            raise ValueError("Appointment not found.")
+        if appt.status not in ("confirmed", "pending"):
+            raise ValueError(
+                f"Cannot reschedule an appointment that is {appt.status}."
+            )
+
+        eff_duration = (
+            duration_minutes if duration_minutes is not None else appt.duration_minutes
+        )
+
+        (
+            bh,
+            tz_info,
+            slot_local,
+            slot_end_local,
+            slot_start_utc,
+            slot_end_utc,
+            resolved_duration,
+        ) = self._resolve_booking_context(
+            db=db,
+            tenant_id=tenant_id,
+            slot_start=slot_start,
+            duration_minutes=eff_duration,
+        )
+
+        self._validate_slot_bookable(
+            db=db,
+            tenant_id=tenant_id,
+            slot_local=slot_local,
+            slot_end_local=slot_end_local,
+            slot_start_utc=slot_start_utc,
+            slot_end_utc=slot_end_utc,
+            bh=bh,
+            tz_info=tz_info,
+        )
+
+        conflict = self._get_overlapping_appointment(
+            db=db,
+            tenant_id=tenant_id,
+            slot_start=slot_start_utc,
+            slot_end=slot_end_utc,
+            exclude_appointment_id=appointment_id,
+        )
+        if conflict:
+            raise ValueError(
+                f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
+                "Please choose another time."
+            )
+
+        if customer_name is not None:
+            appt.customer_name = customer_name
+        if customer_phone is not None:
+            appt.customer_phone = customer_phone
+        if appointment_reason is not None:
+            appt.appointment_reason = appointment_reason
+        if customer_email is not None:
+            appt.customer_email = customer_email
+        if notes is not None:
+            appt.notes = notes
+
+        appt.slot_start = slot_start_utc
+        appt.slot_end = slot_end_utc
+        appt.duration_minutes = resolved_duration
+
+        try:
+            db.commit()
+            db.refresh(appt)
+            logger.info(
+                "Appointment rescheduled: id=%s tenant=%s new_slot=%s",
+                appointment_id,
+                tenant_id,
+                slot_start_utc,
             )
         except IntegrityError:
             db.rollback()

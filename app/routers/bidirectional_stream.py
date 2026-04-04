@@ -834,6 +834,7 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- If they already booked on this call and want a different time: offer [CHECK_SLOTS:...] again, then emit the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
 - Never book a slot that is in the past (check CURRENT DATE & TIME above).
 - Speak naturally; the system handles the actual booking silently.
@@ -873,6 +874,7 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
 - Never book a slot in the past (see CURRENT DATE & TIME).
 
@@ -908,6 +910,7 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
 - Never book a slot in the past (see CURRENT DATE & TIME).
 
@@ -1394,26 +1397,53 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             call_session_id = self.call_session.id
 
             loop = asyncio.get_running_loop()
+
+            def _existing_for_call():
+                return _cal.get_active_appointment_for_call_session(
+                    self.db, tenant_id, call_session_id
+                )
+
+            existing = await loop.run_in_executor(None, _existing_for_call)
+
             try:
-                appt = await loop.run_in_executor(
-                    None,
-                    lambda: _cal.book_appointment(
-                        db=self.db,
-                        tenant_id=tenant_id,
-                        customer_name=customer_name,
-                        customer_phone=customer_phone,
-                        slot_start=slot_start,
-                        agent_id=agent_id,
-                        call_session_id=call_session_id,
-                        appointment_reason=reason,
-                        created_via="voice_agent",
-                    ),
-                )
-                msg = (
-                    f"Done! Your appointment is confirmed for "
-                    f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
-                    f"Is there anything else I can help you with?"
-                )
+                if existing:
+                    appt = await loop.run_in_executor(
+                        None,
+                        lambda: _cal.reschedule_appointment(
+                            db=self.db,
+                            tenant_id=tenant_id,
+                            appointment_id=existing.id,
+                            slot_start=slot_start,
+                            customer_name=customer_name,
+                            customer_phone=customer_phone,
+                            appointment_reason=reason,
+                        ),
+                    )
+                    msg = (
+                        f"All set! I've moved your appointment to "
+                        f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
+                        f"Anything else I can help with?"
+                    )
+                else:
+                    appt = await loop.run_in_executor(
+                        None,
+                        lambda: _cal.book_appointment(
+                            db=self.db,
+                            tenant_id=tenant_id,
+                            customer_name=customer_name,
+                            customer_phone=customer_phone,
+                            slot_start=slot_start,
+                            agent_id=agent_id,
+                            call_session_id=call_session_id,
+                            appointment_reason=reason,
+                            created_via="voice_agent",
+                        ),
+                    )
+                    msg = (
+                        f"Done! Your appointment is confirmed for "
+                        f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
+                        f"Is there anything else I can help you with?"
+                    )
             except ValueError as ve:
                 msg = f"{ve} Would you like to choose a different time?"
 

@@ -77,8 +77,7 @@ class BillingService:
                 logger.warning(f"Session {session_id} not paid yet (status: {session.payment_status})")
                 return None
 
-            # StripeObject: use [] or attributes — .get() is not dict.get (KeyError 'get').
-            metadata = session["metadata"] or {}
+            metadata = StripeService.stripe_metadata_as_dict(session["metadata"])
             user_id_str = metadata.get('user_id')
             tenant_id_str = metadata.get('tenant_id')
             plan_id_str = metadata.get('plan_id')
