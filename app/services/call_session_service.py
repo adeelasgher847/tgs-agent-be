@@ -13,6 +13,11 @@ from datetime import datetime, timezone
 import json
 import asyncio
 from app.core.logger import logger
+from app.services.inbound_call_crm_sync_service import (
+    schedule_inbound_crm_sync,
+    tenant_has_active_inbound_crm,
+)
+
 
 class CallSessionService:
     """Service class for handling call session operations"""
@@ -191,6 +196,16 @@ class CallSessionService:
             
             # Update associated call log
             self._update_call_log_for_session(db, call_session, ended_reason, success_evaluation, cost)
+
+            if (
+                (call_session.call_type or "").lower() == "inbound"
+                and status in ("completed", "failed", "busy")
+                and tenant_has_active_inbound_crm(db, call_session.tenant_id)
+            ):
+                try:
+                    schedule_inbound_crm_sync(call_session.id)
+                except Exception as sync_exc:  # pragma: no cover
+                    logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
         
         return call_session
     

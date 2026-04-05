@@ -1545,6 +1545,16 @@ async def analyze_call_transcript(
             user_id=user.id,
         )
 
+        try:
+            from app.services.inbound_call_crm_sync_service import schedule_inbound_crm_sync
+
+            schedule_inbound_crm_sync(session_uuid)
+        except Exception as crm_exc:
+            logger.warning(
+                "Inbound CRM refresh after transcript analysis skipped (non-critical): %s",
+                crm_exc,
+            )
+
         return create_success_response(
             data=analysis_result,
             message=f"Transcript analysis completed successfully using {analysis_result.get('model_used')}",

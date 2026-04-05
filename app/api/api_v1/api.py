@@ -15,6 +15,7 @@ from app.routers.crm_config import router as crm_config_router
 from app.routers.clickup_oauth import router as clickup_oauth_router
 from app.routers.knowledge_base import router as knowledge_base_router
 from app.routers.calendar import router as calendar_router
+from app.routers.inbound_crm import router as inbound_crm_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -43,3 +44,4 @@ api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Co
 api_router.include_router(clickup_oauth_router, prefix="/auth/clickup", tags=["ClickUp OAuth"],include_in_schema=False)
 api_router.include_router(knowledge_base_router, prefix="/kb", tags=["Knowledge Base"])
 api_router.include_router(calendar_router, prefix="/calendar", tags=["Calendar"])
+api_router.include_router(inbound_crm_router, prefix="/inbound-crm", tags=["Inbound CRM — Call logs"])
