@@ -17,7 +17,8 @@ from app.models.appointment import Appointment
 from app.models.blocked_slot import BlockedSlot
 from app.models.business_hours import BusinessHours
 from app.models.tenant import Tenant
-from app.services.calendar_service import calendar_service
+from app.schemas.calendar import BusinessHoursUpsert
+from app.services.calendar_service import BusinessHoursConflictError, calendar_service
 
 
 TENANT_TZ = "Asia/Karachi"
@@ -75,6 +76,39 @@ def _set_business_hours(db, tenant_id, target_date, *, slot_minutes=30):
     db.add(row)
     db.commit()
     return row
+
+
+def test_create_business_hours_inserts_new_days(calendar_db):
+    tenant = _tenant(calendar_db)
+    payload = [
+        BusinessHoursUpsert(day_of_week=0, open_time="09:00", close_time="17:00", timezone=TENANT_TZ),
+    ]
+    rows = calendar_service.create_business_hours(calendar_db, tenant.id, payload)
+    assert len(rows) == 1
+    assert rows[0].day_of_week == 0
+
+
+def test_create_business_hours_rejects_duplicate_payload_days(calendar_db):
+    tenant = _tenant(calendar_db)
+    payload = [
+        BusinessHoursUpsert(day_of_week=1, open_time="09:00", close_time="17:00", timezone=TENANT_TZ),
+        BusinessHoursUpsert(day_of_week=1, open_time="10:00", close_time="18:00", timezone=TENANT_TZ),
+    ]
+    with pytest.raises(ValueError, match="Duplicate"):
+        calendar_service.create_business_hours(calendar_db, tenant.id, payload)
+
+
+def test_create_business_hours_rejects_existing_weekday(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).date()
+    _set_business_hours(calendar_db, tenant.id, target_date)
+    dow = target_date.weekday()
+    payload = [
+        BusinessHoursUpsert(day_of_week=dow, open_time="09:00", close_time="17:00", timezone=TENANT_TZ),
+    ]
+    with pytest.raises(BusinessHoursConflictError) as excinfo:
+        calendar_service.create_business_hours(calendar_db, tenant.id, payload)
+    assert dow in excinfo.value.days
 
 
 def test_booking_uses_tenant_timezone_and_blocks_same_slot(calendar_db):

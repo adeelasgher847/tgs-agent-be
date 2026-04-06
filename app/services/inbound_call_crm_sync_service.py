@@ -9,10 +9,13 @@ caller name, and transcript-based success evaluation to Trello — not the DB su
 from __future__ import annotations
 
 import asyncio
+import struct
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 
@@ -128,8 +131,49 @@ def tenant_has_active_inbound_crm(db: Session, tenant_id: uuid.UUID) -> bool:
     return bool(cfg and cfg.container_id and str(cfg.container_id).strip())
 
 
+def _pg_advisory_key_pair(call_log_id: uuid.UUID) -> Tuple[int, int]:
+    """Two int32 keys derived from call_log id (stable per log) for pg_advisory_lock."""
+    return struct.unpack(">ii", call_log_id.bytes[:8])
+
+
+def _try_acquire_inbound_sync_lock(db: Session, call_log_id: uuid.UUID) -> bool:
+    """
+    Serialize sync for one call_log across workers (Twilio webhook + stream both schedule sync).
+    Returns False if lock unavailable (another worker is syncing); caller should exit quietly.
+    """
+    try:
+        if db.get_bind().dialect.name != "postgresql":
+            return True
+        k1, k2 = _pg_advisory_key_pair(call_log_id)
+        row = db.execute(
+            text("SELECT pg_try_advisory_lock(:k1, :k2) AS ok"),
+            {"k1": k1, "k2": k2},
+        ).mappings().first()
+        return bool(row and row.get("ok"))
+    except Exception:
+        logger.warning("Inbound CRM sync: advisory lock check failed (continuing without lock)", exc_info=True)
+        return True
+
+
+def _release_inbound_sync_lock(db: Session, call_log_id: uuid.UUID) -> None:
+    try:
+        if db.get_bind().dialect.name != "postgresql":
+            return
+        k1, k2 = _pg_advisory_key_pair(call_log_id)
+        db.execute(text("SELECT pg_advisory_unlock(:k1, :k2)"), {"k1": k1, "k2": k2})
+        db.commit()
+    except Exception:
+        logger.warning("Inbound CRM sync: pg_advisory_unlock failed (non-critical)", exc_info=True)
+    finally:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 def sync_inbound_call_to_crm(call_session_id: uuid.UUID) -> None:
     db: Session = SessionLocal()
+    lock_log_id: Optional[uuid.UUID] = None
     try:
         session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
         if not session or (session.call_type or "").lower() != "inbound":
@@ -143,98 +187,155 @@ def sync_inbound_call_to_crm(call_session_id: uuid.UUID) -> None:
             logger.warning("Inbound CRM sync: no CallLog for session %s", call_session_id)
             return
 
-        config = (
-            db.query(TenantInboundCRMConfig)
-            .filter(
-                TenantInboundCRMConfig.tenant_id == session.tenant_id,
-                TenantInboundCRMConfig.is_enabled.is_(True),
-                TenantInboundCRMConfig.provider == "trello",
-            )
+        pre_sync = (
+            db.query(CallLogCRMSync)
+            .filter(CallLogCRMSync.call_log_id == call_log.id)
             .first()
         )
-        if not config:
+        if pre_sync and pre_sync.sync_status == "success" and (pre_sync.external_item_id or "").strip():
+            logger.debug(
+                "Inbound CRM sync: already successful for call_log=%s, skipping duplicate run",
+                call_log.id,
+            )
             return
 
-        if not config.container_id:
-            logger.warning("Inbound CRM sync: no board (container_id) for tenant %s", session.tenant_id)
+        if not _try_acquire_inbound_sync_lock(db, call_log.id):
+            logger.debug(
+                "Inbound CRM sync: another worker holds lock for call_log=%s, skipping",
+                call_log.id,
+            )
             return
-
-        from app.services.voice_analysis_service import voice_analysis_service
+        lock_log_id = call_log.id
 
         try:
-            voice_analysis_service.analyze_call_transcript(
-                db,
-                session,
-                session.user_id,
-                raise_on_no_transcript=False,
-            )
-        except HTTPException as he:
-            logger.warning(
-                "Inbound CRM auto-analysis skipped or failed (HTTP): %s",
-                he.detail,
-            )
-        except Exception:
-            logger.exception("Inbound CRM auto-analysis failed (continuing with Trello sync)")
+            _sync_inbound_call_to_crm_locked(db, call_session_id, session, call_log)
+        finally:
+            if lock_log_id is not None:
+                _release_inbound_sync_lock(db, lock_log_id)
+    finally:
+        db.close()
 
-        session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
-        call_log = db.query(CallLog).filter(CallLog.call_session_id == session.id).first()
-        if not session or not call_log:
-            logger.warning("Inbound CRM sync: session/log missing after analysis")
-            return
 
-        sync_row = db.query(CallLogCRMSync).filter(CallLogCRMSync.call_log_id == call_log.id).first()
-        if not sync_row:
-            sync_row = CallLogCRMSync(
-                call_log_id=call_log.id,
-                tenant_inbound_crm_config_id=config.id,
-                sync_status="pending",
-                attempt_count=0,
-            )
-            db.add(sync_row)
+def _sync_inbound_call_to_crm_locked(
+    db: Session,
+    call_session_id: uuid.UUID,
+    session: CallSession,
+    call_log: CallLog,
+) -> None:
+    """Body of inbound CRM sync while holding pg_try_advisory_lock for call_log.id."""
+    config = (
+        db.query(TenantInboundCRMConfig)
+        .filter(
+            TenantInboundCRMConfig.tenant_id == session.tenant_id,
+            TenantInboundCRMConfig.is_enabled.is_(True),
+            TenantInboundCRMConfig.provider == "trello",
+        )
+        .first()
+    )
+    if not config:
+        return
+
+    if not config.container_id:
+        logger.warning("Inbound CRM sync: no board (container_id) for tenant %s", session.tenant_id)
+        return
+
+    from app.services.voice_analysis_service import voice_analysis_service
+
+    try:
+        voice_analysis_service.analyze_call_transcript(
+            db,
+            session,
+            session.user_id,
+            raise_on_no_transcript=False,
+        )
+    except HTTPException as he:
+        logger.warning(
+            "Inbound CRM auto-analysis skipped or failed (HTTP): %s",
+            he.detail,
+        )
+    except Exception:
+        logger.exception("Inbound CRM auto-analysis failed (continuing with Trello sync)")
+
+    session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+    call_log = db.query(CallLog).filter(CallLog.call_session_id == session.id).first()
+    if not session or not call_log:
+        logger.warning("Inbound CRM sync: session/log missing after analysis")
+        return
+
+    sync_row = db.query(CallLogCRMSync).filter(CallLogCRMSync.call_log_id == call_log.id).first()
+    if sync_row and sync_row.sync_status == "success" and (sync_row.external_item_id or "").strip():
+        logger.debug(
+            "Inbound CRM sync: concurrent run finished first for call_log=%s, skipping",
+            call_log.id,
+        )
+        return
+
+    if not sync_row:
+        sync_row = CallLogCRMSync(
+            call_log_id=call_log.id,
+            tenant_inbound_crm_config_id=config.id,
+            sync_status="pending",
+            attempt_count=0,
+        )
+        db.add(sync_row)
+        try:
             db.commit()
             db.refresh(sync_row)
-
-        try:
-            trello = _trello_for_config(config)
-            list_id = config.default_list_id
-            if not list_id:
-                list_id = trello.ensure_inbound_call_logs_list(config.container_id)
-                config.default_list_id = list_id
-                db.add(config)
-                db.commit()
-
-            desc = _build_card_description(call_log, session)
-            title = _card_title(call_log, session)
-
-            if sync_row.external_item_id:
-                result = trello.update_inbound_call_log_card(
-                    sync_row.external_item_id,
-                    card_name=title,
-                    description=desc,
+        except IntegrityError:
+            db.rollback()
+            sync_row = (
+                db.query(CallLogCRMSync)
+                .filter(CallLogCRMSync.call_log_id == call_log.id)
+                .first()
+            )
+            if not sync_row:
+                raise
+            if sync_row.sync_status == "success" and (sync_row.external_item_id or "").strip():
+                logger.debug(
+                    "Inbound CRM sync: row created by peer for call_log=%s, skipping",
+                    call_log.id,
                 )
-            else:
-                result = trello.create_inbound_call_log_card(list_id, title, desc)
+                return
 
-            sync_row.external_item_id = result.get("id", sync_row.external_item_id)
-            sync_row.external_item_url = result.get("url") or sync_row.external_item_url
-            sync_row.sync_status = "success"
-            sync_row.last_error = None
+    try:
+        trello = _trello_for_config(config)
+        list_id = config.default_list_id
+        if not list_id:
+            list_id = trello.ensure_inbound_call_logs_list(config.container_id)
+            config.default_list_id = list_id
+            db.add(config)
+            db.commit()
+
+        desc = _build_card_description(call_log, session)
+        title = _card_title(call_log, session)
+
+        if sync_row.external_item_id:
+            result = trello.update_inbound_call_log_card(
+                sync_row.external_item_id,
+                card_name=title,
+                description=desc,
+            )
+        else:
+            result = trello.create_inbound_call_log_card(list_id, title, desc)
+
+        sync_row.external_item_id = result.get("id", sync_row.external_item_id)
+        sync_row.external_item_url = result.get("url") or sync_row.external_item_url
+        sync_row.sync_status = "success"
+        sync_row.last_error = None
+        sync_row.updated_at = datetime.now(timezone.utc)
+        db.add(sync_row)
+        db.commit()
+        logger.info("Inbound CRM sync OK call_log=%s card=%s", call_log.id, sync_row.external_item_id)
+    except Exception as e:
+        logger.exception("Inbound CRM sync failed for session %s", call_session_id)
+        sync_row = db.query(CallLogCRMSync).filter(CallLogCRMSync.call_log_id == call_log.id).first()
+        if sync_row:
+            sync_row.attempt_count = (sync_row.attempt_count or 0) + 1
+            sync_row.sync_status = "failed"
+            sync_row.last_error = str(e)[:2000]
             sync_row.updated_at = datetime.now(timezone.utc)
             db.add(sync_row)
             db.commit()
-            logger.info("Inbound CRM sync OK call_log=%s card=%s", call_log.id, sync_row.external_item_id)
-        except Exception as e:
-            logger.exception("Inbound CRM sync failed for session %s", call_session_id)
-            sync_row = db.query(CallLogCRMSync).filter(CallLogCRMSync.call_log_id == call_log.id).first()
-            if sync_row:
-                sync_row.attempt_count = (sync_row.attempt_count or 0) + 1
-                sync_row.sync_status = "failed"
-                sync_row.last_error = str(e)[:2000]
-                sync_row.updated_at = datetime.now(timezone.utc)
-                db.add(sync_row)
-                db.commit()
-    finally:
-        db.close()
 
 
 async def sync_inbound_call_to_crm_async(call_session_id: uuid.UUID) -> None:

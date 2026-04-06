@@ -21,6 +21,15 @@ from app.schemas.calendar import (
 
 SLOT_BOOKING_BUFFER_MINUTES = 15
 
+
+class BusinessHoursConflictError(Exception):
+    """Raised when creating business hours for weekdays that already exist for the tenant."""
+
+    def __init__(self, days: List[int]):
+        self.days = days
+        super().__init__()
+
+
 ALLOWED_STATUS_TRANSITIONS = {
     "pending":   {"confirmed", "cancelled"},
     "confirmed": {"completed", "cancelled", "no_show"},
@@ -598,6 +607,50 @@ class CalendarService:
             .first()
         )
         return bh[0] if bh else "UTC"
+
+    def create_business_hours(
+        self, db: Session, tenant_id: uuid.UUID, hours_list: List[BusinessHoursUpsert]
+    ) -> List[BusinessHours]:
+        """Insert business hours only; fails if any requested weekday already exists."""
+        if not hours_list:
+            return []
+        days = [item.day_of_week for item in hours_list]
+        if len(days) != len(set(days)):
+            raise ValueError("Duplicate day_of_week values in request body.")
+        existing = (
+            db.query(BusinessHours.day_of_week)
+            .filter(
+                BusinessHours.tenant_id == tenant_id,
+                BusinessHours.day_of_week.in_(days),
+            )
+            .all()
+        )
+        if existing:
+            raise BusinessHoursConflictError(sorted({row[0] for row in existing}))
+
+        results: List[BusinessHours] = []
+        for item in hours_list:
+            open_t = _parse_time_str(item.open_time) if item.open_time else None
+            close_t = _parse_time_str(item.close_time) if item.close_time else None
+            bh = BusinessHours(
+                tenant_id=tenant_id,
+                day_of_week=item.day_of_week,
+                open_time=open_t,
+                close_time=close_t,
+                is_closed=item.is_closed,
+                timezone=item.timezone,
+                slot_duration_minutes=item.slot_duration_minutes,
+            )
+            db.add(bh)
+            results.append(bh)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise BusinessHoursConflictError(days)
+        for r in results:
+            db.refresh(r)
+        return results
 
     def upsert_business_hours(
         self, db: Session, tenant_id: uuid.UUID, hours_list: List[BusinessHoursUpsert]

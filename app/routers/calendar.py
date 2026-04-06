@@ -14,7 +14,7 @@ from app.schemas.calendar import (
     AppointmentListResponse,
     AvailableSlotsResponse,
 )
-from app.services.calendar_service import calendar_service
+from app.services.calendar_service import BusinessHoursConflictError, calendar_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
@@ -185,6 +185,28 @@ def get_business_hours(
     db: Session = Depends(get_db),
 ):
     hours = calendar_service.get_business_hours(db, user.current_tenant_id)
+    return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
+
+
+@router.post("/business-hours", response_model=SuccessResponse[List[BusinessHoursOut]], status_code=status.HTTP_201_CREATED)
+def create_business_hours(
+    payload: List[BusinessHoursUpsert],
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Create business hours for the tenant. Use PUT to update existing weekdays."""
+    try:
+        hours = calendar_service.create_business_hours(db, user.current_tenant_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except BusinessHoursConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Business hours already exist for one or more weekdays.",
+                "day_of_week": exc.days,
+            },
+        ) from exc
     return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
 
 
