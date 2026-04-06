@@ -142,14 +142,25 @@ def upsert_inbound_crm_config(
         if not row.container_id:
             row.default_list_id = None
 
-    if row.container_id and row.is_enabled:
+    if row.is_enabled:
         try:
             svc = _trello_for_config(row)
-            row.container_url = svc.get_board_url(row.container_id)
-            if not row.default_list_id:
-                row.default_list_id = svc.ensure_inbound_call_logs_list(row.container_id)
+            if row.container_id:
+                row.container_url = svc.get_board_url(row.container_id)
+                if not row.default_list_id:
+                    row.default_list_id = svc.ensure_inbound_call_logs_list(row.container_id)
+            else:
+                tenant = db.query(Tenant).filter(Tenant.id == tid).first()
+                board_name = f"Call logs — {tenant.name if tenant else tid}"
+                created = svc.create_container(board_name)
+                board_id = created.get("id", "")
+                if not board_id:
+                    raise ValueError("Trello did not return a board id")
+                row.container_id = board_id
+                row.container_url = svc.get_board_url(board_id)
+                row.default_list_id = svc.ensure_inbound_call_logs_list(board_id)
         except Exception as e:
-            logger.warning("Could not verify Trello board/list: %s", e)
+            logger.warning("Could not verify/provision Trello board/list: %s", e)
 
     db.commit()
     db.refresh(row)

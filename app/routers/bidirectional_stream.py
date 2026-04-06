@@ -2015,17 +2015,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Mark as ended to prevent multiple calls
                     self._call_ended = True
                     
-                    # Update call session status to completed
+                    # Use shared status updater so CallLog + inbound CRM sync hooks run reliably.
                     if self.call_session:
-                        self.call_session.status = "completed"
-                        self.call_session.end_time = datetime.now(timezone.utc)
-                        self.call_session.ended_reason = "User said goodbye"
-                        
-                        if self.call_session.start_time:
-                            duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
-                            self.call_session.duration = int(duration)
-                        
-                        self.db.commit()
+                        updated = call_session_service.update_call_session_status(
+                            self.db,
+                            self.call_session.id,
+                            "completed",
+                            ended_reason="User said goodbye",
+                        )
+                        if updated:
+                            self.call_session = updated
                     
                     # End Twilio call with DB-derived credentials (no env fallback).
                     if self.call_sid and self.call_session:
@@ -2080,13 +2079,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             self._call_ended = True
             if self.call_session:
-                self.call_session.status = "completed"
-                self.call_session.end_time = datetime.now(timezone.utc)
-                self.call_session.ended_reason = "Agent sent [END_CALL]"
-                if self.call_session.start_time:
-                    duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
-                    self.call_session.duration = int(duration)
-                self.db.commit()
+                updated = call_session_service.update_call_session_status(
+                    self.db,
+                    self.call_session.id,
+                    "completed",
+                    ended_reason="Agent sent [END_CALL]",
+                )
+                if updated:
+                    self.call_session = updated
             if self.call_sid and self.call_session:
                 try:
                     account_sid, auth_token = get_twilio_credentials_for_call(
@@ -2163,17 +2163,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Mark as ended to prevent multiple calls
                     self._call_ended = True
                     
-                    # Update call session status to completed
+                    # Use shared status updater so CallLog + inbound CRM sync hooks run reliably.
                     if self.call_session:
-                        self.call_session.status = "completed"
-                        self.call_session.end_time = datetime.now(timezone.utc)
-                        self.call_session.ended_reason = "Voicemail detected"
-                        
-                        if self.call_session.start_time:
-                            duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
-                            self.call_session.duration = int(duration)
-                        
-                        self.db.commit()
+                        updated = call_session_service.update_call_session_status(
+                            self.db,
+                            self.call_session.id,
+                            "completed",
+                            ended_reason="Voicemail detected",
+                        )
+                        if updated:
+                            self.call_session = updated
                     
                     # End Twilio call immediately with DB-derived credentials (no env fallback).
                     if self.call_sid and self.call_session:
