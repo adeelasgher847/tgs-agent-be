@@ -111,6 +111,37 @@ def test_create_business_hours_rejects_existing_weekday(calendar_db):
     assert dow in excinfo.value.days
 
 
+def test_delete_business_hours_removes_row(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).date()
+    row = _set_business_hours(calendar_db, tenant.id, target_date)
+    deleted = calendar_service.delete_business_hours(calendar_db, row.id, tenant.id)
+    assert deleted is True
+    assert (
+        calendar_db.query(BusinessHours)
+        .filter(BusinessHours.id == row.id)
+        .first()
+        is None
+    )
+
+
+def test_delete_business_hours_rejects_other_tenant_row(calendar_db):
+    tenant = _tenant(calendar_db)
+    other = Tenant(name="Other Tenant", schema_name="other_tenant")
+    calendar_db.add(other)
+    calendar_db.commit()
+    target_date = datetime.now(timezone.utc).date()
+    row = _set_business_hours(calendar_db, other.id, target_date)
+    deleted = calendar_service.delete_business_hours(calendar_db, row.id, tenant.id)
+    assert deleted is False
+    assert (
+        calendar_db.query(BusinessHours)
+        .filter(BusinessHours.id == row.id)
+        .first()
+        is not None
+    )
+
+
 def test_to_appointment_out_adds_local_fields_matching_business_timezone(calendar_db):
     tenant = _tenant(calendar_db)
     target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=1)

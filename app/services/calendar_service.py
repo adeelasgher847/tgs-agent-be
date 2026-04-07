@@ -730,6 +730,23 @@ class CalendarService:
             db.refresh(r)
         return results
 
+    def delete_business_hours(
+        self, db: Session, business_hours_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> bool:
+        row = (
+            db.query(BusinessHours)
+            .filter(
+                BusinessHours.id == business_hours_id,
+                BusinessHours.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not row:
+            return False
+        db.delete(row)
+        db.commit()
+        return True
+
     # ── Blocked Slots ─────────────────────────────────────────────────────────
 
     def get_blocked_slots(self, db: Session, tenant_id: uuid.UUID) -> List[BlockedSlot]:

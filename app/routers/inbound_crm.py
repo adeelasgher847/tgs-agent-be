@@ -44,6 +44,52 @@ def _to_public(row: TenantInboundCRMConfig) -> TenantInboundCRMConfigPublic:
     )
 
 
+def _ensure_tenant_board(
+    db: Session,
+    row: TenantInboundCRMConfig,
+) -> TenantInboundCRMProvisionResponse:
+    """
+    Ensure tenant has a usable Trello board/list mapping.
+    Reuses existing board when valid, otherwise provisions a new one.
+    """
+    tenant = db.query(Tenant).filter(Tenant.id == row.tenant_id).first()
+    name = f"Call logs — {tenant.name if tenant else row.tenant_id}"
+    svc = _trello_for_config(row)
+
+    board_id = (row.container_id or "").strip()
+    if board_id:
+        try:
+            board_url = svc.get_board_url(board_id)
+            list_id = svc.ensure_inbound_call_logs_list(board_id)
+            row.container_url = board_url
+            row.default_list_id = list_id
+            db.add(row)
+            db.commit()
+            return TenantInboundCRMProvisionResponse(
+                board_id=board_id,
+                board_url=board_url or "",
+                list_id=list_id or "",
+            )
+        except Exception as e:
+            # Board may have been deleted/unavailable; recover by creating a fresh board.
+            logger.warning("Existing inbound CRM board unavailable, provisioning a new one: %s", e)
+
+    created = svc.create_container(name)
+    new_board_id = created.get("id", "")
+    if not new_board_id:
+        raise HTTPException(status_code=502, detail="Trello did not return a board id")
+    row.container_id = new_board_id
+    row.container_url = svc.get_board_url(new_board_id)
+    row.default_list_id = svc.ensure_inbound_call_logs_list(new_board_id)
+    db.add(row)
+    db.commit()
+    return TenantInboundCRMProvisionResponse(
+        board_id=new_board_id,
+        board_url=row.container_url or "",
+        list_id=row.default_list_id or "",
+    )
+
+
 @router.get("/config", response_model=SuccessResponse[TenantInboundCRMConfigPublic | None])
 def get_inbound_crm_config(
     user: User = Depends(require_tenant),
@@ -64,33 +110,52 @@ def get_inbound_crm_board_url(
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
-    """Board link for this tenant to open Trello and view call cards (any tenant member)."""
+    """Get or provision tenant board URL. Keeps the same board unless it no longer exists."""
     row = (
         db.query(TenantInboundCRMConfig)
         .filter(TenantInboundCRMConfig.tenant_id == user.current_tenant_id)
         .first()
     )
-    if not row or not row.container_id:
+    if not row:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No inbound CRM board configured for this tenant",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Save inbound CRM config (keys / connection type) first",
         )
+    if not row.is_enabled:
+        raise HTTPException(status_code=400, detail="Inbound CRM is disabled for this tenant")
 
-    board_url = (row.container_url or "").strip()
-    if not board_url:
-        try:
-            board_url = _trello_for_config(row).get_board_url(row.container_id)
-            row.container_url = board_url
-            db.add(row)
-            db.commit()
-        except Exception as e:
-            logger.warning("Could not resolve Trello board URL from API: %s", e)
-            board_url = f"https://trello.com/b/{row.container_id}"
-
+    try:
+        provisioned = _ensure_tenant_board(db, row)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("get_inbound_crm_board_url failed")
+        raise HTTPException(status_code=502, detail=str(e))
     return create_success_response(
-        InboundBoardUrlOut(board_url=board_url, board_id=row.container_id),
+        InboundBoardUrlOut(board_url=provisioned.board_url, board_id=provisioned.board_id),
         "Inbound CRM board URL",
     )
+
+
+@router.post("/config", response_model=SuccessResponse[TenantInboundCRMConfigPublic])
+def create_inbound_crm_config(
+    body: TenantInboundCRMConfigUpsert,
+    user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Create inbound CRM config once. Use PUT /config to update existing config."""
+    tid = user.current_tenant_id
+    if not tid:
+        raise HTTPException(status_code=400, detail="No tenant selected")
+    existing = db.query(TenantInboundCRMConfig).filter(TenantInboundCRMConfig.tenant_id == tid).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Inbound CRM configuration already exists. Use PUT /config to update it.",
+        )
+    return upsert_inbound_crm_config(body=body, user=user, db=db)
 
 
 @router.put("/config", response_model=SuccessResponse[TenantInboundCRMConfigPublic])
@@ -185,57 +250,12 @@ def validate_inbound_crm_credentials(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/config/provision-board", response_model=SuccessResponse[TenantInboundCRMProvisionResponse])
-def provision_inbound_crm_board(
-    user: User = Depends(require_owner),
-    db: Session = Depends(get_db),
-):
-    tid = user.current_tenant_id
-    row = db.query(TenantInboundCRMConfig).filter(TenantInboundCRMConfig.tenant_id == tid).first()
-    if not row:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Save inbound CRM config (keys / connection type) first",
-        )
-
-    tenant = db.query(Tenant).filter(Tenant.id == tid).first()
-    name = f"Call logs — {tenant.name if tenant else tid}"
-
-    try:
-        svc = _trello_for_config(row)
-        created = svc.create_container(name)
-        board_id = created.get("id", "")
-        if not board_id:
-            raise HTTPException(status_code=502, detail="Trello did not return a board id")
-        row.container_id = board_id
-        row.container_url = svc.get_board_url(board_id)
-        row.default_list_id = svc.ensure_inbound_call_logs_list(board_id)
-        db.add(row)
-        db.commit()
-        return create_success_response(
-            TenantInboundCRMProvisionResponse(
-                board_id=board_id,
-                board_url=row.container_url or "",
-                list_id=row.default_list_id or "",
-            ),
-            "Board provisioned",
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("provision_inbound_crm_board failed")
-        raise HTTPException(status_code=502, detail=str(e))
-
-
 @router.delete("/config", response_model=SuccessResponse[dict])
 def delete_inbound_crm_config(
     user: User = Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
-    """
-    Owner or admin: remove this tenant's cards from their Trello board (tracked in sync),
-    then remove DB config. The Trello board itself is never deleted.
-    """
+    """Owner/admin: clear inbound call log cards only; keep board and tenant configuration."""
     tid = user.current_tenant_id
     if not tid:
         raise HTTPException(status_code=400, detail="No tenant selected")
@@ -249,5 +269,5 @@ def delete_inbound_crm_config(
 
     return create_success_response(
         result,
-        "Inbound CRM disconnected; call cards removed from Trello where possible; board kept on Trello",
+        "Inbound CRM logs cleared from Trello where possible; board/config kept",
     )

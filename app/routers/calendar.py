@@ -232,6 +232,18 @@ def upsert_business_hours(
     return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
 
 
+@router.delete("/business-hours/{business_hours_id}", response_model=SuccessResponse[dict])
+def delete_business_hours(
+    business_hours_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    deleted = calendar_service.delete_business_hours(db, business_hours_id, user.current_tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business hours not found")
+    return create_success_response(data={"deleted": True, "id": str(business_hours_id)})
+
+
 # ─── Blocked Slots ────────────────────────────────────────────────────────────
 
 @router.get("/blocked-slots", response_model=SuccessResponse[List[BlockedSlotOut]])

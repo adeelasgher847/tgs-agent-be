@@ -353,8 +353,8 @@ def schedule_inbound_crm_sync(call_session_id: uuid.UUID) -> None:
 
 def delete_tenant_inbound_crm_config(db: Session, tenant_id: uuid.UUID) -> Optional[dict]:
     """
-    Remove this tenant's inbound CRM integration: delete only tracked Trello cards (not the board),
-    then remove sync rows and config row. The Trello board itself is always left intact.
+    Clear this tenant's inbound CRM logs: delete tracked Trello cards (not the board),
+    and remove sync rows. Keeps the tenant config row and board mapping intact.
     """
     row = (
         db.query(TenantInboundCRMConfig)
@@ -387,10 +387,11 @@ def delete_tenant_inbound_crm_config(db: Session, tenant_id: uuid.UUID) -> Optio
     db.query(CallLogCRMSync).filter(
         CallLogCRMSync.tenant_inbound_crm_config_id == cfg_id
     ).delete(synchronize_session=False)
-    db.delete(row)
     db.commit()
 
     return {
-        "deleted": True,
+        "cleared": True,
         "trello_cards_deleted": trello_cards_deleted,
+        "board_kept": True,
+        "container_id": row.container_id,
     }
