@@ -117,12 +117,15 @@ def test_delete_business_hours_removes_row(calendar_db):
     row = _set_business_hours(calendar_db, tenant.id, target_date)
     deleted = calendar_service.delete_business_hours(calendar_db, row.id, tenant.id)
     assert deleted is True
-    assert (
+    stored = (
         calendar_db.query(BusinessHours)
         .filter(BusinessHours.id == row.id)
         .first()
-        is None
     )
+    assert stored is not None
+    assert stored.is_deleted is True
+    assert stored.deleted_at is not None
+    assert calendar_service.get_business_hours(calendar_db, tenant.id) == []
 
 
 def test_delete_business_hours_rejects_other_tenant_row(calendar_db):
@@ -140,6 +143,22 @@ def test_delete_business_hours_rejects_other_tenant_row(calendar_db):
         .first()
         is not None
     )
+
+
+def test_create_business_hours_revives_soft_deleted_row(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).date()
+    row = _set_business_hours(calendar_db, tenant.id, target_date)
+    assert calendar_service.delete_business_hours(calendar_db, row.id, tenant.id) is True
+
+    dow = target_date.weekday()
+    payload = [
+        BusinessHoursUpsert(day_of_week=dow, open_time="10:00", close_time="18:00", timezone=TENANT_TZ),
+    ]
+    rows = calendar_service.create_business_hours(calendar_db, tenant.id, payload)
+    assert len(rows) == 1
+    assert rows[0].id == row.id
+    assert rows[0].is_deleted is False
 
 
 def test_to_appointment_out_adds_local_fields_matching_business_timezone(calendar_db):

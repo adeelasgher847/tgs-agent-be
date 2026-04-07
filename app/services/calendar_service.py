@@ -82,6 +82,7 @@ class CalendarService:
             .filter(
                 BusinessHours.tenant_id == tenant_id,
                 BusinessHours.day_of_week == target_date.weekday(),
+                BusinessHours.is_deleted.is_(False),
             )
             .first()
         )
@@ -633,7 +634,10 @@ class CalendarService:
     def get_business_hours(self, db: Session, tenant_id: uuid.UUID) -> List[BusinessHours]:
         return (
             db.query(BusinessHours)
-            .filter(BusinessHours.tenant_id == tenant_id)
+            .filter(
+                BusinessHours.tenant_id == tenant_id,
+                BusinessHours.is_deleted.is_(False),
+            )
             .order_by(BusinessHours.day_of_week.asc())
             .all()
         )
@@ -642,7 +646,10 @@ class CalendarService:
         """Return the timezone string from the first configured business-hours row."""
         bh = (
             db.query(BusinessHours.timezone)
-            .filter(BusinessHours.tenant_id == tenant_id)
+            .filter(
+                BusinessHours.tenant_id == tenant_id,
+                BusinessHours.is_deleted.is_(False),
+            )
             .first()
         )
         return bh[0] if bh else "UTC"
@@ -657,30 +664,45 @@ class CalendarService:
         if len(days) != len(set(days)):
             raise ValueError("Duplicate day_of_week values in request body.")
         existing = (
-            db.query(BusinessHours.day_of_week)
+            db.query(BusinessHours)
             .filter(
                 BusinessHours.tenant_id == tenant_id,
                 BusinessHours.day_of_week.in_(days),
             )
             .all()
         )
-        if existing:
-            raise BusinessHoursConflictError(sorted({row[0] for row in existing}))
+        active_existing_days = sorted({row.day_of_week for row in existing if not row.is_deleted})
+        if active_existing_days:
+            raise BusinessHoursConflictError(active_existing_days)
+
+        deleted_by_day = {row.day_of_week: row for row in existing if row.is_deleted}
 
         results: List[BusinessHours] = []
         for item in hours_list:
             open_t = _parse_time_str(item.open_time) if item.open_time else None
             close_t = _parse_time_str(item.close_time) if item.close_time else None
-            bh = BusinessHours(
-                tenant_id=tenant_id,
-                day_of_week=item.day_of_week,
-                open_time=open_t,
-                close_time=close_t,
-                is_closed=item.is_closed,
-                timezone=item.timezone,
-                slot_duration_minutes=item.slot_duration_minutes,
-            )
-            db.add(bh)
+            bh = deleted_by_day.get(item.day_of_week)
+            if bh:
+                bh.open_time = open_t
+                bh.close_time = close_t
+                bh.is_closed = item.is_closed
+                bh.timezone = item.timezone
+                bh.slot_duration_minutes = item.slot_duration_minutes
+                bh.is_deleted = False
+                bh.deleted_at = None
+            else:
+                bh = BusinessHours(
+                    tenant_id=tenant_id,
+                    day_of_week=item.day_of_week,
+                    open_time=open_t,
+                    close_time=close_t,
+                    is_closed=item.is_closed,
+                    timezone=item.timezone,
+                    slot_duration_minutes=item.slot_duration_minutes,
+                    is_deleted=False,
+                    deleted_at=None,
+                )
+                db.add(bh)
             results.append(bh)
         try:
             db.commit()
@@ -712,6 +734,8 @@ class CalendarService:
                 existing.is_closed = item.is_closed
                 existing.timezone = item.timezone
                 existing.slot_duration_minutes = item.slot_duration_minutes
+                existing.is_deleted = False
+                existing.deleted_at = None
                 results.append(existing)
             else:
                 bh = BusinessHours(
@@ -722,6 +746,8 @@ class CalendarService:
                     is_closed=item.is_closed,
                     timezone=item.timezone,
                     slot_duration_minutes=item.slot_duration_minutes,
+                    is_deleted=False,
+                    deleted_at=None,
                 )
                 db.add(bh)
                 results.append(bh)
@@ -743,7 +769,8 @@ class CalendarService:
         )
         if not row:
             return False
-        db.delete(row)
+        row.is_deleted = True
+        row.deleted_at = datetime.now(timezone.utc)
         db.commit()
         return True
 

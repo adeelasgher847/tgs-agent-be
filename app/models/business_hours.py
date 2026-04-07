@@ -18,6 +18,8 @@ class BusinessHours(Base):
     is_closed = Column(Boolean, nullable=False, server_default="false")
     timezone = Column(String(60), nullable=False, server_default="UTC")
     slot_duration_minutes = Column(Integer, nullable=False, server_default="30")
+    is_deleted = Column(Boolean, nullable=False, server_default="false")
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

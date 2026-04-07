@@ -73,23 +73,15 @@ def create_appointment(
 def list_appointments(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
-    agent_id: Optional[uuid.UUID] = Query(None),
-    appt_status: Optional[str] = Query(None, alias="status"),
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
-    """List appointments with optional filters and pagination."""
+    """List appointments filtered only by date range."""
     items, total = calendar_service.get_appointments(
         db=db,
         tenant_id=user.current_tenant_id,
         date_from=date_from,
         date_to=date_to,
-        agent_id=agent_id,
-        status=appt_status,
-        limit=limit,
-        offset=offset,
     )
     return create_success_response(
         data=AppointmentListResponse(
