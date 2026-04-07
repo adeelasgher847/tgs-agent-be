@@ -63,7 +63,10 @@ def create_appointment(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
-    return create_success_response(data=AppointmentOut.model_validate(appt), status_code=status.HTTP_201_CREATED)
+    return create_success_response(
+        data=calendar_service.to_appointment_out(db, user.current_tenant_id, appt),
+        status_code=status.HTTP_201_CREATED,
+    )
 
 
 @router.get("/appointments", response_model=SuccessResponse[AppointmentListResponse])
@@ -90,7 +93,9 @@ def list_appointments(
     )
     return create_success_response(
         data=AppointmentListResponse(
-            appointments=[AppointmentOut.model_validate(a) for a in items],
+            appointments=[
+                calendar_service.to_appointment_out(db, user.current_tenant_id, a) for a in items
+            ],
             total=total,
         )
     )
@@ -105,7 +110,9 @@ def get_appointment(
     appt = calendar_service.get_appointment_by_id(db, appointment_id, user.current_tenant_id)
     if not appt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
-    return create_success_response(data=AppointmentOut.model_validate(appt))
+    return create_success_response(
+        data=calendar_service.to_appointment_out(db, user.current_tenant_id, appt)
+    )
 
 
 @router.patch(
@@ -137,7 +144,9 @@ def reschedule_appointment(
         if msg == "Appointment not found.":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=msg)
-    return create_success_response(data=AppointmentOut.model_validate(appt))
+    return create_success_response(
+        data=calendar_service.to_appointment_out(db, user.current_tenant_id, appt)
+    )
 
 
 @router.patch("/appointments/{appointment_id}", response_model=SuccessResponse[AppointmentOut])
@@ -161,7 +170,9 @@ def update_appointment_status(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     if not appt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
-    return create_success_response(data=AppointmentOut.model_validate(appt))
+    return create_success_response(
+        data=calendar_service.to_appointment_out(db, user.current_tenant_id, appt)
+    )
 
 
 @router.delete("/appointments/{appointment_id}", response_model=SuccessResponse[dict])

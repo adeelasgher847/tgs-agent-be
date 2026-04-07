@@ -126,6 +126,19 @@ class AppointmentOut(BaseModel):
     cancellation_reason: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    # Additive: same instants as slot_start/slot_end, expressed in business-hours timezone
+    business_timezone: Optional[str] = Field(
+        None,
+        description="IANA timezone from business hours (for slot_*_local). slot_start/slot_end remain UTC.",
+    )
+    slot_start_local: Optional[datetime] = Field(
+        None,
+        description="slot_start converted to business_timezone (same instant as slot_start).",
+    )
+    slot_end_local: Optional[datetime] = Field(
+        None,
+        description="slot_end converted to business_timezone (same instant as slot_end).",
+    )
 
 class AppointmentListResponse(BaseModel):
     appointments: List[AppointmentOut]

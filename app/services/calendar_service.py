@@ -15,8 +15,11 @@ from app.models.business_hours import BusinessHours
 from app.models.blocked_slot import BlockedSlot
 from app.models.appointment import Appointment
 from app.schemas.calendar import (
-    BusinessHoursUpsert, BlockedSlotCreate,
-    AvailableSlot, AvailableSlotsResponse,
+    AppointmentOut,
+    BusinessHoursUpsert,
+    BlockedSlotCreate,
+    AvailableSlot,
+    AvailableSlotsResponse,
 )
 
 SLOT_BOOKING_BUFFER_MINUTES = 15
@@ -548,6 +551,42 @@ class CalendarService:
             db.query(Appointment)
             .filter(Appointment.id == appointment_id, Appointment.tenant_id == tenant_id)
             .first()
+        )
+
+    def appointment_local_display(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        appt: Appointment,
+    ) -> Tuple[str, datetime, datetime]:
+        """
+        Same instants as slot_start/slot_end (UTC in DB), expressed in the business-hours
+        timezone for the appointment's local calendar day. Used for additive API fields only.
+        """
+        utc_start = _ensure_utc(appt.slot_start)
+        utc_end = _ensure_utc(appt.slot_end)
+        tenant_tz_str = self.get_tenant_timezone(db, tenant_id)
+        tenant_tz = _safe_tz(tenant_tz_str)
+        local_seed = utc_start.astimezone(tenant_tz)
+        bh = self._get_business_hours_for_date(db, tenant_id, local_seed.date())
+        if bh and bh.timezone:
+            tz_info = _safe_tz(bh.timezone)
+            tz_label = bh.timezone
+        else:
+            tz_info = tenant_tz
+            tz_label = tenant_tz_str
+        return (tz_label, utc_start.astimezone(tz_info), utc_end.astimezone(tz_info))
+
+    def to_appointment_out(self, db: Session, tenant_id: uuid.UUID, appt: Appointment) -> AppointmentOut:
+        """Build AppointmentOut with UTC slot_* plus additive local fields for display."""
+        tz_label, start_l, end_l = self.appointment_local_display(db, tenant_id, appt)
+        base = AppointmentOut.model_validate(appt)
+        return base.model_copy(
+            update={
+                "business_timezone": tz_label,
+                "slot_start_local": start_l,
+                "slot_end_local": end_l,
+            }
         )
 
     def update_appointment_status(

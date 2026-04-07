@@ -111,6 +111,29 @@ def test_create_business_hours_rejects_existing_weekday(calendar_db):
     assert dow in excinfo.value.days
 
 
+def test_to_appointment_out_adds_local_fields_matching_business_timezone(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=1)
+    _set_business_hours(calendar_db, tenant.id, target_date)
+
+    local_slot = datetime.combine(target_date, time(14, 0))
+    appointment = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=local_slot,
+        created_via="web",
+    )
+    out = calendar_service.to_appointment_out(calendar_db, tenant.id, appointment)
+    assert out.business_timezone == TENANT_TZ
+    assert out.slot_start_local is not None and out.slot_end_local is not None
+    assert out.slot_start_local.hour == 14
+    assert out.slot_start_local.minute == 0
+    assert out.slot_start == appointment.slot_start
+    assert out.slot_end == appointment.slot_end
+
+
 def test_booking_uses_tenant_timezone_and_blocks_same_slot(calendar_db):
     tenant = _tenant(calendar_db)
     target_date = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date() + timedelta(days=1)
