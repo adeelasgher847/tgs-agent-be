@@ -148,6 +148,26 @@ class AppointmentListItemOut(BaseModel):
     slot_end_local: Optional[datetime] = None
 
 
+class AppointmentDetailOut(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    agent_id: Optional[uuid.UUID] = None
+    customer_name: str
+    customer_phone: str
+    customer_email: Optional[str] = None
+    appointment_reason: Optional[str] = None
+    duration_minutes: int
+    status: str
+    created_via: str
+    notes: Optional[str] = None
+    cancellation_reason: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    business_timezone: Optional[str] = None
+    slot_start_local: Optional[datetime] = None
+    slot_end_local: Optional[datetime] = None
+
+
 class AppointmentListResponse(BaseModel):
     appointments: List[AppointmentListItemOut]
     total: int

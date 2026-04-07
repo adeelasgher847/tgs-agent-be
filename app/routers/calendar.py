@@ -12,6 +12,7 @@ from app.schemas.calendar import (
     BlockedSlotCreate, BlockedSlotOut,
     AppointmentCreate, AppointmentStatusUpdate, AppointmentReschedule, AppointmentOut,
     AppointmentListItemOut,
+    AppointmentDetailOut,
     AppointmentListResponse,
     AvailableSlotsResponse,
 )
@@ -103,7 +104,7 @@ def list_appointments(
     )
 
 
-@router.get("/appointments/{appointment_id}", response_model=SuccessResponse[AppointmentOut])
+@router.get("/appointments/{appointment_id}", response_model=SuccessResponse[AppointmentDetailOut])
 def get_appointment(
     appointment_id: uuid.UUID,
     user: User = Depends(require_tenant),
@@ -112,8 +113,11 @@ def get_appointment(
     appt = calendar_service.get_appointment_by_id(db, appointment_id, user.current_tenant_id)
     if not appt:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+    full = calendar_service.to_appointment_out(db, user.current_tenant_id, appt)
     return create_success_response(
-        data=calendar_service.to_appointment_out(db, user.current_tenant_id, appt)
+        data=AppointmentDetailOut.model_validate(
+            full.model_dump(exclude={"slot_start", "slot_end"})
+        )
     )
 
 
