@@ -77,12 +77,6 @@ def _build_card_description(call_log: CallLog, session: CallSession) -> str:
     else:
         parts.append("_Not available._")
 
-    recs = analysis.get("recommendations") if analysis else None
-    if isinstance(recs, list) and recs:
-        parts += ["", "### Recommendations"]
-        for i, rec in enumerate(recs, 1):
-            parts.append(f"{i}. {rec}")
-
     parts += [
         "",
         "## Call reference",
