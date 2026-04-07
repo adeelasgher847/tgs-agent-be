@@ -834,6 +834,8 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: offer [CHECK_SLOTS:...] again, then emit the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
 - Never book a slot that is in the past (check CURRENT DATE & TIME above).
@@ -874,6 +876,8 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
 - Never book a slot in the past (see CURRENT DATE & TIME).
@@ -910,6 +914,8 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
 - Never book a slot in the past (see CURRENT DATE & TIME).
