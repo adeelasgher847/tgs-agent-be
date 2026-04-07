@@ -140,8 +140,16 @@ class AppointmentOut(BaseModel):
         description="slot_end converted to business_timezone (same instant as slot_end).",
     )
 
+
+class AppointmentListItemOut(BaseModel):
+    id: uuid.UUID
+    appointment_reason: Optional[str] = None
+    slot_start_local: Optional[datetime] = None
+    slot_end_local: Optional[datetime] = None
+
+
 class AppointmentListResponse(BaseModel):
-    appointments: List[AppointmentOut]
+    appointments: List[AppointmentListItemOut]
     total: int
 
 

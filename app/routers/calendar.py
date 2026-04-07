@@ -11,6 +11,7 @@ from app.schemas.calendar import (
     BusinessHoursUpsert, BusinessHoursOut,
     BlockedSlotCreate, BlockedSlotOut,
     AppointmentCreate, AppointmentStatusUpdate, AppointmentReschedule, AppointmentOut,
+    AppointmentListItemOut,
     AppointmentListResponse,
     AvailableSlotsResponse,
 )
@@ -86,7 +87,16 @@ def list_appointments(
     return create_success_response(
         data=AppointmentListResponse(
             appointments=[
-                calendar_service.to_appointment_out(db, user.current_tenant_id, a) for a in items
+                AppointmentListItemOut(
+                    id=full.id,
+                    appointment_reason=full.appointment_reason,
+                    slot_start_local=full.slot_start_local,
+                    slot_end_local=full.slot_end_local,
+                )
+                for full in [
+                    calendar_service.to_appointment_out(db, user.current_tenant_id, a)
+                    for a in items
+                ]
             ],
             total=total,
         )
