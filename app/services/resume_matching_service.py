@@ -280,6 +280,22 @@ def _blend_ai_rules(ai_val: float, rules_val: float, weight_ai: float) -> float:
     return round(min(1.0, max(0.0, blended)), 4)
 
 
+def _estimate_match_confidence(
+    *,
+    parse_confidence: float | None,
+    criteria_count: int,
+    overall_score: float,
+) -> float:
+    """
+    Confidence in quality of the match result (not candidate suitability).
+    """
+    p = max(0.0, min(1.0, float(parse_confidence or 0.0)))
+    criteria_signal = 1.0 if criteria_count >= 2 else (0.75 if criteria_count == 1 else 0.55)
+    score_stability = 1.0 - abs(0.5 - max(0.0, min(1.0, overall_score))) * 0.35
+    conf = (0.6 * p) + (0.25 * criteria_signal) + (0.15 * score_stability)
+    return round(max(0.0, min(1.0, conf)), 4)
+
+
 def _score_candidate_rules(
     resume_id: UUID,
     job: JobDescription,
@@ -312,6 +328,9 @@ def _score_candidate_rules(
     for name, spec in criteria.items():
         if not isinstance(spec, dict):
             continue
+        # Ignore metadata blocks inside matching_criteria (e.g. explainability/scoring_dimensions).
+        if "type" not in spec:
+            continue
         weight = float(spec.get("weight", 1.0))
         crit_type = str(spec.get("type", "skill"))
         detail = ""
@@ -320,6 +339,8 @@ def _score_candidate_rules(
         resume_skills = {_norm_skill(s.name) for s in parsed.skills}
         if crit_type == "skill":
             target = str(spec.get("skill", ""))
+            if not target.strip():
+                continue
             nk = _norm_skill(target)
             matched = nk in resume_skills or any(nk in rs for rs in resume_skills)
             score = 1.0 if matched else 0.0
@@ -355,6 +376,12 @@ def _score_candidate_rules(
     )
     core = 0.58 * fit_channel + 0.42 * crit_component
     overall = round(min(1.0, max(0.0, core * penalty)), 4)
+    parse_confidence = parsed.parse_confidence if parsed.parse_confidence is not None else 0.0
+    match_confidence = _estimate_match_confidence(
+        parse_confidence=parse_confidence,
+        criteria_count=len(breakdown),
+        overall_score=overall,
+    )
 
     return MatchResponse(
         resume_id=resume_id,
@@ -364,6 +391,8 @@ def _score_candidate_rules(
         criteria_breakdown=breakdown,
         missing_required_skills=missing,
         weighted_skill_hits={k: round(v, 4) for k, v in weighted_hits.items()},
+        parse_confidence=parse_confidence,
+        match_confidence=match_confidence,
         match_source="rules",
     )
 
@@ -400,6 +429,11 @@ def score_candidate(
     w = float(getattr(settings, "RECRUIT_MATCH_AI_WEIGHT", 0.68))
 
     if mode == "ai":
+        ai_confidence = _estimate_match_confidence(
+            parse_confidence=rules_mr.parse_confidence,
+            criteria_count=len(rules_mr.criteria_breakdown),
+            overall_score=ai.overall_fit,
+        )
         return MatchResponse(
             resume_id=resume_id,
             job_description_id=job.id,
@@ -408,6 +442,8 @@ def score_candidate(
             criteria_breakdown=rules_mr.criteria_breakdown,
             missing_required_skills=rules_mr.missing_required_skills,
             weighted_skill_hits=rules_mr.weighted_skill_hits,
+            parse_confidence=rules_mr.parse_confidence,
+            match_confidence=ai_confidence,
             match_source="ai",
             rules_baseline_overall=rules_mr.overall_score,
             ai_rationale=ai.rationale,
@@ -418,6 +454,11 @@ def score_candidate(
 
     overall_b = _blend_ai_rules(ai.overall_fit, rules_mr.overall_score, w)
     skill_b = _blend_ai_rules(ai.skill_match, rules_mr.skill_match_score, w)
+    hybrid_confidence = _estimate_match_confidence(
+        parse_confidence=rules_mr.parse_confidence,
+        criteria_count=len(rules_mr.criteria_breakdown),
+        overall_score=overall_b,
+    )
 
     return MatchResponse(
         resume_id=resume_id,
@@ -427,6 +468,8 @@ def score_candidate(
         criteria_breakdown=rules_mr.criteria_breakdown,
         missing_required_skills=rules_mr.missing_required_skills,
         weighted_skill_hits=rules_mr.weighted_skill_hits,
+        parse_confidence=rules_mr.parse_confidence,
+        match_confidence=hybrid_confidence,
         match_source="hybrid",
         rules_baseline_overall=rules_mr.overall_score,
         ai_rationale=ai.rationale,

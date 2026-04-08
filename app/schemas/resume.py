@@ -150,6 +150,15 @@ class MatchResponse(BaseModel):
     criteria_breakdown: list[MatchComponentScore]
     missing_required_skills: list[str] = Field(default_factory=list)
     weighted_skill_hits: dict[str, float] = Field(default_factory=dict)
+    parse_confidence: float | None = Field(
+        default=None,
+        description="Confidence of resume parsing quality (0-1).",
+    )
+    match_confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence in this match result quality (0-1), separate from the match score.",
+    )
     match_source: str = Field(
         default="rules",
         description="rules | ai | hybrid — how overall_score was produced",
@@ -187,6 +196,22 @@ class MatchResponse(BaseModel):
         s = max(0.0, min(1.0, float(self.skill_match_score)))
         return int(round(s * 100))
 
+    @computed_field
+    @property
+    def match_confidence_percent(self) -> int:
+        c = max(0.0, min(1.0, float(self.match_confidence)))
+        return int(round(c * 100))
+
+    @computed_field
+    @property
+    def match_confidence_label(self) -> str:
+        c = max(0.0, min(1.0, float(self.match_confidence)))
+        if c >= 0.75:
+            return "High"
+        if c >= 0.5:
+            return "Medium"
+        return "Low"
+
 
 class MatchMode(str, Enum):
     """How to combine LLM judgement with deterministic rules."""
@@ -204,4 +229,82 @@ class MatchRequest(BaseModel):
         default=None,
         description="rules = heuristics only; ai = LLM primary (rules on parse fail); hybrid = blend (default from server settings)",
     )
+
+
+class ShortlistCriteriaUpdateRequest(BaseModel):
+    skill_weight_matrix: dict[str, float] | None = Field(
+        default=None,
+        description="Optional skill weight map. Values are normalized server-side.",
+    )
+    scoring_dimensions: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Optional scoring dimensions list with `name`, `weight`, and optional `description`.",
+    )
+    must_have_criteria: list[str] | None = Field(
+        default=None,
+        description="Optional list of hard filters (human-readable constraints).",
+    )
+    minimum_parse_confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional minimum parse confidence required for shortlisting.",
+    )
+    minimum_profile_completeness: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional minimum profile completeness required for shortlisting.",
+    )
+
+
+class ShortlistCriteriaResponse(BaseModel):
+    job_description_id: UUID
+    matching_criteria: dict[str, Any] = Field(default_factory=dict)
+    skill_weight_matrix: dict[str, float] = Field(default_factory=dict)
+    version: int
+
+
+class TopCandidateItem(BaseModel):
+    resume_id: UUID
+    filename: str
+    score: float = Field(ge=0.0, le=1.0)
+    rank: int = Field(ge=1)
+    match_percent: int = Field(ge=0, le=100)
+    fit_label: str
+    fit_summary: str
+    profile_completeness: float = Field(ge=0.0, le=1.0)
+    parse_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    exclusion_reasons: list[str] = Field(default_factory=list)
+
+
+class TopCandidatesResponse(BaseModel):
+    items: list[TopCandidateItem] = Field(default_factory=list)
+    scanned_count: int = Field(ge=0)
+    shortlisted_count: int = Field(ge=0)
+    excluded_count: int = Field(ge=0)
+    excluded_reasons_summary: dict[str, int] = Field(default_factory=dict)
+
+
+class TopCandidatesRequest(BaseModel):
+    job_description_id: UUID
+    batch_id: UUID | None = Field(default=None, description="Optional: shortlist within one uploaded batch.")
+    top_k: int = Field(default=20, ge=1, le=200)
+    min_overall_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_resumes: int = Field(default=1000, ge=1, le=5000)
+    match_mode: MatchMode | None = Field(default=None, description="rules | ai | hybrid")
+    include_excluded: bool = Field(
+        default=False,
+        description="If true, include exclusion reasons on returned records (when applicable).",
+    )
+
+
+class ShortlistByBatchRequest(BaseModel):
+    batch_id: UUID = Field(description="Upload batch UUID from resume multi-upload.")
+    job_description_id: UUID = Field(description="Job description UUID to match against.")
+    top_k: int = Field(default=20, ge=1, le=200)
+    min_overall_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    max_resumes: int = Field(default=1000, ge=1, le=5000)
+    match_mode: MatchMode | None = Field(default=None, description="rules | ai | hybrid")
+    include_excluded: bool = Field(default=False)
 

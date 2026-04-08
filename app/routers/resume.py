@@ -33,7 +33,13 @@ from app.schemas.resume import (
     ParsedResume,
     ResumeListItem,
     ResumeStatusResponse,
+    ShortlistCriteriaResponse,
+    ShortlistCriteriaUpdateRequest,
+    ShortlistByBatchRequest,
+    TopCandidatesRequest,
+    TopCandidatesResponse,
 )
+from app.services.candidate_shortlisting_service import candidate_shortlisting_service
 from app.services.resume_matching_service import score_candidate
 from app.services.resume_parse_service import run_parse_for_resume
 from app.utils.fit_score_labels import explain_fit_score
@@ -523,6 +529,121 @@ def shortlist_batch_against_job(
     return create_success_response(payload, "Batch shortlist computed successfully")
 
 
+@router.post(
+    "/shortlist",
+    response_model=SuccessResponse[TopCandidatesResponse],
+)
+def shortlist_top_candidates(
+    payload: TopCandidatesRequest,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    job = db.query(JobDescription).filter(
+        JobDescription.id == payload.job_description_id,
+        JobDescription.tenant_id == user.current_tenant_id,
+    ).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+
+    result = candidate_shortlisting_service.shortlist(
+        db,
+        tenant_id=user.current_tenant_id,
+        job=job,
+        batch_id=payload.batch_id,
+        top_k=payload.top_k,
+        min_overall_score=payload.min_overall_score,
+        max_resumes=payload.max_resumes,
+        match_mode=payload.match_mode.value if payload.match_mode else None,
+        include_excluded=payload.include_excluded,
+    )
+    return create_success_response(result, "Top candidates shortlisted successfully")
+
+
+@router.post(
+    "/shortlist/by-batch",
+    response_model=SuccessResponse[TopCandidatesResponse],
+)
+def shortlist_top_candidates_by_batch(
+    payload: ShortlistByBatchRequest,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    job = db.query(JobDescription).filter(
+        JobDescription.id == payload.job_description_id,
+        JobDescription.tenant_id == user.current_tenant_id,
+    ).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+
+    result = candidate_shortlisting_service.shortlist(
+        db,
+        tenant_id=user.current_tenant_id,
+        job=job,
+        batch_id=payload.batch_id,
+        top_k=payload.top_k,
+        min_overall_score=payload.min_overall_score,
+        max_resumes=payload.max_resumes,
+        match_mode=payload.match_mode.value if payload.match_mode else None,
+        include_excluded=payload.include_excluded,
+    )
+    return create_success_response(
+        result,
+        "Top candidates shortlisted successfully for the provided batch",
+    )
+
+
+@router.put(
+    "/shortlist/criteria/{job_description_id}",
+    response_model=SuccessResponse[ShortlistCriteriaResponse],
+)
+def update_shortlist_criteria(
+    job_description_id: UUID,
+    payload: ShortlistCriteriaUpdateRequest,
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    if not admin_user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    job = db.query(JobDescription).filter(
+        JobDescription.id == job_description_id,
+        JobDescription.tenant_id == admin_user.current_tenant_id,
+    ).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+
+    criteria_updates: dict = {}
+    if payload.scoring_dimensions is not None:
+        criteria_updates["scoring_dimensions"] = payload.scoring_dimensions
+    if payload.must_have_criteria is not None:
+        criteria_updates["must_have_criteria"] = payload.must_have_criteria
+    if payload.minimum_parse_confidence is not None:
+        criteria_updates["minimum_parse_confidence"] = payload.minimum_parse_confidence
+    if payload.minimum_profile_completeness is not None:
+        criteria_updates["minimum_profile_completeness"] = payload.minimum_profile_completeness
+
+    job = candidate_shortlisting_service.update_shortlist_criteria(
+        db,
+        job=job,
+        user_id=admin_user.id,
+        criteria_updates=criteria_updates,
+        skill_weight_matrix=payload.skill_weight_matrix,
+    )
+    response = ShortlistCriteriaResponse(
+        job_description_id=job.id,
+        matching_criteria=job.matching_criteria if isinstance(job.matching_criteria, dict) else {},
+        skill_weight_matrix=job.skill_weight_matrix if isinstance(job.skill_weight_matrix, dict) else {},
+        version=job.version or 1,
+    )
+    return create_success_response(response, "Shortlist scoring criteria updated successfully")
+
+
 @router.get(
     "/{resume_id}",
     response_model=SuccessResponse[dict],
@@ -577,6 +698,10 @@ def get_status(
 def match_resume(
     resume_id: UUID,
     job_description_id: UUID,
+    verbose: bool = Query(
+        default=False,
+        description="When true, return full detailed scoring payload. Default returns concise match summary.",
+    ),
     body: MatchRequest | None = None,
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
@@ -602,10 +727,27 @@ def match_resume(
     mm = body.match_mode.value if body and body.match_mode else None
     result = score_candidate(res.id, job, parsed, match_mode=mm)
 
-    payload = {
-        "match": result.model_dump(mode="json"),
-        "billing_note": {"estimated_match_api_charge_usd": 0.0},
-    }
+    if verbose:
+        payload = {
+            "match": result.model_dump(mode="json"),
+            "billing_note": {"estimated_match_api_charge_usd": 0.0},
+        }
+    else:
+        strengths = list(result.weighted_skill_hits.keys())[:3]
+        gaps = list(result.missing_required_skills)[:3]
+        payload = {
+            "match": {
+                "resume_id": str(result.resume_id),
+                "job_description_id": str(result.job_description_id),
+                "match_percent": result.overall_match_percent,
+                "fit_label": result.overall_fit_label,
+                "fit_summary": result.overall_fit_summary,
+                "confidence_percent": result.match_confidence_percent,
+                "confidence_label": result.match_confidence_label,
+                "top_strengths": strengths,
+                "top_gaps": gaps,
+            }
+        }
     return create_success_response(payload, "Match computed successfully")
 
 
