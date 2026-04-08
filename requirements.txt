@@ -33,3 +33,4 @@ google-cloud-texttospeech
 sendgrid
 geopy
 timezonefinder
+tzdata

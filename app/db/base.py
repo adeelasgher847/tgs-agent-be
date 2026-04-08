@@ -22,3 +22,10 @@ from app.models.tenant_crm_config import CRMConfig
 # Knowledge base / RAG
 from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.models.knowledge_base_chunk import KnowledgeBaseChunk
+
+# Calendar
+from app.models.business_hours import BusinessHours
+from app.models.blocked_slot import BlockedSlot
+from app.models.appointment import Appointment
+from app.models.tenant_inbound_crm_config import TenantInboundCRMConfig
+from app.models.call_log_crm_sync import CallLogCRMSync

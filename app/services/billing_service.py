@@ -77,7 +77,7 @@ class BillingService:
                 logger.warning(f"Session {session_id} not paid yet (status: {session.payment_status})")
                 return None
 
-            metadata = session.get('metadata') or {}
+            metadata = StripeService.stripe_metadata_as_dict(session["metadata"])
             user_id_str = metadata.get('user_id')
             tenant_id_str = metadata.get('tenant_id')
             plan_id_str = metadata.get('plan_id')
@@ -99,7 +99,7 @@ class BillingService:
                     plan_row = db.query(Plan).filter(Plan.id == plan_id).first()
                     if plan_row and plan_row.crm_type:
                         crm_type = plan_row.crm_type
-                stripe_sub_id = session.get('subscription')  # present when mode=subscription
+                stripe_sub_id = session["subscription"]  # set when mode=subscription
                 period_start, period_end = None, None
                 if stripe_sub_id:
                     try:
@@ -116,7 +116,7 @@ class BillingService:
                     plan_id=plan_id,
                     status="active",
                     stripe_subscription_id=stripe_sub_id,
-                    stripe_customer_id=session.get('customer'),
+                    stripe_customer_id=session["customer"],
                     stripe_session_id=session_id,
                     crm_type=crm_type,
                     current_period_start=period_start,
@@ -134,7 +134,7 @@ class BillingService:
 
             # Credit purchase: add credits to tenant
             credits_to_add = 0
-            amount_total_cents = session.get('amount_total') or 0
+            amount_total_cents = session["amount_total"] or 0
             amount_dollars = float(amount_total_cents) / 100.0
             if purchase_type == 'credit_purchase':
                 credits_to_add = int(amount_dollars * 10)

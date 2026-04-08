@@ -111,7 +111,7 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Optional, Dict, Iterable
+from typing import Optional, Dict, Iterable, List
 import time
 from datetime import datetime, timezone
 import uuid
@@ -133,6 +133,7 @@ from app.services.groq_service import groq_service
 from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
+from app.services.voice_twilio_utils import get_twilio_credentials_for_call
 from app.services.google_tts_service import google_tts_service
 from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
@@ -257,6 +258,7 @@ class BidirectionalStreamHandler:
         # Session data
         self.call_session = None
         self.agent = None
+        self._last_offered_calendar_slots: List[datetime] = []
         self._load_session_data()
         
         # User pickup detection (VAPI-style: actual user audio = user picked up)
@@ -273,6 +275,8 @@ class BidirectionalStreamHandler:
 
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
+        self._auto_greeting_sent = False
+        self._recording_started = False
         
         # Background audio manager (embedded MP3 / ambient noise)
         self._background_audio = BackgroundAudioManager(
@@ -523,16 +527,14 @@ class BidirectionalStreamHandler:
         
         if should_backchannel:
             backchannel = random.choice(self._backchannel_phrases)
-            
-            # Queue backchannel with minimal processing
-            await self.tts_queue.put({
-                "text": backchannel,
-                "chunk_id": "backchannel",
-                "is_backchannel": True,
-                "is_final": True,
-                "use_ssml": False
-            })
-            
+
+            if self._tts_pipeline:
+                await self._tts_pipeline.queue_tts({
+                    "text": backchannel,
+                    "is_final": True,
+                    "use_ssml": False,
+                })
+
             self._last_backchannel_time = now
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
@@ -648,7 +650,10 @@ class BidirectionalStreamHandler:
                 if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                     greeting_text = self.agent.first_message
                 else:
-                    greeting_text = "hello how are you"
+                    if self.call_session and self.call_session.call_type == "inbound":
+                        greeting_text = "Thank you for calling. How may I assist you today?"
+                    else:
+                        greeting_text = "hello how are you"
                 
                 # Add greeting to transcript
                 await self._add_to_transcript("agent", greeting_text, "greeting")
@@ -679,6 +684,7 @@ class BidirectionalStreamHandler:
             # ------- RAG: build knowledge base context in voice layer -------
             tenant_uuid = self.call_session.tenant_id if self.call_session else None
             agent_uuid = self.agent.id if self.agent else None
+            rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
 
             # Build KB context for the LLM with an explicit timeout so the voice
             # pipeline never hangs on embeddings/Pinecone.
@@ -691,7 +697,7 @@ class BidirectionalStreamHandler:
                     return build_rag_context_block_with_trace(
                         user_text=user_text,
                         tenant_id=tenant_uuid,
-                        agent_id=agent_uuid,
+                        agent_id=rag_agent_scope,
                     )
 
                 rag_context_block, rag_trace = await asyncio.wait_for(
@@ -702,7 +708,7 @@ class BidirectionalStreamHandler:
                 rag_context_block, rag_trace = build_rag_context_block_with_trace(
                     user_text="",
                     tenant_id=tenant_uuid,
-                    agent_id=agent_uuid,
+                    agent_id=rag_agent_scope,
                 )
                 rag_trace["status"] = "timeout"
                 rag_trace["timeout"] = True
@@ -711,10 +717,36 @@ class BidirectionalStreamHandler:
                 rag_context_block, rag_trace = build_rag_context_block_with_trace(
                     user_text="",
                     tenant_id=tenant_uuid,
-                    agent_id=agent_uuid,
+                    agent_id=rag_agent_scope,
                 )
                 rag_trace["status"] = "failure"
                 rag_trace["error"] = str(e)
+
+            inbound_prompt_context_block = ""
+            inbound_kb_docs_context_block = ""
+            if self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
+                try:
+                    inbound_prompt_context_block = (
+                        agent_service.build_inbound_prompt_context_block(
+                            db=self.db,
+                            inbound_agent_id=agent_uuid,
+                            tenant_id=tenant_uuid,
+                        )
+                    )
+                    inbound_kb_docs_context_block = (
+                        agent_service.build_inbound_kb_documents_context_block(
+                            db=self.db,
+                            inbound_agent_id=agent_uuid,
+                            tenant_id=tenant_uuid,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to build inbound context blocks for agent %s: %s",
+                        agent_uuid,
+                        e,
+                        exc_info=True,
+                    )
 
             # One-line RAG summary (safe: no chunk text, no secrets)
             try:
@@ -789,12 +821,25 @@ Previous conversation:
 {history_text}
 
 {rag_context_block}
+{inbound_prompt_context_block}
+{inbound_kb_docs_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
 4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
+
+# APPOINTMENT BOOKING
+- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Use a short reason with NO commas inside reason= (commas break parsing).
+- If they already booked on this call and want a different time: offer [CHECK_SLOTS:...] again, then emit the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
+- Only book one of the slots that was just offered by the system.
+- Never book a slot that is in the past (check CURRENT DATE & TIME above).
+- Speak naturally; the system handles the actual booking silently.
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -819,11 +864,23 @@ Previous conversation:
 {history_text}
 
 {rag_context_block}
+{inbound_prompt_context_block}
+{inbound_kb_docs_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
+
+# APPOINTMENT BOOKING
+- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Use a short reason with NO commas inside reason= (commas break parsing).
+- If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
+- Only book one of the slots that was just offered by the system.
+- Never book a slot in the past (see CURRENT DATE & TIME).
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -845,18 +902,39 @@ Previous conversation:
 {history_text}
 
 {rag_context_block}
+{inbound_prompt_context_block}
+{inbound_kb_docs_context_block}
 
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
+# APPOINTMENT BOOKING
+- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Use a short reason with NO commas inside reason= (commas break parsing).
+- If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
+- Only book one of the slots that was just offered by the system.
+- Never book a slot in the past (see CURRENT DATE & TIME).
+
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
-            
+
+            # Prepend current date/time so the agent knows what "today", "tomorrow",
+            # and "past slots" mean. Also injected into appointment booking flow.
+            _now_local = datetime.now(timezone.utc)
+            _now_str = _now_local.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+            system_prompt = (
+                f"# CURRENT DATE & TIME\nNow: {_now_str}\n\n"
+                + system_prompt
+            )
+
             # Get agent's configured model and provider
             llm_service = None
             model_name = "gemini-1.5-flash"  # Default fallback
@@ -928,6 +1006,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         return ""
                     text = text.replace("[END_CALL]", "")
                     text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
+                    text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", text)
+                    text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", text)
                     return text
 
                 def _find_flush_index(buf: str):
@@ -1098,12 +1178,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         # Queue fallback response
                         if final_text and not self._tts_cancel.is_set():
                             chunk_counter += 1
-                            await self.tts_queue.put({
-                                "text": final_text,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": True
-                            })
+                            if self._tts_pipeline:
+                                await self._tts_pipeline.queue_tts({
+                                    "text": final_text,
+                                    "use_ssml": self._use_ssml,
+                                    "is_final": True,
+                                })
                     except Exception as e:
                         logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
                         # Ultimate fallback response
@@ -1118,8 +1198,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         })
 
             if final_text:
-                # Strip [END_CALL] from transcript so saved conversation is clean
-                transcript_text = final_text.replace("[END_CALL]", "").strip()
+                # Strip control tokens from transcript (never saved to history)
+                transcript_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", final_text)
+                transcript_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", transcript_text)
+                transcript_text = transcript_text.replace("[END_CALL]", "").strip()
                 if transcript_text:
                     await self._add_to_transcript(
                         "agent",
@@ -1130,10 +1212,258 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "rag_trace": rag_trace,
                         },
                     )
-        
+
+                # Handle calendar tokens (fire-and-forget after TTS is already queued)
+                if "[CHECK_SLOTS:" in final_text:
+                    asyncio.create_task(self._handle_check_slots_token(final_text))
+                elif "[BOOK_APPOINTMENT:" in final_text:
+                    asyncio.create_task(self._handle_book_appointment_token(final_text))
+
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
     
+    # ── Calendar token handlers ───────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_calendar_slot_key(value: str) -> str:
+        value = (value or "").strip().lower().replace(".", "")
+        return re.sub(r"\s+", " ", value)
+
+    def _cache_calendar_slots(self, slots: List) -> None:
+        self._last_offered_calendar_slots = [slot.slot_start for slot in slots]
+
+    def _resolve_cached_calendar_slot(self, slot_raw: str) -> Optional[datetime]:
+        normalized = self._normalize_calendar_slot_key(slot_raw)
+        if not normalized or not self._last_offered_calendar_slots:
+            return None
+
+        for slot_dt in self._last_offered_calendar_slots:
+            candidates = {
+                slot_dt.isoformat(),
+                slot_dt.strftime("%Y-%m-%d %H:%M"),
+                slot_dt.strftime("%Y-%m-%d %I:%M %p").lstrip("0"),
+                slot_dt.strftime("%I:%M %p").lstrip("0"),
+                slot_dt.strftime("%H:%M"),
+            }
+            if slot_dt.minute == 0:
+                candidates.add(slot_dt.strftime("%I %p").lstrip("0"))
+
+            normalized_candidates = {
+                self._normalize_calendar_slot_key(candidate)
+                for candidate in candidates
+            }
+            if normalized in normalized_candidates:
+                return slot_dt
+
+        try:
+            parsed_dt = datetime.fromisoformat(slot_raw.replace("Z", "+00:00"))
+        except ValueError:
+            parsed_dt = None
+
+        if parsed_dt is not None:
+            for slot_dt in self._last_offered_calendar_slots:
+                if parsed_dt.tzinfo is None:
+                    offered_local = slot_dt.replace(tzinfo=None, second=0, microsecond=0)
+                    parsed_local = parsed_dt.replace(second=0, microsecond=0)
+                    if offered_local == parsed_local:
+                        return slot_dt
+                else:
+                    offered_utc = slot_dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                    parsed_utc = parsed_dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                    if offered_utc == parsed_utc:
+                        return slot_dt
+
+        for fmt in ("%I:%M %p", "%I %p", "%H:%M"):
+            try:
+                parsed_time = datetime.strptime(slot_raw.strip(), fmt).time()
+                matches = [
+                    slot_dt
+                    for slot_dt in self._last_offered_calendar_slots
+                    if slot_dt.hour == parsed_time.hour and slot_dt.minute == parsed_time.minute
+                ]
+                if len(matches) == 1:
+                    return matches[0]
+            except ValueError:
+                continue
+
+        return None
+
+    async def _handle_check_slots_token(self, llm_response: str):
+        """
+        Called when LLM emits [CHECK_SLOTS:date=<value>].
+        Fetches available slots and speaks them directly via TTS (no second LLM call).
+        """
+        try:
+            import re as _re
+            from datetime import date as _date, timedelta as _td, datetime as _dt, timezone as _tz
+            from zoneinfo import ZoneInfo as _ZI
+            from app.services.calendar_service import calendar_service as _cal
+
+            m = _re.search(r"\[CHECK_SLOTS:date=([^\]]+)\]", llm_response)
+            if not m:
+                return
+
+            if not self.call_session:
+                return
+
+            tenant_id = self.call_session.tenant_id
+            agent_id = self.agent.id if self.agent else None
+
+            loop = asyncio.get_running_loop()
+            tenant_tz_str = await loop.run_in_executor(
+                None,
+                lambda: _cal.get_tenant_timezone(self.db, tenant_id),
+            )
+            try:
+                tenant_tz = _ZI(tenant_tz_str)
+            except Exception:
+                tenant_tz = _tz.utc
+
+            today = _dt.now(tenant_tz).date()
+            raw_date = m.group(1).strip().lower()
+
+            if raw_date in ("today", "aaj"):
+                target = today
+            elif raw_date in ("tomorrow", "kal", "tomorrow's"):
+                target = today + _td(days=1)
+            else:
+                try:
+                    target = _date.fromisoformat(raw_date)
+                except ValueError:
+                    target = today + _td(days=1)
+
+            result = await loop.run_in_executor(
+                None,
+                lambda: _cal.get_available_slots(self.db, tenant_id, target, agent_id),
+            )
+            self._cache_calendar_slots(result.slots)
+
+            if not result.slots:
+                msg = f"Sorry, there are no available slots on {target.strftime('%A, %B %d')}. Please try another date."
+            else:
+                slot_labels = ", ".join(s.slot_label for s in result.slots[:6])
+                suffix = f" and {len(result.slots) - 6} more" if len(result.slots) > 6 else ""
+                msg = (
+                    f"On {target.strftime('%A, %B %d')}, these slots are available: "
+                    f"{slot_labels}{suffix}. Which time works for you?"
+                )
+
+            await self._add_to_transcript("agent", msg, "calendar_slots")
+            if self._tts_pipeline:
+                await self._tts_pipeline.queue_tts({
+                    "text": msg,
+                    "chunk_id": "calendar_slots",
+                    "use_ssml": False,
+                    "is_final": True,
+                })
+        except Exception as e:
+            logger.error("Error in _handle_check_slots_token: %s", e, exc_info=True)
+
+    async def _handle_book_appointment_token(self, llm_response: str):
+        """
+        Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,slot=...,reason=...].
+        Books the appointment and speaks the confirmation directly via TTS.
+        """
+        try:
+            import re as _re
+            from datetime import datetime as _dt
+            from app.services.calendar_service import calendar_service as _cal
+
+            m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
+            if not m:
+                return
+            raw = m.group(1)
+
+            def _get(key: str) -> str:
+                km = _re.search(rf"{key}=([^,\]]+)", raw)
+                return km.group(1).strip() if km else ""
+
+            customer_name = _get("name")
+            customer_phone = _get("phone")
+            slot_raw = _get("slot")
+            reason = _get("reason") or None
+
+            if not customer_name or not customer_phone or not slot_raw:
+                logger.warning("BOOK_APPOINTMENT token missing required fields: %s", raw)
+                return
+
+            if not self.call_session:
+                return
+
+            slot_start = self._resolve_cached_calendar_slot(slot_raw)
+            if slot_start is None:
+                try:
+                    slot_start = _dt.fromisoformat(slot_raw.replace("Z", "+00:00"))
+                except ValueError:
+                    logger.warning("BOOK_APPOINTMENT: invalid slot datetime: %s", slot_raw)
+                    return
+
+            tenant_id = self.call_session.tenant_id
+            agent_id = self.agent.id if self.agent else None
+            call_session_id = self.call_session.id
+
+            loop = asyncio.get_running_loop()
+
+            def _existing_for_call():
+                return _cal.get_active_appointment_for_call_session(
+                    self.db, tenant_id, call_session_id
+                )
+
+            existing = await loop.run_in_executor(None, _existing_for_call)
+
+            try:
+                if existing:
+                    appt = await loop.run_in_executor(
+                        None,
+                        lambda: _cal.reschedule_appointment(
+                            db=self.db,
+                            tenant_id=tenant_id,
+                            appointment_id=existing.id,
+                            slot_start=slot_start,
+                            customer_name=customer_name,
+                            customer_phone=customer_phone,
+                            appointment_reason=reason,
+                        ),
+                    )
+                    msg = (
+                        f"All set! I've moved your appointment to "
+                        f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
+                        f"Anything else I can help with?"
+                    )
+                else:
+                    appt = await loop.run_in_executor(
+                        None,
+                        lambda: _cal.book_appointment(
+                            db=self.db,
+                            tenant_id=tenant_id,
+                            customer_name=customer_name,
+                            customer_phone=customer_phone,
+                            slot_start=slot_start,
+                            agent_id=agent_id,
+                            call_session_id=call_session_id,
+                            appointment_reason=reason,
+                            created_via="voice_agent",
+                        ),
+                    )
+                    msg = (
+                        f"Done! Your appointment is confirmed for "
+                        f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
+                        f"Is there anything else I can help you with?"
+                    )
+            except ValueError as ve:
+                msg = f"{ve} Would you like to choose a different time?"
+
+            await self._add_to_transcript("agent", msg, "calendar_booking")
+            if self._tts_pipeline:
+                await self._tts_pipeline.queue_tts({
+                    "text": msg,
+                    "chunk_id": "calendar_booking",
+                    "use_ssml": False,
+                    "is_final": True,
+                })
+        except Exception as e:
+            logger.error("Error in _handle_book_appointment_token: %s", e, exc_info=True)
+
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
@@ -1691,21 +2021,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Mark as ended to prevent multiple calls
                     self._call_ended = True
                     
-                    # Update call session status to completed
+                    # Use shared status updater so CallLog + inbound CRM sync hooks run reliably.
                     if self.call_session:
-                        self.call_session.status = "completed"
-                        self.call_session.end_time = datetime.now(timezone.utc)
-                        self.call_session.ended_reason = "User said goodbye"
-                        
-                        if self.call_session.start_time:
-                            duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
-                            self.call_session.duration = int(duration)
-                        
-                        self.db.commit()
+                        updated = call_session_service.update_call_session_status(
+                            self.db,
+                            self.call_session.id,
+                            "completed",
+                            ended_reason="User said goodbye",
+                        )
+                        if updated:
+                            self.call_session = updated
                     
-                    # End Twilio call
-                    if self.call_sid:
-                        twilio_service.end_call(self.call_sid)
+                    # End Twilio call with DB-derived credentials (no env fallback).
+                    if self.call_sid and self.call_session:
+                        try:
+                            account_sid, auth_token = get_twilio_credentials_for_call(
+                                self.db, self.call_session
+                            )
+                            twilio_service.end_call_with_credentials(
+                                self.call_sid, account_sid, auth_token
+                            )
+                        except Exception as end_err:
+                            logger.warning(
+                                "Could not end Twilio call with DB credentials "
+                                "(call_sid=%s, session=%s): %s",
+                                self.call_sid,
+                                self.call_session.id if self.call_session else None,
+                                end_err,
+                            )
                     
                     # Broadcast call ended event
                     if self.call_session:
@@ -1742,15 +2085,30 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             self._call_ended = True
             if self.call_session:
-                self.call_session.status = "completed"
-                self.call_session.end_time = datetime.now(timezone.utc)
-                self.call_session.ended_reason = "Agent sent [END_CALL]"
-                if self.call_session.start_time:
-                    duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
-                    self.call_session.duration = int(duration)
-                self.db.commit()
-            if self.call_sid:
-                twilio_service.end_call(self.call_sid)
+                updated = call_session_service.update_call_session_status(
+                    self.db,
+                    self.call_session.id,
+                    "completed",
+                    ended_reason="Agent sent [END_CALL]",
+                )
+                if updated:
+                    self.call_session = updated
+            if self.call_sid and self.call_session:
+                try:
+                    account_sid, auth_token = get_twilio_credentials_for_call(
+                        self.db, self.call_session
+                    )
+                    twilio_service.end_call_with_credentials(
+                        self.call_sid, account_sid, auth_token
+                    )
+                except Exception as end_err:
+                    logger.warning(
+                        "Could not end Twilio call with DB credentials "
+                        "(call_sid=%s, session=%s): %s",
+                        self.call_sid,
+                        self.call_session.id if self.call_session else None,
+                        end_err,
+                    )
             if self.call_session:
                 try:
                     await broadcast_call_status_update(
@@ -1811,21 +2169,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Mark as ended to prevent multiple calls
                     self._call_ended = True
                     
-                    # Update call session status to completed
+                    # Use shared status updater so CallLog + inbound CRM sync hooks run reliably.
                     if self.call_session:
-                        self.call_session.status = "completed"
-                        self.call_session.end_time = datetime.now(timezone.utc)
-                        self.call_session.ended_reason = "Voicemail detected"
-                        
-                        if self.call_session.start_time:
-                            duration = (self.call_session.end_time - self.call_session.start_time).total_seconds()
-                            self.call_session.duration = int(duration)
-                        
-                        self.db.commit()
+                        updated = call_session_service.update_call_session_status(
+                            self.db,
+                            self.call_session.id,
+                            "completed",
+                            ended_reason="Voicemail detected",
+                        )
+                        if updated:
+                            self.call_session = updated
                     
-                    # End Twilio call immediately
-                    if self.call_sid:
-                        twilio_service.end_call(self.call_sid)
+                    # End Twilio call immediately with DB-derived credentials (no env fallback).
+                    if self.call_sid and self.call_session:
+                        try:
+                            account_sid, auth_token = get_twilio_credentials_for_call(
+                                self.db, self.call_session
+                            )
+                            twilio_service.end_call_with_credentials(
+                                self.call_sid, account_sid, auth_token
+                            )
+                        except Exception as end_err:
+                            logger.warning(
+                                "Could not end Twilio call with DB credentials "
+                                "(call_sid=%s, session=%s): %s",
+                                self.call_sid,
+                                self.call_session.id if self.call_session else None,
+                                end_err,
+                            )
                     
                     # Broadcast call ended event
                     if self.call_session:
@@ -1897,7 +2268,32 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             self.stream_sid = message.get("streamSid")
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
-            
+
+            # Inbound calls use Connect/Stream, so start recording explicitly here.
+            # This enables recording-status webhook -> call_session.recording_url persistence.
+            if (
+                self.call_sid
+                and self.call_session
+                and self.call_session.call_type == "inbound"
+                and not self._recording_started
+            ):
+                try:
+                    account_sid, auth_token = get_twilio_credentials_for_call(
+                        self.db, self.call_session
+                    )
+                    started = twilio_service.start_recording_with_credentials(
+                        self.call_sid, account_sid, auth_token
+                    )
+                    if started:
+                        self._recording_started = True
+                except Exception as rec_err:
+                    logger.warning(
+                        "Could not start inbound recording (call_sid=%s, session=%s): %s",
+                        self.call_sid,
+                        self.call_session.id if self.call_session else None,
+                        rec_err,
+                    )
+
             # DO NOT start credit monitoring or greeting here!
             # Wait for first media packet (user actually picks up - VAPI-style)
         
@@ -1921,6 +2317,21 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
             # Handler only decides *when* to start; manager owns implementation.
             asyncio.create_task(self._start_background_audio_with_delay())
+
+            # 👋 Send one-time immediate greeting after pickup for inbound calls.
+            if (
+                self.call_session
+                and self.call_session.call_type == "inbound"
+                and not self._auto_greeting_sent
+            ):
+                self._auto_greeting_sent = True
+                asyncio.create_task(
+                    self.generate_and_stream_response(
+                        user_text="",
+                        confidence=1.0,
+                        is_greeting=True,
+                    )
+                )
         
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)

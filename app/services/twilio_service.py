@@ -31,6 +31,50 @@ class TwilioService:
     def get_client_with_credentials(self, account_sid: str, auth_token: str):
         """Get Twilio client with custom credentials"""
         return Client(account_sid, auth_token)
+
+    @staticmethod
+    def _normalize_url(url: Optional[str]) -> Optional[str]:
+        if not url:
+            return url
+        return str(url).strip().rstrip("/")
+
+    def _verify_number_webhook_configuration(
+        self,
+        number_obj,
+        expected_voice_url: Optional[str],
+        expected_status_callback_url: Optional[str],
+    ) -> None:
+        """
+        Fail-fast verification for Twilio webhook configuration.
+        """
+        if expected_voice_url:
+            actual_voice_url = self._normalize_url(getattr(number_obj, "voice_url", None))
+            expected_voice_url_normalized = self._normalize_url(expected_voice_url)
+            if actual_voice_url != expected_voice_url_normalized:
+                raise Exception(
+                    f"Webhook verification failed: voice_url mismatch "
+                    f"(expected={expected_voice_url_normalized}, actual={actual_voice_url})"
+                )
+            actual_voice_method = (getattr(number_obj, "voice_method", "") or "").upper()
+            if actual_voice_method != "POST":
+                raise Exception(
+                    f"Webhook verification failed: voice_method must be POST (actual={actual_voice_method})"
+                )
+
+        if expected_status_callback_url:
+            actual_status_url = self._normalize_url(getattr(number_obj, "status_callback", None))
+            expected_status_url_normalized = self._normalize_url(expected_status_callback_url)
+            if actual_status_url != expected_status_url_normalized:
+                raise Exception(
+                    f"Webhook verification failed: status_callback mismatch "
+                    f"(expected={expected_status_url_normalized}, actual={actual_status_url})"
+                )
+            actual_status_method = (getattr(number_obj, "status_callback_method", "") or "").upper()
+            if actual_status_method != "POST":
+                raise Exception(
+                    f"Webhook verification failed: status_callback_method must be POST "
+                    f"(actual={actual_status_method})"
+                )
     
     def make_call(self, to_number, from_number, webhook_url, status_callback_url, record=True):
         """Make an outbound call with improved reliability and optional recording"""
@@ -246,6 +290,10 @@ class TwilioService:
             
             # Purchase the number
             incoming_phone_number = client.incoming_phone_numbers.create(**purchase_params)
+            # Verify webhooks (fail-fast) when requested by caller
+            self._verify_number_webhook_configuration(
+                incoming_phone_number, webhook_url, status_callback_url
+            )
             
             return {
                 'sid': incoming_phone_number.sid,
@@ -363,6 +411,9 @@ class TwilioService:
                 raise Exception("No parameters provided for update")
             
             number = client.incoming_phone_numbers(phone_number_sid).update(**update_params)
+            self._verify_number_webhook_configuration(
+                number, webhook_url, status_callback_url
+            )
             
             return {
                 'sid': number.sid,
@@ -377,6 +428,56 @@ class TwilioService:
                 'date_updated': str(number.date_updated)
             }
             
+        except TwilioException as e:
+            raise Exception(f"Error updating number configuration: {str(e)}")
+
+    def update_number_configuration_with_credentials(
+        self,
+        phone_number_sid: str,
+        account_sid: str,
+        auth_token: str,
+        friendly_name: Optional[str] = None,
+        webhook_url: Optional[str] = None,
+        status_callback_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update configuration for a phone number using custom Twilio credentials.
+        """
+        client = self.get_client_with_credentials(account_sid, auth_token)
+
+        try:
+            update_params = {}
+
+            if friendly_name is not None:
+                update_params["friendly_name"] = friendly_name
+            if webhook_url is not None:
+                update_params["voice_url"] = webhook_url
+                update_params["voice_method"] = "POST"
+            if status_callback_url is not None:
+                update_params["status_callback"] = status_callback_url
+                update_params["status_callback_method"] = "POST"
+
+            if not update_params:
+                raise Exception("No parameters provided for update")
+
+            number = client.incoming_phone_numbers(phone_number_sid).update(**update_params)
+            self._verify_number_webhook_configuration(
+                number, webhook_url, status_callback_url
+            )
+
+            return {
+                "sid": number.sid,
+                "phone_number": number.phone_number,
+                "friendly_name": number.friendly_name,
+                "voice_url": number.voice_url,
+                "voice_method": number.voice_method,
+                "status_callback": number.status_callback,
+                "status_callback_method": number.status_callback_method,
+                "capabilities": number.capabilities,
+                "date_created": str(number.date_created),
+                "date_updated": str(number.date_updated),
+            }
+
         except TwilioException as e:
             raise Exception(f"Error updating number configuration: {str(e)}")
     
@@ -442,6 +543,42 @@ class TwilioService:
             
         except TwilioException as e:
             logger.error(f"❌ Error ending call {call_sid}: {str(e)}")
+            return False
+
+    def end_call_with_credentials(self, call_sid: str, account_sid: str, auth_token: str) -> bool:
+        """
+        End a call using explicit Twilio credentials.
+        """
+        client = self.get_client_with_credentials(account_sid, auth_token)
+
+        try:
+            client.calls(call_sid).update(status='completed')
+            logger.info(f"✅ Call {call_sid} ended successfully with explicit credentials")
+            return True
+
+        except TwilioException as e:
+            logger.error(f"❌ Error ending call {call_sid} with explicit credentials: {str(e)}")
+            return False
+
+    def start_recording_with_credentials(self, call_sid: str, account_sid: str, auth_token: str) -> bool:
+        """
+        Start call recording using explicit Twilio credentials.
+        Recording status updates are sent to the existing recording-status webhook.
+        """
+        client = self.get_client_with_credentials(account_sid, auth_token)
+        recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
+
+        try:
+            client.calls(call_sid).recordings.create(
+                recording_channels="dual",
+                recording_status_callback=recording_status_callback_url,
+                recording_status_callback_method="POST",
+            )
+            logger.info(f"✅ Recording started for call {call_sid} with explicit credentials")
+            return True
+
+        except TwilioException as e:
+            logger.error(f"❌ Error starting recording for call {call_sid}: {str(e)}")
             return False
     
     def redirect_call(self, call_sid: str, redirect_url: str, method: str = "POST") -> bool:

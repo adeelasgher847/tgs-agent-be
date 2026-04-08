@@ -31,9 +31,9 @@ class PhoneNumber(Base):
     # Relationships
     tenant = relationship("Tenant", back_populates="phone_numbers")
     
-    # Composite unique constraint: phone_number must be unique within each tenant
+    # Global unique constraint: a phone number can belong to only one tenant.
     __table_args__ = (
-        UniqueConstraint('tenant_id', 'phone_number', name='uq_phone_number_per_tenant'),
+        UniqueConstraint('phone_number', name='uq_phone_number_global'),
     )
     
     def __repr__(self):

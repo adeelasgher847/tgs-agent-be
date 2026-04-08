@@ -33,8 +33,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         
         if event_type == 'checkout.session.completed':
             logger.info("STRIPE WEBHOOK: checkout.session.completed")
-            session = event.get('data', {}).get('object', {}) or {}
-            session_id = session.get('id')
+            # StripeObject supports [] not dict.get(); .get looks up key "get" and raises.
+            session = event["data"]["object"]
+            session_id = session["id"]
             if not session_id:
                 return {"status": "ignored", "reason": "no_session_id"}
 

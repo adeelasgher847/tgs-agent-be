@@ -70,27 +70,28 @@ async def generate_mulaw_tts(text: str, lang: str = "en", voice: str = "female",
 
 def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
     """
-    Replace <Play> with <Start><Stream> to enable realtime MULAW streaming.
-    Configure Twilio edge/region via settings.TWILIO_EDGE if available.
+    Build <Connect><Stream> TwiML for bidirectional media streaming.
+    <Connect> keeps the call alive and enables two-way audio over WebSocket.
     """
-    from twilio.twiml.voice_response import VoiceResponse, Start, Stream, Parameter
-    
-    # Your public WebSocket endpoint that handles Twilio Media Streams:
-    # Example: wss://your-domain.com/api/v1/stream/ws/bidirectional/{callSessionId}/{agentId}
+    from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Parameter
+
     ws_url = f"{settings.WEBHOOK_BASE_URL.replace('http', 'ws')}/api/v1/stream/ws/bidirectional/{call_session_id}/{agent_id}"
     if ws_url.startswith("ws://"):
-        ws_url = "wss://" + ws_url[len("ws://"):]  # enforce TLS for Twilio
+        ws_url = "wss://" + ws_url[len("ws://"):]
 
-    edge = getattr(settings, "TWILIO_EDGE", None)  # e.g., "ashburn", "singapore", "dublin"
+    edge = getattr(settings, "TWILIO_EDGE", None)
+
     vr = VoiceResponse()
-    with vr.start() as s:
-        stream = Stream(url=ws_url, name=f"tts-stream-{agent_id}")
-        # Forward region hint to your WS (for observability); set real Twilio edge via account/call config.
-        if edge:
-            stream.parameter(Parameter(name="edge", value=edge))
-        s.append(stream)
+    connect = Connect()
+    stream = Stream(url=ws_url, name=f"tts-stream-{agent_id}")
+    stream.parameter(Parameter(name="callSessionId", value=call_session_id))
+    stream.parameter(Parameter(name="agentId", value=agent_id))
+    if edge:
+        stream.parameter(Parameter(name="edge", value=edge))
+    connect.append(stream)
+    vr.append(connect)
 
-    logger.debug(f"🛠️ Built streaming TwiML for session {call_session_id}")
+    logger.debug(f"Built bidirectional streaming TwiML for session {call_session_id}")
     return str(vr)
 
 

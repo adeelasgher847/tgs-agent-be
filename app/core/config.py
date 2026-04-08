@@ -155,6 +155,10 @@ class Settings(BaseSettings):
     # Higher means more trust in vector similarity.
     RAG_RERANK_VECTOR_WEIGHT: float = 0.8
     
+    # Trello — platform-managed inbound call boards (optional)
+    TRELLO_PLATFORM_API_KEY: str = ""
+    TRELLO_PLATFORM_API_TOKEN: str = ""
+
     # Monday.com Configuration
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
