@@ -1370,21 +1370,45 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             from app.services.calendar_service import calendar_service as _cal
 
             m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
-            if not m:
-                return
-            raw = m.group(1)
+            if m:
+                raw = m.group(1)
+            else:
+                # Tolerate malformed token without closing bracket during live calls.
+                m_fallback = _re.search(r"\[BOOK_APPOINTMENT:(.+)$", llm_response, flags=_re.DOTALL)
+                if not m_fallback:
+                    return
+                raw = m_fallback.group(1).strip()
+                logger.warning(
+                    "BOOK_APPOINTMENT token missing closing bracket; using fallback parser. token_tail=%s",
+                    raw[:300],
+                )
 
-            def _get(key: str) -> str:
-                km = _re.search(rf"{key}=([^,\]]+)", raw)
-                return km.group(1).strip() if km else ""
+            raw_single_line = " ".join((raw or "").split())
 
-            customer_name = _get("name")
-            customer_phone = _get("phone")
-            slot_raw = _get("slot")
-            reason = _get("reason") or None
+            # Robust parse for ordered keys, allowing commas inside reason.
+            strict = _re.search(
+                r"name=(?P<name>.*?),\s*phone=(?P<phone>.*?),\s*slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
+                raw_single_line,
+            )
+            if strict:
+                customer_name = (strict.group("name") or "").strip()
+                customer_phone = (strict.group("phone") or "").strip()
+                slot_raw = (strict.group("slot") or "").strip()
+                reason_val = (strict.group("reason") or "").strip()
+                reason = reason_val or None
+            else:
+                # Backward-compatible fallback for legacy/messy token shapes.
+                def _get(key: str) -> str:
+                    km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
+                    return km.group(1).strip() if km else ""
+
+                customer_name = _get("name")
+                customer_phone = _get("phone")
+                slot_raw = _get("slot")
+                reason = _get("reason") or None
 
             if not customer_name or not customer_phone or not slot_raw:
-                logger.warning("BOOK_APPOINTMENT token missing required fields: %s", raw)
+                logger.warning("BOOK_APPOINTMENT token missing required fields: %s", raw_single_line[:500])
                 return
 
             if not self.call_session:

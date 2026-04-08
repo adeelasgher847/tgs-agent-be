@@ -62,6 +62,7 @@ def create_appointment(
             customer_email=payload.customer_email,
             notes=payload.notes,
             created_via="web",
+            notify_user_id=user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
@@ -144,6 +145,7 @@ def reschedule_appointment(
             customer_email=payload.customer_email,
             appointment_reason=payload.appointment_reason,
             notes=payload.notes,
+            notify_user_id=user.id,
         )
     except ValueError as exc:
         msg = str(exc)
@@ -171,6 +173,7 @@ def update_appointment_status(
             status=payload.status,
             cancellation_reason=payload.cancellation_reason,
             notes=payload.notes,
+            notify_user_id=user.id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))

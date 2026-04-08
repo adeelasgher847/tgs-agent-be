@@ -14,6 +14,8 @@ from app.core.logger import logger
 from app.models.business_hours import BusinessHours
 from app.models.blocked_slot import BlockedSlot
 from app.models.appointment import Appointment
+from app.models.call_session import CallSession
+from app.models.user import User
 from app.schemas.calendar import (
     AppointmentOut,
     BusinessHoursUpsert,
@@ -21,6 +23,7 @@ from app.schemas.calendar import (
     AvailableSlot,
     AvailableSlotsResponse,
 )
+from app.services.email_service import email_service
 
 SLOT_BOOKING_BUFFER_MINUTES = 15
 
@@ -213,6 +216,64 @@ class CalendarService:
                 f"This time slot is blocked ({blocked.title}). Please choose another time."
             )
 
+    def _resolve_notification_email(
+        self,
+        db: Session,
+        notify_user_id: Optional[uuid.UUID] = None,
+        call_session_id: Optional[uuid.UUID] = None,
+    ) -> Optional[str]:
+        if notify_user_id:
+            user = db.query(User).filter(User.id == notify_user_id).first()
+            if user and user.email:
+                return user.email
+        if call_session_id:
+            cs = db.query(CallSession).filter(CallSession.id == call_session_id).first()
+            if cs and cs.user_id:
+                user = db.query(User).filter(User.id == cs.user_id).first()
+                if user and user.email:
+                    return user.email
+        return None
+
+    def _send_appointment_confirmation_email(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        appt: Appointment,
+        notify_user_id: Optional[uuid.UUID] = None,
+        call_session_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """Best-effort notification email; never breaks booking/status updates."""
+        if appt.status != "confirmed":
+            return
+        recipient = self._resolve_notification_email(
+            db=db,
+            notify_user_id=notify_user_id,
+            call_session_id=call_session_id,
+        )
+        if not recipient:
+            return
+        try:
+            tz_label, start_local, end_local = self.appointment_local_display(db, tenant_id, appt)
+            subject = "Assistly | Appointment confirmed"
+            body = f"""
+            <html>
+            <body>
+                <h2>Your appointment is confirmed</h2>
+                <p>Customer: <strong>{appt.customer_name}</strong></p>
+                <p>Reason: <strong>{appt.appointment_reason or 'N/A'}</strong></p>
+                <p>Time: <strong>{start_local.strftime('%A, %B %d, %Y %I:%M %p')} - {end_local.strftime('%I:%M %p')} ({tz_label})</strong></p>
+                <p>Thank you,<br>Assistly</p>
+            </body>
+            </html>
+            """
+            email_service.send_generic_email(
+                to_email=recipient,
+                subject=subject,
+                html_body=body,
+            )
+        except Exception:
+            logger.exception("Appointment confirmation email failed for appointment=%s", appt.id)
+
     # ── Slot availability ─────────────────────────────────────────────────────
 
     def get_available_slots(
@@ -321,6 +382,7 @@ class CalendarService:
         notes: Optional[str] = None,
         created_via: str = "voice_agent",
         duration_minutes: Optional[int] = None,
+        notify_user_id: Optional[uuid.UUID] = None,
     ) -> Appointment:
         """
         Book a slot. Raises ValueError if the slot is unavailable, in the past,
@@ -394,6 +456,13 @@ class CalendarService:
                 f"The {_fmt_slot_label(slot_local)} slot was just taken. "
                 "Please choose another time."
             )
+        self._send_appointment_confirmation_email(
+            db=db,
+            tenant_id=tenant_id,
+            appt=appt,
+            notify_user_id=notify_user_id,
+            call_session_id=call_session_id,
+        )
         return appt
 
     def get_active_appointment_for_call_session(
@@ -426,6 +495,7 @@ class CalendarService:
         customer_email: Optional[str] = None,
         notes: Optional[str] = None,
         duration_minutes: Optional[int] = None,
+        notify_user_id: Optional[uuid.UUID] = None,
     ) -> Appointment:
         """
         Move an existing appointment to a new slot. Same validation as booking;
@@ -512,6 +582,13 @@ class CalendarService:
                 f"The {_fmt_slot_label(slot_local)} slot was just taken. "
                 "Please choose another time."
             )
+        self._send_appointment_confirmation_email(
+            db=db,
+            tenant_id=tenant_id,
+            appt=appt,
+            notify_user_id=notify_user_id,
+            call_session_id=appt.call_session_id,
+        )
         return appt
 
     # ── Queries ───────────────────────────────────────────────────────────────
@@ -598,6 +675,7 @@ class CalendarService:
         status: str,
         cancellation_reason: Optional[str] = None,
         notes: Optional[str] = None,
+        notify_user_id: Optional[uuid.UUID] = None,
     ) -> Optional[Appointment]:
         appt = self.get_appointment_by_id(db, appointment_id, tenant_id)
         if not appt:
@@ -610,6 +688,7 @@ class CalendarService:
                 f"Allowed transitions: {', '.join(sorted(allowed)) or 'none (terminal state)'}."
             )
 
+        was_confirmed = appt.status == "confirmed"
         appt.status = status
         if cancellation_reason is not None:
             appt.cancellation_reason = cancellation_reason
@@ -617,6 +696,14 @@ class CalendarService:
             appt.notes = notes
         db.commit()
         db.refresh(appt)
+        if (not was_confirmed) and appt.status == "confirmed":
+            self._send_appointment_confirmation_email(
+                db=db,
+                tenant_id=tenant_id,
+                appt=appt,
+                notify_user_id=notify_user_id,
+                call_session_id=appt.call_session_id,
+            )
         return appt
 
     def delete_appointment(
