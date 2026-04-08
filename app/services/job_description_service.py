@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Any, Optional
 import uuid
 import re
@@ -239,6 +240,9 @@ class JobDescriptionService:
     ) -> JobDescription:
         jd = self.get_by_id(db, job_description_id, tenant_id)
         updates = payload.model_dump(exclude_unset=True)
+        for key, value in list(updates.items()):
+            if isinstance(value, Enum):
+                updates[key] = value.value
 
         for key, value in updates.items():
             setattr(jd, key, value)
@@ -249,6 +253,16 @@ class JobDescriptionService:
         db.commit()
         db.refresh(jd)
         return jd
+
+    def delete(
+        self,
+        db: Session,
+        job_description_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> None:
+        jd = self.get_by_id(db, job_description_id, tenant_id)
+        db.delete(jd)
+        db.commit()
 
     def process(
         self,
