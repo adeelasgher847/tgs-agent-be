@@ -164,6 +164,18 @@ class Settings(BaseSettings):
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
     MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
 
+    # Resume ↔ job matching (recruiting): LLM + rules
+    # hybrid = blend (recommended); rules = heuristics only; ai = LLM scores (rules if LLM fails)
+    RECRUIT_MATCH_MODE: str = "hybrid"
+    # Weight of LLM vs rules when match_mode=hybrid (0–1). Higher = trust AI more.
+    RECRUIT_MATCH_AI_WEIGHT: float = 0.68
+    RECRUIT_MATCH_LLM_PROVIDER: str = "auto"  # auto | openai | gemini
+    RECRUIT_MATCH_OPENAI_MODEL: str = "gpt-4o-mini"
+    RECRUIT_MATCH_GEMINI_MODEL: str = "gemini-1.5-flash"
+    RECRUIT_MATCH_LLM_TEMPERATURE: float = 0.12
+    RECRUIT_MATCH_LLM_MAX_TOKENS: int = 600
+    RECRUIT_MATCH_MAX_PROMPT_CHARS: int = 14000
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

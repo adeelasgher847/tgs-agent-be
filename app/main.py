@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 from sqlalchemy.orm import Session
+from fastapi.openapi.utils import get_openapi
 
 from app.api.api_v1.api import api_router
 from app.routers.health import router as health_router
@@ -17,7 +18,45 @@ from app.core.logger import setup_logging, logger
 # Initialize centralized logging
 setup_logging()
 
-app = FastAPI()
+# Use OpenAPI 3.0.x for better Swagger multipart file rendering.
+app = FastAPI(openapi_version="3.0.3")
+
+
+def _patch_binary_formats(schema_obj):
+    """
+    FastAPI/Pydantic can emit contentMediaType for file fields, which Swagger UI
+    sometimes renders as array<string>. Convert these to format=binary for
+    consistent file upload widgets.
+    """
+    if isinstance(schema_obj, dict):
+        if (
+            schema_obj.get("type") == "string"
+            and schema_obj.get("contentMediaType") == "application/octet-stream"
+        ):
+            schema_obj["format"] = "binary"
+            schema_obj.pop("contentMediaType", None)
+        for v in schema_obj.values():
+            _patch_binary_formats(v)
+    elif isinstance(schema_obj, list):
+        for item in schema_obj:
+            _patch_binary_formats(item)
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title or "FastAPI",
+        version=app.version or "0.1.0",
+        description=app.description,
+        routes=app.routes,
+    )
+    _patch_binary_formats(openapi_schema)
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 # Initialize rate limiter on startup (temporarily disabled due to Redis connection issues)
 @app.on_event("startup")

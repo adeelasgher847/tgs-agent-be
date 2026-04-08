@@ -1,7 +1,7 @@
 from app.db.base_class import Base
 from app.models.user import User
 from app.models.tenant import Tenant
-from app.models.role import Role 
+from app.models.role import Role
 from app.models.agent import Agent
 from app.models.password_reset import PasswordResetToken
 from app.models.call_session import CallSession
@@ -12,7 +12,6 @@ from app.models.refresh_token import RefreshToken
 from app.models.invite import Invite
 from app.models.plan import Plan
 from app.models.subscription import Subscription
-from app.models.usage_record import UsageRecord
 from app.models.usage_record import UsageRecord
 from app.models.provider import Provider
 from app.models.model import Model
@@ -29,3 +28,7 @@ from app.models.blocked_slot import BlockedSlot
 from app.models.appointment import Appointment
 from app.models.tenant_inbound_crm_config import TenantInboundCRMConfig
 from app.models.call_log_crm_sync import CallLogCRMSync
+from app.models.job_description import JobDescription
+
+# Recruiting / resumes
+from app.models.resume import Resume
