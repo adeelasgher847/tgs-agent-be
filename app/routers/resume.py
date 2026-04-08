@@ -28,6 +28,7 @@ from app.schemas.resume import (
     BatchShortlistPayload,
     MatchMode,
     MatchRequest,
+    MatchResponse,
     ParseMode,
     ParseStatusEnum,
     ParsedResume,
@@ -176,6 +177,76 @@ async def upload_resume(
         "batch_id": str(resume.batch_id) if resume.batch_id else None,
     }
     return create_success_response(payload, "Resume uploaded successfully", status.HTTP_201_CREATED)
+
+
+@router.post(
+    "/upload-and-match",
+    response_model=SuccessResponse[dict],
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_resume_and_match(
+    file: UploadFile = File(...),
+    job_description_id: UUID = Form(
+        ...,
+        description="Job description UUID to score this resume against",
+    ),
+    parse_mode: ParseMode = Form(default=ParseMode.hybrid),
+    match_mode: MatchMode | None = Form(default=None),
+    verbose: bool = Query(
+        default=False,
+        description="When true, return full detailed scoring payload. Default returns concise match summary.",
+    ),
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    """
+    Upload a resume, parse it, and score it against a job description in a single request.
+    """
+    if not admin_user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    job = db.query(JobDescription).filter(
+        JobDescription.id == job_description_id,
+        JobDescription.tenant_id == admin_user.current_tenant_id,
+    ).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+
+    resume = await _store_single_file_and_create_resume(
+        file,
+        admin_user.current_tenant_id,
+        db,
+        upload_mode=UploadMode.SINGLE,
+    )
+    db.commit()
+    db.refresh(resume)
+
+    try:
+        res = run_parse_for_resume(db, resume.id, parse_mode=parse_mode)
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume not found")
+    db.commit()
+    db.refresh(res)
+
+    if res.status != ParseStatus.READY or not res.parsed_json:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Resume uploaded but parsing did not complete successfully",
+                "resume": resume_detail_payload(res),
+            },
+        )
+
+    parsed = ParsedResume.model_validate(res.parsed_json)
+    mm = match_mode.value if match_mode else None
+    result = score_candidate(res.id, job, parsed, match_mode=mm)
+    match_payload = _match_result_to_payload(result, verbose=verbose)
+    payload = {"resume": resume_detail_payload(res), **match_payload}
+    return create_success_response(
+        payload,
+        "Resume uploaded, parsed, and matched successfully",
+        status.HTTP_201_CREATED,
+    )
 
 
 @router.post(
@@ -726,29 +797,31 @@ def match_resume(
     parsed = ParsedResume.model_validate(res.parsed_json)
     mm = body.match_mode.value if body and body.match_mode else None
     result = score_candidate(res.id, job, parsed, match_mode=mm)
+    payload = _match_result_to_payload(result, verbose=verbose)
+    return create_success_response(payload, "Match computed successfully")
 
+
+def _match_result_to_payload(result: MatchResponse, *, verbose: bool) -> dict:
     if verbose:
-        payload = {
+        return {
             "match": result.model_dump(mode="json"),
             "billing_note": {"estimated_match_api_charge_usd": 0.0},
         }
-    else:
-        strengths = list(result.weighted_skill_hits.keys())[:3]
-        gaps = list(result.missing_required_skills)[:3]
-        payload = {
-            "match": {
-                "resume_id": str(result.resume_id),
-                "job_description_id": str(result.job_description_id),
-                "match_percent": result.overall_match_percent,
-                "fit_label": result.overall_fit_label,
-                "fit_summary": result.overall_fit_summary,
-                "confidence_percent": result.match_confidence_percent,
-                "confidence_label": result.match_confidence_label,
-                "top_strengths": strengths,
-                "top_gaps": gaps,
-            }
+    strengths = list(result.weighted_skill_hits.keys())[:3]
+    gaps = list(result.missing_required_skills)[:3]
+    return {
+        "match": {
+            "resume_id": str(result.resume_id),
+            "job_description_id": str(result.job_description_id),
+            "match_percent": result.overall_match_percent,
+            "fit_label": result.overall_fit_label,
+            "fit_summary": result.overall_fit_summary,
+            "confidence_percent": result.match_confidence_percent,
+            "confidence_label": result.match_confidence_label,
+            "top_strengths": strengths,
+            "top_gaps": gaps,
         }
-    return create_success_response(payload, "Match computed successfully")
+    }
 
 
 def resume_detail_payload(res: Resume) -> dict:
