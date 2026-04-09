@@ -317,6 +317,42 @@ class BidirectionalStreamHandler:
                 agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
+
+    def _extract_greeting_from_prompt(self) -> Optional[str]:
+        """
+        Extract explicit greeting from prompt text, if configured.
+        Supported formats:
+        - GREETING: Hello and welcome ...
+        - FIRST_MESSAGE: Hello and welcome ...
+        - OPENING: Hello and welcome ...
+        - [GREETING:Hello and welcome ...]
+        """
+        candidate_prompts: List[str] = []
+        if self.agent and getattr(self.agent, "system_prompt", None):
+            candidate_prompts.append(self.agent.system_prompt or "")
+        if (
+            self.agent
+            and getattr(self.agent, "model", None)
+            and getattr(self.agent.model, "system_prompt", None)
+        ):
+            candidate_prompts.append(self.agent.model.system_prompt or "")
+
+        patterns = [
+            r"(?im)^\s*(?:GREETING|FIRST_MESSAGE|OPENING)\s*:\s*(.+?)\s*$",
+            r"(?is)\[\s*GREETING\s*:\s*(.+?)\s*\]",
+        ]
+
+        for prompt_text in candidate_prompts:
+            if not prompt_text:
+                continue
+            for pattern in patterns:
+                match = re.search(pattern, prompt_text)
+                if not match:
+                    continue
+                greeting_text = (match.group(1) or "").strip().strip('"').strip("'")
+                if greeting_text:
+                    return greeting_text
+        return None
     
     async def _precache_common_phrases(self):
         """
@@ -650,7 +686,10 @@ class BidirectionalStreamHandler:
                 if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                     greeting_text = self.agent.first_message
                 else:
-                    if self.call_session and self.call_session.call_type == "inbound":
+                    prompt_greeting = self._extract_greeting_from_prompt()
+                    if prompt_greeting:
+                        greeting_text = prompt_greeting
+                    elif self.call_session and self.call_session.call_type == "inbound":
                         greeting_text = "Thank you for calling. How may I assist you today?"
                     else:
                         greeting_text = "hello how are you"
@@ -1008,6 +1047,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
                     text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", text)
                     text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", text)
+                    # Tolerate malformed tokens that miss a closing bracket.
+                    text = re.sub(r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*", "", text)
                     return text
 
                 def _find_flush_index(buf: str):
@@ -1177,10 +1218,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         )
                         # Queue fallback response
                         if final_text and not self._tts_cancel.is_set():
+                            safe_tts_text = re.sub(r"\[OUTCOME:[^\]]+\]", "", final_text)
+                            safe_tts_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", safe_tts_text)
+                            safe_tts_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", safe_tts_text)
+                            safe_tts_text = re.sub(
+                                r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*",
+                                "",
+                                safe_tts_text,
+                            ).replace("[END_CALL]", "").strip()
                             chunk_counter += 1
                             if self._tts_pipeline:
                                 await self._tts_pipeline.queue_tts({
-                                    "text": final_text,
+                                    "text": safe_tts_text or final_text,
                                     "use_ssml": self._use_ssml,
                                     "is_final": True,
                                 })
