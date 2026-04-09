@@ -873,6 +873,7 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
 - CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: offer [CHECK_SLOTS:...] again, then emit the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
@@ -915,6 +916,7 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
 - CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
@@ -953,6 +955,7 @@ Previous conversation:
 - If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
 - CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
@@ -980,6 +983,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             api_key = None
             temperature = 0.5
             max_tokens = 100
+            booking_intent_turn = self._is_booking_intent_turn(user_text)
             
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
@@ -1005,6 +1009,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     max_tokens = self.agent.agent_max_tokens
                 elif self.agent.model.max_tokens:
                     max_tokens = self.agent.model.max_tokens
+
+                # Booking turns need enough completion budget for action token emission.
+                if booking_intent_turn:
+                    max_tokens = max(max_tokens, 180)
                 
                 # Select service based on provider
                 if self.agent.provider:
@@ -1127,6 +1135,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if "[OUTCOME:" in tts_buffer:
                         tts_buffer = _strip_control_tokens(tts_buffer)
 
+                    # Avoid spoken "final confirmation" before backend booking succeeds.
+                    if "[BOOK_APPOINTMENT:" in response_accum:
+                        tts_buffer = self._strip_premature_booking_confirmation(_strip_control_tokens(tts_buffer))
+
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
                     # If punctuation-based flush isn't available, do a time-based flush (~200ms for 400–500ms latency)
@@ -1247,10 +1259,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         })
 
             if final_text:
+                # Two-step reliability: if booking intent exists but token is missing, run action extraction.
+                if booking_intent_turn and not self._has_calendar_token(final_text):
+                    extracted_token = await self._extract_calendar_action_token(
+                        llm_service=llm_service,
+                        model_name=model_name,
+                        api_key=api_key,
+                        user_text=user_text,
+                        assistant_text=final_text,
+                        history_text=history_text,
+                        temperature=temperature,
+                    )
+                    if extracted_token:
+                        logger.info("Action extraction fallback emitted token: %s", extracted_token[:140])
+                        final_text = f"{final_text}\n{extracted_token}"
+
                 # Strip control tokens from transcript (never saved to history)
                 transcript_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", final_text)
                 transcript_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", transcript_text)
                 transcript_text = transcript_text.replace("[END_CALL]", "").strip()
+                if "[BOOK_APPOINTMENT:" in final_text:
+                    transcript_text = self._strip_premature_booking_confirmation(transcript_text)
                 if transcript_text:
                     await self._add_to_transcript(
                         "agent",
@@ -1263,9 +1292,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
 
                 # Handle calendar tokens (fire-and-forget after TTS is already queued)
-                if "[CHECK_SLOTS:" in final_text:
+                if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_check_slots_token(final_text))
-                elif "[BOOK_APPOINTMENT:" in final_text:
+                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_book_appointment_token(final_text))
 
         except Exception as e:
@@ -1280,6 +1309,103 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
     def _cache_calendar_slots(self, slots: List) -> None:
         self._last_offered_calendar_slots = [slot.slot_start for slot in slots]
+
+    @staticmethod
+    def _has_calendar_token(text: str) -> bool:
+        if not text:
+            return False
+        return bool(re.search(r"\[\s*(?:CHECK_SLOTS|BOOK_APPOINTMENT)\s*:", text, flags=re.IGNORECASE))
+
+    def _is_booking_intent_turn(self, user_text: str, model_text: str = "") -> bool:
+        """Conservative booking-intent detector for token-budget and fallback extraction."""
+        haystack = f"{user_text or ''} {model_text or ''}".lower()
+        if not haystack.strip():
+            return False
+        booking_keywords = (
+            "book", "booking", "schedule", "appointment", "reschedule", "slot", "available slot",
+            "am", "pm", "a.m", "p.m", "date", "time", "tomorrow", "today",
+        )
+        return any(k in haystack for k in booking_keywords)
+
+    @staticmethod
+    def _strip_premature_booking_confirmation(text: str) -> str:
+        """
+        Remove assistant self-confirmations so final confirmation comes only after backend success.
+        """
+        if not text:
+            return ""
+        patterns = [
+            r"(?i)\b(?:great|done|perfect|all set)[^.!?]*\b(?:appointment)[^.!?]*\b(?:scheduled|confirmed|booked)\b[^.!?]*[.!?]?",
+            r"(?i)\byour appointment[^.!?]*\b(?:scheduled|confirmed|booked)\b[^.!?]*[.!?]?",
+            r"(?i)\ba confirmation message will be sent to you shortly[^.!?]*[.!?]?",
+            r"(?i)\bwe look forward to seeing you[^.!?]*[.!?]?",
+        ]
+        cleaned = text
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    async def _extract_calendar_action_token(
+        self,
+        *,
+        llm_service,
+        model_name: str,
+        api_key: Optional[str],
+        user_text: str,
+        assistant_text: str,
+        history_text: str,
+        temperature: float,
+    ) -> Optional[str]:
+        """Second-pass action extraction. Returns one action token or None."""
+        if not self.call_session:
+            return None
+
+        offered_slots = ", ".join(
+            slot.strftime("%Y-%m-%d %H:%M")
+            for slot in self._last_offered_calendar_slots[:16]
+        )
+        extraction_system_prompt = (
+            "You extract calendar actions from a phone-call turn.\n"
+            "Return exactly one line and nothing else:\n"
+            "- [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<slot>,reason=<reason>]\n"
+            "- [CHECK_SLOTS:date=YYYY-MM-DD]\n"
+            "- NONE\n"
+            "Rules:\n"
+            "1) If user selected a concrete slot that was offered, return BOOK_APPOINTMENT.\n"
+            "2) If user asked to check availability, return CHECK_SLOTS.\n"
+            "3) If uncertain or missing critical fields, return NONE.\n"
+            "4) Keep reason short and without commas.\n"
+        )
+        extraction_prompt = (
+            f"Now (UTC): {datetime.now(timezone.utc).isoformat()}\n\n"
+            f"Recent history:\n{history_text or '(empty)'}\n\n"
+            f"Latest user text:\n{user_text or '(empty)'}\n\n"
+            f"Assistant draft text:\n{assistant_text or '(empty)'}\n\n"
+            f"Offered slot starts (YYYY-MM-DD HH:MM):\n{offered_slots or '(none cached)'}\n"
+        )
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: llm_service.generate_text(
+                    prompt=extraction_prompt,
+                    system_prompt=extraction_system_prompt,
+                    model_name=model_name,
+                    temperature=min(temperature, 0.15),
+                    max_tokens=140,
+                    api_key=api_key,
+                ),
+            )
+            content = (result.get("content") or "").strip()
+            if re.search(r"^\[\s*BOOK_APPOINTMENT\s*:", content, flags=re.IGNORECASE):
+                return content.splitlines()[0].strip()
+            if re.search(r"^\[\s*CHECK_SLOTS\s*:", content, flags=re.IGNORECASE):
+                return content.splitlines()[0].strip()
+            return None
+        except Exception as e:
+            logger.warning("Calendar action extraction pass failed: %s", e)
+            return None
 
     def _resolve_cached_calendar_slot(self, slot_raw: str) -> Optional[datetime]:
         normalized = self._normalize_calendar_slot_key(slot_raw)
