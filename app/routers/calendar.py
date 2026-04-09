@@ -15,8 +15,10 @@ from app.schemas.calendar import (
     AppointmentDetailOut,
     AppointmentListResponse,
     AvailableSlotsResponse,
+    AppointmentIntakeSummaryResponse,
 )
 from app.services.calendar_service import BusinessHoursConflictError, calendar_service
+from app.services.appointment_intake_summary_service import appointment_intake_summary_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
@@ -127,6 +129,34 @@ def list_appointments(
             ],
             total=total,
         )
+    )
+
+
+@router.get(
+    "/appointments/{appointment_id}/intake-summary",
+    response_model=SuccessResponse[AppointmentIntakeSummaryResponse],
+)
+def get_appointment_intake_summary(
+    appointment_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a fresh intake briefing from the call transcript linked to this appointment.
+    Not stored — suitable for demo; each request runs a new LLM extraction.
+
+    Omits sentiment scores, satisfaction metrics, and emotional analytics by design.
+    """
+    appt = calendar_service.get_appointment_by_id(db, appointment_id, user.current_tenant_id)
+    if not appt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+    payload = appointment_intake_summary_service.generate_intake_summary(
+        db=db,
+        tenant_id=user.current_tenant_id,
+        appointment=appt,
+    )
+    return create_success_response(
+        data=AppointmentIntakeSummaryResponse.model_validate(payload),
     )
 
 

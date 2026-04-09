@@ -870,11 +870,11 @@ Previous conversation:
 4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
 
 # APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- If user wants to book/schedule an appointment: collect their name, reason, email for confirmations (if they offer it), and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
 - CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: offer [CHECK_SLOTS:...] again, then emit the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
@@ -913,11 +913,11 @@ Previous conversation:
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
 # APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- If user wants to book/schedule an appointment: collect their name, reason, email for confirmations (if they offer it), and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
 - CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
@@ -952,11 +952,11 @@ Previous conversation:
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
 # APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- If user wants to book/schedule an appointment: collect their name, reason, email for confirmations (if they offer it), and preferred date/time.
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
 - CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
@@ -1367,7 +1367,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         extraction_system_prompt = (
             "You extract calendar actions from a phone-call turn.\n"
             "Return exactly one line and nothing else:\n"
-            "- [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<slot>,reason=<reason>]\n"
+            "- [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<slot>,reason=<reason>] "
+            "(if the user gave an email, use: name=...,phone=...,email=...,slot=...,reason=...)\n"
             "- [CHECK_SLOTS:date=YYYY-MM-DD]\n"
             "- NONE\n"
             "Rules:\n"
@@ -1375,6 +1376,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             "2) If user asked to check availability, return CHECK_SLOTS.\n"
             "3) If uncertain or missing critical fields, return NONE.\n"
             "4) Keep reason short and without commas.\n"
+            "5) Include email= only if the user clearly gave an address; field order is name, phone, optional email, slot, reason.\n"
         )
         extraction_prompt = (
             f"Now (UTC): {datetime.now(timezone.utc).isoformat()}\n\n"
@@ -1393,7 +1395,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     system_prompt=extraction_system_prompt,
                     model_name=model_name,
                     temperature=min(temperature, 0.15),
-                    max_tokens=140,
+                    max_tokens=180,
                     api_key=api_key,
                 ),
             )
@@ -1534,15 +1536,48 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as e:
             logger.error("Error in _handle_check_slots_token: %s", e, exc_info=True)
 
+    def _client_transcript_lines_newest_first(self, limit: int = 16) -> list[str]:
+        """Recent client utterances (newest first) for voice email recovery."""
+        conversation_history: list = []
+        if self.call_session and self.call_session.call_transcript:
+            try:
+                raw = self.call_session.call_transcript
+                conversation_history = (
+                    json.loads(raw) if isinstance(raw, str) else raw
+                )
+            except Exception:
+                conversation_history = []
+        if not isinstance(conversation_history, list):
+            return []
+        out: list[str] = []
+        for msg in reversed(conversation_history):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            content = (msg.get("content") or msg.get("message") or "").strip()
+            message_type = msg.get("message_type", "")
+            if (
+                role == "client"
+                and content
+                and message_type not in ("greeting", "system", "status")
+            ):
+                out.append(content)
+                if len(out) >= limit:
+                    break
+        return out
+
     async def _handle_book_appointment_token(self, llm_response: str):
         """
-        Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,slot=...,reason=...].
+        Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,optional email=...,slot=...,reason=...].
+        Resolves customer_email from the token and/or recent client transcript (spoken-email STT recovery).
         Books the appointment and speaks the confirmation directly via TTS.
         """
         try:
             import re as _re
             from datetime import datetime as _dt
+
             from app.services.calendar_service import calendar_service as _cal
+            from app.utils.spoken_email import resolve_customer_email_for_booking
 
             m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
             if m:
@@ -1560,14 +1595,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             raw_single_line = " ".join((raw or "").split())
 
-            # Robust parse for ordered keys, allowing commas inside reason.
+            token_email_raw: str | None = None
+            # Robust parse: name, phone, optional email, slot, optional reason (commas in reason).
             strict = _re.search(
-                r"name=(?P<name>.*?),\s*phone=(?P<phone>.*?),\s*slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
+                r"name=(?P<name>.*?),\s*phone=(?P<phone>.*?),\s*(?:email=(?P<email>.*?),\s*)?"
+                r"slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
                 raw_single_line,
             )
             if strict:
                 customer_name = (strict.group("name") or "").strip()
                 customer_phone = (strict.group("phone") or "").strip()
+                token_email_raw = (strict.group("email") or "").strip() or None
                 slot_raw = (strict.group("slot") or "").strip()
                 reason_val = (strict.group("reason") or "").strip()
                 reason = reason_val or None
@@ -1579,6 +1617,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                 customer_name = _get("name")
                 customer_phone = _get("phone")
+                token_email_raw = _get("email") or None
                 slot_raw = _get("slot")
                 reason = _get("reason") or None
 
@@ -1588,6 +1627,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             if not self.call_session:
                 return
+
+            customer_email = resolve_customer_email_for_booking(
+                token_email_raw=token_email_raw,
+                transcript_client_lines_newest_first=self._client_transcript_lines_newest_first(),
+            )
+            if customer_email:
+                logger.info("BOOK_APPOINTMENT: using customer_email (token or transcript)")
 
             slot_start = self._resolve_cached_calendar_slot(slot_raw)
             if slot_start is None:
@@ -1622,6 +1668,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             customer_name=customer_name,
                             customer_phone=customer_phone,
                             appointment_reason=reason,
+                            customer_email=customer_email,
                         ),
                     )
                     msg = (
@@ -1641,6 +1688,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             agent_id=agent_id,
                             call_session_id=call_session_id,
                             appointment_reason=reason,
+                            customer_email=customer_email,
                             created_via="voice_agent",
                         ),
                     )

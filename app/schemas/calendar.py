@@ -186,3 +186,26 @@ class AvailableSlotsResponse(BaseModel):
     timezone: str
     slots: List[AvailableSlot]
     total: int
+
+
+# ─── On-demand intake briefing (call transcript; not persisted) ───────────────
+
+class AppointmentIntakeSummaryFields(BaseModel):
+    """Structured briefing for staff; excludes sentiment / satisfaction scores."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    reason_for_visit: Optional[str] = None
+    health_symptoms_or_conditions: Optional[str] = None
+    customer_details_mentioned: Optional[str] = None
+    staff_briefing: Optional[str] = None
+    key_points: List[str] = Field(default_factory=list)
+
+
+class AppointmentIntakeSummaryResponse(BaseModel):
+    appointment_id: uuid.UUID
+    call_session_id: uuid.UUID
+    generated_at: datetime
+    model_used: str
+    transcript_message_count: int
+    intake: AppointmentIntakeSummaryFields
