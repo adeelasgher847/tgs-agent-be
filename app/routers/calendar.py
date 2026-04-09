@@ -21,6 +21,31 @@ from app.utils.response import create_success_response
 
 router = APIRouter()
 
+# External API mapping (stable public contract):
+# 0=Sunday ... 6=Saturday
+# Internal storage/service mapping remains Python weekday:
+# 0=Monday ... 6=Sunday
+def _api_day_to_internal(day: int) -> int:
+    return (day + 6) % 7
+
+
+def _internal_day_to_api(day: int) -> int:
+    return (day + 1) % 7
+
+
+def _map_hours_payload_to_internal(payload: List[BusinessHoursUpsert]) -> List[BusinessHoursUpsert]:
+    return [
+        item.model_copy(update={"day_of_week": _api_day_to_internal(item.day_of_week)})
+        for item in payload
+    ]
+
+
+def _map_hours_out_to_api(rows: List[BusinessHoursOut]) -> List[BusinessHoursOut]:
+    return [
+        row.model_copy(update={"day_of_week": _internal_day_to_api(row.day_of_week)})
+        for row in rows
+    ]
+
 
 # ─── Slot Availability ────────────────────────────────────────────────────────
 
@@ -205,7 +230,8 @@ def get_business_hours(
     db: Session = Depends(get_db),
 ):
     hours = calendar_service.get_business_hours(db, user.current_tenant_id)
-    return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
+    out = [BusinessHoursOut.model_validate(h) for h in hours]
+    return create_success_response(data=_map_hours_out_to_api(out))
 
 
 @router.post("/business-hours", response_model=SuccessResponse[List[BusinessHoursOut]], status_code=status.HTTP_201_CREATED)
@@ -215,8 +241,9 @@ def create_business_hours(
     db: Session = Depends(get_db),
 ):
     """Create business hours for the tenant. Use PUT to update existing weekdays."""
+    internal_payload = _map_hours_payload_to_internal(payload)
     try:
-        hours = calendar_service.create_business_hours(db, user.current_tenant_id, payload)
+        hours = calendar_service.create_business_hours(db, user.current_tenant_id, internal_payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except BusinessHoursConflictError as exc:
@@ -224,10 +251,11 @@ def create_business_hours(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "message": "Business hours already exist for one or more weekdays.",
-                "day_of_week": exc.days,
+                "day_of_week": [_internal_day_to_api(day) for day in exc.days],
             },
         ) from exc
-    return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
+    out = [BusinessHoursOut.model_validate(h) for h in hours]
+    return create_success_response(data=_map_hours_out_to_api(out))
 
 
 @router.put("/business-hours", response_model=SuccessResponse[List[BusinessHoursOut]])
@@ -237,8 +265,10 @@ def upsert_business_hours(
     db: Session = Depends(get_db),
 ):
     """Set business hours for the tenant. Pass all 7 days at once (or just the ones you want to update)."""
-    hours = calendar_service.upsert_business_hours(db, user.current_tenant_id, payload)
-    return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
+    internal_payload = _map_hours_payload_to_internal(payload)
+    hours = calendar_service.upsert_business_hours(db, user.current_tenant_id, internal_payload)
+    out = [BusinessHoursOut.model_validate(h) for h in hours]
+    return create_success_response(data=_map_hours_out_to_api(out))
 
 
 @router.delete("/business-hours/{business_hours_id}", response_model=SuccessResponse[dict])

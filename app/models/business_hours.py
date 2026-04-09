@@ -12,7 +12,7 @@ class BusinessHours(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False, index=True)
-    day_of_week = Column(Integer, nullable=False)       # 0=Monday … 6=Sunday
+    day_of_week = Column(Integer, nullable=False)       # Internal: 0=Monday … 6=Sunday
     open_time = Column(Time, nullable=True)             # None when is_closed=True
     close_time = Column(Time, nullable=True)
     is_closed = Column(Boolean, nullable=False, server_default="false")

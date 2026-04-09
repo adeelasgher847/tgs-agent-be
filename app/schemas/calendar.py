@@ -7,7 +7,7 @@ import uuid
 # ─── Business Hours ───────────────────────────────────────────────────────────
 
 class BusinessHoursUpsert(BaseModel):
-    day_of_week: int = Field(..., ge=0, le=6, description="0=Monday … 6=Sunday")
+    day_of_week: int = Field(..., ge=0, le=6, description="0=Sunday … 6=Saturday")
     open_time: Optional[str] = Field(None, description="HH:MM, e.g. '09:00'")
     close_time: Optional[str] = Field(None, description="HH:MM, e.g. '17:00'")
     is_closed: bool = False
@@ -39,7 +39,7 @@ class BusinessHoursOut(BaseModel):
 
     id: uuid.UUID
     tenant_id: uuid.UUID
-    day_of_week: int
+    day_of_week: int = Field(..., description="0=Sunday … 6=Saturday")
     open_time: Optional[str] = None
     close_time: Optional[str] = None
     is_closed: bool
