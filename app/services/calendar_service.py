@@ -7,10 +7,12 @@ import html
 from datetime import datetime, date, timedelta, timezone, time as dt_time, tzinfo
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 import uuid
 
+from app.core.config import settings
 from app.core.logger import logger
 from app.models.business_hours import BusinessHours
 from app.models.blocked_slot import BlockedSlot
@@ -28,6 +30,7 @@ from app.services.email_service import email_service
 from app.utils.spoken_email import normalize_stored_email
 
 SLOT_BOOKING_BUFFER_MINUTES = 15
+APPOINTMENT_REVIEW_TOKEN_TTL_HOURS = 24 * 7
 
 
 class BusinessHoursConflictError(Exception):
@@ -245,13 +248,8 @@ class CalendarService:
         call_session_id: Optional[uuid.UUID] = None,
     ) -> None:
         """
-        Best-effort confirmation emails; never breaks booking/status updates.
-
-        - If ``customer_email`` is present and valid, the caller receives a customer-facing message.
-        - If an internal recipient exists (web ``notify_user_id`` or call-session owner), they
-          receive a staff-oriented message (unchanged from before).
-        - If both resolve to the same address, a single customer-facing email is sent (no duplicate).
-        - If the caller did not provide email, only the internal recipient is emailed when available.
+        Send tenant-facing review request email after confirmation.
+        Customer confirmation is intentionally deferred until tenant review acknowledgement.
         """
         if appt.status != "confirmed":
             return
@@ -261,9 +259,7 @@ class CalendarService:
             notify_user_id=notify_user_id,
             call_session_id=call_session_id,
         )
-        customer_recipient = normalize_stored_email(appt.customer_email)
-
-        if not staff_recipient and not customer_recipient:
+        if not staff_recipient:
             return
 
         tz_label, start_local, end_local = self.appointment_local_display(db, tenant_id, appt)
@@ -274,73 +270,157 @@ class CalendarService:
         safe_name = html.escape(appt.customer_name or "")
         safe_reason = html.escape((appt.appointment_reason or "").strip() or "N/A")
 
-        subject = "Assistly | Appointment confirmed"
+        review_token = self._create_appointment_review_token(
+            appointment_id=appt.id,
+            tenant_id=tenant_id,
+            reviewer_user_id=notify_user_id,
+        )
+        backend_base = (settings.WEBHOOK_BASE_URL or "").rstrip("/")
+        review_link = (
+            f"{backend_base}/api/v1/calendar/appointments/acknowledge?token={review_token}"
+            if backend_base
+            else ""
+        )
 
-        customer_body = f"""
+        subject = "Assistly | Appointment confirmed — review requested"
+        action_html = (
+            f'<p><a href="{html.escape(review_link)}" '
+            'style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;'
+            'text-decoration:none;border-radius:6px;">View & Acknowledge</a></p>'
+            if review_link
+            else "<p><em>Review link unavailable: WEBHOOK_BASE_URL is not configured.</em></p>"
+        )
+
+        staff_body = f"""
             <html>
             <body>
-                <h2>Your appointment is confirmed</h2>
+                <h2>Appointment confirmed — action required</h2>
+                <p>Customer: <strong>{safe_name}</strong></p>
+                <p>Reason: <strong>{safe_reason}</strong></p>
+                <p>Time: <strong>{html.escape(time_line)}</strong></p>
+                {action_html}
+                <p>Opening the link will mark this appointment as reviewed.</p>
+                <p>Thank you,<br>Assistly</p>
+            </body>
+            </html>
+            """
+        try:
+            email_service.send_generic_email(
+                to_email=staff_recipient,
+                subject=subject,
+                html_body=staff_body,
+            )
+        except Exception:
+            logger.exception(
+                "Staff review-request email failed for appointment=%s",
+                appt.id,
+            )
+
+    def _create_appointment_review_token(
+        self,
+        *,
+        appointment_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        reviewer_user_id: Optional[uuid.UUID] = None,
+    ) -> str:
+        now = datetime.now(timezone.utc)
+        payload = {
+            "type": "appointment_review_ack",
+            "appointment_id": str(appointment_id),
+            "tenant_id": str(tenant_id),
+            "reviewer_user_id": str(reviewer_user_id) if reviewer_user_id else None,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=APPOINTMENT_REVIEW_TOKEN_TTL_HOURS)).timestamp()),
+        }
+        return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+    def _decode_appointment_review_token(self, token: str) -> dict:
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        except JWTError as e:
+            raise ValueError("Invalid or expired review token.") from e
+        if payload.get("type") != "appointment_review_ack":
+            raise ValueError("Invalid review token type.")
+        return payload
+
+    def _send_customer_review_ack_email(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        appt: Appointment,
+    ) -> None:
+        customer_recipient = normalize_stored_email(appt.customer_email)
+        if not customer_recipient:
+            return
+        tz_label, start_local, end_local = self.appointment_local_display(db, tenant_id, appt)
+        time_line = (
+            f"{start_local.strftime('%A, %B %d, %Y %I:%M %p')} – "
+            f"{end_local.strftime('%I:%M %p')} ({tz_label})"
+        )
+        safe_name = html.escape(appt.customer_name or "")
+        safe_reason = html.escape((appt.appointment_reason or "").strip() or "N/A")
+        body = f"""
+            <html>
+            <body>
+                <h2>Your appointment has been reviewed</h2>
                 <p>Hi {safe_name},</p>
-                <p>Your appointment is confirmed for:</p>
+                <p>Your appointment details have been reviewed by our team:</p>
                 <p><strong>{html.escape(time_line)}</strong></p>
                 <p>Reason: <strong>{safe_reason}</strong></p>
                 <p>Thank you,<br>Assistly</p>
             </body>
             </html>
             """
+        email_service.send_generic_email(
+            to_email=customer_recipient,
+            subject="Assistly | Your appointment is reviewed",
+            html_body=body,
+        )
 
-        staff_body = f"""
-            <html>
-            <body>
-                <h2>Appointment confirmed</h2>
-                <p>Customer: <strong>{safe_name}</strong></p>
-                <p>Reason: <strong>{safe_reason}</strong></p>
-                <p>Time: <strong>{html.escape(time_line)}</strong></p>
-                <p>Thank you,<br>Assistly</p>
-            </body>
-            </html>
-            """
+    def acknowledge_appointment_from_token(
+        self,
+        *,
+        db: Session,
+        token: str,
+    ) -> Appointment:
+        payload = self._decode_appointment_review_token(token)
+        try:
+            appt_id = uuid.UUID(payload["appointment_id"])
+            tenant_id = uuid.UUID(payload["tenant_id"])
+            reviewer_raw = payload.get("reviewer_user_id")
+            reviewer_user_id = uuid.UUID(reviewer_raw) if reviewer_raw else None
+        except Exception as e:
+            raise ValueError("Malformed review token payload.") from e
 
-        staff_l = staff_recipient.lower() if staff_recipient else None
-        cust_l = customer_recipient.lower() if customer_recipient else None
+        appt = self.get_appointment_by_id(db, appt_id, tenant_id)
+        if not appt:
+            raise ValueError("Appointment not found for review acknowledgement.")
 
-        if customer_recipient and staff_recipient and cust_l == staff_l:
-            try:
-                email_service.send_generic_email(
-                    to_email=customer_recipient,
-                    subject=subject,
-                    html_body=customer_body,
-                )
-            except Exception:
-                logger.exception(
-                    "Appointment confirmation email failed (deduped) for appointment=%s",
-                    appt.id,
-                )
-            return
+        first_review = appt.review_status != "reviewed"
+        if first_review:
+            appt.review_status = "reviewed"
+            appt.reviewed_at = datetime.now(timezone.utc)
+            if reviewer_user_id:
+                appt.reviewed_by_user_id = reviewer_user_id
 
-        if customer_recipient:
-            try:
-                email_service.send_generic_email(
-                    to_email=customer_recipient,
-                    subject=subject,
-                    html_body=customer_body,
-                )
-            except Exception:
-                logger.exception(
-                    "Customer confirmation email failed for appointment=%s", appt.id
-                )
+        should_notify_customer = (
+            normalize_stored_email(appt.customer_email) is not None
+            and appt.customer_notified_on_review_at is None
+        )
 
-        if staff_recipient:
-            try:
-                email_service.send_generic_email(
-                    to_email=staff_recipient,
-                    subject=subject,
-                    html_body=staff_body,
-                )
-            except Exception:
-                logger.exception(
-                    "Staff confirmation email failed for appointment=%s", appt.id
-                )
+        if first_review or should_notify_customer:
+            if should_notify_customer:
+                try:
+                    self._send_customer_review_ack_email(db=db, tenant_id=tenant_id, appt=appt)
+                    appt.customer_notified_on_review_at = datetime.now(timezone.utc)
+                except Exception:
+                    logger.exception(
+                        "Customer review-ack email failed for appointment=%s", appt.id
+                    )
+            db.commit()
+            db.refresh(appt)
+
+        return appt
 
     # ── Slot availability ─────────────────────────────────────────────────────
 

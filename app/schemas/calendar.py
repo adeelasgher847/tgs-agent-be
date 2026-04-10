@@ -199,12 +199,20 @@ class AppointmentIntakeSummaryFields(BaseModel):
     health_symptoms_or_conditions: Optional[str] = None
     customer_details_mentioned: Optional[str] = None
     staff_briefing: Optional[str] = None
-    key_points: List[str] = Field(default_factory=list)
+    key_points: Optional[str] = None
 
 
 class AppointmentIntakeSummaryResponse(BaseModel):
     appointment_id: uuid.UUID
     call_session_id: uuid.UUID
+    customer_name: str
+    customer_phone: str
+    customer_email: Optional[str] = None
+    appointment_reason: Optional[str] = None
+    duration_minutes: int
+    status: str
+    review_status: str = Field(default="not_reviewed", description="not_reviewed | reviewed")
+    reviewed_at: Optional[datetime] = None
     generated_at: datetime
     model_used: str
     transcript_message_count: int

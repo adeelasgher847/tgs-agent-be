@@ -28,7 +28,7 @@ Output ONLY valid JSON (no markdown fences, no commentary). Use this exact schem
   "health_symptoms_or_conditions": string or null,
   "customer_details_mentioned": string or null,
   "staff_briefing": string or null,
-  "key_points": [ string, ... ]
+  "key_points": string or null
 }
 
 Rules:
@@ -37,8 +37,9 @@ Rules:
 - health_symptoms_or_conditions: only facts the customer stated about symptoms, conditions, pain, or health concerns; null if not discussed.
 - customer_details_mentioned: other useful facts (availability, preferences, family member, insurance mentioned, etc.); null if none.
 - staff_briefing: 2–5 sentences the team should read before the appointment; null if nothing beyond reason_for_visit.
-- key_points: 3–8 short bullet strings for a quick scan; use [] if nothing to list.
+- key_points: concise scan-ready summary points in one variable/string (not array). Use semicolons to separate points. Null if nothing useful.
 - Do NOT invent medical facts; if unsure, say so briefly or use null.
+- Do NOT include customer_name, customer_phone, customer_email, appointment_reason, duration_minutes, or lifecycle status in these five intake fields.
 - Do NOT include: sentiment labels, sentiment scores, satisfaction scores, star ratings, NPS, or emotional analytics.
 - Do NOT output any keys other than the five above."""
 
@@ -79,11 +80,13 @@ def _allowed_only(data: Dict[str, Any]) -> Dict[str, Any]:
         v = data[k]
         if k == "key_points":
             if v is None:
-                out[k] = []
+                out[k] = None
             elif isinstance(v, list):
-                out[k] = [str(x).strip() for x in v if str(x).strip()][:20]
+                points = [str(x).strip() for x in v if str(x).strip()][:20]
+                out[k] = "; ".join(points) if points else None
             else:
-                out[k] = [str(v).strip()]
+                text_v = str(v).strip()
+                out[k] = text_v if text_v else None
         else:
             if v is None or (isinstance(v, str) and not v.strip()):
                 out[k] = None
@@ -295,6 +298,14 @@ class AppointmentIntakeSummaryService:
         return {
             "appointment_id": appointment.id,
             "call_session_id": appointment.call_session_id,
+            "customer_name": appointment.customer_name,
+            "customer_phone": appointment.customer_phone,
+            "customer_email": appointment.customer_email,
+            "appointment_reason": appointment.appointment_reason,
+            "duration_minutes": appointment.duration_minutes,
+            "status": appointment.status,
+            "review_status": (appointment.review_status or "not_reviewed"),
+            "reviewed_at": appointment.reviewed_at,
             "generated_at": datetime.now(timezone.utc),
             "model_used": used_model,
             "transcript_message_count": len(messages),

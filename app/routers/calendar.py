@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date
 import uuid
 
 from app.api.deps import get_db, require_tenant
+from app.core.config import settings
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.calendar import (
@@ -130,6 +132,29 @@ def list_appointments(
             total=total,
         )
     )
+
+
+@router.get("/appointments/acknowledge", include_in_schema=False)
+def acknowledge_appointment_review(
+    token: str = Query(..., description="Signed acknowledgement token from email."),
+    db: Session = Depends(get_db),
+):
+    """
+    Public review-link endpoint (token-authenticated).
+    Marks an appointment as reviewed and redirects to frontend appointments page.
+    """
+    try:
+        appt = calendar_service.acknowledge_appointment_from_token(db=db, token=token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    base = (settings.FRONTEND_URL or "").rstrip("/")
+    redirect_to = (
+        f"{base}/appointments?appointmentId={appt.id}&reviewed=1"
+        if base
+        else "/appointments"
+    )
+    return RedirectResponse(url=redirect_to, status_code=status.HTTP_302_FOUND)
 
 
 @router.get(

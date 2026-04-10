@@ -34,6 +34,10 @@ class Appointment(Base):
 
     notes = Column(Text, nullable=True)
     cancellation_reason = Column(Text, nullable=True)
+    review_status = Column(String(20), nullable=False, server_default="not_reviewed")
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
+    customer_notified_on_review_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
