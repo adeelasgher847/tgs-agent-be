@@ -99,7 +99,7 @@ def create_appointment(
     )
 
 
-@router.get("/appointments", response_model=SuccessResponse[AppointmentListResponse])
+@router.get("/appointments", response_model=SuccessResponse[AppointmentListResponse],include_in_schema=False)
 def list_appointments(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
