@@ -2,6 +2,7 @@
 from app.utils.spoken_email import (
     best_email_from_client_utterances,
     coerce_email_from_text,
+    normalize_stored_email,
     resolve_customer_email_for_booking,
 )
 
@@ -43,6 +44,18 @@ def test_resolve_transcript_when_token_invalid():
         transcript_client_lines_newest_first=["backup is jane.doe@site.co.uk"],
     )
     assert hit == "jane.doe@site.co.uk"
+
+
+def test_normalize_stored_email_valid():
+    n = normalize_stored_email("  user@example.com ")
+    assert n is not None
+    assert n.endswith("@example.com")
+
+
+def test_normalize_stored_email_invalid():
+    assert normalize_stored_email("not-an-email") is None
+    assert normalize_stored_email(None) is None
+    assert normalize_stored_email("") is None
 
 
 def test_resolve_token_placeholder_skipped():

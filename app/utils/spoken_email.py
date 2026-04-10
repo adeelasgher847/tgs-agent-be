@@ -88,3 +88,13 @@ def resolve_customer_email_for_booking(
                 return direct
 
     return best_email_from_client_utterances(transcript_client_lines_newest_first)
+
+
+def normalize_stored_email(raw: Optional[str]) -> Optional[str]:
+    """
+    Validate an email stored on a model (DB/API) before sending notifications.
+    Returns normalized form or None if missing/invalid.
+    """
+    if not raw or not str(raw).strip():
+        return None
+    return _validate(str(raw).strip())

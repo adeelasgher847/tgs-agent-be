@@ -3,6 +3,7 @@ Calendar Service
 Handles business hours, blocked slots, and appointment booking logic.
 All operations are scoped to tenant_id for multi-tenant isolation.
 """
+import html
 from datetime import datetime, date, timedelta, timezone, time as dt_time, tzinfo
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -24,6 +25,7 @@ from app.schemas.calendar import (
     AvailableSlotsResponse,
 )
 from app.services.email_service import email_service
+from app.utils.spoken_email import normalize_stored_email
 
 SLOT_BOOKING_BUFFER_MINUTES = 15
 
@@ -242,37 +244,103 @@ class CalendarService:
         notify_user_id: Optional[uuid.UUID] = None,
         call_session_id: Optional[uuid.UUID] = None,
     ) -> None:
-        """Best-effort notification email; never breaks booking/status updates."""
+        """
+        Best-effort confirmation emails; never breaks booking/status updates.
+
+        - If ``customer_email`` is present and valid, the caller receives a customer-facing message.
+        - If an internal recipient exists (web ``notify_user_id`` or call-session owner), they
+          receive a staff-oriented message (unchanged from before).
+        - If both resolve to the same address, a single customer-facing email is sent (no duplicate).
+        - If the caller did not provide email, only the internal recipient is emailed when available.
+        """
         if appt.status != "confirmed":
             return
-        recipient = self._resolve_notification_email(
+
+        staff_recipient = self._resolve_notification_email(
             db=db,
             notify_user_id=notify_user_id,
             call_session_id=call_session_id,
         )
-        if not recipient:
+        customer_recipient = normalize_stored_email(appt.customer_email)
+
+        if not staff_recipient and not customer_recipient:
             return
-        try:
-            tz_label, start_local, end_local = self.appointment_local_display(db, tenant_id, appt)
-            subject = "Assistly | Appointment confirmed"
-            body = f"""
+
+        tz_label, start_local, end_local = self.appointment_local_display(db, tenant_id, appt)
+        time_line = (
+            f"{start_local.strftime('%A, %B %d, %Y %I:%M %p')} – "
+            f"{end_local.strftime('%I:%M %p')} ({tz_label})"
+        )
+        safe_name = html.escape(appt.customer_name or "")
+        safe_reason = html.escape((appt.appointment_reason or "").strip() or "N/A")
+
+        subject = "Assistly | Appointment confirmed"
+
+        customer_body = f"""
             <html>
             <body>
                 <h2>Your appointment is confirmed</h2>
-                <p>Customer: <strong>{appt.customer_name}</strong></p>
-                <p>Reason: <strong>{appt.appointment_reason or 'N/A'}</strong></p>
-                <p>Time: <strong>{start_local.strftime('%A, %B %d, %Y %I:%M %p')} - {end_local.strftime('%I:%M %p')} ({tz_label})</strong></p>
+                <p>Hi {safe_name},</p>
+                <p>Your appointment is confirmed for:</p>
+                <p><strong>{html.escape(time_line)}</strong></p>
+                <p>Reason: <strong>{safe_reason}</strong></p>
                 <p>Thank you,<br>Assistly</p>
             </body>
             </html>
             """
-            email_service.send_generic_email(
-                to_email=recipient,
-                subject=subject,
-                html_body=body,
-            )
-        except Exception:
-            logger.exception("Appointment confirmation email failed for appointment=%s", appt.id)
+
+        staff_body = f"""
+            <html>
+            <body>
+                <h2>Appointment confirmed</h2>
+                <p>Customer: <strong>{safe_name}</strong></p>
+                <p>Reason: <strong>{safe_reason}</strong></p>
+                <p>Time: <strong>{html.escape(time_line)}</strong></p>
+                <p>Thank you,<br>Assistly</p>
+            </body>
+            </html>
+            """
+
+        staff_l = staff_recipient.lower() if staff_recipient else None
+        cust_l = customer_recipient.lower() if customer_recipient else None
+
+        if customer_recipient and staff_recipient and cust_l == staff_l:
+            try:
+                email_service.send_generic_email(
+                    to_email=customer_recipient,
+                    subject=subject,
+                    html_body=customer_body,
+                )
+            except Exception:
+                logger.exception(
+                    "Appointment confirmation email failed (deduped) for appointment=%s",
+                    appt.id,
+                )
+            return
+
+        if customer_recipient:
+            try:
+                email_service.send_generic_email(
+                    to_email=customer_recipient,
+                    subject=subject,
+                    html_body=customer_body,
+                )
+            except Exception:
+                logger.exception(
+                    "Customer confirmation email failed for appointment=%s", appt.id
+                )
+
+        if staff_recipient:
+            try:
+                email_service.send_generic_email(
+                    to_email=staff_recipient,
+                    subject=subject,
+                    html_body=staff_body,
+                )
+            except Exception:
+                logger.exception(
+                    "Staff confirmation email failed for appointment=%s", appt.id
+                )
 
     # ── Slot availability ─────────────────────────────────────────────────────
 
