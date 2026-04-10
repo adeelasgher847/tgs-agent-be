@@ -304,7 +304,6 @@ class AppointmentIntakeSummaryService:
             "appointment_reason": appointment.appointment_reason,
             "duration_minutes": appointment.duration_minutes,
             "status": appointment.status,
-            "review_status": (appointment.review_status or "not_reviewed"),
             "reviewed_at": appointment.reviewed_at,
             "generated_at": datetime.now(timezone.utc),
             "model_used": used_model,

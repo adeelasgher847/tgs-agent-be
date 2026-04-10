@@ -248,10 +248,10 @@ class CalendarService:
         call_session_id: Optional[uuid.UUID] = None,
     ) -> None:
         """
-        Send tenant-facing review request email after confirmation.
-        Customer confirmation is intentionally deferred until tenant review acknowledgement.
+        Send tenant-facing review request email for pending appointments.
+        Customer confirmation is intentionally deferred until explicit confirmation.
         """
-        if appt.status != "confirmed":
+        if appt.status != "pending":
             return
 
         staff_recipient = self._resolve_notification_email(
@@ -282,7 +282,7 @@ class CalendarService:
             else ""
         )
 
-        subject = "Assistly | Appointment confirmed — review requested"
+        subject = "Assistly | Appointment pending — confirmation required"
         action_html = (
             f'<p><a href="{html.escape(review_link)}" '
             'style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;'
@@ -294,12 +294,12 @@ class CalendarService:
         staff_body = f"""
             <html>
             <body>
-                <h2>Appointment confirmed — action required</h2>
+                <h2>Appointment pending — action required</h2>
                 <p>Customer: <strong>{safe_name}</strong></p>
                 <p>Reason: <strong>{safe_reason}</strong></p>
                 <p>Time: <strong>{html.escape(time_line)}</strong></p>
                 {action_html}
-                <p>Opening the link will mark this appointment as reviewed.</p>
+                <p>Opening the link will confirm this appointment.</p>
                 <p>Thank you,<br>Assistly</p>
             </body>
             </html>
@@ -362,9 +362,9 @@ class CalendarService:
         body = f"""
             <html>
             <body>
-                <h2>Your appointment has been reviewed</h2>
+                <h2>Your appointment is confirmed</h2>
                 <p>Hi {safe_name},</p>
-                <p>Your appointment details have been reviewed by our team:</p>
+                <p>Your appointment has been confirmed by our team:</p>
                 <p><strong>{html.escape(time_line)}</strong></p>
                 <p>Reason: <strong>{safe_reason}</strong></p>
                 <p>Thank you,<br>Assistly</p>
@@ -373,9 +373,32 @@ class CalendarService:
             """
         email_service.send_generic_email(
             to_email=customer_recipient,
-            subject="Assistly | Your appointment is reviewed",
+            subject="Assistly | Your appointment is confirmed",
             html_body=body,
         )
+
+    def _notify_customer_confirmation_if_needed(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        appt: Appointment,
+    ) -> bool:
+        should_notify_customer = (
+            normalize_stored_email(appt.customer_email) is not None
+            and appt.customer_notified_on_review_at is None
+        )
+        if not should_notify_customer:
+            return False
+        try:
+            self._send_customer_review_ack_email(db=db, tenant_id=tenant_id, appt=appt)
+            appt.customer_notified_on_review_at = datetime.now(timezone.utc)
+            return True
+        except Exception:
+            logger.exception(
+                "Customer confirmation email failed for appointment=%s",
+                appt.id,
+            )
+            return False
 
     def acknowledge_appointment_from_token(
         self,
@@ -396,27 +419,25 @@ class CalendarService:
         if not appt:
             raise ValueError("Appointment not found for review acknowledgement.")
 
-        first_review = appt.review_status != "reviewed"
-        if first_review:
-            appt.review_status = "reviewed"
+        changed = False
+        if appt.status == "cancelled":
+            raise ValueError("Cancelled appointment cannot be confirmed from acknowledgement link.")
+
+        if appt.status != "confirmed":
+            appt.status = "confirmed"
+            changed = True
+
+        if appt.reviewed_at is None:
             appt.reviewed_at = datetime.now(timezone.utc)
-            if reviewer_user_id:
-                appt.reviewed_by_user_id = reviewer_user_id
+            changed = True
+        if reviewer_user_id and appt.reviewed_by_user_id is None:
+            appt.reviewed_by_user_id = reviewer_user_id
+            changed = True
 
-        should_notify_customer = (
-            normalize_stored_email(appt.customer_email) is not None
-            and appt.customer_notified_on_review_at is None
-        )
+        if self._notify_customer_confirmation_if_needed(db=db, tenant_id=tenant_id, appt=appt):
+            changed = True
 
-        if first_review or should_notify_customer:
-            if should_notify_customer:
-                try:
-                    self._send_customer_review_ack_email(db=db, tenant_id=tenant_id, appt=appt)
-                    appt.customer_notified_on_review_at = datetime.now(timezone.utc)
-                except Exception:
-                    logger.exception(
-                        "Customer review-ack email failed for appointment=%s", appt.id
-                    )
+        if changed:
             db.commit()
             db.refresh(appt)
 
@@ -586,7 +607,7 @@ class CalendarService:
             slot_start=slot_start_utc,
             slot_end=slot_end_utc,
             duration_minutes=resolved_duration,
-            status="confirmed",
+            status="pending",
             created_via=created_via,
             notes=notes,
         )
@@ -842,16 +863,14 @@ class CalendarService:
             appt.cancellation_reason = cancellation_reason
         if notes is not None:
             appt.notes = notes
-        db.commit()
-        db.refresh(appt)
         if (not was_confirmed) and appt.status == "confirmed":
-            self._send_appointment_confirmation_email(
+            self._notify_customer_confirmation_if_needed(
                 db=db,
                 tenant_id=tenant_id,
                 appt=appt,
-                notify_user_id=notify_user_id,
-                call_session_id=appt.call_session_id,
             )
+        db.commit()
+        db.refresh(appt)
         return appt
 
     def delete_appointment(

@@ -211,7 +211,6 @@ class AppointmentIntakeSummaryResponse(BaseModel):
     appointment_reason: Optional[str] = None
     duration_minutes: int
     status: str
-    review_status: str = Field(default="not_reviewed", description="not_reviewed | reviewed")
     reviewed_at: Optional[datetime] = None
     generated_at: datetime
     model_used: str
