@@ -93,3 +93,19 @@ class JobDescriptionOut(JobDescriptionBase):
 
     class Config:
         from_attributes = True
+
+
+class JobDescriptionListOut(BaseModel):
+    id: uuid.UUID
+    job_title: str
+    required_skills: List[str] = Field(default_factory=list)
+    years_experience_min: Optional[int] = None
+    location: Optional[str] = None
+    salary_min: Optional[Decimal] = None
+    salary_max: Optional[Decimal] = None
+    currency: Optional[str] = None
+    employment_type: Optional[EmploymentTypeEnum] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
