@@ -113,7 +113,7 @@ import base64
 import asyncio
 from typing import Optional, Dict, Iterable, List
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 import uuid
 import sys
 import math
@@ -259,6 +259,8 @@ class BidirectionalStreamHandler:
         self.call_session = None
         self.agent = None
         self._last_offered_calendar_slots: List[datetime] = []
+        self._last_requested_calendar_date: Optional[date] = None
+        self._last_selected_calendar_slot: Optional[datetime] = None
         self._load_session_data()
         
         # User pickup detection (VAPI-style: actual user audio = user picked up)
@@ -275,6 +277,7 @@ class BidirectionalStreamHandler:
 
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
+        self._turn_response_seed_text = ""
         self._auto_greeting_sent = False
         self._recording_started = False
         
@@ -520,14 +523,22 @@ class BidirectionalStreamHandler:
 
             # Add to transcript (always)
             await self._add_to_transcript("client", transcript, "speech", confidence)
+            self._update_booking_memory_from_user_turn(transcript)
 
             # One response per turn: if we already started LLM from interim, TTS is already playing/queued
             # When VAD detects user silent (final), we do NOT start a second response — gapless playback
             if self._turn_response_started:
+                should_regenerate = self._should_regenerate_on_final(transcript)
                 self._turn_response_started = False
-                return  # TTS built from interim continues; no duplicate response
+                self._turn_response_seed_text = ""
+                if should_regenerate:
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.cancel_current_and_clear_queue()
+                    await self.generate_and_stream_response(transcript, confidence)
+                return  # Interim response stays unless final meaningfully corrected it
 
             # Generate and stream response (no interim was used for this turn, e.g. very short utterance)
+            self._turn_response_seed_text = ""
             await self.generate_and_stream_response(transcript, confidence)
             
         except Exception as e:
@@ -599,6 +610,9 @@ class BidirectionalStreamHandler:
                 
                 # Don't process interim during barge-in - wait for final transcript
                 return
+
+            if self._should_defer_interim_response(transcript):
+                return
             
             # Basic gating: confidence and minimum words (for LLM generation only)
             # NOTE: This comes AFTER barge-in check so that interruption works even with low confidence
@@ -622,6 +636,7 @@ class BidirectionalStreamHandler:
             self._last_interim_text = transcript
             self._last_interim_sent_ts = now
             self._turn_response_started = True  # One response per turn; final will not start a second one
+            self._turn_response_seed_text = transcript
             await self.generate_and_stream_response(transcript, confidence)
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
@@ -826,8 +841,11 @@ class BidirectionalStreamHandler:
                             if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
                                 filtered.append((role, content))
 
-                    # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
+                    # Booking flows benefit from a slightly wider history window so
+                    # the model keeps the already-collected service/date/slot in view.
                     max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
+                    if self._is_booking_context_active(user_text):
+                        max_msgs = max(max_msgs, 30)
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
@@ -839,6 +857,8 @@ class BidirectionalStreamHandler:
                 except Exception:
                     history_text = ""
             
+            booking_memory_block = self._build_booking_memory_block()
+
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
@@ -859,6 +879,7 @@ You are {agent_name}, having a real-time phone call with a human.
 Previous conversation:
 {history_text}
 
+{booking_memory_block}
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
@@ -904,6 +925,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 Previous conversation:
 {history_text}
 
+{booking_memory_block}
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
@@ -944,6 +966,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 Previous conversation:
 {history_text}
 
+{booking_memory_block}
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
@@ -1312,6 +1335,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
     def _cache_calendar_slots(self, slots: List) -> None:
         self._last_offered_calendar_slots = [slot.slot_start for slot in slots]
+        self._last_selected_calendar_slot = None
 
     @staticmethod
     def _has_calendar_token(text: str) -> bool:
@@ -1329,6 +1353,121 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             "am", "pm", "a.m", "p.m", "date", "time", "tomorrow", "today",
         )
         return any(k in haystack for k in booking_keywords)
+
+    def _is_booking_context_active(self, user_text: str = "") -> bool:
+        return bool(
+            self._last_offered_calendar_slots
+            or self._last_requested_calendar_date
+            or self._last_selected_calendar_slot
+            or self._is_booking_intent_turn(user_text)
+        )
+
+    @staticmethod
+    def _normalize_turn_text(text: str) -> str:
+        cleaned = re.sub(r"[^\w\s:]", " ", (text or "").lower())
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    def _should_defer_interim_response(self, transcript: str) -> bool:
+        """
+        Avoid early LLM responses for short/ambiguous booking clarifications.
+        This keeps the low-latency path for normal conversation while waiting for
+        a final STT transcript when the caller is choosing dates/times or correcting us.
+        """
+        if not self._is_booking_context_active(transcript):
+            return False
+
+        normalized = self._normalize_turn_text(transcript)
+        if not normalized:
+            return False
+
+        words = normalized.split()
+        if len(words) <= 4:
+            return True
+
+        if re.fullmatch(r"\d{1,2}(?::\d{2})?\s*(?:a\s*m|am|p\s*m|pm)?", normalized):
+            return True
+
+        clarification_markers = (
+            " am",
+            " pm",
+            " a m",
+            " p m",
+            "slot",
+            "time",
+            "date",
+            "spell",
+            "spelled",
+            "already",
+            "wrong",
+            "available",
+        )
+        return any(marker in f" {normalized} " for marker in clarification_markers)
+
+    def _should_regenerate_on_final(self, final_transcript: str) -> bool:
+        """
+        If an interim-driven response started from incomplete booking speech,
+        allow the final transcript to replace it when it clearly adds/corrects detail.
+        """
+        if not self._turn_response_seed_text:
+            return False
+        if not self._is_booking_context_active(final_transcript):
+            return False
+
+        final_norm = self._normalize_turn_text(final_transcript)
+        seed_norm = self._normalize_turn_text(self._turn_response_seed_text)
+        if not final_norm or final_norm == seed_norm:
+            return False
+
+        final_slot = self._resolve_cached_calendar_slot(final_transcript)
+        seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
+        if final_slot and final_slot != seed_slot:
+            return True
+
+        if final_norm.startswith(seed_norm) and len(final_norm) >= len(seed_norm) + 3:
+            return True
+
+        correction_markers = ("wrong", "no no", "not ", "already", "spell", "11 00", "11 am")
+        return any(marker in final_norm for marker in correction_markers)
+
+    def _update_booking_memory_from_user_turn(self, transcript: str) -> None:
+        if not transcript or not self._last_offered_calendar_slots:
+            return
+        resolved_slot = self._resolve_cached_calendar_slot(transcript)
+        if resolved_slot is not None:
+            self._last_selected_calendar_slot = resolved_slot
+
+    def _build_booking_memory_block(self) -> str:
+        if not self._is_booking_context_active():
+            return ""
+
+        lines = [
+            "# BOOKING MEMORY",
+            "Use this deterministic booking memory before asking repeated questions.",
+        ]
+        if self._last_requested_calendar_date is not None:
+            lines.append(
+                f"- Date already discussed: {self._last_requested_calendar_date.strftime('%A, %B %d, %Y')}."
+            )
+        if self._last_offered_calendar_slots:
+            offered = ", ".join(
+                slot.strftime("%I:%M %p").lstrip("0")
+                for slot in self._last_offered_calendar_slots[:8]
+            )
+            lines.append(f"- Last offered slots: {offered}.")
+        if self._last_selected_calendar_slot is not None:
+            lines.append(
+                "- Current caller-selected slot candidate: "
+                f"{self._last_selected_calendar_slot.strftime('%A, %B %d at %I:%M %p')}."
+            )
+        lines.append(
+            "- If the caller gives a short clarification like '11', '11 a.m.', or corrects you, "
+            "resolve it against the last offered slots before asking again."
+        )
+        lines.append(
+            "- If appointment type/date/slot is already present here or in recent history, "
+            "do not ask for it again; move to the next missing field."
+        )
+        return "\n".join(lines)
 
     @staticmethod
     def _strip_premature_booking_confirmation(text: str) -> str:
@@ -1517,6 +1656,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 lambda: _cal.get_available_slots(self.db, tenant_id, target, agent_id),
             )
             self._cache_calendar_slots(result.slots)
+            self._last_requested_calendar_date = target
 
             if not result.slots:
                 msg = f"Sorry, there are no available slots on {target.strftime('%A, %B %d')}. Please try another date."
@@ -1569,6 +1709,93 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     break
         return out
 
+    async def _repair_customer_email_with_llm(
+        self,
+        *,
+        token_email_raw: Optional[str],
+        transcript_client_lines_newest_first: list[str],
+    ) -> Optional[str]:
+        """
+        Best-effort repair layer for noisy spoken emails.
+        Returns a validated email or None. Never raises.
+        """
+        from app.utils.spoken_email import (
+            build_email_repair_prompt,
+            coerce_email_from_text,
+            normalize_stored_email,
+        )
+
+        prompt = build_email_repair_prompt(
+            token_email_raw=token_email_raw,
+            transcript_client_lines_newest_first=transcript_client_lines_newest_first,
+        )
+        repair_system_prompt = (
+            "You repair customer email addresses from noisy call transcripts. "
+            "Prefer spelled-out transcript evidence over fused STT literals. "
+            "If uncertain, return NONE. Output only the email or NONE."
+        )
+        loop = asyncio.get_running_loop()
+
+        async def _call_repair(service, model_name: str) -> Optional[str]:
+            def _run():
+                return service.generate_text(
+                    prompt=prompt,
+                    system_prompt=repair_system_prompt,
+                    model_name=model_name,
+                    temperature=0.0,
+                    max_tokens=60,
+                )
+
+            try:
+                payload = await loop.run_in_executor(None, _run)
+            except Exception as e:
+                logger.warning(
+                    "Email repair LLM failed via %s/%s: %s",
+                    service.__class__.__name__,
+                    model_name,
+                    e,
+                )
+                return None
+
+            content = (payload.get("content") or "").strip()
+            if not content or content.upper() == "NONE":
+                return None
+            return normalize_stored_email(content) or coerce_email_from_text(content)
+
+        if settings.GEMINI_API_KEY:
+            repaired = await _call_repair(gemini_service, "gemini-1.5-flash")
+            if repaired:
+                return repaired
+
+        if settings.OPENAI_API_KEY:
+            repaired = await _call_repair(openai_service, "gpt-4o-mini")
+            if repaired:
+                return repaired
+
+        return None
+
+    def _merge_pending_email_note(
+        self,
+        existing_notes: Optional[str],
+        *,
+        pending_email: Optional[str],
+        source: str,
+        reason: str,
+    ) -> Optional[str]:
+        if not pending_email:
+            return existing_notes
+
+        entry = (
+            f"Pending email verification: {pending_email} "
+            f"(source: {source}; reason: {reason})"
+        )
+        base = (existing_notes or "").strip()
+        if pending_email in base and "Pending email verification:" in base:
+            return existing_notes
+        if not base:
+            return entry
+        return f"{base}\n{entry}"
+
     async def _handle_book_appointment_token(self, llm_response: str):
         """
         Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,optional email=...,slot=...,reason=...].
@@ -1577,6 +1804,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         """
         try:
             import re as _re
+            from dataclasses import replace
             from datetime import datetime as _dt
 
             from app.services.calendar_service import calendar_service as _cal
@@ -1631,12 +1859,46 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if not self.call_session:
                 return
 
-            customer_email = resolve_customer_email_for_booking(
+            transcript_lines = self._client_transcript_lines_newest_first()
+            email_resolution = resolve_customer_email_for_booking(
                 token_email_raw=token_email_raw,
-                transcript_client_lines_newest_first=self._client_transcript_lines_newest_first(),
+                transcript_client_lines_newest_first=transcript_lines,
             )
-            if customer_email:
-                logger.info("BOOK_APPOINTMENT: using customer_email (token or transcript)")
+            if (
+                email_resolution.should_attempt_llm_repair
+                and not email_resolution.verified_email
+            ):
+                repaired_email = await self._repair_customer_email_with_llm(
+                    token_email_raw=token_email_raw,
+                    transcript_client_lines_newest_first=transcript_lines,
+                )
+                if repaired_email and repaired_email != email_resolution.pending_email:
+                    email_resolution = replace(
+                        email_resolution,
+                        pending_email=repaired_email,
+                        source="llm_repaired_unverified",
+                        trust_score=max(email_resolution.trust_score, 60),
+                        should_attempt_llm_repair=False,
+                        reason=(
+                            f"{email_resolution.reason} "
+                            "LLM repair produced a validated candidate; still pending confirmation."
+                        ).strip(),
+                    )
+
+            verified_customer_email = email_resolution.verified_email
+            if verified_customer_email:
+                logger.info(
+                    "BOOK_APPOINTMENT: using verified customer_email source=%s trust=%s",
+                    email_resolution.source,
+                    email_resolution.trust_score,
+                )
+            elif email_resolution.pending_email:
+                logger.info(
+                    "BOOK_APPOINTMENT: keeping email pending verification source=%s trust=%s candidate=%s",
+                    email_resolution.source,
+                    email_resolution.trust_score,
+                    email_resolution.pending_email,
+                )
 
             slot_start = self._resolve_cached_calendar_slot(slot_raw)
             if slot_start is None:
@@ -1658,6 +1920,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
 
             existing = await loop.run_in_executor(None, _existing_for_call)
+            merged_notes = self._merge_pending_email_note(
+                existing.notes if existing else None,
+                pending_email=email_resolution.pending_email,
+                source=email_resolution.source,
+                reason=email_resolution.reason,
+            )
 
             try:
                 if existing:
@@ -1671,7 +1939,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             customer_name=customer_name,
                             customer_phone=customer_phone,
                             appointment_reason=reason,
-                            customer_email=customer_email,
+                            customer_email=verified_customer_email,
+                            notes=merged_notes,
                         ),
                     )
                     msg = (
@@ -1679,6 +1948,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
                         f"Anything else I can help with?"
                     )
+                    self._last_selected_calendar_slot = appt.slot_start
                 else:
                     appt = await loop.run_in_executor(
                         None,
@@ -1691,7 +1961,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             agent_id=agent_id,
                             call_session_id=call_session_id,
                             appointment_reason=reason,
-                            customer_email=customer_email,
+                            customer_email=verified_customer_email,
+                            notes=merged_notes,
                             created_via="voice_agent",
                         ),
                     )
@@ -1699,6 +1970,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         f"Done! Your appointment is confirmed for "
                         f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
                         f"Is there anything else I can help you with?"
+                    )
+                    self._last_selected_calendar_slot = appt.slot_start
+                if email_resolution.pending_email and not verified_customer_email:
+                    msg += (
+                        " I captured an email candidate, but it will stay pending "
+                        "verification until it's confirmed."
                     )
             except ValueError as ve:
                 msg = f"{ve} Would you like to choose a different time?"
