@@ -81,6 +81,7 @@ class JobDescriptionService:
             job_title=inferred_job_title,
             required_skills=[],
             years_experience_min=None,
+            years_experience_max=None,
             education_requirements=None,
             location=None,
             salary_min=None,
@@ -288,6 +289,8 @@ class JobDescriptionService:
                 jd.job_title = (llm_data.get("job_title") or "").strip()[:255]
             if jd.years_experience_min is None and llm_data.get("years_experience_min") is not None:
                 jd.years_experience_min = llm_data.get("years_experience_min")
+            if jd.years_experience_max is None and llm_data.get("years_experience_max") is not None:
+                jd.years_experience_max = llm_data.get("years_experience_max")
             if not jd.education_requirements and llm_data.get("education_requirements"):
                 jd.education_requirements = llm_data.get("education_requirements")
             if not jd.location and llm_data.get("location"):
@@ -352,6 +355,7 @@ class JobDescriptionService:
             matching_criteria = {
                 "required_skills": skills,
                 "minimum_years_experience": jd.years_experience_min,
+                "maximum_years_experience": jd.years_experience_max,
                 "education_requirements": jd.education_requirements,
                 "location": jd.location,
                 "employment_type": jd.employment_type,
@@ -441,6 +445,7 @@ Analyze the following job description and return STRICT JSON with this exact str
   ],
   "keywords": [string],
   "years_experience_min": number|null,
+  "years_experience_max": number|null,
   "education_requirements": string|null,
   "location": string|null,
   "employment_type": string|null,
@@ -530,7 +535,12 @@ JOB DESCRIPTION:
         parts = [
             f"Job Title: {data.get('job_title') or ''}",
             f"Required Skills: {', '.join(data.get('required_skills') or [])}",
-            f"Experience: {data.get('years_experience_min') or ''} years minimum",
+            (
+                "Experience: "
+                f"{data.get('years_experience_min') or ''}"
+                f"{('-' + str(data.get('years_experience_max'))) if data.get('years_experience_max') is not None else ''} "
+                "years"
+            ),
             f"Education: {data.get('education_requirements') or ''}",
             f"Location: {data.get('location') or ''}",
             (
