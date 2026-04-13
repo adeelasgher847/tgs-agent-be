@@ -113,7 +113,7 @@ import base64
 import asyncio
 from typing import Optional, Dict, Iterable, List
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 import uuid
 import sys
 import math
@@ -259,6 +259,8 @@ class BidirectionalStreamHandler:
         self.call_session = None
         self.agent = None
         self._last_offered_calendar_slots: List[datetime] = []
+        self._last_requested_calendar_date: Optional[date] = None
+        self._last_selected_calendar_slot: Optional[datetime] = None
         self._load_session_data()
         
         # User pickup detection (VAPI-style: actual user audio = user picked up)
@@ -275,6 +277,7 @@ class BidirectionalStreamHandler:
 
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
+        self._turn_response_seed_text = ""
         self._auto_greeting_sent = False
         self._recording_started = False
         
@@ -317,6 +320,42 @@ class BidirectionalStreamHandler:
                 agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
+
+    def _extract_greeting_from_prompt(self) -> Optional[str]:
+        """
+        Extract explicit greeting from prompt text, if configured.
+        Supported formats:
+        - GREETING: Hello and welcome ...
+        - FIRST_MESSAGE: Hello and welcome ...
+        - OPENING: Hello and welcome ...
+        - [GREETING:Hello and welcome ...]
+        """
+        candidate_prompts: List[str] = []
+        if self.agent and getattr(self.agent, "system_prompt", None):
+            candidate_prompts.append(self.agent.system_prompt or "")
+        if (
+            self.agent
+            and getattr(self.agent, "model", None)
+            and getattr(self.agent.model, "system_prompt", None)
+        ):
+            candidate_prompts.append(self.agent.model.system_prompt or "")
+
+        patterns = [
+            r"(?im)^\s*(?:GREETING|FIRST_MESSAGE|OPENING)\s*:\s*(.+?)\s*$",
+            r"(?is)\[\s*GREETING\s*:\s*(.+?)\s*\]",
+        ]
+
+        for prompt_text in candidate_prompts:
+            if not prompt_text:
+                continue
+            for pattern in patterns:
+                match = re.search(pattern, prompt_text)
+                if not match:
+                    continue
+                greeting_text = (match.group(1) or "").strip().strip('"').strip("'")
+                if greeting_text:
+                    return greeting_text
+        return None
     
     async def _precache_common_phrases(self):
         """
@@ -484,14 +523,22 @@ class BidirectionalStreamHandler:
 
             # Add to transcript (always)
             await self._add_to_transcript("client", transcript, "speech", confidence)
+            self._update_booking_memory_from_user_turn(transcript)
 
             # One response per turn: if we already started LLM from interim, TTS is already playing/queued
             # When VAD detects user silent (final), we do NOT start a second response — gapless playback
             if self._turn_response_started:
+                should_regenerate = self._should_regenerate_on_final(transcript)
                 self._turn_response_started = False
-                return  # TTS built from interim continues; no duplicate response
+                self._turn_response_seed_text = ""
+                if should_regenerate:
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.cancel_current_and_clear_queue()
+                    await self.generate_and_stream_response(transcript, confidence)
+                return  # Interim response stays unless final meaningfully corrected it
 
             # Generate and stream response (no interim was used for this turn, e.g. very short utterance)
+            self._turn_response_seed_text = ""
             await self.generate_and_stream_response(transcript, confidence)
             
         except Exception as e:
@@ -563,6 +610,9 @@ class BidirectionalStreamHandler:
                 
                 # Don't process interim during barge-in - wait for final transcript
                 return
+
+            if self._should_defer_interim_response(transcript):
+                return
             
             # Basic gating: confidence and minimum words (for LLM generation only)
             # NOTE: This comes AFTER barge-in check so that interruption works even with low confidence
@@ -586,6 +636,7 @@ class BidirectionalStreamHandler:
             self._last_interim_text = transcript
             self._last_interim_sent_ts = now
             self._turn_response_started = True  # One response per turn; final will not start a second one
+            self._turn_response_seed_text = transcript
             await self.generate_and_stream_response(transcript, confidence)
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
@@ -650,7 +701,10 @@ class BidirectionalStreamHandler:
                 if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                     greeting_text = self.agent.first_message
                 else:
-                    if self.call_session and self.call_session.call_type == "inbound":
+                    prompt_greeting = self._extract_greeting_from_prompt()
+                    if prompt_greeting:
+                        greeting_text = prompt_greeting
+                    elif self.call_session and self.call_session.call_type == "inbound":
                         greeting_text = "Thank you for calling. How may I assist you today?"
                     else:
                         greeting_text = "hello how are you"
@@ -787,8 +841,11 @@ class BidirectionalStreamHandler:
                             if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
                                 filtered.append((role, content))
 
-                    # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
+                    # Booking flows benefit from a slightly wider history window so
+                    # the model keeps the already-collected service/date/slot in view.
                     max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
+                    if self._is_booking_context_active(user_text):
+                        max_msgs = max(max_msgs, 39)
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
@@ -800,6 +857,8 @@ class BidirectionalStreamHandler:
                 except Exception:
                     history_text = ""
             
+            booking_memory_block = self._build_booking_memory_block()
+
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
@@ -820,6 +879,7 @@ You are {agent_name}, having a real-time phone call with a human.
 Previous conversation:
 {history_text}
 
+{booking_memory_block}
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
@@ -831,10 +891,12 @@ Previous conversation:
 4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
 
 # APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
+- If the user declines or does not provide email, continue booking without email (do not block scheduling).
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: offer [CHECK_SLOTS:...] again, then emit the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
@@ -863,6 +925,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 Previous conversation:
 {history_text}
 
+{booking_memory_block}
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
@@ -873,10 +936,12 @@ Previous conversation:
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
 # APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
+- If the user declines or does not provide email, continue booking without email (do not block scheduling).
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
@@ -901,6 +966,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 Previous conversation:
 {history_text}
 
+{booking_memory_block}
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
@@ -911,10 +977,12 @@ Previous conversation:
 3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
 
 # APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, reason, and preferred date/time.
+- If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
+- If the user declines or does not provide email, continue booking without email (do not block scheduling).
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Example: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
+- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
+- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
 - If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
 - Only book one of the slots that was just offered by the system.
@@ -941,6 +1009,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             api_key = None
             temperature = 0.5
             max_tokens = 100
+            booking_intent_turn = self._is_booking_intent_turn(user_text)
             
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
@@ -966,6 +1035,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     max_tokens = self.agent.agent_max_tokens
                 elif self.agent.model.max_tokens:
                     max_tokens = self.agent.model.max_tokens
+
+                # Booking turns need enough completion budget for action token emission.
+                if booking_intent_turn:
+                    max_tokens = max(max_tokens, 180)
                 
                 # Select service based on provider
                 if self.agent.provider:
@@ -1008,6 +1081,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
                     text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", text)
                     text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", text)
+                    # Tolerate malformed tokens that miss a closing bracket.
+                    text = re.sub(r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*", "", text)
                     return text
 
                 def _find_flush_index(buf: str):
@@ -1085,6 +1160,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Remove OUTCOME tokens from any in-flight buffer (never spoken)
                     if "[OUTCOME:" in tts_buffer:
                         tts_buffer = _strip_control_tokens(tts_buffer)
+
+                    # Avoid spoken "final confirmation" before backend booking succeeds.
+                    if "[BOOK_APPOINTMENT:" in response_accum:
+                        tts_buffer = self._strip_premature_booking_confirmation(_strip_control_tokens(tts_buffer))
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
@@ -1177,10 +1256,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         )
                         # Queue fallback response
                         if final_text and not self._tts_cancel.is_set():
+                            safe_tts_text = re.sub(r"\[OUTCOME:[^\]]+\]", "", final_text)
+                            safe_tts_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", safe_tts_text)
+                            safe_tts_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", safe_tts_text)
+                            safe_tts_text = re.sub(
+                                r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*",
+                                "",
+                                safe_tts_text,
+                            ).replace("[END_CALL]", "").strip()
                             chunk_counter += 1
                             if self._tts_pipeline:
                                 await self._tts_pipeline.queue_tts({
-                                    "text": final_text,
+                                    "text": safe_tts_text or final_text,
                                     "use_ssml": self._use_ssml,
                                     "is_final": True,
                                 })
@@ -1198,10 +1285,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         })
 
             if final_text:
+                # Two-step reliability: if booking intent exists but token is missing, run action extraction.
+                if booking_intent_turn and not self._has_calendar_token(final_text):
+                    extracted_token = await self._extract_calendar_action_token(
+                        llm_service=llm_service,
+                        model_name=model_name,
+                        api_key=api_key,
+                        user_text=user_text,
+                        assistant_text=final_text,
+                        history_text=history_text,
+                        temperature=temperature,
+                    )
+                    if extracted_token:
+                        logger.info("Action extraction fallback emitted token: %s", extracted_token[:140])
+                        final_text = f"{final_text}\n{extracted_token}"
+
                 # Strip control tokens from transcript (never saved to history)
                 transcript_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", final_text)
                 transcript_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", transcript_text)
                 transcript_text = transcript_text.replace("[END_CALL]", "").strip()
+                if "[BOOK_APPOINTMENT:" in final_text:
+                    transcript_text = self._strip_premature_booking_confirmation(transcript_text)
                 if transcript_text:
                     await self._add_to_transcript(
                         "agent",
@@ -1214,9 +1318,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
 
                 # Handle calendar tokens (fire-and-forget after TTS is already queued)
-                if "[CHECK_SLOTS:" in final_text:
+                if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_check_slots_token(final_text))
-                elif "[BOOK_APPOINTMENT:" in final_text:
+                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_book_appointment_token(final_text))
 
         except Exception as e:
@@ -1231,6 +1335,221 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
     def _cache_calendar_slots(self, slots: List) -> None:
         self._last_offered_calendar_slots = [slot.slot_start for slot in slots]
+        self._last_selected_calendar_slot = None
+
+    @staticmethod
+    def _has_calendar_token(text: str) -> bool:
+        if not text:
+            return False
+        return bool(re.search(r"\[\s*(?:CHECK_SLOTS|BOOK_APPOINTMENT)\s*:", text, flags=re.IGNORECASE))
+
+    def _is_booking_intent_turn(self, user_text: str, model_text: str = "") -> bool:
+        """Conservative booking-intent detector for token-budget and fallback extraction."""
+        haystack = f"{user_text or ''} {model_text or ''}".lower()
+        if not haystack.strip():
+            return False
+        booking_keywords = (
+            "book", "booking", "schedule", "appointment", "reschedule", "slot", "available slot",
+            "am", "pm", "a.m", "p.m", "date", "time", "tomorrow", "today",
+        )
+        return any(k in haystack for k in booking_keywords)
+
+    def _is_booking_context_active(self, user_text: str = "") -> bool:
+        return bool(
+            self._last_offered_calendar_slots
+            or self._last_requested_calendar_date
+            or self._last_selected_calendar_slot
+            or self._is_booking_intent_turn(user_text)
+        )
+
+    @staticmethod
+    def _normalize_turn_text(text: str) -> str:
+        cleaned = re.sub(r"[^\w\s:]", " ", (text or "").lower())
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    def _should_defer_interim_response(self, transcript: str) -> bool:
+        """
+        Avoid early LLM responses for short/ambiguous booking clarifications.
+        This keeps the low-latency path for normal conversation while waiting for
+        a final STT transcript when the caller is choosing dates/times or correcting us.
+        """
+        if not self._is_booking_context_active(transcript):
+            return False
+
+        normalized = self._normalize_turn_text(transcript)
+        if not normalized:
+            return False
+
+        words = normalized.split()
+        if len(words) <= 4:
+            return True
+
+        if re.fullmatch(r"\d{1,2}(?::\d{2})?\s*(?:a\s*m|am|p\s*m|pm)?", normalized):
+            return True
+
+        clarification_markers = (
+            " am",
+            " pm",
+            " a m",
+            " p m",
+            "slot",
+            "time",
+            "date",
+            "spell",
+            "spelled",
+            "already",
+            "wrong",
+            "available",
+        )
+        return any(marker in f" {normalized} " for marker in clarification_markers)
+
+    def _should_regenerate_on_final(self, final_transcript: str) -> bool:
+        """
+        If an interim-driven response started from incomplete booking speech,
+        allow the final transcript to replace it when it clearly adds/corrects detail.
+        """
+        if not self._turn_response_seed_text:
+            return False
+        if not self._is_booking_context_active(final_transcript):
+            return False
+
+        final_norm = self._normalize_turn_text(final_transcript)
+        seed_norm = self._normalize_turn_text(self._turn_response_seed_text)
+        if not final_norm or final_norm == seed_norm:
+            return False
+
+        final_slot = self._resolve_cached_calendar_slot(final_transcript)
+        seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
+        if final_slot and final_slot != seed_slot:
+            return True
+
+        if final_norm.startswith(seed_norm) and len(final_norm) >= len(seed_norm) + 3:
+            return True
+
+        correction_markers = ("wrong", "no no", "not ", "already", "spell", "11 00", "11 am")
+        return any(marker in final_norm for marker in correction_markers)
+
+    def _update_booking_memory_from_user_turn(self, transcript: str) -> None:
+        if not transcript or not self._last_offered_calendar_slots:
+            return
+        resolved_slot = self._resolve_cached_calendar_slot(transcript)
+        if resolved_slot is not None:
+            self._last_selected_calendar_slot = resolved_slot
+
+    def _build_booking_memory_block(self) -> str:
+        if not self._is_booking_context_active():
+            return ""
+
+        lines = [
+            "# BOOKING MEMORY",
+            "Use this deterministic booking memory before asking repeated questions.",
+        ]
+        if self._last_requested_calendar_date is not None:
+            lines.append(
+                f"- Date already discussed: {self._last_requested_calendar_date.strftime('%A, %B %d, %Y')}."
+            )
+        if self._last_offered_calendar_slots:
+            offered = ", ".join(
+                slot.strftime("%I:%M %p").lstrip("0")
+                for slot in self._last_offered_calendar_slots[:8]
+            )
+            lines.append(f"- Last offered slots: {offered}.")
+        if self._last_selected_calendar_slot is not None:
+            lines.append(
+                "- Current caller-selected slot candidate: "
+                f"{self._last_selected_calendar_slot.strftime('%A, %B %d at %I:%M %p')}."
+            )
+        lines.append(
+            "- If the caller gives a short clarification like '11', '11 a.m.', or corrects you, "
+            "resolve it against the last offered slots before asking again."
+        )
+        lines.append(
+            "- If appointment type/date/slot is already present here or in recent history, "
+            "do not ask for it again; move to the next missing field."
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _strip_premature_booking_confirmation(text: str) -> str:
+        """
+        Remove assistant self-confirmations so final confirmation comes only after backend success.
+        """
+        if not text:
+            return ""
+        patterns = [
+            r"(?i)\b(?:great|done|perfect|all set)[^.!?]*\b(?:appointment)[^.!?]*\b(?:scheduled|confirmed|booked)\b[^.!?]*[.!?]?",
+            r"(?i)\byour appointment[^.!?]*\b(?:scheduled|confirmed|booked)\b[^.!?]*[.!?]?",
+            r"(?i)\ba confirmation message will be sent to you shortly[^.!?]*[.!?]?",
+            r"(?i)\bwe look forward to seeing you[^.!?]*[.!?]?",
+        ]
+        cleaned = text
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    async def _extract_calendar_action_token(
+        self,
+        *,
+        llm_service,
+        model_name: str,
+        api_key: Optional[str],
+        user_text: str,
+        assistant_text: str,
+        history_text: str,
+        temperature: float,
+    ) -> Optional[str]:
+        """Second-pass action extraction. Returns one action token or None."""
+        if not self.call_session:
+            return None
+
+        offered_slots = ", ".join(
+            slot.strftime("%Y-%m-%d %H:%M")
+            for slot in self._last_offered_calendar_slots[:16]
+        )
+        extraction_system_prompt = (
+            "You extract calendar actions from a phone-call turn.\n"
+            "Return exactly one line and nothing else:\n"
+            "- [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<slot>,reason=<reason>] "
+            "(if the user gave an email, use: name=...,phone=...,email=...,slot=...,reason=...)\n"
+            "- [CHECK_SLOTS:date=YYYY-MM-DD]\n"
+            "- NONE\n"
+            "Rules:\n"
+            "1) If user selected a concrete slot that was offered, return BOOK_APPOINTMENT.\n"
+            "2) If user asked to check availability, return CHECK_SLOTS.\n"
+            "3) If uncertain or missing critical fields, return NONE.\n"
+            "4) Keep reason short and without commas.\n"
+            "5) Include email= only if the user clearly gave an address; field order is name, phone, optional email, slot, reason.\n"
+        )
+        extraction_prompt = (
+            f"Now (UTC): {datetime.now(timezone.utc).isoformat()}\n\n"
+            f"Recent history:\n{history_text or '(empty)'}\n\n"
+            f"Latest user text:\n{user_text or '(empty)'}\n\n"
+            f"Assistant draft text:\n{assistant_text or '(empty)'}\n\n"
+            f"Offered slot starts (YYYY-MM-DD HH:MM):\n{offered_slots or '(none cached)'}\n"
+        )
+
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: llm_service.generate_text(
+                    prompt=extraction_prompt,
+                    system_prompt=extraction_system_prompt,
+                    model_name=model_name,
+                    temperature=min(temperature, 0.15),
+                    max_tokens=180,
+                    api_key=api_key,
+                ),
+            )
+            content = (result.get("content") or "").strip()
+            if re.search(r"^\[\s*BOOK_APPOINTMENT\s*:", content, flags=re.IGNORECASE):
+                return content.splitlines()[0].strip()
+            if re.search(r"^\[\s*CHECK_SLOTS\s*:", content, flags=re.IGNORECASE):
+                return content.splitlines()[0].strip()
+            return None
+        except Exception as e:
+            logger.warning("Calendar action extraction pass failed: %s", e)
+            return None
 
     def _resolve_cached_calendar_slot(self, slot_raw: str) -> Optional[datetime]:
         normalized = self._normalize_calendar_slot_key(slot_raw)
@@ -1337,6 +1656,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 lambda: _cal.get_available_slots(self.db, tenant_id, target, agent_id),
             )
             self._cache_calendar_slots(result.slots)
+            self._last_requested_calendar_date = target
 
             if not result.slots:
                 msg = f"Sorry, there are no available slots on {target.strftime('%A, %B %d')}. Please try another date."
@@ -1359,15 +1679,136 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as e:
             logger.error("Error in _handle_check_slots_token: %s", e, exc_info=True)
 
+    def _client_transcript_lines_newest_first(self, limit: int = 16) -> list[str]:
+        """Recent client utterances (newest first) for voice email recovery."""
+        conversation_history: list = []
+        if self.call_session and self.call_session.call_transcript:
+            try:
+                raw = self.call_session.call_transcript
+                conversation_history = (
+                    json.loads(raw) if isinstance(raw, str) else raw
+                )
+            except Exception:
+                conversation_history = []
+        if not isinstance(conversation_history, list):
+            return []
+        out: list[str] = []
+        for msg in reversed(conversation_history):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            content = (msg.get("content") or msg.get("message") or "").strip()
+            message_type = msg.get("message_type", "")
+            if (
+                role == "client"
+                and content
+                and message_type not in ("greeting", "system", "status")
+            ):
+                out.append(content)
+                if len(out) >= limit:
+                    break
+        return out
+
+    async def _repair_customer_email_with_llm(
+        self,
+        *,
+        token_email_raw: Optional[str],
+        transcript_client_lines_newest_first: list[str],
+    ) -> Optional[str]:
+        """
+        Best-effort repair layer for noisy spoken emails.
+        Returns a validated email or None. Never raises.
+        """
+        from app.utils.spoken_email import (
+            build_email_repair_prompt,
+            coerce_email_from_text,
+            normalize_stored_email,
+        )
+
+        prompt = build_email_repair_prompt(
+            token_email_raw=token_email_raw,
+            transcript_client_lines_newest_first=transcript_client_lines_newest_first,
+        )
+        repair_system_prompt = (
+            "You repair customer email addresses from noisy call transcripts. "
+            "Prefer spelled-out transcript evidence over fused STT literals. "
+            "If uncertain, return NONE. Output only the email or NONE."
+        )
+        loop = asyncio.get_running_loop()
+
+        async def _call_repair(service, model_name: str) -> Optional[str]:
+            def _run():
+                return service.generate_text(
+                    prompt=prompt,
+                    system_prompt=repair_system_prompt,
+                    model_name=model_name,
+                    temperature=0.0,
+                    max_tokens=60,
+                )
+
+            try:
+                payload = await loop.run_in_executor(None, _run)
+            except Exception as e:
+                logger.warning(
+                    "Email repair LLM failed via %s/%s: %s",
+                    service.__class__.__name__,
+                    model_name,
+                    e,
+                )
+                return None
+
+            content = (payload.get("content") or "").strip()
+            if not content or content.upper() == "NONE":
+                return None
+            return normalize_stored_email(content) or coerce_email_from_text(content)
+
+        if settings.GEMINI_API_KEY:
+            repaired = await _call_repair(gemini_service, "gemini-1.5-flash")
+            if repaired:
+                return repaired
+
+        if settings.OPENAI_API_KEY:
+            repaired = await _call_repair(openai_service, "gpt-4o-mini")
+            if repaired:
+                return repaired
+
+        return None
+
+    def _merge_pending_email_note(
+        self,
+        existing_notes: Optional[str],
+        *,
+        pending_email: Optional[str],
+        source: str,
+        reason: str,
+    ) -> Optional[str]:
+        if not pending_email:
+            return existing_notes
+
+        entry = (
+            f"Pending email verification: {pending_email} "
+            f"(source: {source}; reason: {reason})"
+        )
+        base = (existing_notes or "").strip()
+        if pending_email in base and "Pending email verification:" in base:
+            return existing_notes
+        if not base:
+            return entry
+        return f"{base}\n{entry}"
+
     async def _handle_book_appointment_token(self, llm_response: str):
         """
-        Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,slot=...,reason=...].
+        Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,optional email=...,slot=...,reason=...].
+        Resolves customer_email from the token and/or recent client transcript (spoken-email STT recovery).
         Books the appointment and speaks the confirmation directly via TTS.
         """
         try:
             import re as _re
+            from dataclasses import replace
             from datetime import datetime as _dt
+
             from app.services.calendar_service import calendar_service as _cal
+            from app.utils.spoken_email import resolve_customer_email_for_booking
 
             m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
             if m:
@@ -1385,14 +1826,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             raw_single_line = " ".join((raw or "").split())
 
-            # Robust parse for ordered keys, allowing commas inside reason.
+            token_email_raw: str | None = None
+            # Robust parse: name, phone, optional email, slot, optional reason (commas in reason).
             strict = _re.search(
-                r"name=(?P<name>.*?),\s*phone=(?P<phone>.*?),\s*slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
+                r"name=(?P<name>.*?),\s*phone=(?P<phone>.*?),\s*(?:email=(?P<email>.*?),\s*)?"
+                r"slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
                 raw_single_line,
             )
             if strict:
                 customer_name = (strict.group("name") or "").strip()
                 customer_phone = (strict.group("phone") or "").strip()
+                token_email_raw = (strict.group("email") or "").strip() or None
                 slot_raw = (strict.group("slot") or "").strip()
                 reason_val = (strict.group("reason") or "").strip()
                 reason = reason_val or None
@@ -1404,6 +1848,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                 customer_name = _get("name")
                 customer_phone = _get("phone")
+                token_email_raw = _get("email") or None
                 slot_raw = _get("slot")
                 reason = _get("reason") or None
 
@@ -1413,6 +1858,51 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             if not self.call_session:
                 return
+
+            transcript_lines = self._client_transcript_lines_newest_first()
+            email_resolution = resolve_customer_email_for_booking(
+                token_email_raw=token_email_raw,
+                transcript_client_lines_newest_first=transcript_lines,
+            )
+            if (
+                email_resolution.should_attempt_llm_repair
+                and not email_resolution.verified_email
+            ):
+                repaired_email = await self._repair_customer_email_with_llm(
+                    token_email_raw=token_email_raw,
+                    transcript_client_lines_newest_first=transcript_lines,
+                )
+                if repaired_email and repaired_email != email_resolution.pending_email:
+                    email_resolution = replace(
+                        email_resolution,
+                        pending_email=repaired_email,
+                        source="llm_repaired_unverified",
+                        trust_score=max(email_resolution.trust_score, 60),
+                        should_attempt_llm_repair=False,
+                        reason=(
+                            f"{email_resolution.reason} "
+                            "LLM repair produced a validated candidate; still pending confirmation."
+                        ).strip(),
+                    )
+
+            verified_customer_email = email_resolution.verified_email
+            # Demo override: store pending candidate when verified email isn't available.
+            customer_email_for_storage = (
+                verified_customer_email or email_resolution.pending_email
+            )
+            if verified_customer_email:
+                logger.info(
+                    "BOOK_APPOINTMENT: using verified customer_email source=%s trust=%s",
+                    email_resolution.source,
+                    email_resolution.trust_score,
+                )
+            elif email_resolution.pending_email:
+                logger.info(
+                    "BOOK_APPOINTMENT: keeping email pending verification source=%s trust=%s candidate=%s",
+                    email_resolution.source,
+                    email_resolution.trust_score,
+                    email_resolution.pending_email,
+                )
 
             slot_start = self._resolve_cached_calendar_slot(slot_raw)
             if slot_start is None:
@@ -1434,6 +1924,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
 
             existing = await loop.run_in_executor(None, _existing_for_call)
+            merged_notes = self._merge_pending_email_note(
+                existing.notes if existing else None,
+                pending_email=email_resolution.pending_email,
+                source=email_resolution.source,
+                reason=email_resolution.reason,
+            )
 
             try:
                 if existing:
@@ -1447,6 +1943,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             customer_name=customer_name,
                             customer_phone=customer_phone,
                             appointment_reason=reason,
+                            customer_email=customer_email_for_storage,
+                            notes=merged_notes,
                         ),
                     )
                     msg = (
@@ -1454,6 +1952,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
                         f"Anything else I can help with?"
                     )
+                    self._last_selected_calendar_slot = appt.slot_start
                 else:
                     appt = await loop.run_in_executor(
                         None,
@@ -1466,6 +1965,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             agent_id=agent_id,
                             call_session_id=call_session_id,
                             appointment_reason=reason,
+                            customer_email=customer_email_for_storage,
+                            notes=merged_notes,
                             created_via="voice_agent",
                         ),
                     )
@@ -1473,6 +1974,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         f"Done! Your appointment is confirmed for "
                         f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
                         f"Is there anything else I can help you with?"
+                    )
+                    self._last_selected_calendar_slot = appt.slot_start
+                if email_resolution.pending_email and not verified_customer_email:
+                    msg += (
+                        " I captured an email candidate, but it will stay pending "
+                        "verification until it's confirmed."
                     )
             except ValueError as ve:
                 msg = f"{ve} Would you like to choose a different time?"

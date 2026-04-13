@@ -7,7 +7,7 @@ import uuid
 # ─── Business Hours ───────────────────────────────────────────────────────────
 
 class BusinessHoursUpsert(BaseModel):
-    day_of_week: int = Field(..., ge=0, le=6, description="0=Monday … 6=Sunday")
+    day_of_week: int = Field(..., ge=0, le=6, description="0=Sunday … 6=Saturday")
     open_time: Optional[str] = Field(None, description="HH:MM, e.g. '09:00'")
     close_time: Optional[str] = Field(None, description="HH:MM, e.g. '17:00'")
     is_closed: bool = False
@@ -39,7 +39,7 @@ class BusinessHoursOut(BaseModel):
 
     id: uuid.UUID
     tenant_id: uuid.UUID
-    day_of_week: int
+    day_of_week: int = Field(..., description="0=Sunday … 6=Saturday")
     open_time: Optional[str] = None
     close_time: Optional[str] = None
     is_closed: bool
@@ -186,3 +186,33 @@ class AvailableSlotsResponse(BaseModel):
     timezone: str
     slots: List[AvailableSlot]
     total: int
+
+
+# ─── On-demand intake briefing (call transcript; not persisted) ───────────────
+
+class AppointmentIntakeSummaryFields(BaseModel):
+    """Structured briefing for staff; excludes sentiment / satisfaction scores."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    reason_for_visit: Optional[str] = None
+    health_symptoms_or_conditions: Optional[str] = None
+    customer_details_mentioned: Optional[str] = None
+    staff_briefing: Optional[str] = None
+    key_points: Optional[str] = None
+
+
+class AppointmentIntakeSummaryResponse(BaseModel):
+    appointment_id: uuid.UUID
+    call_session_id: uuid.UUID
+    customer_name: str
+    customer_phone: str
+    customer_email: Optional[str] = None
+    appointment_reason: Optional[str] = None
+    duration_minutes: int
+    status: str
+    reviewed_at: Optional[datetime] = None
+    generated_at: datetime
+    model_used: str
+    transcript_message_count: int
+    intake: AppointmentIntakeSummaryFields

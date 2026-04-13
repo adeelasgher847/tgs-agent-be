@@ -27,13 +27,16 @@ class Appointment(Base):
     duration_minutes = Column(Integer, nullable=False, server_default="30")
 
     # Lifecycle: pending / confirmed / cancelled / completed / no_show
-    status = Column(String(20), nullable=False, server_default="confirmed")
+    status = Column(String(20), nullable=False, server_default="pending")
 
     # Booking source: voice_agent / web / api
     created_via = Column(String(20), nullable=False, server_default="web")
 
     notes = Column(Text, nullable=True)
     cancellation_reason = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
+    customer_notified_on_review_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import date
 import uuid
 
 from app.api.deps import get_db, require_tenant
+from app.core.config import settings
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.calendar import (
@@ -15,11 +17,38 @@ from app.schemas.calendar import (
     AppointmentDetailOut,
     AppointmentListResponse,
     AvailableSlotsResponse,
+    AppointmentIntakeSummaryResponse,
 )
 from app.services.calendar_service import BusinessHoursConflictError, calendar_service
+from app.services.appointment_intake_summary_service import appointment_intake_summary_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
+
+# External API mapping (stable public contract):
+# 0=Sunday ... 6=Saturday
+# Internal storage/service mapping remains Python weekday:
+# 0=Monday ... 6=Sunday
+def _api_day_to_internal(day: int) -> int:
+    return (day + 6) % 7
+
+
+def _internal_day_to_api(day: int) -> int:
+    return (day + 1) % 7
+
+
+def _map_hours_payload_to_internal(payload: List[BusinessHoursUpsert]) -> List[BusinessHoursUpsert]:
+    return [
+        item.model_copy(update={"day_of_week": _api_day_to_internal(item.day_of_week)})
+        for item in payload
+    ]
+
+
+def _map_hours_out_to_api(rows: List[BusinessHoursOut]) -> List[BusinessHoursOut]:
+    return [
+        row.model_copy(update={"day_of_week": _internal_day_to_api(row.day_of_week)})
+        for row in rows
+    ]
 
 
 # ─── Slot Availability ────────────────────────────────────────────────────────
@@ -72,7 +101,7 @@ def create_appointment(
     )
 
 
-@router.get("/appointments", response_model=SuccessResponse[AppointmentListResponse])
+@router.get("/appointments", response_model=SuccessResponse[AppointmentListResponse],include_in_schema=False)
 def list_appointments(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
@@ -102,6 +131,57 @@ def list_appointments(
             ],
             total=total,
         )
+    )
+
+
+@router.get("/appointments/acknowledge", include_in_schema=False)
+def acknowledge_appointment_review(
+    token: str = Query(..., description="Signed acknowledgement token from email."),
+    db: Session = Depends(get_db),
+):
+    """
+    Public review-link endpoint (token-authenticated).
+    Marks an appointment as reviewed and redirects to frontend appointments page.
+    """
+    try:
+        appt = calendar_service.acknowledge_appointment_from_token(db=db, token=token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    base = (settings.FRONTEND_URL or "").rstrip("/")
+    redirect_to = (
+        f"{base}/appointments?appointmentId={appt.id}&reviewed=1"
+        if base
+        else "/appointments"
+    )
+    return RedirectResponse(url=redirect_to, status_code=status.HTTP_302_FOUND)
+
+
+@router.get(
+    "/appointments/{appointment_id}/intake-summary",
+    response_model=SuccessResponse[AppointmentIntakeSummaryResponse],
+)
+def get_appointment_intake_summary(
+    appointment_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a fresh intake briefing from the call transcript linked to this appointment.
+    Not stored — suitable for demo; each request runs a new LLM extraction.
+
+    Omits sentiment scores, satisfaction metrics, and emotional analytics by design.
+    """
+    appt = calendar_service.get_appointment_by_id(db, appointment_id, user.current_tenant_id)
+    if not appt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+    payload = appointment_intake_summary_service.generate_intake_summary(
+        db=db,
+        tenant_id=user.current_tenant_id,
+        appointment=appt,
+    )
+    return create_success_response(
+        data=AppointmentIntakeSummaryResponse.model_validate(payload),
     )
 
 
@@ -205,7 +285,8 @@ def get_business_hours(
     db: Session = Depends(get_db),
 ):
     hours = calendar_service.get_business_hours(db, user.current_tenant_id)
-    return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
+    out = [BusinessHoursOut.model_validate(h) for h in hours]
+    return create_success_response(data=_map_hours_out_to_api(out))
 
 
 @router.post("/business-hours", response_model=SuccessResponse[List[BusinessHoursOut]], status_code=status.HTTP_201_CREATED)
@@ -215,8 +296,9 @@ def create_business_hours(
     db: Session = Depends(get_db),
 ):
     """Create business hours for the tenant. Use PUT to update existing weekdays."""
+    internal_payload = _map_hours_payload_to_internal(payload)
     try:
-        hours = calendar_service.create_business_hours(db, user.current_tenant_id, payload)
+        hours = calendar_service.create_business_hours(db, user.current_tenant_id, internal_payload)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except BusinessHoursConflictError as exc:
@@ -224,10 +306,11 @@ def create_business_hours(
             status_code=status.HTTP_409_CONFLICT,
             detail={
                 "message": "Business hours already exist for one or more weekdays.",
-                "day_of_week": exc.days,
+                "day_of_week": [_internal_day_to_api(day) for day in exc.days],
             },
         ) from exc
-    return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
+    out = [BusinessHoursOut.model_validate(h) for h in hours]
+    return create_success_response(data=_map_hours_out_to_api(out))
 
 
 @router.put("/business-hours", response_model=SuccessResponse[List[BusinessHoursOut]])
@@ -237,8 +320,10 @@ def upsert_business_hours(
     db: Session = Depends(get_db),
 ):
     """Set business hours for the tenant. Pass all 7 days at once (or just the ones you want to update)."""
-    hours = calendar_service.upsert_business_hours(db, user.current_tenant_id, payload)
-    return create_success_response(data=[BusinessHoursOut.model_validate(h) for h in hours])
+    internal_payload = _map_hours_payload_to_internal(payload)
+    hours = calendar_service.upsert_business_hours(db, user.current_tenant_id, internal_payload)
+    out = [BusinessHoursOut.model_validate(h) for h in hours]
+    return create_success_response(data=_map_hours_out_to_api(out))
 
 
 @router.delete("/business-hours/{business_hours_id}", response_model=SuccessResponse[dict])
