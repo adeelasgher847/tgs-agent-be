@@ -1886,12 +1886,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
 
             verified_customer_email = email_resolution.verified_email
-            # TODO: Demo override (temporarily disabled)
-            # Keep pending-email storage logic here for quick re-enable later.
-            # customer_email_for_storage = (
-            #     verified_customer_email or email_resolution.pending_email
-            # )
-            customer_email_for_storage = verified_customer_email
+            # Demo override: store pending candidate when verified email isn't available.
+            customer_email_for_storage = (
+                verified_customer_email or email_resolution.pending_email
+            )
             if verified_customer_email:
                 logger.info(
                     "BOOK_APPOINTMENT: using verified customer_email source=%s trust=%s",
