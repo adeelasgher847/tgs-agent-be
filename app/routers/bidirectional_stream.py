@@ -1886,6 +1886,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
 
             verified_customer_email = email_resolution.verified_email
+            # TODO: Demo override (temporarily disabled)
+            # Keep pending-email storage logic here for quick re-enable later.
+            # customer_email_for_storage = (
+            #     verified_customer_email or email_resolution.pending_email
+            # )
+            customer_email_for_storage = verified_customer_email
             if verified_customer_email:
                 logger.info(
                     "BOOK_APPOINTMENT: using verified customer_email source=%s trust=%s",
@@ -1939,7 +1945,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             customer_name=customer_name,
                             customer_phone=customer_phone,
                             appointment_reason=reason,
-                            customer_email=verified_customer_email,
+                            customer_email=customer_email_for_storage,
                             notes=merged_notes,
                         ),
                     )
@@ -1961,7 +1967,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             agent_id=agent_id,
                             call_session_id=call_session_id,
                             appointment_reason=reason,
-                            customer_email=verified_customer_email,
+                            customer_email=customer_email_for_storage,
                             notes=merged_notes,
                             created_via="voice_agent",
                         ),

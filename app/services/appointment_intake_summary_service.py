@@ -40,7 +40,7 @@ Rules:
 - key_points: concise scan-ready summary points in one variable/string (not array). Use semicolons to separate points. Null if nothing useful.
 - Do NOT invent medical facts; if unsure, say so briefly or use null.
 - Do NOT include customer_name, customer_phone, customer_email, appointment_reason, duration_minutes, or lifecycle status in these five intake fields.
-- Never output literal email addresses in any field. If relevant, use generic phrasing like "email captured (verification pending)".
+- Never output literal email addresses in any field.
 - Do NOT include: sentiment labels, sentiment scores, satisfaction scores, star ratings, NPS, or emotional analytics.
 - Do NOT output any keys other than the five above."""
 
@@ -61,13 +61,22 @@ def _scrub_email_literals(value: Optional[str]) -> Optional[str]:
         return None
 
     if _EMAIL_RE.search(text):
-        text = _EMAIL_RE.sub("email captured (verification pending)", text)
+        # TODO: Alternative redaction phrasing retained for future use:
+        # text = _EMAIL_RE.sub("email captured (verification pending)", text)
+        # text = re.sub(
+        #     r"(email captured \(verification pending\))(?:\s*[,;]\s*\1)+",
+        #     r"\1",
+        #     text,
+        #     flags=re.IGNORECASE,
+        # )
+        text = _EMAIL_RE.sub("", text)
         text = re.sub(
-            r"(email captured \(verification pending\))(?:\s*[,;]\s*\1)+",
-            r"\1",
+            r"(?i)\b(?:customer'?s?\s+)?email\s*(?:is|:)?\s*(?:,|;)?",
+            "",
             text,
-            flags=re.IGNORECASE,
         )
+        text = re.sub(r"\s*[,;]\s*[,;]\s*", "; ", text)
+        text = re.sub(r"^[,;\s]+|[,;\s]+$", "", text)
         text = re.sub(r"\s{2,}", " ", text).strip()
     return text or None
 
