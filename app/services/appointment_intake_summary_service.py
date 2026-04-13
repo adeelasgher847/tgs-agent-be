@@ -40,8 +40,36 @@ Rules:
 - key_points: concise scan-ready summary points in one variable/string (not array). Use semicolons to separate points. Null if nothing useful.
 - Do NOT invent medical facts; if unsure, say so briefly or use null.
 - Do NOT include customer_name, customer_phone, customer_email, appointment_reason, duration_minutes, or lifecycle status in these five intake fields.
+- Never output literal email addresses in any field. If relevant, use generic phrasing like "email captured (verification pending)".
 - Do NOT include: sentiment labels, sentiment scores, satisfaction scores, star ratings, NPS, or emotional analytics.
 - Do NOT output any keys other than the five above."""
+
+_EMAIL_RE = re.compile(
+    r"\b[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}\b"
+)
+
+
+def _scrub_email_literals(value: Optional[str]) -> Optional[str]:
+    """
+    Remove literal email addresses from summary text fields.
+    Keeps PII handling deterministic even if the LLM ignores prompt instructions.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if _EMAIL_RE.search(text):
+        text = _EMAIL_RE.sub("email captured (verification pending)", text)
+        text = re.sub(
+            r"(email captured \(verification pending\))(?:\s*[,;]\s*\1)+",
+            r"\1",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"\s{2,}", " ", text).strip()
+    return text or None
 
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
@@ -83,15 +111,16 @@ def _allowed_only(data: Dict[str, Any]) -> Dict[str, Any]:
                 out[k] = None
             elif isinstance(v, list):
                 points = [str(x).strip() for x in v if str(x).strip()][:20]
-                out[k] = "; ".join(points) if points else None
+                scrubbed = _scrub_email_literals("; ".join(points) if points else None)
+                out[k] = scrubbed
             else:
                 text_v = str(v).strip()
-                out[k] = text_v if text_v else None
+                out[k] = _scrub_email_literals(text_v if text_v else None)
         else:
             if v is None or (isinstance(v, str) and not v.strip()):
                 out[k] = None
             else:
-                out[k] = str(v).strip()
+                out[k] = _scrub_email_literals(str(v).strip())
     return out
 
 
