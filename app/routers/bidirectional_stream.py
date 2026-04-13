@@ -845,7 +845,7 @@ class BidirectionalStreamHandler:
                     # the model keeps the already-collected service/date/slot in view.
                     max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
                     if self._is_booking_context_active(user_text):
-                        max_msgs = max(max_msgs, 30)
+                        max_msgs = max(max_msgs, 39)
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
