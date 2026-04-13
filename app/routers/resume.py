@@ -255,6 +255,7 @@ async def upload_multiple_resumes_and_match(
                 upload_mode=UploadMode.BATCH,
                 batch_id=batch_id,
             )
+            resume.job_description_id = job_description_id
             db.commit()
             db.refresh(resume)
         except HTTPException as exc:
@@ -359,6 +360,51 @@ async def upload_multiple_resumes_and_match(
         "Multiple resumes uploaded and matched",
         status.HTTP_201_CREATED,
     )
+
+
+@router.get(
+    "/by-job/{job_description_id}",
+    response_model=SuccessResponse[list[ResumeListItem]],
+)
+def list_resumes_by_job_description(
+    job_description_id: UUID,
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    job = db.query(JobDescription).filter(
+        JobDescription.id == job_description_id,
+        JobDescription.tenant_id == user.current_tenant_id,
+    ).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+
+    rows = (
+        db.query(Resume)
+        .filter(
+            Resume.tenant_id == user.current_tenant_id,
+            Resume.job_description_id == job_description_id,
+        )
+        .order_by(Resume.created_at.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
+    items = [
+        ResumeListItem(
+            id=r.id,
+            original_filename=r.original_filename,
+            status=ParseStatusEnum(r.status.value),
+            parse_confidence=r.parse_confidence,
+            created_at=r.created_at,
+            batch_id=r.batch_id,
+            job_description_id=r.job_description_id,
+        )
+        for r in rows
+    ]
+    return create_success_response(items, "Resumes by job description retrieved successfully")
 
 
 # @router.post(

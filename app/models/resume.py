@@ -43,6 +43,9 @@ class Resume(Base):
         index=True,
     )
     batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    job_description_id = Column(
+        UUID(as_uuid=True), ForeignKey("jobdescription.id"), nullable=True, index=True
+    )
     raw_text = Column(Text, nullable=True)
     parsed_json = Column(JSONB, nullable=True)
     warnings = Column(JSONB, nullable=True)

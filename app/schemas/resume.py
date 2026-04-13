@@ -99,8 +99,8 @@ class ResumeListItem(BaseModel):
     status: ParseStatusEnum
     parse_confidence: float | None = None
     created_at: Any
-    upload_mode: str | None = None
     batch_id: UUID | None = None
+    job_description_id: UUID | None = None
 
 
 class BatchShortlistItem(BaseModel):
