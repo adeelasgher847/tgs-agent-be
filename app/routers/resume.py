@@ -15,6 +15,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
@@ -43,6 +44,7 @@ from app.schemas.resume import (
 from app.services.candidate_shortlisting_service import candidate_shortlisting_service
 from app.services.resume_matching_service import score_candidate
 from app.services.resume_parse_service import run_parse_for_resume
+from app.services.resume_rules_parser import extract_location_from_text
 from app.utils.fit_score_labels import explain_fit_score
 from app.utils.response import create_success_response
 
@@ -168,6 +170,209 @@ def _match_result_to_payload(result: MatchResponse, *, verbose: bool) -> dict:
             "top_gaps": gaps,
         }
     }
+
+
+def _extract_candidate_summary(resume: Resume) -> tuple[str | None, list[str], float | None]:
+    parsed = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
+    profile = parsed.get("profile") if isinstance(parsed.get("profile"), dict) else {}
+    location = profile.get("location")
+    if not location:
+        raw_text = parsed.get("raw_text") or resume.raw_text
+        if isinstance(raw_text, str) and raw_text.strip():
+            location = extract_location_from_text(raw_text)
+
+    years_exp = parsed.get("years_experience_total")
+    try:
+        years_exp = float(years_exp) if years_exp is not None else None
+    except (TypeError, ValueError):
+        years_exp = None
+
+    education_values: list[str] = []
+    education = parsed.get("education")
+    if isinstance(education, list):
+        for item in education:
+            if not isinstance(item, dict):
+                continue
+            degree = str(item.get("degree") or "").strip()
+            institution = str(item.get("institution") or "").strip()
+            combined = " - ".join(part for part in [degree, institution] if part)
+            if combined:
+                education_values.append(combined)
+
+    return (str(location).strip() if location else None, education_values, years_exp)
+
+
+def _extract_candidate_enrichment(
+    resume: Resume,
+) -> tuple[str | None, str | None, list[str], list[str], list[str], list[str], list[str]]:
+    parsed = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
+    profile = parsed.get("profile") if isinstance(parsed.get("profile"), dict) else {}
+
+    title = None
+    summary = None
+
+    experience_items = parsed.get("experience") if isinstance(parsed.get("experience"), list) else []
+    if experience_items:
+        first = experience_items[0] if isinstance(experience_items[0], dict) else {}
+        role = str(first.get("role") or "").strip()
+        company = str(first.get("company") or "").strip()
+        if role and company:
+            title = f"{role} at {company}"
+        elif role:
+            title = role
+        elif company:
+            title = company
+
+    raw_text = parsed.get("raw_text") if isinstance(parsed.get("raw_text"), str) else ""
+    if raw_text:
+        summary = " ".join(raw_text.split())[:260]
+
+    skills: list[str] = []
+    skills_raw = parsed.get("skills") if isinstance(parsed.get("skills"), list) else []
+    for s in skills_raw:
+        if isinstance(s, dict):
+            name = str(s.get("name") or "").strip()
+            if name:
+                skills.append(name)
+
+    experience: list[str] = []
+    for item in experience_items:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip()
+        company = str(item.get("company") or "").strip()
+        duration = str(item.get("duration") or "").strip()
+        label = " | ".join(part for part in [role, company, duration] if part)
+        if label:
+            experience.append(label)
+
+    languages: list[str] = []
+    langs = parsed.get("languages") if isinstance(parsed.get("languages"), list) else []
+    for lang in langs:
+        text = str(lang).strip()
+        if text:
+            languages.append(text)
+
+    projects: list[str] = []
+    projects_raw = parsed.get("projects") if isinstance(parsed.get("projects"), list) else []
+    for p in projects_raw:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        desc = str(p.get("description") or "").strip()
+        project_label = " - ".join(part for part in [name, desc] if part)
+        if project_label:
+            projects.append(project_label)
+
+    achievements: list[str] = []
+    for item in experience_items:
+        if not isinstance(item, dict):
+            continue
+        responsibilities = item.get("responsibilities")
+        if not isinstance(responsibilities, list):
+            continue
+        for ach in responsibilities:
+            text = str(ach).strip()
+            if text:
+                achievements.append(text)
+
+    # Fallback title to profile name if experience role is absent.
+    if not title:
+        profile_name = str(profile.get("name") or "").strip()
+        title = profile_name or None
+
+    return (
+        title,
+        summary,
+        skills[:30],
+        experience[:20],
+        languages[:15],
+        achievements[:20],
+        projects[:15],
+    )
+
+
+def _resolved_resume_file_path(storage_path: str) -> Path:
+    """Ensure stored path is a real file under the configured upload root."""
+    path = Path(storage_path).expanduser().resolve()
+    upload_root = Path(
+        getattr(settings, "RESUME_UPLOAD_DIR", "./uploads/resumes")
+    ).expanduser().resolve()
+    try:
+        path.relative_to(upload_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Resume file path is not allowed",
+        ) from exc
+    if not path.is_file():
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Resume file not found on server",
+        )
+    return path
+
+
+@router.get("/{resume_id}/download")
+def download_resume(
+    resume_id: UUID,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Download the original uploaded resume file (tenant-scoped).
+    """
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    res = (
+        db.query(Resume)
+        .filter(
+            Resume.id == resume_id,
+            Resume.tenant_id == user.current_tenant_id,
+        )
+        .first()
+    )
+    if res is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume not found")
+
+    file_path = _resolved_resume_file_path(res.storage_path)
+    media_type = res.content_type or "application/octet-stream"
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_type,
+        filename=res.original_filename,
+    )
+
+
+def _match_against_job(
+    resume: Resume,
+    job: JobDescription,
+    *,
+    match_mode: MatchMode,
+) -> tuple[int | None, float | None, str | None]:
+    """Compute match vs JD for list views. Returns (match_percent, overall_score, fit_label)."""
+    if resume.status != ParseStatus.READY or not resume.parsed_json:
+        return None, None, None
+    try:
+        parsed = ParsedResume.model_validate(resume.parsed_json)
+    except Exception:
+        return None, None, None
+    try:
+        result = score_candidate(
+            resume.id,
+            job,
+            parsed,
+            match_mode=match_mode.value,
+        )
+        return (
+            result.overall_match_percent,
+            result.overall_score,
+            result.overall_fit_label,
+        )
+    except Exception as exc:
+        log.warning("Match scoring failed for resume %s: %s", resume.id, exc)
+        return None, None, None
 
 
 @router.post(
@@ -369,6 +574,13 @@ async def upload_multiple_resumes_and_match(
 def list_resumes_by_job_description(
     job_description_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
+    match_mode: MatchMode = Query(
+        MatchMode.rules,
+        description=(
+            "How to score each resume vs this JD. "
+            "`rules` is fast (no LLM). `hybrid` / `ai` match upload-multiple-and-match when API keys are set (slower)."
+        ),
+    ),
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
 ):
@@ -392,19 +604,124 @@ def list_resumes_by_job_description(
         .limit(min(limit, 200))
         .all()
     )
-    items = [
-        ResumeListItem(
-            id=r.id,
-            original_filename=r.original_filename,
-            status=ParseStatusEnum(r.status.value),
-            parse_confidence=r.parse_confidence,
-            created_at=r.created_at,
-            batch_id=r.batch_id,
-            job_description_id=r.job_description_id,
+    items: list[ResumeListItem] = []
+    threshold = float(job.pass_match_threshold if job.pass_match_threshold is not None else 0.5)
+    for r in rows:
+        location, education, years_exp = _extract_candidate_summary(r)
+        title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
+        mp, os_, fl = _match_against_job(r, job, match_mode=match_mode)
+        is_rel: bool | None = (os_ is not None and os_ >= threshold) if os_ is not None else None
+        fit_label = "Relevant" if is_rel is True else ("Irrelevant" if is_rel is False else fl)
+        items.append(
+            ResumeListItem(
+                id=r.id,
+                original_filename=r.original_filename,
+                status=ParseStatusEnum(r.status.value),
+                parse_confidence=r.parse_confidence,
+                location=location,
+                education=education,
+                experience_years=years_exp,
+                title=title,
+                summary=summary,
+                skills=skills,
+                experience=experience,
+                languages=languages,
+                achievements=achievements,
+                projects=projects,
+                match_percent=mp,
+                overall_score=os_,
+                overall_match_score=os_,
+                fit_label=fit_label,
+                is_relevant=is_rel,
+                created_at=r.created_at,
+                batch_id=r.batch_id,
+                job_description_id=r.job_description_id,
+            )
         )
-        for r in rows
-    ]
     return create_success_response(items, "Resumes by job description retrieved successfully")
+
+
+@router.get(
+    "/resume-after-screening/{job_description_id}",
+    response_model=SuccessResponse[list[ResumeListItem]],
+)
+def list_resumes_after_screening(
+    job_description_id: UUID,
+    limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
+    match_mode: MatchMode = Query(
+        MatchMode.rules,
+        description=(
+            "How to score each resume vs this JD. "
+            "`rules` is fast (no LLM). `hybrid` / `ai` match upload-multiple-and-match when API keys are set (slower)."
+        ),
+    ),
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Return only screened-in resumes where overall_score >= job pass threshold.
+    """
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    job = db.query(JobDescription).filter(
+        JobDescription.id == job_description_id,
+        JobDescription.tenant_id == user.current_tenant_id,
+    ).first()
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+
+    rows = (
+        db.query(Resume)
+        .filter(
+            Resume.tenant_id == user.current_tenant_id,
+            Resume.job_description_id == job_description_id,
+        )
+        .order_by(Resume.created_at.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
+
+    threshold = float(job.pass_match_threshold if job.pass_match_threshold is not None else 0.5)
+    items: list[ResumeListItem] = []
+    for r in rows:
+        location, education, years_exp = _extract_candidate_summary(r)
+        title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
+        mp, os_, _ = _match_against_job(r, job, match_mode=match_mode)
+        if os_ is None or os_ < threshold:
+            continue
+
+        items.append(
+            ResumeListItem(
+                id=r.id,
+                original_filename=r.original_filename,
+                status=ParseStatusEnum(r.status.value),
+                parse_confidence=r.parse_confidence,
+                location=location,
+                education=education,
+                experience_years=years_exp,
+                title=title,
+                summary=summary,
+                skills=skills,
+                experience=experience,
+                languages=languages,
+                achievements=achievements,
+                projects=projects,
+                match_percent=mp,
+                overall_score=os_,
+                overall_match_score=os_,
+                fit_label="Relevant",
+                is_relevant=True,
+                created_at=r.created_at,
+                batch_id=r.batch_id,
+                job_description_id=r.job_description_id,
+            )
+        )
+
+    return create_success_response(
+        items,
+        "Screened resumes retrieved successfully",
+    )
 
 
 # @router.post(

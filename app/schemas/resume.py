@@ -98,6 +98,42 @@ class ResumeListItem(BaseModel):
     original_filename: str
     status: ParseStatusEnum
     parse_confidence: float | None = None
+    location: str | None = None
+    education: list[str] = Field(default_factory=list)
+    experience_years: float | None = None
+    title: str | None = None
+    summary: str | None = None
+    skills: list[str] = Field(default_factory=list)
+    experience: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=list)
+    achievements: list[str] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+    match_percent: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Resume vs job match as 0–100 (same scale as match endpoints). Null if not scored.",
+    )
+    overall_score: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Raw match strength 0–1 when scored.",
+    )
+    overall_match_score: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Alias of overall_score for client compatibility.",
+    )
+    fit_label: str | None = Field(
+        default=None,
+        description='Exactly "Relevant" or "Irrelevant" when scored (server threshold on overall score).',
+    )
+    is_relevant: bool | None = Field(
+        default=None,
+        description="True = relevant to this job, False = irrelevant, null = not scored.",
+    )
     created_at: Any
     batch_id: UUID | None = None
     job_description_id: UUID | None = None

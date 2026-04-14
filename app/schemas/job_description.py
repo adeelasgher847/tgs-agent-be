@@ -39,6 +39,12 @@ class JobDescriptionBase(BaseModel):
     employment_type: Optional[EmploymentTypeEnum] = None
     key_responsibilities: List[str] = Field(default_factory=list)
     required_certifications: List[str] = Field(default_factory=list)
+    pass_match_threshold: float = Field(
+        default=50.0,
+        ge=1.0,
+        le=100.0,
+        description="Minimum overall match percentage (1-100) required for a resume to pass this job.",
+    )
 
     @model_validator(mode="after")
     def validate_salary_range(self) -> "JobDescriptionBase":
@@ -76,6 +82,12 @@ class JobDescriptionUpdate(BaseModel):
     skill_weight_matrix: Optional[Dict[str, float]] = None
     matching_criteria: Optional[Dict[str, Any]] = None
     processing_status: Optional[ProcessingStatusEnum] = None
+    pass_match_threshold: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        le=100.0,
+        description="Minimum overall match percentage (1-100) required for a resume to pass this job.",
+    )
 
     @model_validator(mode="after")
     def validate_salary_range(self) -> "JobDescriptionUpdate":
@@ -124,6 +136,7 @@ class JobDescriptionListOut(BaseModel):
     key_responsibilities: List[str] = Field(default_factory=list)
     required_certifications: List[str] = Field(default_factory=list)
     raw_text: Optional[str] = None
+    pass_match_threshold: float = 50.0
     created_at: datetime
 
     class Config:

@@ -29,6 +29,24 @@ class JobDescriptionService:
         {"name": "keyword_context", "weight": 0.10, "description": "Domain keyword and responsibility context relevance."},
     ]
 
+    @staticmethod
+    def _threshold_percent_to_fraction(value: Any) -> float:
+        try:
+            v = float(value if value is not None else 50.0)
+        except (TypeError, ValueError):
+            v = 50.0
+        v = max(1.0, min(100.0, v))
+        return round(v / 100.0, 4)
+
+    @staticmethod
+    def _threshold_fraction_to_percent(value: Any) -> float:
+        try:
+            v = float(value if value is not None else 0.5)
+        except (TypeError, ValueError):
+            v = 0.5
+        v = max(0.0, min(1.0, v))
+        return round(v * 100.0, 2)
+
     def create_manual(
         self,
         db: Session,
@@ -37,6 +55,9 @@ class JobDescriptionService:
         user_id: uuid.UUID,
     ) -> JobDescription:
         data = payload.model_dump()
+        data["pass_match_threshold"] = self._threshold_percent_to_fraction(
+            data.get("pass_match_threshold", 50.0)
+        )
 
         # Persist manual form as raw text fallback when explicit raw text is not sent.
         if not data.get("raw_text"):
@@ -231,6 +252,8 @@ class JobDescriptionService:
             ps = "PENDING"
         jd.processing_status = ps
 
+        jd.pass_match_threshold = self._threshold_fraction_to_percent(jd.pass_match_threshold)
+
     def update(
         self,
         db: Session,
@@ -241,6 +264,10 @@ class JobDescriptionService:
     ) -> JobDescription:
         jd = self.get_by_id(db, job_description_id, tenant_id)
         updates = payload.model_dump(exclude_unset=True)
+        if "pass_match_threshold" in updates:
+            updates["pass_match_threshold"] = self._threshold_percent_to_fraction(
+                updates.get("pass_match_threshold")
+            )
         for key, value in list(updates.items()):
             if isinstance(value, Enum):
                 updates[key] = value.value
