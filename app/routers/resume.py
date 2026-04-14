@@ -581,13 +581,6 @@ async def upload_multiple_resumes_and_match(
 def list_resumes_by_job_description(
     job_description_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
-    match_mode: MatchMode = Query(
-        MatchMode.rules,
-        description=(
-            "How to score each resume vs this JD. "
-            "`rules` is fast (no LLM). `hybrid` / `ai` match upload-multiple-and-match when API keys are set (slower)."
-        ),
-    ),
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
 ):
@@ -616,9 +609,15 @@ def list_resumes_by_job_description(
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
         title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
-        mp, os_, fl = _match_against_job(r, job, match_mode=match_mode)
-        is_rel: bool | None = (os_ is not None and os_ >= threshold) if os_ is not None else None
-        fit_label = "Relevant" if is_rel is True else ("Irrelevant" if is_rel is False else fl)
+        os_ = r.overall_match_score
+        mp = r.match_percent
+        if r.is_relevant is not None:
+            is_rel: bool | None = bool(r.is_relevant)
+        elif os_ is not None:
+            is_rel = bool(os_ >= threshold)
+        else:
+            is_rel = None
+        fit_label = r.fit_label or ("Relevant" if is_rel is True else ("Irrelevant" if is_rel is False else None))
         items.append(
             ResumeListItem(
                 id=r.id,
@@ -655,13 +654,6 @@ def list_resumes_by_job_description(
 def list_resumes_after_screening(
     job_description_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
-    match_mode: MatchMode = Query(
-        MatchMode.rules,
-        description=(
-            "How to score each resume vs this JD. "
-            "`rules` is fast (no LLM). `hybrid` / `ai` match upload-multiple-and-match when API keys are set (slower)."
-        ),
-    ),
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
 ):
@@ -694,7 +686,8 @@ def list_resumes_after_screening(
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
         title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
-        mp, os_, _ = _match_against_job(r, job, match_mode=match_mode)
+        os_ = r.overall_match_score
+        mp = r.match_percent
         if os_ is None or os_ < threshold:
             continue
 
@@ -717,7 +710,7 @@ def list_resumes_after_screening(
                 match_percent=mp,
                 overall_score=os_,
                 overall_match_score=os_,
-                fit_label="Relevant",
+                fit_label=r.fit_label or "Relevant",
                 is_relevant=True,
                 created_at=r.created_at,
                 batch_id=r.batch_id,
