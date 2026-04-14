@@ -528,6 +528,13 @@ async def upload_multiple_resumes_and_match(
             # Match phase: score one resume against the requested JD.
             parsed = ParsedResume.model_validate(parsed_resume_row.parsed_json)
             result = score_candidate(parsed_resume_row.id, job, parsed, match_mode=mm)
+            threshold = float(job.pass_match_threshold if job.pass_match_threshold is not None else 0.5)
+            parsed_resume_row.overall_match_score = float(result.overall_score)
+            parsed_resume_row.match_percent = int(result.overall_match_percent)
+            parsed_resume_row.is_relevant = bool(result.overall_score >= threshold)
+            parsed_resume_row.fit_label = "Relevant" if parsed_resume_row.is_relevant else "Irrelevant"
+            db.commit()
+            db.refresh(parsed_resume_row)
             items.append(
                 {
                     "original_filename": original_filename,

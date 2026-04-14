@@ -14,6 +14,7 @@ from pypdf import PdfReader
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.job_description import JobDescription
+from app.models.resume import Resume
 from app.models.user import user_tenant_association
 from app.schemas.job_description import JobDescriptionCreateManual, JobDescriptionUpdate
 from app.services.openai_service import openai_service
@@ -289,6 +290,14 @@ class JobDescriptionService:
         tenant_id: uuid.UUID,
     ) -> None:
         jd = self.get_by_id(db, job_description_id, tenant_id)
+        # Detach dependent resumes before deleting JD to satisfy FK constraints.
+        (
+            db.query(Resume)
+            .filter(
+                Resume.job_description_id == job_description_id,
+            )
+            .update({Resume.job_description_id: None}, synchronize_session=False)
+        )
         db.delete(jd)
         db.commit()
 
