@@ -167,6 +167,13 @@ def _extract_candidate_summary(resume: Resume) -> tuple[str | None, list[str], f
     return (str(location).strip() if location else None, education_values, years_exp)
 
 
+def _extract_candidate_phone(resume: Resume) -> str | None:
+    parsed = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
+    profile = parsed.get("profile") if isinstance(parsed.get("profile"), dict) else {}
+    phone = str(profile.get("phone") or "").strip()
+    return phone or None
+
+
 def _extract_candidate_enrichment(
     resume: Resume,
 ) -> tuple[str | None, str | None, list[str], list[str], list[str], list[str], list[str]]:
@@ -543,6 +550,7 @@ def list_resumes_by_job_description(
     threshold = float(job.pass_match_threshold if job.pass_match_threshold is not None else 0.5)
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
+        phone = _extract_candidate_phone(r)
         title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
         os_ = r.overall_match_score
         mp = r.match_percent
@@ -564,6 +572,7 @@ def list_resumes_by_job_description(
                 experience_years=years_exp,
                 title=title,
                 summary=summary,
+                phone=phone,
                 skills=skills,
                 experience=experience,
                 languages=languages,
@@ -620,6 +629,7 @@ def list_resumes_after_screening(
     items: list[ResumeListItem] = []
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
+        phone = _extract_candidate_phone(r)
         title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
         os_ = r.overall_match_score
         mp = r.match_percent
@@ -637,6 +647,7 @@ def list_resumes_after_screening(
                 experience_years=years_exp,
                 title=title,
                 summary=summary,
+                phone=phone,
                 skills=skills,
                 experience=experience,
                 languages=languages,
