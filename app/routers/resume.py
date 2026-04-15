@@ -34,7 +34,6 @@ from app.schemas.resume import (
 )
 from app.services.resume_matching_service import score_candidate
 from app.services.resume_parse_service import run_parse_for_resume
-from app.services.resume_rules_parser import extract_location_from_text
 from app.utils.response import create_success_response
 
 router = APIRouter()
@@ -141,10 +140,6 @@ def _extract_candidate_summary(resume: Resume) -> tuple[str | None, list[str], f
     parsed = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
     profile = parsed.get("profile") if isinstance(parsed.get("profile"), dict) else {}
     location = profile.get("location")
-    if not location:
-        raw_text = parsed.get("raw_text") or resume.raw_text
-        if isinstance(raw_text, str) and raw_text.strip():
-            location = extract_location_from_text(raw_text)
 
     years_exp = parsed.get("years_experience_total")
     try:

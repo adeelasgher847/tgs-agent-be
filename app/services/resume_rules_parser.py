@@ -226,6 +226,10 @@ def _is_globally_valid_location(value: str) -> bool:
     query = (value or "").strip()
     if not query or len(query) < 3:
         return False
+    # Avoid external geocoding for clearly non-location phrases/noisy resume bullets.
+    words = [w for w in re.split(r"\s+", query) if w]
+    if len(words) > 6:
+        return False
     global _NOMINATIM_TLS_UNAVAILABLE
     if _NOMINATIM_TLS_UNAVAILABLE:
         return False
@@ -240,7 +244,10 @@ def _is_globally_valid_location(value: str) -> bool:
         return True
 
     try:
-        geolocator = Nominatim(user_agent="tgs_resume_location_validator")
+        geolocator = Nominatim(
+            user_agent="tgs_resume_location_validator",
+            ssl_context=_build_geopy_ssl_context(),
+        )
         result = geolocator.geocode(query, exactly_one=True, addressdetails=True, timeout=2)
     except Exception as exc:
         if _is_tls_cert_error(exc):
@@ -317,6 +324,19 @@ def _is_tls_cert_error(exc: Exception) -> bool:
         or "sslcertverificationerror" in text
         or "unable to get local issuer certificate" in text
     )
+
+
+def _build_geopy_ssl_context() -> ssl.SSLContext:
+    """
+    Build an SSL context for geopy requests using certifi when available.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        # Fall back to system trust store if certifi isn't available.
+        return ssl.create_default_context()
 
 
 def _guess_name(text: str) -> str | None:
