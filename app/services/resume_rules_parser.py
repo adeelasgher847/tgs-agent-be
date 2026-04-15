@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+import ssl
 
 from app.schemas.resume import (
     EducationItem,
@@ -67,6 +68,8 @@ GLOBAL_LOCATION_HINTS = {
     "france",
     "netherlands",
 }
+
+_NOMINATIM_TLS_UNAVAILABLE = False
 
 
 def parse_rules(raw_text: str, parser_version: str) -> ParsedResume:
@@ -223,6 +226,9 @@ def _is_globally_valid_location(value: str) -> bool:
     query = (value or "").strip()
     if not query or len(query) < 3:
         return False
+    global _NOMINATIM_TLS_UNAVAILABLE
+    if _NOMINATIM_TLS_UNAVAILABLE:
+        return False
     try:
         from geopy.geocoders import Nominatim
     except Exception:
@@ -236,7 +242,10 @@ def _is_globally_valid_location(value: str) -> bool:
     try:
         geolocator = Nominatim(user_agent="tgs_resume_location_validator")
         result = geolocator.geocode(query, exactly_one=True, addressdetails=True, timeout=2)
-    except Exception:
+    except Exception as exc:
+        if _is_tls_cert_error(exc):
+            _NOMINATIM_TLS_UNAVAILABLE = True
+            return False
         result = None
     if not result:
         # Try geocoding meaningful tokens/subphrases as fallback for lines like
@@ -252,7 +261,10 @@ def _is_globally_valid_location(value: str) -> bool:
                 return True
             try:
                 res = geolocator.geocode(t, exactly_one=True, addressdetails=True, timeout=2)
-            except Exception:
+            except Exception as exc:
+                if _is_tls_cert_error(exc):
+                    _NOMINATIM_TLS_UNAVAILABLE = True
+                    return False
                 continue
             if not res:
                 continue
@@ -293,6 +305,18 @@ def _is_globally_valid_location(value: str) -> bool:
     }
     # Accept if geocoder classified this as a geographic place-like entity.
     return place_type in allowed_types or bool(raw.get("address"))
+
+
+def _is_tls_cert_error(exc: Exception) -> bool:
+    """Detect certificate-chain failures from requests/geopy wrappers."""
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    text = str(exc).lower()
+    return (
+        "certificate verify failed" in text
+        or "sslcertverificationerror" in text
+        or "unable to get local issuer certificate" in text
+    )
 
 
 def _guess_name(text: str) -> str | None:

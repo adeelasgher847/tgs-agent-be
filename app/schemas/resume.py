@@ -104,6 +104,7 @@ class ResumeListItem(BaseModel):
     title: str | None = None
     summary: str | None = None
     phone: str | None = None
+    email: str | None = None
     skills: list[str] = Field(default_factory=list)
     experience: list[str] = Field(default_factory=list)
     languages: list[str] = Field(default_factory=list)

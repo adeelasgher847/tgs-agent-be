@@ -174,6 +174,13 @@ def _extract_candidate_phone(resume: Resume) -> str | None:
     return phone or None
 
 
+def _extract_candidate_email(resume: Resume) -> str | None:
+    parsed = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
+    profile = parsed.get("profile") if isinstance(parsed.get("profile"), dict) else {}
+    email = str(profile.get("email") or "").strip()
+    return email or None
+
+
 def _extract_candidate_enrichment(
     resume: Resume,
 ) -> tuple[str | None, str | None, list[str], list[str], list[str], list[str], list[str]]:
@@ -551,6 +558,7 @@ def list_resumes_by_job_description(
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
         phone = _extract_candidate_phone(r)
+        email = _extract_candidate_email(r)
         title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
         os_ = r.overall_match_score
         mp = r.match_percent
@@ -573,6 +581,7 @@ def list_resumes_by_job_description(
                 title=title,
                 summary=summary,
                 phone=phone,
+                email=email,
                 skills=skills,
                 experience=experience,
                 languages=languages,
@@ -630,6 +639,7 @@ def list_resumes_after_screening(
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
         phone = _extract_candidate_phone(r)
+        email = _extract_candidate_email(r)
         title, summary, skills, experience, languages, achievements, projects = _extract_candidate_enrichment(r)
         os_ = r.overall_match_score
         mp = r.match_percent
@@ -648,6 +658,7 @@ def list_resumes_after_screening(
                 title=title,
                 summary=summary,
                 phone=phone,
+                email=email,
                 skills=skills,
                 experience=experience,
                 languages=languages,
