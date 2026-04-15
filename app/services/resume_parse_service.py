@@ -223,7 +223,7 @@ def run_parse_for_resume(
     model_used = None
     provider_used = "rules"
 
-    model_for_call = "gpt-4o"
+    model_for_call = "gpt-4o-mini"
 
     if use_ai and settings.OPENAI_API_KEY:
         try:

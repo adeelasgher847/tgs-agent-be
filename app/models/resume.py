@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, Float, ForeignKey, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -43,6 +43,16 @@ class Resume(Base):
         index=True,
     )
     batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    job_description_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("jobdescription.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    overall_match_score = Column(Float, nullable=True)
+    match_percent = Column(Integer, nullable=True)
+    fit_label = Column(String(32), nullable=True)
+    is_relevant = Column(Boolean, nullable=True)
     raw_text = Column(Text, nullable=True)
     parsed_json = Column(JSONB, nullable=True)
     warnings = Column(JSONB, nullable=True)

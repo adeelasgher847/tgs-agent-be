@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
+import ssl
 
 from app.schemas.resume import (
     EducationItem,
@@ -23,10 +25,51 @@ URL_RE = re.compile(
     re.IGNORECASE,
 )
 YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+DATE_RANGE_RE = re.compile(
+    r"(?i)\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*[–\-]\s*(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}|Present|Current)\b"
+)
+YEAR_RANGE_RE = re.compile(r"(?i)\b(19|20)\d{2}\s*[–\-]\s*(Present|Current|(19|20)\d{2})\b")
+NUMERIC_MONTH_RANGE_RE = re.compile(
+    r"(?i)\b(0?[1-9]|1[0-2])\s*/\s*(19|20)\d{2}\s*[–\-]\s*(Present|Current|(0?[1-9]|1[0-2])\s*/\s*(19|20)\d{2})\b"
+)
 SECTION_HEADERS = re.compile(
     r"(?mi)^\s*(experience|work history|employment|education|skills|"
     r"projects|certifications|summary|objective)\s*:?\s*$",
 )
+
+GLOBAL_LOCATION_HINTS = {
+    "lahore",
+    "karachi",
+    "islamabad",
+    "rawalpindi",
+    "faisalabad",
+    "multan",
+    "peshawar",
+    "quetta",
+    "pakistan",
+    "india",
+    "bangladesh",
+    "nepal",
+    "sri lanka",
+    "uae",
+    "dubai",
+    "abu dhabi",
+    "saudi arabia",
+    "riyadh",
+    "doha",
+    "qatar",
+    "usa",
+    "united states",
+    "uk",
+    "united kingdom",
+    "canada",
+    "australia",
+    "germany",
+    "france",
+    "netherlands",
+}
+
+_NOMINATIM_TLS_UNAVAILABLE = False
 
 
 def parse_rules(raw_text: str, parser_version: str) -> ParsedResume:
@@ -97,17 +140,203 @@ def _unique_links(urls: list[str]) -> list[str]:
 
 
 def _guess_location_line(text: str) -> str | None:
+    location_tokens = {
+        "lahore",
+        "karachi",
+        "islamabad",
+        "pakistan",
+        "india",
+        "uae",
+        "dubai",
+        "saudi",
+        "riyadh",
+        "usa",
+        "uk",
+        "canada",
+        "germany",
+        "france",
+        "remote",
+        "onsite",
+        "hybrid",
+        "city",
+        "country",
+    }
+    skill_like_tokens = {
+        "react",
+        "node",
+        "nodejs",
+        "express",
+        "fastapi",
+        "django",
+        "flask",
+        "python",
+        "javascript",
+        "typescript",
+        "sql",
+        "mongodb",
+        "postgres",
+        "aws",
+        "docker",
+        "kubernetes",
+    }
+
+    candidates: list[str] = []
     for line in text.splitlines()[:25]:
         line_stripped = line.strip()
         if not line_stripped or "@" in line_stripped:
             continue
         if EMAIL_RE.search(line_stripped):
             continue
-        if len(line_stripped) < 80 and "," in line_stripped and any(
-            ch.isalpha() for ch in line_stripped
-        ):
-            return line_stripped
+        if len(line_stripped) > 80:
+            continue
+        lower = line_stripped.lower()
+        if lower.startswith(("skills", "tech stack", "technologies", "experience", "education")):
+            continue
+        words = [w for w in re.split(r"[\s,/-]+", lower) if w]
+        if not words:
+            continue
+        # Reject likely skill lists like "React, Express, Node.js, MySQL"
+        skill_hits = sum(1 for w in words if w in skill_like_tokens)
+        if skill_hits >= 2:
+            continue
+        # Prefer lines with explicit location hints
+        if any(w in location_tokens for w in words):
+            candidates.append(line_stripped)
+            continue
+        # Fallback for common "City, Country" style with low technical signal
+        if "," in line_stripped and any(ch.isalpha() for ch in line_stripped) and skill_hits == 0:
+            candidates.append(line_stripped)
+    for candidate in candidates:
+        if _is_globally_valid_location(candidate):
+            return candidate
     return None
+
+
+def extract_location_from_text(text: str) -> str | None:
+    """Public helper for lightweight location extraction from resume text."""
+    return _guess_location_line(text or "")
+
+
+@lru_cache(maxsize=256)
+def _is_globally_valid_location(value: str) -> bool:
+    """
+    Validate that a candidate location resolves as a real geographic place globally.
+    Uses geopy/Nominatim with small timeout and cache to avoid repeated lookups.
+    """
+    query = (value or "").strip()
+    if not query or len(query) < 3:
+        return False
+    # Avoid external geocoding for clearly non-location phrases/noisy resume bullets.
+    words = [w for w in re.split(r"\s+", query) if w]
+    if len(words) > 6:
+        return False
+    global _NOMINATIM_TLS_UNAVAILABLE
+    if _NOMINATIM_TLS_UNAVAILABLE:
+        return False
+    try:
+        from geopy.geocoders import Nominatim
+    except Exception:
+        # If geopy is unavailable for any reason, fail closed.
+        return False
+
+    lower_query = query.lower()
+    if any(hint in lower_query for hint in GLOBAL_LOCATION_HINTS):
+        return True
+
+    try:
+        geolocator = Nominatim(
+            user_agent="tgs_resume_location_validator",
+            ssl_context=_build_geopy_ssl_context(),
+        )
+        result = geolocator.geocode(query, exactly_one=True, addressdetails=True, timeout=2)
+    except Exception as exc:
+        if _is_tls_cert_error(exc):
+            _NOMINATIM_TLS_UNAVAILABLE = True
+            return False
+        result = None
+    if not result:
+        # Try geocoding meaningful tokens/subphrases as fallback for lines like
+        # "KBWH PU Old Campus Lahore" where full text may not resolve directly.
+        parts = [p.strip() for p in re.split(r"[,/|\-]+", query) if p.strip()]
+        words = [w for w in re.split(r"\s+", query) if len(w) >= 4]
+        token_candidates = parts + words[-3:]
+        for token in token_candidates:
+            t = token.strip()
+            if not t:
+                continue
+            if any(hint in t.lower() for hint in GLOBAL_LOCATION_HINTS):
+                return True
+            try:
+                res = geolocator.geocode(t, exactly_one=True, addressdetails=True, timeout=2)
+            except Exception as exc:
+                if _is_tls_cert_error(exc):
+                    _NOMINATIM_TLS_UNAVAILABLE = True
+                    return False
+                continue
+            if not res:
+                continue
+            raw = getattr(res, "raw", {}) or {}
+            place_type = str(raw.get("type") or "").lower()
+            if place_type in {
+                "city",
+                "town",
+                "village",
+                "hamlet",
+                "suburb",
+                "county",
+                "state",
+                "province",
+                "region",
+                "administrative",
+                "country",
+                "municipality",
+            } or bool(raw.get("address")):
+                return True
+        return False
+
+    raw = getattr(result, "raw", {}) or {}
+    place_type = str(raw.get("type") or "").lower()
+    allowed_types = {
+        "city",
+        "town",
+        "village",
+        "hamlet",
+        "suburb",
+        "county",
+        "state",
+        "province",
+        "region",
+        "administrative",
+        "country",
+        "municipality",
+    }
+    # Accept if geocoder classified this as a geographic place-like entity.
+    return place_type in allowed_types or bool(raw.get("address"))
+
+
+def _is_tls_cert_error(exc: Exception) -> bool:
+    """Detect certificate-chain failures from requests/geopy wrappers."""
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    text = str(exc).lower()
+    return (
+        "certificate verify failed" in text
+        or "sslcertverificationerror" in text
+        or "unable to get local issuer certificate" in text
+    )
+
+
+def _build_geopy_ssl_context() -> ssl.SSLContext:
+    """
+    Build an SSL context for geopy requests using certifi when available.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        # Fall back to system trust store if certifi isn't available.
+        return ssl.create_default_context()
 
 
 def _guess_name(text: str) -> str | None:
@@ -198,19 +427,35 @@ def _experience_blocks(text: str) -> list[ExperienceItem]:
     lines = text.splitlines()
     items: list[ExperienceItem] = []
     buf: list[str] = []
+    in_experience_section = False
     for ln in lines:
+        stripped = ln.strip()
+        lower = stripped.lower()
+        if SECTION_HEADERS.match(stripped):
+            if "experience" in lower or "employment" in lower or "work history" in lower:
+                in_experience_section = True
+                continue
+            if in_experience_section and ("education" in lower or "projects" in lower or "skills" in lower):
+                break
         if SECTION_HEADERS.match(ln.strip()) and "education" in ln.lower():
             break
-        if re.match(
-            r"^\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}",
-            ln,
-            re.I,
-        ) or re.search(r"\d{4}\s*[–\-]\s*(Present|\d{4})", ln, re.I):
+        has_date_marker = (
+            re.match(
+                r"^\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}",
+                ln,
+                re.I,
+            )
+            or YEAR_RANGE_RE.search(ln)
+            or DATE_RANGE_RE.search(ln)
+            or NUMERIC_MONTH_RANGE_RE.search(ln)
+        )
+
+        if has_date_marker or (in_experience_section and _looks_like_role_header(stripped)):
             if buf:
                 items.append(_lines_to_experience(buf))
                 buf = []
             buf.append(ln)
-        elif buf:
+        elif buf and (in_experience_section or stripped):
             buf.append(ln)
     if buf:
         items.append(_lines_to_experience(buf))
@@ -220,16 +465,20 @@ def _experience_blocks(text: str) -> list[ExperienceItem]:
 def _lines_to_experience(lines: list[str]) -> ExperienceItem:
     header = lines[0]
     duration = None
-    md = re.search(r"(\d{4}\s*[–\-]\s*(?:Present|\d{4})|20\d{2}|19\d{2})", header, re.I)
+    line_blob = " ".join(lines[:3])
+    md = (
+        DATE_RANGE_RE.search(line_blob)
+        or YEAR_RANGE_RE.search(line_blob)
+        or NUMERIC_MONTH_RANGE_RE.search(line_blob)
+    )
+    if not md:
+        md = re.search(r"(20\d{2}|19\d{2})", header, re.I)
     if md:
-        duration = md.group(1)
-    rest = " ".join(lines[1:6])
-    role_company = re.sub(
-        r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\s*[–\-]\s*(?:Present|\d{4})\s*",
-        "",
-        header,
-        flags=re.I,
-    ).strip()
+        duration = md.group(0)
+    role_company = DATE_RANGE_RE.sub("", header).strip()
+    role_company = YEAR_RANGE_RE.sub("", role_company).strip()
+    role_company = NUMERIC_MONTH_RANGE_RE.sub("", role_company).strip()
+    role_company = re.sub(r"(?i)\b(achievements/tasks|achievements|tasks)\b", "", role_company).strip(" -|")
     role = role_company
     company = None
     if "|" in role_company:
@@ -245,6 +494,31 @@ def _lines_to_experience(lines: list[str]) -> ExperienceItem:
         duration=duration,
         responsibilities=responsibilities,
     )
+
+
+def _looks_like_role_header(line: str) -> bool:
+    if not line:
+        return False
+    lower = line.lower().strip()
+    if len(lower) < 5 or len(lower) > 120:
+        return False
+    if SECTION_HEADERS.match(lower):
+        return False
+    if EMAIL_RE.search(lower) or URL_RE.search(lower):
+        return False
+    role_keywords = (
+        "engineer",
+        "developer",
+        "manager",
+        "lead",
+        "intern",
+        "consultant",
+        "architect",
+        "analyst",
+        "specialist",
+        "officer",
+    )
+    return any(k in lower for k in role_keywords)
 
 
 def _education_blocks(text: str) -> list[EducationItem]:

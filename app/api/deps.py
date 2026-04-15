@@ -3,6 +3,7 @@ from typing import Generator, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import InterfaceError
 from app.models.user import User, user_tenant_association
 from app.models.tenant import Tenant
 from app.core.security import verify_token,create_user_token, create_refresh_token_value, refresh_token_expires_at
@@ -19,7 +20,11 @@ def get_db() -> Generator:
     try:
         yield db
     finally:
-        db.close()
+        try:
+            db.close()
+        except InterfaceError:
+            # During app shutdown/reload, connection can already be gone.
+            pass
 
 
 def get_current_user_jwt(

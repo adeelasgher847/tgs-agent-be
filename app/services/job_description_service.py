@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Any, Optional
 import uuid
 import re
@@ -13,6 +14,7 @@ from pypdf import PdfReader
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.job_description import JobDescription
+from app.models.resume import Resume
 from app.models.user import user_tenant_association
 from app.schemas.job_description import JobDescriptionCreateManual, JobDescriptionUpdate
 from app.services.openai_service import openai_service
@@ -28,6 +30,24 @@ class JobDescriptionService:
         {"name": "keyword_context", "weight": 0.10, "description": "Domain keyword and responsibility context relevance."},
     ]
 
+    @staticmethod
+    def _threshold_percent_to_fraction(value: Any) -> float:
+        try:
+            v = float(value if value is not None else 50.0)
+        except (TypeError, ValueError):
+            v = 50.0
+        v = max(1.0, min(100.0, v))
+        return round(v / 100.0, 4)
+
+    @staticmethod
+    def _threshold_fraction_to_percent(value: Any) -> float:
+        try:
+            v = float(value if value is not None else 0.5)
+        except (TypeError, ValueError):
+            v = 0.5
+        v = max(0.0, min(1.0, v))
+        return round(v * 100.0, 2)
+
     def create_manual(
         self,
         db: Session,
@@ -36,6 +56,9 @@ class JobDescriptionService:
         user_id: uuid.UUID,
     ) -> JobDescription:
         data = payload.model_dump()
+        data["pass_match_threshold"] = self._threshold_percent_to_fraction(
+            data.get("pass_match_threshold", 50.0)
+        )
 
         # Persist manual form as raw text fallback when explicit raw text is not sent.
         if not data.get("raw_text"):
@@ -80,6 +103,7 @@ class JobDescriptionService:
             job_title=inferred_job_title,
             required_skills=[],
             years_experience_min=None,
+            years_experience_max=None,
             education_requirements=None,
             location=None,
             salary_min=None,
@@ -229,6 +253,8 @@ class JobDescriptionService:
             ps = "PENDING"
         jd.processing_status = ps
 
+        jd.pass_match_threshold = self._threshold_fraction_to_percent(jd.pass_match_threshold)
+
     def update(
         self,
         db: Session,
@@ -239,6 +265,13 @@ class JobDescriptionService:
     ) -> JobDescription:
         jd = self.get_by_id(db, job_description_id, tenant_id)
         updates = payload.model_dump(exclude_unset=True)
+        if "pass_match_threshold" in updates:
+            updates["pass_match_threshold"] = self._threshold_percent_to_fraction(
+                updates.get("pass_match_threshold")
+            )
+        for key, value in list(updates.items()):
+            if isinstance(value, Enum):
+                updates[key] = value.value
 
         for key, value in updates.items():
             setattr(jd, key, value)
@@ -249,6 +282,24 @@ class JobDescriptionService:
         db.commit()
         db.refresh(jd)
         return jd
+
+    def delete(
+        self,
+        db: Session,
+        job_description_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> None:
+        jd = self.get_by_id(db, job_description_id, tenant_id)
+        # Detach dependent resumes before deleting JD to satisfy FK constraints.
+        (
+            db.query(Resume)
+            .filter(
+                Resume.job_description_id == job_description_id,
+            )
+            .update({Resume.job_description_id: None}, synchronize_session=False)
+        )
+        db.delete(jd)
+        db.commit()
 
     def process(
         self,
@@ -274,6 +325,8 @@ class JobDescriptionService:
                 jd.job_title = (llm_data.get("job_title") or "").strip()[:255]
             if jd.years_experience_min is None and llm_data.get("years_experience_min") is not None:
                 jd.years_experience_min = llm_data.get("years_experience_min")
+            if jd.years_experience_max is None and llm_data.get("years_experience_max") is not None:
+                jd.years_experience_max = llm_data.get("years_experience_max")
             if not jd.education_requirements and llm_data.get("education_requirements"):
                 jd.education_requirements = llm_data.get("education_requirements")
             if not jd.location and llm_data.get("location"):
@@ -338,6 +391,7 @@ class JobDescriptionService:
             matching_criteria = {
                 "required_skills": skills,
                 "minimum_years_experience": jd.years_experience_min,
+                "maximum_years_experience": jd.years_experience_max,
                 "education_requirements": jd.education_requirements,
                 "location": jd.location,
                 "employment_type": jd.employment_type,
@@ -427,6 +481,7 @@ Analyze the following job description and return STRICT JSON with this exact str
   ],
   "keywords": [string],
   "years_experience_min": number|null,
+  "years_experience_max": number|null,
   "education_requirements": string|null,
   "location": string|null,
   "employment_type": string|null,
@@ -516,7 +571,12 @@ JOB DESCRIPTION:
         parts = [
             f"Job Title: {data.get('job_title') or ''}",
             f"Required Skills: {', '.join(data.get('required_skills') or [])}",
-            f"Experience: {data.get('years_experience_min') or ''} years minimum",
+            (
+                "Experience: "
+                f"{data.get('years_experience_min') or ''}"
+                f"{('-' + str(data.get('years_experience_max'))) if data.get('years_experience_max') is not None else ''} "
+                "years"
+            ),
             f"Education: {data.get('education_requirements') or ''}",
             f"Location: {data.get('location') or ''}",
             (

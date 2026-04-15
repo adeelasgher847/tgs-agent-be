@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Numeric
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Numeric, Float
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 import uuid
@@ -14,6 +14,7 @@ class JobDescription(Base):
     job_title = Column(String(255), nullable=False)
     required_skills = Column(JSONB, nullable=True)  # list[str]
     years_experience_min = Column(Integer, nullable=True)
+    years_experience_max = Column(Integer, nullable=True)
     education_requirements = Column(Text, nullable=True)
     location = Column(String(255), nullable=True)
     salary_min = Column(Numeric(12, 2), nullable=True)
@@ -22,6 +23,7 @@ class JobDescription(Base):
     employment_type = Column(String(50), nullable=True)
     key_responsibilities = Column(JSONB, nullable=True)  # list[str] or free-text wrapped as list
     required_certifications = Column(JSONB, nullable=True)  # list[str]
+    pass_match_threshold = Column(Float, nullable=False, default=0.5, server_default="0.5")
 
     # System/AI fields
     raw_text = Column(Text, nullable=True)

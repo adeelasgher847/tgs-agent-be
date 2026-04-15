@@ -64,8 +64,6 @@ class BackgroundAudioManager:
             # Continue without background audio - call won't crash
             logger.warning(f"[BG] Failed to load background audio: {e}")
 
-    # -------- Background loop --------------------------------------------
-
     async def _stream_loop(self) -> None:
         """
         Continuously stream background audio in a loop.

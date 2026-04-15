@@ -2,6 +2,7 @@
 Resolve IANA timezone from city name (and optional country) using geopy + timezonefinder.
 Used when user provides only city for scheduled-call timezone.
 """
+import ssl
 from typing import Optional
 
 from app.core.logger import logger
@@ -24,7 +25,10 @@ def resolve_timezone_from_city(city: str, country: Optional[str] = None) -> Opti
         if country and str(country).strip():
             location_str = f"{location_str}, {country.strip()}"
 
-        geolocator = Nominatim(user_agent="tgs-agent-scheduler")
+        geolocator = Nominatim(
+            user_agent="tgs-agent-scheduler",
+            ssl_context=_build_geopy_ssl_context(),
+        )
         tf = TimezoneFinder()
 
         coords = geolocator.geocode(location_str)
@@ -39,3 +43,16 @@ def resolve_timezone_from_city(city: str, country: Optional[str] = None) -> Opti
     except Exception as e:
         logger.warning(f"Timezone resolver failed for '{city}' / '{country}': {e}")
         return None
+
+
+def _build_geopy_ssl_context() -> ssl.SSLContext:
+    """
+    Build an SSL context for geopy requests using certifi when available.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        # Fall back to system trust store if certifi isn't available.
+        return ssl.create_default_context()
