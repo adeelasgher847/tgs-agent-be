@@ -531,13 +531,6 @@ def list_resumes_by_job_description(
     if not user.current_tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
 
-    job = db.query(JobDescription).filter(
-        JobDescription.id == job_description_id,
-        JobDescription.tenant_id == user.current_tenant_id,
-    ).first()
-    if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
-
     rows = (
         db.query(Resume)
         .filter(
@@ -548,8 +541,18 @@ def list_resumes_by_job_description(
         .limit(min(limit, 200))
         .all()
     )
+    job = db.query(JobDescription).filter(
+        JobDescription.id == job_description_id,
+        JobDescription.tenant_id == user.current_tenant_id,
+    ).first()
+
+    # Keep list endpoint stable for UI even if JD row is missing/stale.
+    # We still enforce tenant-scoped resume filtering above.
+    if job is None and not rows:
+        return create_success_response([], "No resumes found for this job description")
+
     items: list[ResumeListItem] = []
-    threshold = float(job.pass_match_threshold if job.pass_match_threshold is not None else 0.5)
+    threshold = float(job.pass_match_threshold if job and job.pass_match_threshold is not None else 0.5)
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
         phone = _extract_candidate_phone(r)
@@ -611,13 +614,6 @@ def list_resumes_after_screening(
     if not user.current_tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
 
-    job = db.query(JobDescription).filter(
-        JobDescription.id == job_description_id,
-        JobDescription.tenant_id == user.current_tenant_id,
-    ).first()
-    if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
-
     rows = (
         db.query(Resume)
         .filter(
@@ -628,8 +624,15 @@ def list_resumes_after_screening(
         .limit(min(limit, 200))
         .all()
     )
+    job = db.query(JobDescription).filter(
+        JobDescription.id == job_description_id,
+        JobDescription.tenant_id == user.current_tenant_id,
+    ).first()
 
-    threshold = float(job.pass_match_threshold if job.pass_match_threshold is not None else 0.5)
+    if job is None and not rows:
+        return create_success_response([], "No screened resumes found for this job description")
+
+    threshold = float(job.pass_match_threshold if job and job.pass_match_threshold is not None else 0.5)
     items: list[ResumeListItem] = []
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
