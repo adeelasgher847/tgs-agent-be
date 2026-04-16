@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 
 class ResumeInterviewScheduleRequest(BaseModel):
     resume_id: UUID
-    crm_config_id: UUID
+    crm_config_id: UUID | None = Field(
+        default=None,
+        description="Optional CRM config ID. If omitted, backend auto-selects user's Trello-linked CRM (fallback: first linked CRM).",
+    )
     agent_id: UUID
     phone_number: str = Field(description="Candidate phone number in E.164 format")
     call_time_utc: str = Field(description="Scheduled UTC datetime string")
@@ -65,15 +68,6 @@ class ResumeInterviewItem(BaseModel):
     metadata_json: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime | None = None
-
-
-class ResumeInterviewEventItem(BaseModel):
-    id: UUID
-    resume_interview_id: UUID
-    event_type: str
-    event_payload: dict[str, Any] | None = None
-    created_by: UUID
-    created_at: datetime
 
 
 class ResumeInterviewSessionLinkItem(BaseModel):

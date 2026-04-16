@@ -43,18 +43,3 @@ class ResumeInterview(Base):
     updated_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-
-class ResumeInterviewEvent(Base):
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id"), nullable=False, index=True)
-    resume_interview_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("resumeinterview.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    event_type = Column(String(80), nullable=False, index=True)
-    event_payload = Column(JSONB, nullable=True)
-    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

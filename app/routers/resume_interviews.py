@@ -10,14 +10,15 @@ from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
 from app.models.job_description import JobDescription
 from app.models.call_session import CallSession
 from app.models.resume import Resume
-from app.models.resume_interview import ResumeInterview, ResumeInterviewEvent
+from app.models.resume_interview import ResumeInterview
+from app.models.scheduled_call import ScheduledCall
+from app.models.tenant_crm_config import CRMConfig
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.resume_interview import (
     ResumeInterviewBulkScheduleRequest,
     ResumeInterviewBulkScheduleResponse,
     ResumeInterviewBulkScheduleResultItem,
-    ResumeInterviewEventItem,
     ResumeInterviewItem,
     ResumeInterviewSessionLinkItem,
     ResumeInterviewScheduleRequest,
@@ -65,26 +66,6 @@ def _serialize_interview(row: ResumeInterview) -> ResumeInterviewItem:
     )
 
 
-def _append_event(
-    db: Session,
-    *,
-    tenant_id: UUID,
-    interview_id: UUID,
-    event_type: str,
-    created_by: UUID,
-    payload: dict | None = None,
-) -> None:
-    db.add(
-        ResumeInterviewEvent(
-            tenant_id=tenant_id,
-            resume_interview_id=interview_id,
-            event_type=event_type,
-            event_payload=payload or {},
-            created_by=created_by,
-        )
-    )
-
-
 def _to_session_link_item(
     *,
     resume: Resume,
@@ -119,6 +100,52 @@ def _parse_utc_datetime(value: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _resolve_crm_config_id(db: Session, user: User, explicit: UUID | None) -> UUID:
+    if explicit:
+        return explicit
+
+    # Prefer Trello as requested by product flow.
+    trello_link = (
+        db.query(ScheduledCall)
+        .filter(
+            ScheduledCall.user_id == user.id,
+            ScheduledCall.tenant_crm_config_id.isnot(None),
+            ScheduledCall.crm_type == "trello",
+        )
+        .order_by(ScheduledCall.created_at.desc())
+        .first()
+    )
+    if trello_link and trello_link.tenant_crm_config_id:
+        return trello_link.tenant_crm_config_id
+
+    # Fallback: any linked CRM config for this user.
+    any_link = (
+        db.query(ScheduledCall)
+        .filter(
+            ScheduledCall.user_id == user.id,
+            ScheduledCall.tenant_crm_config_id.isnot(None),
+        )
+        .order_by(ScheduledCall.created_at.desc())
+        .first()
+    )
+    if any_link and any_link.tenant_crm_config_id:
+        return any_link.tenant_crm_config_id
+
+    # Final fallback: global Trello CRM config from DB.
+    global_trello = (
+        db.query(CRMConfig)
+        .filter(CRMConfig.crm_type == "trello")
+        .first()
+    )
+    if global_trello:
+        return global_trello.id
+
+    raise HTTPException(
+        status.HTTP_400_BAD_REQUEST,
+        "crm_config_id is missing and no linked/global CRM configuration was found",
+    )
 
 
 async def _create_scheduled_interview(
@@ -183,16 +210,9 @@ async def _create_scheduled_interview(
     )
     db.add(interview)
     db.flush()
-    _append_event(
-        db,
-        tenant_id=user.current_tenant_id,
-        interview_id=interview.id,
-        event_type="SCHEDULE_REQUESTED",
-        created_by=user.id,
-        payload={"payload": body.model_dump(mode="json")},
-    )
 
     try:
+        resolved_crm_config_id = _resolve_crm_config_id(db, user, body.crm_config_id)
         schedule_result = await scheduled_call_service.create_single_scheduled_call(
             db=db,
             tenant_id=user.current_tenant_id,
@@ -200,51 +220,26 @@ async def _create_scheduled_interview(
             phone_number=body.phone_number,
             agent_id=body.agent_id,
             call_time_utc=body.call_time_utc,
-            crm_config_id=body.crm_config_id,
+            crm_config_id=resolved_crm_config_id,
             phone_number_id=str(body.phone_number_id) if body.phone_number_id else None,
         )
-        # Business requirement: once added from resume list, mark as in-progress.
         interview.status = "IN_PROGRESS"
         interview.crm_item_id = schedule_result.get("item_id")
         interview.crm_batch_id = schedule_result.get("batch_id")
         interview.crm_type = schedule_result.get("crm_type")
         interview.last_error = None
         interview.updated_by = user.id
-        _append_event(
-            db,
-            tenant_id=user.current_tenant_id,
-            interview_id=interview.id,
-            event_type="IN_PROGRESS",
-            created_by=user.id,
-            payload=schedule_result,
-        )
         db.commit()
     except HTTPException as exc:
         interview.status = "SCHEDULE_FAILED"
         interview.last_error = str(exc.detail)
         interview.updated_by = user.id
-        _append_event(
-            db,
-            tenant_id=user.current_tenant_id,
-            interview_id=interview.id,
-            event_type="SCHEDULE_FAILED",
-            created_by=user.id,
-            payload={"detail": str(exc.detail)},
-        )
         db.commit()
         raise
     except Exception as exc:
         interview.status = "SCHEDULE_FAILED"
         interview.last_error = str(exc)
         interview.updated_by = user.id
-        _append_event(
-            db,
-            tenant_id=user.current_tenant_id,
-            interview_id=interview.id,
-            event_type="SCHEDULE_FAILED",
-            created_by=user.id,
-            payload={"detail": str(exc)},
-        )
         db.commit()
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Failed to schedule interview")
 
@@ -407,68 +402,12 @@ def update_resume_interview_status(
         interview.metadata_json = {**existing, **body.metadata_patch}
     interview.updated_by = user.id
 
-    _append_event(
-        db,
-        tenant_id=user.current_tenant_id,
-        interview_id=interview.id,
-        event_type=f"STATUS_{requested}",
-        created_by=user.id,
-        payload=body.model_dump(mode="json"),
-    )
     db.commit()
     db.refresh(interview)
     return create_success_response(
         _serialize_interview(interview),
         "Resume interview status updated successfully",
     )
-
-
-@router.get(
-    "/{interview_id}/events",
-    response_model=SuccessResponse[list[ResumeInterviewEventItem]],
-)
-def list_resume_interview_events(
-    interview_id: UUID,
-    limit: int = Query(100, ge=1, le=500),
-    user: User = Depends(require_member_or_admin),
-    db: Session = Depends(get_db),
-):
-    if not user.current_tenant_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
-
-    interview = (
-        db.query(ResumeInterview)
-        .filter(
-            ResumeInterview.id == interview_id,
-            ResumeInterview.tenant_id == user.current_tenant_id,
-        )
-        .first()
-    )
-    if interview is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume interview not found")
-
-    rows = (
-        db.query(ResumeInterviewEvent)
-        .filter(
-            ResumeInterviewEvent.tenant_id == user.current_tenant_id,
-            ResumeInterviewEvent.resume_interview_id == interview_id,
-        )
-        .order_by(ResumeInterviewEvent.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-    items = [
-        ResumeInterviewEventItem(
-            id=r.id,
-            resume_interview_id=r.resume_interview_id,
-            event_type=r.event_type,
-            event_payload=r.event_payload,
-            created_by=r.created_by,
-            created_at=r.created_at,
-        )
-        for r in rows
-    ]
-    return create_success_response(items, "Resume interview events retrieved successfully")
 
 
 @router.get(
