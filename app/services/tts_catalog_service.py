@@ -12,25 +12,42 @@ from app.services.tts_adapter import get_tts_adapter_for_provider
 
 class TTSCatalogService:
     def ensure_default_provider(self, db: Session) -> TTSProvider:
-        provider = (
-            db.query(TTSProvider)
-            .filter(TTSProvider.slug == "elevenlabs")
-            .first()
-        )
-        if provider:
-            return provider
+        providers_to_seed = [
+            {
+                "slug": "elevenlabs",
+                "display_name": "ElevenLabs",
+                "is_active": True,
+                "supports_streaming": True,
+                "supports_ssml": True,
+            },
+            {
+                "slug": "google",
+                "display_name": "Google Cloud TTS",
+                "is_active": True,
+                "supports_streaming": True,
+                "supports_ssml": True,
+            },
+        ]
 
-        provider = TTSProvider(
-            slug="elevenlabs",
-            display_name="ElevenLabs",
-            is_active=True,
-            supports_streaming=False,
-            supports_ssml=True,
-        )
-        db.add(provider)
-        db.commit()
-        db.refresh(provider)
-        return provider
+        selected = None
+        changed = False
+        for spec in providers_to_seed:
+            provider = db.query(TTSProvider).filter(TTSProvider.slug == spec["slug"]).first()
+            if provider is None:
+                provider = TTSProvider(**spec)
+                db.add(provider)
+                changed = True
+            if spec["slug"] == "elevenlabs":
+                selected = provider
+
+        if changed:
+            db.commit()
+            if selected is not None:
+                db.refresh(selected)
+
+        if selected is None:
+            selected = db.query(TTSProvider).filter(TTSProvider.slug == "elevenlabs").first()
+        return selected
 
     def list_providers(self, db: Session, active_only: bool = True) -> list[TTSProvider]:
         self.ensure_default_provider(db)

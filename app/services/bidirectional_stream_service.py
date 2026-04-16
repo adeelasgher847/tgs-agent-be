@@ -71,6 +71,8 @@ async def generate_mulaw_tts(
             return audio_cache[cache_key]
 
         if provider_slug == "google":
+            tts_voice = getattr(agent, "tts_voice", None) if agent else None
+            google_voice_name = getattr(tts_voice, "external_voice_id", None)
             # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
             # Google TTS auto-detects SSML if text starts with <speak>
             # Let SSML control prosody (use defaults when SSML present, don't override)
@@ -82,7 +84,8 @@ async def generate_mulaw_tts(
                 speaking_rate=1.0 if use_ssml else speaking_rate,  # Use 1.0 (default) for SSML to respect prosody tags
                 pitch=0.0,  # Always 0, let SSML <prosody pitch> handle variations
                 output_format="mulaw",
-                use_chirp3_hd=use_chirp3_hd
+                use_chirp3_hd=use_chirp3_hd,
+                voice_name_override=google_voice_name,
             )
         else:
             tts_voice = getattr(agent, "tts_voice", None) if agent else None

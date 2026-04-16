@@ -2240,6 +2240,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 elif emo == "confident":
                                     speaking_rate = 1.01
 
+                                tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
+                                google_voice_name = getattr(tts_voice, "external_voice_id", None)
                                 audio_iter = google_tts_service.stream_text_to_speech(
                                     text=streaming_text,
                                     language=lang,
@@ -2248,6 +2250,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     output_format="mulaw",
                                     use_chirp3_hd=True,
                                     sample_rate_hz=8000,
+                                    voice_name_override=google_voice_name,
                                 )
 
                             await stream_mulaw_from_audio_iter(audio_iter)
