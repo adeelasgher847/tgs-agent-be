@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Index, text
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Index, text, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -20,6 +20,9 @@ class Agent(Base):
     model_id = Column(UUID(as_uuid=True), ForeignKey("model.id"), nullable=True)
     provider_id = Column(UUID(as_uuid=True), ForeignKey("provider.id"), nullable=True)  # Provider for filtering models
     provider_agent_id = Column(String(255), nullable=True)
+    tts_provider_id = Column(UUID(as_uuid=True), ForeignKey("ttsprovider.id"), nullable=True)
+    tts_voice_id = Column(UUID(as_uuid=True), ForeignKey("ttsvoice.id"), nullable=True)
+    tts_settings_json = Column(JSON, nullable=True)
     
     # Agent-specific model configuration (overrides model defaults)
     agent_temperature = Column(Integer, nullable=True)  # Agent-specific temperature (0-100)
@@ -39,6 +42,8 @@ class Agent(Base):
     appointments = relationship("Appointment", back_populates="agent")
     model = relationship("Model")
     provider = relationship("Provider")  # Provider relationship for filtering models
+    tts_provider = relationship("TTSProvider", back_populates="agents")
+    tts_voice = relationship("TTSVoice", back_populates="agents")
 
     __table_args__ = (
         Index(

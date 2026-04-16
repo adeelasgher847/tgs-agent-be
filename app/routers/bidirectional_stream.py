@@ -135,6 +135,7 @@ from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.services.voice_twilio_utils import get_twilio_credentials_for_call
 from app.services.google_tts_service import google_tts_service
+from app.services.tts_adapter import get_tts_adapter
 from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
@@ -419,7 +420,8 @@ class BidirectionalStreamHandler:
                         voice=voice,
                         use_chirp3_hd=True,
                         speaking_rate=1.0,
-                        use_ssml=False
+                        use_ssml=False,
+                        agent=self.agent,
                     )
                 except Exception:
                     continue
@@ -2032,11 +2034,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     lang = self.agent.language if self.agent and self.agent.language else "en"
                     voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
                     clean = text.strip()
+                    tts_provider_slug = None
+                    if self.agent and getattr(self.agent, "tts_provider", None):
+                        tts_provider_slug = (self.agent.tts_provider.slug or "").lower()
 
                     # Prefer true streaming TTS for longer responses (real-time playback).
                     # Keep cache-friendly path for very short phrases (ack/backchannel).
                     word_count = len(clean.split())
-                    use_streaming_tts = word_count >= 4  # speak sooner; streaming reduces time-to-first-audio
+                    use_streaming_tts = word_count >= 4
                     if use_streaming_tts and not self._tts_cancel.is_set():
                         try:
                             import base64
@@ -2198,32 +2203,52 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                                 self._twilio_buffer_primed = True
 
-                            # Use Google StreamingSynthesize (bidirectional streaming) to reduce time-to-first-audio
-                            # NEVER send SSML to streaming synthesize; strip tags to prevent them being spoken.
+                            # Stream text in near real-time from provider.
+                            # For Google: use native async streaming API.
+                            # For ElevenLabs: use HTTP chunk streaming via adapter.
                             streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
+                            if tts_provider_slug and tts_provider_slug != "google":
+                                tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
+                                external_voice_id = getattr(tts_voice, "external_voice_id", None)
+                                if not external_voice_id:
+                                    raise ValueError("TTS voice is not configured for streaming.")
+                                adapter = get_tts_adapter(tts_provider_slug)
+                                provider_settings = dict(getattr(self.agent, "tts_settings_json", None) or {})
+                                provider_settings.setdefault("output_format", "ulaw_8000")
+                                sync_iter = adapter.stream_synthesize(
+                                    text=streaming_text,
+                                    voice_external_id=external_voice_id,
+                                    settings_json=provider_settings,
+                                )
 
-                            # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
-                            # Keep this subtle to avoid uncanny/unstable cadence.
-                            emo = detect_emotion(streaming_text)
-                            speaking_rate = 1.0
-                            if emo == "happy":
-                                speaking_rate = 1.03
-                            elif emo == "sad":
-                                speaking_rate = 0.97
-                            elif emo == "uncertain":
-                                speaking_rate = 0.98
-                            elif emo == "confident":
-                                speaking_rate = 1.01
+                                async def _async_iter_from_sync(sync_source):
+                                    for chunk in sync_source:
+                                        yield chunk
 
-                            audio_iter = google_tts_service.stream_text_to_speech(
-                                text=streaming_text,
-                                language=lang,
-                                voice_type=voice,
-                                speaking_rate=speaking_rate,
-                                output_format="mulaw",
-                                use_chirp3_hd=True,
-                                sample_rate_hz=8000,
-                            )
+                                audio_iter = _async_iter_from_sync(sync_iter)
+                            else:
+                                # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
+                                # Keep this subtle to avoid uncanny/unstable cadence.
+                                emo = detect_emotion(streaming_text)
+                                speaking_rate = 1.0
+                                if emo == "happy":
+                                    speaking_rate = 1.03
+                                elif emo == "sad":
+                                    speaking_rate = 0.97
+                                elif emo == "uncertain":
+                                    speaking_rate = 0.98
+                                elif emo == "confident":
+                                    speaking_rate = 1.01
+
+                                audio_iter = google_tts_service.stream_text_to_speech(
+                                    text=streaming_text,
+                                    language=lang,
+                                    voice_type=voice,
+                                    speaking_rate=speaking_rate,
+                                    output_format="mulaw",
+                                    use_chirp3_hd=True,
+                                    sample_rate_hz=8000,
+                                )
 
                             await stream_mulaw_from_audio_iter(audio_iter)
                             return  # streaming path complete
@@ -2247,7 +2272,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         use_chirp3_hd=True,
                         speaking_rate=1.0,
                         use_ssml=use_ssml,
-                        add_office_bg=False  # Background mixing handled separately
+                        add_office_bg=False,  # Background mixing handled separately
+                        agent=self.agent,
                     )
                     
                     if self._tts_cancel.is_set():
@@ -2356,11 +2382,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     # Begin generating suffix in parallel (if any)
                     suffix_task = asyncio.create_task(
-                        generate_mulaw_tts(text=suffix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=1.0, add_office_bg=True)
+                        generate_mulaw_tts(
+                            text=suffix,
+                            lang=lang,
+                            voice=voice,
+                            use_chirp3_hd=True,
+                            speaking_rate=1.0,
+                            add_office_bg=True,
+                            agent=self.agent,
+                        )
                     ) if suffix else None
 
                     # Generate prefix audio immediately
-                    prefix_audio = await generate_mulaw_tts(text=prefix, lang=lang, voice=voice, use_chirp3_hd=True, speaking_rate=1.0, add_office_bg=True)
+                    prefix_audio = await generate_mulaw_tts(
+                        text=prefix,
+                        lang=lang,
+                        voice=voice,
+                        use_chirp3_hd=True,
+                        speaking_rate=1.0,
+                        add_office_bg=True,
+                        agent=self.agent,
+                    )
 
                     # Hold back 50ms for crossfade with next chunk (smooth transitions)
                     overlap_bytes = 400  # 50ms at 8kHz
