@@ -238,7 +238,8 @@ async def _create_scheduled_interview(
             user_id=user.id,
             phone_number=body.phone_number,
             agent_id=body.agent_id,
-            call_time_utc=body.call_time_utc,
+            # Use normalized UTC timestamp to keep DB and CRM schedule values identical.
+            call_time_utc=scheduled_at_utc.isoformat(),
             crm_config_id=resolved_crm_config_id,
             phone_number_id=str(body.phone_number_id) if body.phone_number_id else None,
         )
