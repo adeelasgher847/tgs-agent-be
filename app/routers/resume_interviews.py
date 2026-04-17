@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,6 +16,7 @@ from app.models.tenant_crm_config import CRMConfig
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.resume_interview import (
+    ResumeInterviewCalendarItem,
     ResumeInterviewBulkScheduleRequest,
     ResumeInterviewBulkScheduleResponse,
     ResumeInterviewBulkScheduleResultItem,
@@ -83,6 +84,24 @@ def _to_session_link_item(
         twilio_call_sid=interview.twilio_call_sid if interview else None,
         crm_item_id=interview.crm_item_id if interview else None,
         crm_batch_id=interview.crm_batch_id if interview else None,
+    )
+
+
+def _to_calendar_item(
+    *,
+    interview: ResumeInterview,
+    resume: Resume,
+) -> ResumeInterviewCalendarItem:
+    return ResumeInterviewCalendarItem(
+        interview_id=interview.id,
+        resume_id=interview.resume_id,
+        resume_filename=resume.original_filename,
+        scheduled_at=interview.scheduled_at,
+        status=interview.status,
+        agent_id=interview.agent_id,
+        candidate_phone=interview.candidate_phone,
+        job_description_id=interview.job_description_id,
+        call_session_id=interview.call_session_id,
     )
 
 
@@ -352,6 +371,44 @@ def list_resume_interviews(
         [_serialize_interview(r) for r in rows],
         "Resume interview history retrieved successfully",
     )
+
+
+@router.get(
+    "/calendar",
+    response_model=SuccessResponse[list[ResumeInterviewCalendarItem]],
+)
+def list_resume_interviews_for_calendar(
+    start_date: date = Query(..., description="Calendar start date in YYYY-MM-DD"),
+    end_date: date = Query(..., description="Calendar end date in YYYY-MM-DD"),
+    limit: int = Query(500, ge=1, le=5000),
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    if end_date < start_date:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "end_date must be greater than or equal to start_date")
+
+    range_start = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+    range_end = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+
+    rows = (
+        db.query(ResumeInterview, Resume)
+        .join(Resume, Resume.id == ResumeInterview.resume_id)
+        .filter(
+            ResumeInterview.tenant_id == user.current_tenant_id,
+            Resume.tenant_id == user.current_tenant_id,
+            ResumeInterview.scheduled_at >= range_start,
+            ResumeInterview.scheduled_at < range_end,
+        )
+        .order_by(ResumeInterview.scheduled_at.asc())
+        .limit(limit)
+        .all()
+    )
+
+    payload = [_to_calendar_item(interview=interview, resume=resume) for interview, resume in rows]
+    return create_success_response(payload, "Resume interviews for calendar retrieved successfully")
 
 
 @router.patch(

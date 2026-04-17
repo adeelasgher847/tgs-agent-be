@@ -70,6 +70,18 @@ class ResumeInterviewItem(BaseModel):
     updated_at: datetime | None = None
 
 
+class ResumeInterviewCalendarItem(BaseModel):
+    interview_id: UUID
+    resume_id: UUID
+    resume_filename: str
+    scheduled_at: datetime
+    status: str
+    agent_id: UUID
+    candidate_phone: str
+    job_description_id: UUID | None = None
+    call_session_id: UUID | None = None
+
+
 class ResumeInterviewSessionLinkItem(BaseModel):
     resume_id: UUID
     resume_filename: str
