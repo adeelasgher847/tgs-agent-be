@@ -5,6 +5,8 @@ from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
 from app.models.model import Model
 from app.models.knowledge_base_document import KnowledgeBaseDocument
+from app.models.tts_provider import TTSProvider
+from app.models.tts_voice import TTSVoice
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
@@ -12,13 +14,88 @@ from app.services.rag_service import rag_service
 from app.core.config import settings
 from fastapi import HTTPException, status
 import uuid
+import re
 from app.core.logger import logger
 
 class AgentService:
     """
     Agent service with business logic for agent operations
     """
-    
+
+    def _validate_tts_selection(
+        self,
+        db: Session,
+        *,
+        tts_provider_id: Optional[uuid.UUID],
+        tts_voice_id: Optional[uuid.UUID],
+    ) -> Dict[str, Any]:
+        """
+        Validate optional TTS provider/voice selection.
+        Returns normalized ids where provider can be inferred from voice.
+        """
+        normalized = {
+            "tts_provider_id": tts_provider_id,
+            "tts_voice_id": tts_voice_id,
+        }
+
+        if not tts_provider_id and not tts_voice_id:
+            return normalized
+
+        provider = None
+        if tts_provider_id:
+            provider = db.query(TTSProvider).filter(TTSProvider.id == tts_provider_id).first()
+            if not provider or not provider.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid tts_provider_id. Provider not found or inactive.",
+                )
+
+        if tts_voice_id:
+            voice = db.query(TTSVoice).filter(TTSVoice.id == tts_voice_id).first()
+            if not voice or not voice.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid tts_voice_id. Voice not found or inactive.",
+                )
+
+            if provider and voice.provider_id != provider.id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Selected TTS voice does not belong to the selected provider.",
+                )
+
+            normalized["tts_provider_id"] = provider.id if provider else voice.provider_id
+            normalized["tts_voice_id"] = voice.id
+        elif provider:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="tts_voice_id is required when selecting a tts_provider_id.",
+            )
+
+        return normalized
+
+    def _validate_tts_settings_payload(self, tts_settings_json: Optional[Dict[str, Any]]) -> None:
+        if not tts_settings_json:
+            return
+        suspicious_key_pattern = re.compile(r"(api[_-]?key|token|secret|authorization|credential|xi[_-]?api[_-]?key)", re.IGNORECASE)
+
+        def _walk(value: Any) -> bool:
+            if isinstance(value, dict):
+                for raw_key, nested_value in value.items():
+                    if suspicious_key_pattern.search(str(raw_key or "")):
+                        return True
+                    if _walk(nested_value):
+                        return True
+            elif isinstance(value, list):
+                return any(_walk(item) for item in value)
+            return False
+
+        if _walk(tts_settings_json):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="TTS provider credentials must not be passed in request payload.",
+            )
+
     def _auto_ingest_agent_system_prompt(self, db: Session, agent: Agent) -> None:
         """
         Automatically ingest agent system_prompt into RAG (best-effort).
@@ -167,6 +244,15 @@ class AgentService:
         agent_data['created_by'] = user_id
         agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
 
+        normalized_tts = self._validate_tts_selection(
+            db,
+            tts_provider_id=agent_data.get("tts_provider_id"),
+            tts_voice_id=agent_data.get("tts_voice_id"),
+        )
+        agent_data["tts_provider_id"] = normalized_tts.get("tts_provider_id")
+        agent_data["tts_voice_id"] = normalized_tts.get("tts_voice_id")
+        self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
+
         # Enforce one dedicated inbound agent per tenant.
         if agent_data.get("is_inbound_agent"):
             existing_inbound_agent = db.query(Agent).filter(
@@ -309,6 +395,15 @@ class AgentService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Only one dedicated inbound agent is allowed per tenant.",
                 )
+
+        normalized_tts = self._validate_tts_selection(
+            db,
+            tts_provider_id=update_dict.get("tts_provider_id", agent.tts_provider_id),
+            tts_voice_id=update_dict.get("tts_voice_id", agent.tts_voice_id),
+        )
+        update_dict["tts_provider_id"] = normalized_tts.get("tts_provider_id")
+        update_dict["tts_voice_id"] = normalized_tts.get("tts_voice_id")
+        self._validate_tts_settings_payload(update_dict.get("tts_settings_json"))
 
         # If name is being updated, check for duplicates
         if "name" in update_dict and update_dict["name"]:

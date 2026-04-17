@@ -63,6 +63,7 @@ class TtsOnlySession:
             use_chirp3_hd=True,
             speaking_rate=1.0,
             add_office_bg=True,
+            agent=self.agent,
         )
 
         audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
