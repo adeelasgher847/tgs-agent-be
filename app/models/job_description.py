@@ -12,7 +12,7 @@ class JobDescription(Base):
 
     # Recruiter-provided fields
     job_title = Column(String(255), nullable=False)
-    required_skills = Column(JSONB, nullable=True)  # list[str]
+    required_skills = Column(JSONB, nullable=True)  # list[str
     years_experience_min = Column(Integer, nullable=True)
     years_experience_max = Column(Integer, nullable=True)
     education_requirements = Column(Text, nullable=True)
