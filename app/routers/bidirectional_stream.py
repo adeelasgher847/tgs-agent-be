@@ -1978,6 +1978,36 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         f"Is there anything else I can help you with?"
                     )
                     self._last_selected_calendar_slot = appt.slot_start
+
+                if (
+                    settings.WATI_ENABLED
+                    and self.call_session
+                    and (self.call_session.call_type or "").lower() == "inbound"
+                ):
+                    from app.models.user import User
+                    from app.services.calendar_service import calendar_service as _calendar_for_wati
+
+                    def _send_wati_staff_prompt():
+                        user = (
+                            self.db.query(User)
+                            .filter(User.id == self.call_session.user_id)
+                            .first()
+                        )
+                        if not user or not (user.phone or "").strip():
+                            logger.warning(
+                                "WATI staff prompt skipped: no phone on user_id=%s",
+                                self.call_session.user_id,
+                            )
+                            return
+                        _calendar_for_wati.send_staff_whatsapp_prompt_for_appointment(
+                            self.db,
+                            tenant_id=tenant_id,
+                            appt=appt,
+                            staff_phone=user.phone,
+                        )
+
+                    await loop.run_in_executor(None, _send_wati_staff_prompt)
+
                 if email_resolution.pending_email and not verified_customer_email:
                     msg += (
                         " I captured an email candidate, but it will stay pending "

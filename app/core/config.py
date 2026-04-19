@@ -176,6 +176,21 @@ class Settings(BaseSettings):
     RECRUIT_MATCH_LLM_MAX_TOKENS: int = 600
     RECRUIT_MATCH_MAX_PROMPT_CHARS: int = 14000
 
+    # WATI (WhatsApp) — inbound staff confirmation prompts
+    # Base URL e.g. https://live-xxxxx.wati.io (no trailing slash)
+    WATI_ENABLED: bool = True
+    WATI_API_BASE_URL: str = ""
+    WATI_ACCESS_TOKEN: str = ""
+    # Approved Meta template name (business-initiated messages)
+    WATI_TEMPLATE_NAME: str = ""
+    # Optional WATI channel / WhatsApp number id when using multiple numbers
+    WATI_CHANNEL_NUMBER: str = ""
+    # If set, webhook must present this value as query param `secret` or header `X-Wati-Webhook-Secret`
+    WATI_WEBHOOK_SECRET: str = ""
+    # Comma-separated parameter names matching Meta/WATI body placeholders (same order as backend values)
+    # Default 1,2,3,4 matches templates using {{1}}..{{4}} (name, time_line, ack_code, instructions text)
+    WATI_TEMPLATE_PARAM_NAMES: str = "1,2,3,4"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

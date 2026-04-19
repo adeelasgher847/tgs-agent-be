@@ -38,6 +38,11 @@ class Appointment(Base):
     reviewed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
     customer_notified_on_review_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Inbound staff WhatsApp (WATI) prompt + customer SMS after staff confirms
+    staff_whatsapp_ack_token = Column(String(32), nullable=True, unique=True, index=True)
+    staff_whatsapp_prompt_sent_at = Column(DateTime(timezone=True), nullable=True)
+    customer_sms_confirmed_notified_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

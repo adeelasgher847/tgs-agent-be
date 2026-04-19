@@ -32,6 +32,7 @@ from app.routers.live_voice import router as live_voice_router
 from app.routers.general_websocket import router as general_websocket_router
 from app.routers.calendar import router as calendar_router
 from app.routers.inbound_crm import router as inbound_crm_router
+from app.routers.wati_webhook import router as wati_webhook_router
 from app.routers.internal_tts import router as internal_tts_router
 
 api_router = APIRouter()
@@ -83,6 +84,12 @@ api_router.include_router(
 )
 api_router.include_router(knowledge_base_router, prefix="/kb", tags=["Knowledge Base"])
 api_router.include_router(calendar_router, prefix="/calendar", tags=["Calendar"])
+api_router.include_router(
+    wati_webhook_router,
+    prefix="/webhooks",
+    tags=["Webhooks"],
+    include_in_schema=False,
+)
 api_router.include_router(inbound_crm_router, prefix="/inbound-crm", tags=["Inbound CRM — Call logs"])
 api_router.include_router(
     job_description_router,

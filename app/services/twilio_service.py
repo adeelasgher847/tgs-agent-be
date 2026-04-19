@@ -198,6 +198,26 @@ class TwilioService:
             return False
         return True
 
+    def send_sms(
+        self,
+        to_number: str,
+        from_number: str,
+        body: str,
+        *,
+        account_sid: Optional[str] = None,
+        auth_token: Optional[str] = None,
+    ) -> str:
+        """
+        Send an outbound SMS. Returns Twilio Message SID.
+        Uses per-number credentials when both account_sid and auth_token are provided.
+        """
+        if account_sid and auth_token:
+            client = self.get_client_with_credentials(account_sid, auth_token)
+        else:
+            client = self.get_client()
+        msg = client.messages.create(to=to_number, from_=from_number, body=body)
+        return msg.sid
+
     # Phone Number Purchasing Methods
     
     def search_available_numbers(self, country_code: str = "US", area_code: Optional[str] = None, 

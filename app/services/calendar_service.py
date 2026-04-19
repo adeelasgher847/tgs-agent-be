@@ -4,6 +4,8 @@ Handles business hours, blocked slots, and appointment booking logic.
 All operations are scoped to tenant_id for multi-tenant isolation.
 """
 import html
+import re
+import secrets
 from datetime import datetime, date, timedelta, timezone, time as dt_time, tzinfo
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -18,7 +20,7 @@ from app.models.business_hours import BusinessHours
 from app.models.blocked_slot import BlockedSlot
 from app.models.appointment import Appointment
 from app.models.call_session import CallSession
-from app.models.user import User
+from app.models.user import User, user_tenant_association
 from app.schemas.calendar import (
     AppointmentOut,
     BusinessHoursUpsert,
@@ -27,6 +29,8 @@ from app.schemas.calendar import (
     AvailableSlotsResponse,
 )
 from app.services.email_service import email_service
+from app.services.twilio_service import twilio_service
+from app.services.voice_twilio_utils import get_twilio_credentials_for_call
 from app.utils.spoken_email import normalize_stored_email
 
 SLOT_BOOKING_BUFFER_MINUTES = 15
@@ -400,6 +404,124 @@ class CalendarService:
             )
             return False
 
+    def _customer_confirmation_sms_body(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        appt: Appointment,
+    ) -> str:
+        tz_label, start_local, end_local = self.appointment_local_display(db, tenant_id, appt)
+        time_line = (
+            f"{start_local.strftime('%A, %B %d, %Y %I:%M %p')} "
+            f"– {end_local.strftime('%I:%M %p')} ({tz_label})"
+        )
+        return (
+            f"Your appointment is confirmed for {time_line}. "
+            f"Thank you for calling."
+        )
+
+    def _notify_customer_confirmation_sms_if_needed(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        appt: Appointment,
+    ) -> bool:
+        if appt.customer_sms_confirmed_notified_at is not None:
+            return False
+        from app.services.wati_service import normalize_whatsapp_number_e164
+
+        to_e164 = normalize_whatsapp_number_e164((appt.customer_phone or "").strip())
+        if not to_e164:
+            return False
+
+        body = self._customer_confirmation_sms_body(db, tenant_id, appt)
+        from_number: Optional[str] = None
+        account_sid: Optional[str] = None
+        auth_token: Optional[str] = None
+
+        if appt.call_session_id:
+            cs = (
+                db.query(CallSession)
+                .filter(CallSession.id == appt.call_session_id)
+                .first()
+            )
+            if cs:
+                try:
+                    account_sid, auth_token = get_twilio_credentials_for_call(db, cs)
+                    from_number = cs.assistant_phone_number or cs.to_number
+                except Exception:
+                    logger.warning(
+                        "SMS: could not resolve DB Twilio credentials for call_session=%s",
+                        appt.call_session_id,
+                        exc_info=True,
+                    )
+
+        if not from_number:
+            from_number = (settings.TWILIO_PHONE_NUMBER or "").strip()
+        if not from_number:
+            logger.warning(
+                "SMS confirmation skipped: no from_number for appointment=%s",
+                appt.id,
+            )
+            return False
+
+        try:
+            twilio_service.send_sms(
+                to_e164,
+                from_number,
+                body,
+                account_sid=account_sid,
+                auth_token=auth_token,
+            )
+            appt.customer_sms_confirmed_notified_at = datetime.now(timezone.utc)
+            return True
+        except Exception:
+            logger.exception(
+                "Customer confirmation SMS failed for appointment=%s",
+                appt.id,
+            )
+            return False
+
+    def confirm_appointment_by_staff(
+        self,
+        *,
+        db: Session,
+        appointment_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        reviewer_user_id: Optional[uuid.UUID] = None,
+    ) -> Appointment:
+        """
+        Mark a pending appointment confirmed (staff acknowledgement via email link or WATI).
+        Sends customer email (if email on file) and SMS (once, idempotent).
+        """
+        appt = self.get_appointment_by_id(db, appointment_id, tenant_id)
+        if not appt:
+            raise ValueError("Appointment not found for review acknowledgement.")
+        if appt.status == "cancelled":
+            raise ValueError("Cancelled appointment cannot be confirmed.")
+
+        changed = False
+        if appt.status != "confirmed":
+            appt.status = "confirmed"
+            changed = True
+        if appt.reviewed_at is None:
+            appt.reviewed_at = datetime.now(timezone.utc)
+            changed = True
+        if reviewer_user_id and appt.reviewed_by_user_id is None:
+            appt.reviewed_by_user_id = reviewer_user_id
+            changed = True
+
+        if self._notify_customer_confirmation_if_needed(db=db, tenant_id=tenant_id, appt=appt):
+            changed = True
+        if self._notify_customer_confirmation_sms_if_needed(db=db, tenant_id=tenant_id, appt=appt):
+            changed = True
+
+        if changed:
+            db.commit()
+            db.refresh(appt)
+
+        return appt
+
     def acknowledge_appointment_from_token(
         self,
         *,
@@ -415,33 +537,154 @@ class CalendarService:
         except Exception as e:
             raise ValueError("Malformed review token payload.") from e
 
-        appt = self.get_appointment_by_id(db, appt_id, tenant_id)
-        if not appt:
-            raise ValueError("Appointment not found for review acknowledgement.")
+        return self.confirm_appointment_by_staff(
+            db=db,
+            appointment_id=appt_id,
+            tenant_id=tenant_id,
+            reviewer_user_id=reviewer_user_id,
+        )
 
-        changed = False
-        if appt.status == "cancelled":
-            raise ValueError("Cancelled appointment cannot be confirmed from acknowledgement link.")
+    def get_pending_appointment_by_whatsapp_ack_token(
+        self,
+        db: Session,
+        token: str,
+    ) -> Optional[Appointment]:
+        if not (token or "").strip():
+            return None
+        t = token.strip()
+        return (
+            db.query(Appointment)
+            .filter(
+                Appointment.staff_whatsapp_ack_token == t,
+                Appointment.status == "pending",
+            )
+            .first()
+        )
 
-        if appt.status != "confirmed":
-            appt.status = "confirmed"
-            changed = True
+    def send_staff_whatsapp_prompt_for_appointment(
+        self,
+        db: Session,
+        *,
+        tenant_id: uuid.UUID,
+        appt: Appointment,
+        staff_phone: str,
+    ) -> None:
+        """Send WATI template to staff after inbound voice booking. No-op if WATI not configured."""
+        from app.services.wati_service import normalize_whatsapp_number_e164, wati_service
 
-        if appt.reviewed_at is None:
-            appt.reviewed_at = datetime.now(timezone.utc)
-            changed = True
-        if reviewer_user_id and appt.reviewed_by_user_id is None:
-            appt.reviewed_by_user_id = reviewer_user_id
-            changed = True
+        if appt.status != "pending":
+            return
+        if not wati_service.is_configured():
+            logger.debug("WATI staff prompt skipped: not configured")
+            return
+        staff_e164 = normalize_whatsapp_number_e164(staff_phone)
+        if not staff_e164:
+            logger.warning(
+                "WATI staff prompt skipped: invalid staff phone for appointment=%s",
+                appt.id,
+            )
+            return
 
-        if self._notify_customer_confirmation_if_needed(db=db, tenant_id=tenant_id, appt=appt):
-            changed = True
+        alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        token = "".join(secrets.choice(alphabet) for _ in range(12))
+        appt.staff_whatsapp_ack_token = token
+        db.commit()
+        db.refresh(appt)
 
-        if changed:
+        tz_label, start_local, end_local = self.appointment_local_display(db, tenant_id, appt)
+        time_line = (
+            f"{start_local.strftime('%A, %B %d, %Y %I:%M %p')} – "
+            f"{end_local.strftime('%I:%M %p')} ({tz_label})"
+        )
+        try:
+            wati_service.send_staff_appointment_prompt(
+                staff_whatsapp_e164=staff_e164,
+                customer_name=appt.customer_name or "",
+                time_line=time_line,
+                ack_code=token,
+            )
+            appt.staff_whatsapp_prompt_sent_at = datetime.now(timezone.utc)
             db.commit()
-            db.refresh(appt)
+        except Exception:
+            logger.exception("WATI staff prompt failed for appointment=%s", appt.id)
 
-        return appt
+    def try_confirm_appointment_from_wati_reply(
+        self,
+        db: Session,
+        *,
+        inbound_text: str,
+        sender_phone: Optional[str] = None,
+    ) -> Optional[Appointment]:
+        """
+        Parse staff reply: must include confirmation word(s) and a booking code we sent.
+        """
+        from app.services.wati_service import normalize_whatsapp_number_e164
+
+        text = (inbound_text or "").strip()
+        if not text:
+            return None
+        lower = text.lower()
+        if not re.search(r"\b(yes|confirm|confirmed|ok|approve)\b", lower):
+            return None
+
+        candidates = re.findall(r"[A-Za-z0-9]{10,12}", text)
+        appt: Optional[Appointment] = None
+        for c in candidates:
+            appt = self.get_pending_appointment_by_whatsapp_ack_token(db, c)
+            if appt:
+                break
+        if not appt:
+            return None
+
+        reviewer_id: Optional[uuid.UUID] = None
+        if sender_phone:
+            raw_sender = sender_phone.strip()
+            sp = normalize_whatsapp_number_e164(raw_sender) or raw_sender
+            digits = re.sub(r"\D", "", raw_sender)
+            candidates = {x for x in (sp, (sp.lstrip("+") if sp else None), digits or None) if x}
+
+            tenant_id = appt.tenant_id
+            if candidates:
+                matched = (
+                    db.query(User)
+                    .join(
+                        user_tenant_association,
+                        User.id == user_tenant_association.c.user_id,
+                    )
+                    .filter(
+                        user_tenant_association.c.tenant_id == tenant_id,
+                        User.phone.isnot(None),
+                        User.phone.in_(list(candidates)),
+                    )
+                    .first()
+                )
+                if matched:
+                    reviewer_id = matched.id
+
+            if reviewer_id is None and sp:
+                for uid, phone in (
+                    db.query(User.id, User.phone)
+                    .join(
+                        user_tenant_association,
+                        User.id == user_tenant_association.c.user_id,
+                    )
+                    .filter(
+                        user_tenant_association.c.tenant_id == tenant_id,
+                        User.phone.isnot(None),
+                    )
+                    .all()
+                ):
+                    up = normalize_whatsapp_number_e164(phone) if phone else None
+                    if up and up == sp:
+                        reviewer_id = uid
+                        break
+
+        return self.confirm_appointment_by_staff(
+            db=db,
+            appointment_id=appt.id,
+            tenant_id=appt.tenant_id,
+            reviewer_user_id=reviewer_id,
+        )
 
     # ── Slot availability ─────────────────────────────────────────────────────
 

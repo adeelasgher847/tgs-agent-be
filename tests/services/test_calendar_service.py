@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta, timezone
+from unittest.mock import patch
 import os
 import sys
 import uuid
@@ -18,6 +19,7 @@ from app.models.blocked_slot import BlockedSlot
 from app.models.business_hours import BusinessHours
 from app.models.tenant import Tenant
 from app.schemas.calendar import BusinessHoursUpsert
+from app.core.config import settings
 from app.services.calendar_service import BusinessHoursConflictError, calendar_service
 
 
@@ -363,3 +365,118 @@ def test_reschedule_rejects_overlapping_other_appointment(calendar_db):
             appointment_id=mine.id,
             slot_start=datetime.combine(target_date, time(11, 0)),
         )
+
+
+def test_wati_reply_confirms_pending_appointment(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = (
+        datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date()
+        + timedelta(days=6)
+    )
+    _set_business_hours(calendar_db, tenant.id, target_date, slot_minutes=30)
+    slot = datetime.combine(target_date, time(10, 0))
+    appt = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=slot,
+        created_via="voice_agent",
+    )
+    token = "aBcDeFgHiJk1"
+    appt.staff_whatsapp_ack_token = token
+    appt.staff_whatsapp_prompt_sent_at = datetime.now(timezone.utc)
+    calendar_db.commit()
+
+    with patch.object(settings, "TWILIO_PHONE_NUMBER", "+15550001111"):
+        with patch(
+            "app.services.calendar_service.twilio_service.send_sms",
+            return_value="SMxxx",
+        ) as mock_sms:
+            result = calendar_service.try_confirm_appointment_from_wati_reply(
+                calendar_db,
+                inbound_text=f"yes please {token}",
+                sender_phone=None,
+            )
+    mock_sms.assert_called_once()
+    assert result is not None
+    assert result.id == appt.id
+    assert result.status == "confirmed"
+    calendar_db.refresh(appt)
+    assert appt.customer_sms_confirmed_notified_at is not None
+
+
+def test_wati_reply_ignored_without_confirm_word(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = (
+        datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date()
+        + timedelta(days=6)
+    )
+    _set_business_hours(calendar_db, tenant.id, target_date, slot_minutes=30)
+    appt = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=datetime.combine(target_date, time(10, 0)),
+        created_via="voice_agent",
+    )
+    token = "xYz9xYz9xYz9"
+    appt.staff_whatsapp_ack_token = token
+    calendar_db.commit()
+
+    result = calendar_service.try_confirm_appointment_from_wati_reply(
+        calendar_db,
+        inbound_text=f"only {token}",
+        sender_phone=None,
+    )
+    assert result is None
+
+
+def test_confirm_appointment_by_staff_idempotent(calendar_db):
+    tenant = _tenant(calendar_db)
+    target_date = (
+        datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))).date()
+        + timedelta(days=6)
+    )
+    _set_business_hours(calendar_db, tenant.id, target_date, slot_minutes=30)
+    appt = calendar_service.book_appointment(
+        db=calendar_db,
+        tenant_id=tenant.id,
+        customer_name="Ali",
+        customer_phone="+923001112233",
+        slot_start=datetime.combine(target_date, time(10, 0)),
+        created_via="web",
+    )
+    with patch.object(settings, "TWILIO_PHONE_NUMBER", "+15550001111"):
+        with patch(
+            "app.services.calendar_service.twilio_service.send_sms",
+            return_value="SM1",
+        ) as mock_sms:
+            a1 = calendar_service.confirm_appointment_by_staff(
+                db=calendar_db,
+                appointment_id=appt.id,
+                tenant_id=tenant.id,
+                reviewer_user_id=None,
+            )
+            a2 = calendar_service.confirm_appointment_by_staff(
+                db=calendar_db,
+                appointment_id=appt.id,
+                tenant_id=tenant.id,
+                reviewer_user_id=None,
+            )
+    assert mock_sms.call_count == 1
+    assert a1.status == "confirmed"
+    assert a2.status == "confirmed"
+    calendar_db.refresh(appt)
+    assert appt.customer_sms_confirmed_notified_at is not None
+
+
+def test_extract_wati_inbound_text_and_sender():
+    from app.services.wati_service import extract_wati_inbound_text_and_sender
+
+    text, sender = extract_wati_inbound_text_and_sender(
+        {"whatsappMessage": {"text": "yes OK"}, "waId": "+15551234567"}
+    )
+    assert text == "yes OK"
+    assert sender == "+15551234567"
