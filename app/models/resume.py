@@ -22,6 +22,12 @@ class UploadMode(str, enum.Enum):
     BATCH = "BATCH"
 
 
+class CandidateStatus(str, enum.Enum):
+    QUALIFIED = "qualified"
+    PARTIALLY_QUALIFIED = "partially qualified"
+    REJECTED = "rejected"
+
+
 class Resume(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     tenant_id = Column(
@@ -53,6 +59,11 @@ class Resume(Base):
     match_percent = Column(Integer, nullable=True)
     fit_label = Column(String(32), nullable=True)
     is_relevant = Column(Boolean, nullable=True)
+    candidate_status = Column(
+        Enum(CandidateStatus),
+        nullable=True,
+        index=True,
+    )
     raw_text = Column(Text, nullable=True)
     parsed_json = Column(JSONB, nullable=True)
     warnings = Column(JSONB, nullable=True)

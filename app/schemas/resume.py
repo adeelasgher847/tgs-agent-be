@@ -16,6 +16,12 @@ class ParseStatusEnum(str, Enum):
     FAILED = "FAILED"
 
 
+class CandidateStatusEnum(str, Enum):
+    QUALIFIED = "qualified"
+    PARTIALLY_QUALIFIED = "partially qualified"
+    REJECTED = "rejected"
+
+
 class ParseSource(str, Enum):
     RULES = "RULES"
     AI = "AI"
@@ -131,6 +137,10 @@ class ResumeListItem(BaseModel):
     fit_label: str | None = Field(
         default=None,
         description='Exactly "Relevant" or "Irrelevant" when scored (server threshold on overall score).',
+    )
+    candidate_status: CandidateStatusEnum | None = Field(
+        default=None,
+        description='Manual reviewer decision: "qualified", "partially qualified", or "rejected".',
     )
     is_relevant: bool | None = Field(
         default=None,
@@ -345,4 +355,13 @@ class ShortlistByBatchRequest(BaseModel):
     max_resumes: int = Field(default=1000, ge=1, le=5000)
     match_mode: MatchMode | None = Field(default=None, description="rules | ai | hybrid")
     include_excluded: bool = Field(default=False)
+
+
+class ResumeCandidateStatusUpdateRequest(BaseModel):
+    status: CandidateStatusEnum
+
+
+class ResumeCandidateStatusUpdateResponse(BaseModel):
+    resume_id: UUID
+    status: CandidateStatusEnum
 

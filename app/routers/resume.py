@@ -21,15 +21,18 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
 from app.core.config import settings
 from app.models.job_description import JobDescription
-from app.models.resume import ParseStatus, Resume, UploadMode
+from app.models.resume import CandidateStatus, ParseStatus, Resume, UploadMode
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.resume import (
+    CandidateStatusEnum,
     MatchMode,
     MatchResponse,
     ParseMode,
     ParseStatusEnum,
     ParsedResume,
+    ResumeCandidateStatusUpdateRequest,
+    ResumeCandidateStatusUpdateResponse,
     ResumeListItem,
 )
 from app.services.resume_matching_service import score_candidate
@@ -350,6 +353,48 @@ async def upload_resume(
     }
     return create_success_response(payload, "Resume uploaded successfully", status.HTTP_201_CREATED)
 
+
+@router.patch(
+    "/{resume_id}/status",
+    response_model=SuccessResponse[ResumeCandidateStatusUpdateResponse],
+)
+def update_resume_candidate_status(
+    resume_id: UUID,
+    body: ResumeCandidateStatusUpdateRequest,
+    admin_user: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    """
+    Update manual candidate status on resume.
+    Allowed values:
+    - qualified
+    - partially qualified
+    - rejected
+    """
+    if not admin_user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    resume = (
+        db.query(Resume)
+        .filter(
+            Resume.id == resume_id,
+            Resume.tenant_id == admin_user.current_tenant_id,
+        )
+        .first()
+    )
+    if resume is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume not found")
+
+    resume.candidate_status = CandidateStatus(body.status.value)
+    db.commit()
+    db.refresh(resume)
+
+    payload = ResumeCandidateStatusUpdateResponse(
+        resume_id=resume.id,
+        status=CandidateStatusEnum(resume.candidate_status.value),
+    )
+    return create_success_response(payload, "Resume status updated successfully")
+
 @router.post(
     "/upload-multiple-and-match",
     response_model=SuccessResponse[dict],
@@ -589,6 +634,11 @@ def list_resumes_by_job_description(
                 overall_score=os_,
                 overall_match_score=os_,
                 fit_label=fit_label,
+                candidate_status=(
+                    CandidateStatusEnum(r.candidate_status.value)
+                    if r.candidate_status
+                    else None
+                ),
                 is_relevant=is_rel,
                 created_at=r.created_at,
                 batch_id=r.batch_id,
@@ -666,6 +716,11 @@ def list_resumes_after_screening(
                 overall_score=os_,
                 overall_match_score=os_,
                 fit_label=r.fit_label or "Relevant",
+                candidate_status=(
+                    CandidateStatusEnum(r.candidate_status.value)
+                    if r.candidate_status
+                    else None
+                ),
                 is_relevant=True,
                 created_at=r.created_at,
                 batch_id=r.batch_id,
