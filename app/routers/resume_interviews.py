@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -20,12 +22,14 @@ from app.schemas.resume_interview import (
     ResumeInterviewBulkScheduleRequest,
     ResumeInterviewBulkScheduleResponse,
     ResumeInterviewBulkScheduleResultItem,
+    ResumeInterviewCallMediaResponse,
     ResumeInterviewItem,
     ResumeInterviewSessionLinkItem,
     ResumeInterviewScheduleRequest,
     ResumeInterviewStatusUpdateRequest,
 )
 from app.services.scheduled_call_service import ScheduledCallService
+from app.services.transcript_service import transcript_service
 from app.services.crm_config_service import CRMConfigService
 from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
@@ -97,6 +101,54 @@ def _calendar_candidate_name_email(resume: Resume) -> tuple[str | None, str | No
     name = str(profile.get("name") or "").strip() or None
     email = str(profile.get("email") or "").strip() or None
     return name, email
+
+
+def _normalize_call_transcript_raw(raw: Any) -> list[dict[str, Any]]:
+    """Normalize legacy call_session.call_transcript (JSONB list or JSON string) to message dicts."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role") or "unknown")
+        text = entry.get("content")
+        if text is None:
+            text = entry.get("message")
+        line: dict[str, Any] = {"role": role, "content": str(text or "")}
+        ts = entry.get("timestamp")
+        if ts is not None:
+            line["timestamp"] = ts
+        out.append(line)
+    return out
+
+
+def _transcript_for_call_session(
+    db: Session,
+    call_session: CallSession,
+) -> tuple[list[dict[str, Any]], str]:
+    rows = transcript_service.get_messages_by_session(db, call_session.id)
+    if rows:
+        return [
+            {
+                "role": m.role or "unknown",
+                "content": m.message or "",
+                "sequence_number": m.sequence_number,
+                "timestamp": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in rows
+        ], "transcript_messages"
+    normalized = _normalize_call_transcript_raw(call_session.call_transcript)
+    if normalized:
+        return normalized, "call_session"
+    return [], "empty"
 
 
 def _to_calendar_item(
@@ -671,6 +723,78 @@ def get_resume_session_link(
         _to_session_link_item(resume=resume, interview=interview, call_session=call_session),
         "Resume session link retrieved successfully",
     )
+
+
+@router.get(
+    "/by-resume/{resume_id}/call-media",
+    response_model=SuccessResponse[ResumeInterviewCallMediaResponse],
+)
+def get_resume_interview_call_media(
+    resume_id: UUID,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Latest resume interview for this resume → linked call session → transcript and recording URL.
+    Transcript prefers `TranscriptMessage` rows; falls back to `CallSession.call_transcript`.
+    """
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    resume = (
+        db.query(Resume)
+        .filter(
+            Resume.id == resume_id,
+            Resume.tenant_id == user.current_tenant_id,
+        )
+        .first()
+    )
+    if resume is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume not found")
+
+    interview = (
+        db.query(ResumeInterview)
+        .filter(
+            ResumeInterview.tenant_id == user.current_tenant_id,
+            ResumeInterview.resume_id == resume_id,
+        )
+        .order_by(ResumeInterview.created_at.desc())
+        .first()
+    )
+    if interview is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No resume interview found for this resume",
+        )
+    if not interview.call_session_id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Resume interview has no linked call session yet",
+        )
+
+    call_session = (
+        db.query(CallSession)
+        .filter(
+            CallSession.id == interview.call_session_id,
+            CallSession.tenant_id == user.current_tenant_id,
+        )
+        .first()
+    )
+    if call_session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Call session not found")
+
+    transcript, transcript_source = _transcript_for_call_session(db, call_session)
+    payload = ResumeInterviewCallMediaResponse(
+        resume_id=resume_id,
+        interview_id=interview.id,
+        call_session_id=call_session.id,
+        recording_url=call_session.recording_url,
+        twilio_call_sid=call_session.twilio_call_sid or interview.twilio_call_sid,
+        call_session_status=call_session.status,
+        transcript=transcript,
+        transcript_source=transcript_source,
+    )
+    return create_success_response(payload, "Resume interview call media retrieved successfully")
 
 
 @router.get(
