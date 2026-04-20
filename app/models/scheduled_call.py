@@ -27,11 +27,20 @@ class ScheduledCall(Base):
     # Legacy fields (for backward compatibility, can be removed later)
     monday_board_id = Column(String(50), nullable=True, index=True)
     monday_board_url = Column(String(500), nullable=True)
+    # Optional relation to resume interview scheduling entries.
+    # NULL means this row is a CRM container mapping row.
+    resume_interview_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("resumeinterview.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     user = relationship("User", back_populates="scheduled_calls")
+    resume_interview = relationship("ResumeInterview", back_populates="scheduled_calls")
     # Note: tenant_crm_config relationship removed to avoid FK validation issues
     # Access CRMConfig via: crm_config_service.get_crm_config_by_id(db, scheduled_call.tenant_crm_config_id)
 

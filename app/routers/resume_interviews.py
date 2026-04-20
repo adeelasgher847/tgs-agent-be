@@ -26,10 +26,13 @@ from app.schemas.resume_interview import (
     ResumeInterviewStatusUpdateRequest,
 )
 from app.services.scheduled_call_service import ScheduledCallService
+from app.services.crm_config_service import CRMConfigService
+from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
 scheduled_call_service = ScheduledCallService()
+crm_config_service = CRMConfigService()
 
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "NO_ANSWER", "CANCELLED", "REJECTED"}
 ALLOWED_STATUS_TRANSITIONS = {
@@ -172,6 +175,7 @@ async def _create_scheduled_interview(
     db: Session,
     user: User,
     body: ResumeInterviewScheduleRequest,
+    resolved_crm_config_id: UUID | None = None,
 ) -> ResumeInterview:
     if not user.current_tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
@@ -231,7 +235,7 @@ async def _create_scheduled_interview(
     db.flush()
 
     try:
-        resolved_crm_config_id = _resolve_crm_config_id(db, user, body.crm_config_id)
+        crm_config_id = resolved_crm_config_id or _resolve_crm_config_id(db, user, body.crm_config_id)
         schedule_result = await scheduled_call_service.create_single_scheduled_call(
             db=db,
             tenant_id=user.current_tenant_id,
@@ -240,7 +244,7 @@ async def _create_scheduled_interview(
             agent_id=body.agent_id,
             # Use normalized UTC timestamp to keep DB and CRM schedule values identical.
             call_time_utc=scheduled_at_utc.isoformat(),
-            crm_config_id=resolved_crm_config_id,
+            crm_config_id=crm_config_id,
             phone_number_id=str(body.phone_number_id) if body.phone_number_id else None,
         )
         interview.status = "IN_PROGRESS"
@@ -249,6 +253,24 @@ async def _create_scheduled_interview(
         interview.crm_type = schedule_result.get("crm_type")
         interview.last_error = None
         interview.updated_by = user.id
+
+        # Create a related scheduledcall row for this specific interview run.
+        # Container mapping rows still exist separately (resume_interview_id=NULL).
+        interview_scheduled_call = ScheduledCall(
+            user_id=user.id,
+            tenant_crm_config_id=crm_config_id,
+            crm_container_id=schedule_result.get("board_id"),
+            crm_container_url=schedule_result.get("board_url"),
+            crm_type=schedule_result.get("crm_type"),
+            monday_board_id=schedule_result.get("board_id")
+            if schedule_result.get("crm_type") == "monday"
+            else None,
+            monday_board_url=schedule_result.get("board_url")
+            if schedule_result.get("crm_type") == "monday"
+            else None,
+            resume_interview_id=interview.id,
+        )
+        db.add(interview_scheduled_call)
         db.commit()
     except HTTPException as exc:
         interview.status = "SCHEDULE_FAILED"
@@ -292,16 +314,138 @@ async def schedule_resume_interview(
 )
 async def schedule_resume_interviews_bulk(
     body: ResumeInterviewBulkScheduleRequest,
+    crm_config_id: UUID | None = Query(
+        default=None,
+        description="Optional CRM config ID to force for all bulk items. If omitted, uses selected/linked Trello fallback logic.",
+    ),
     user: User = Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    # Match single-call behavior: ensure ScheduledCall row/container exists once before bulk loop.
+    # Match single-call behavior: one CRM config per request (not per item).
+    # Priority: query param -> selected Trello/linked fallback.
+    explicit_crm = crm_config_id
+    resolved_crm_config_id = _resolve_crm_config_id(db, user, explicit_crm)
+
+    # Validate CRM exists.
+    crm_config = crm_config_service.get_crm_config_by_id(db, resolved_crm_config_id)
+    if not crm_config:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "CRM configuration not found")
+
+    scheduled_call_service.get_or_create_board_for_user(
+        db=db,
+        user_id=user.id,
+        tenant_id=user.current_tenant_id,
+        crm_config_id=resolved_crm_config_id,
+    )
+    # Defensive persistence check: make sure scheduledcall mapping row exists for this user+CRM.
+    # In some local/dev states we observed mapping not visible immediately; this guarantees creation.
+    mapping_row = (
+        db.query(ScheduledCall)
+        .filter(
+            ScheduledCall.user_id == user.id,
+            ScheduledCall.tenant_crm_config_id == resolved_crm_config_id,
+        )
+        .first()
+    )
+    if not mapping_row:
+        crm_container_id = getattr(crm_config, "container_id", None)
+        crm_container_url = getattr(crm_config, "container_url", None)
+        mapping_row = ScheduledCall(
+            user_id=user.id,
+            tenant_crm_config_id=resolved_crm_config_id,
+            crm_container_id=crm_container_id,
+            crm_container_url=crm_container_url,
+            crm_type=crm_config.crm_type,
+            monday_board_id=crm_container_id if crm_config.crm_type == "monday" else None,
+            monday_board_url=crm_container_url if crm_config.crm_type == "monday" else None,
+        )
+        db.add(mapping_row)
+        db.commit()
+
     results: list[ResumeInterviewBulkScheduleResultItem] = []
     success_count = 0
     error_count = 0
 
+    # Build tenant phone-number lookups so bulk items can auto-resolve phone_number_id
+    # when caller doesn't explicitly pass one.
+    tenant_phone_numbers = phone_number_service.get_phone_numbers(db, user.current_tenant_id)
+
+    def _normalize_phone(value: str | None) -> str:
+        if not value:
+            return ""
+        raw = value.strip()
+        if not raw:
+            return ""
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if raw.startswith("+"):
+            return f"+{digits}" if digits else raw
+        return f"+{digits}" if digits else raw
+
+    phone_number_id_by_phone = {}
+    phone_number_id_by_agent = {}
+    fallback_phone_number_id = None
+    for pn in tenant_phone_numbers:
+        if getattr(pn, "status", None) != "active":
+            continue
+        if fallback_phone_number_id is None:
+            fallback_phone_number_id = pn.id
+        normalized_phone = _normalize_phone(getattr(pn, "phone_number", None))
+        if normalized_phone:
+            phone_number_id_by_phone[normalized_phone] = pn.id
+        assistant_id = getattr(pn, "assistant_id", None)
+        if assistant_id and assistant_id not in phone_number_id_by_agent:
+            phone_number_id_by_agent[assistant_id] = pn.id
+
     for item in body.items:
+        # Force resolved CRM for all items so bulk behaves like single-call.
+        resolved_phone_number_id = item.phone_number_id
+        if not resolved_phone_number_id:
+            # Prefer phone number assigned to selected agent for this item.
+            resolved_phone_number_id = phone_number_id_by_agent.get(item.agent_id)
+        if not resolved_phone_number_id:
+            # Then try matching by raw phone string (works when tenant number itself is provided).
+            resolved_phone_number_id = phone_number_id_by_phone.get(
+                _normalize_phone(item.phone_number)
+            )
+        if not resolved_phone_number_id:
+            # Final fallback: first active tenant phone number.
+            resolved_phone_number_id = fallback_phone_number_id
+
+        item_with_crm = item.model_copy(
+            update={
+                "crm_config_id": resolved_crm_config_id,
+                "phone_number_id": resolved_phone_number_id,
+            }
+        )
         try:
-            interview = await _create_scheduled_interview(db=db, user=user, body=item)
+            # Align with /schedule/single-call: validate optional phone_number_id belongs to tenant and is active.
+            if item_with_crm.phone_number_id:
+                phone_number_obj = phone_number_service.get_phone_number_by_id(
+                    db=db,
+                    phone_number_id=item_with_crm.phone_number_id,
+                    tenant_id=user.current_tenant_id,
+                )
+                if not phone_number_obj:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Phone number {item_with_crm.phone_number_id} not found in your account.",
+                    )
+                if phone_number_obj.status != "active":
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Phone number {item_with_crm.phone_number_id} is not active.",
+                    )
+
+            interview = await _create_scheduled_interview(
+                db=db,
+                user=user,
+                body=item_with_crm,
+                resolved_crm_config_id=resolved_crm_config_id,
+            )
             success_count += 1
             results.append(
                 ResumeInterviewBulkScheduleResultItem(

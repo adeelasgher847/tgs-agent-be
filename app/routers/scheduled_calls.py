@@ -1966,7 +1966,15 @@ async def get_selected_crm_config(
     """
     try:
         # All board records for user (one per linked CRM)
-        board_records = db.query(ScheduledCall).filter(ScheduledCall.user_id == user.id).order_by(ScheduledCall.crm_type).all()
+        board_records = (
+            db.query(ScheduledCall)
+            .filter(
+                ScheduledCall.user_id == user.id,
+                ScheduledCall.resume_interview_id.is_(None),
+            )
+            .order_by(ScheduledCall.crm_type)
+            .all()
+        )
         linked_crms: List[Dict[str, Any]] = []
         for board_record in board_records:
             if not board_record.tenant_crm_config_id:
