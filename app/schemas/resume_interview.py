@@ -78,6 +78,14 @@ class ResumeInterviewCalendarItem(BaseModel):
     status: str
     agent_id: UUID
     candidate_phone: str
+    candidate_name: str | None = Field(
+        default=None,
+        description="Candidate full name from resume parsed_json.profile.name when available.",
+    )
+    candidate_email: str | None = Field(
+        default=None,
+        description="Candidate email from resume parsed_json.profile.email when available.",
+    )
     job_description_id: UUID | None = None
     call_session_id: UUID | None = None
 

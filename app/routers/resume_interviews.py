@@ -90,11 +90,21 @@ def _to_session_link_item(
     )
 
 
+def _calendar_candidate_name_email(resume: Resume) -> tuple[str | None, str | None]:
+    """Name and email from parser output: parsed_json.profile.name / .email."""
+    parsed = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
+    profile = parsed.get("profile") if isinstance(parsed.get("profile"), dict) else {}
+    name = str(profile.get("name") or "").strip() or None
+    email = str(profile.get("email") or "").strip() or None
+    return name, email
+
+
 def _to_calendar_item(
     *,
     interview: ResumeInterview,
     resume: Resume,
 ) -> ResumeInterviewCalendarItem:
+    candidate_name, candidate_email = _calendar_candidate_name_email(resume)
     return ResumeInterviewCalendarItem(
         interview_id=interview.id,
         resume_id=interview.resume_id,
@@ -103,6 +113,8 @@ def _to_calendar_item(
         status=interview.status,
         agent_id=interview.agent_id,
         candidate_phone=interview.candidate_phone,
+        candidate_name=candidate_name,
+        candidate_email=candidate_email,
         job_description_id=interview.job_description_id,
         call_session_id=interview.call_session_id,
     )
