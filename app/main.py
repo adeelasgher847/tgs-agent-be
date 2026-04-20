@@ -39,7 +39,7 @@ def _patch_binary_formats(schema_obj):
             _patch_binary_formats(v)
     elif isinstance(schema_obj, list):
         for item in schema_obj:
-            _patch_binary_formats(item)
+            _patch_binary_formats(item) 
 
 
 def custom_openapi():

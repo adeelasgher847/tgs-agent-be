@@ -88,6 +88,13 @@ api_router.include_router(
     prefix="/recruiting/resumes",
     tags=["Recruiting Resumes"],
 )
+# Alias: singular /resume (some clients used this path; same routes as above)
+api_router.include_router(
+    resume_router,
+    prefix="/recruiting/resume",
+    tags=["Recruiting Resumes (alias)"],
+    include_in_schema=False,
+)
 api_router.include_router(
     resume_interviews_router,
     prefix="/recruiting/resume-interviews",
