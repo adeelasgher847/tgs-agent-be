@@ -457,6 +457,76 @@ class TrelloService(BaseCRMService):
         except Exception as exc:
             return None
 
+    def get_item_call_session_id(
+        self,
+        *,
+        item_id: str,
+        container_id: str | None = None,
+        field_map: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
+        """
+        Resolve call_session_id from a Trello card.
+
+        Lookup order:
+        1) Custom field item matching call_session_id field id (if known)
+        2) Custom field named "Call Session ID" (if board container_id is provided)
+        3) Description line: "Call Session ID: <uuid>"
+        """
+        field_map = field_map or {}
+        known_call_session_field_id = field_map.get("call_session_id")
+
+        card_desc = ""
+        try:
+            card_url = f"{self.API_URL}/cards/{item_id}"
+            card_params = self._auth_params()
+            card_params.update({"fields": "desc"})
+            card_resp = requests.get(card_url, params=card_params, timeout=20)
+            card_resp.raise_for_status()
+            card_desc = str((card_resp.json() or {}).get("desc") or "")
+        except Exception:
+            card_desc = ""
+
+        custom_field_items = []
+        try:
+            items_url = f"{self.API_URL}/cards/{item_id}/customFieldItems"
+            items_params = self._auth_params()
+            items_resp = requests.get(items_url, params=items_params, timeout=20)
+            items_resp.raise_for_status()
+            custom_field_items = items_resp.json() or []
+        except Exception:
+            custom_field_items = []
+
+        call_session_field_id = known_call_session_field_id
+        if not call_session_field_id and container_id:
+            try:
+                fields_url = f"{self.API_URL}/boards/{container_id}/customFields"
+                fields_params = self._auth_params()
+                fields_resp = requests.get(fields_url, params=fields_params, timeout=20)
+                fields_resp.raise_for_status()
+                for field in fields_resp.json() or []:
+                    if str(field.get("name") or "").strip().lower() == "call session id":
+                        call_session_field_id = field.get("id")
+                        break
+            except Exception:
+                call_session_field_id = None
+
+        if call_session_field_id:
+            for item in custom_field_items:
+                if item.get("idCustomField") != call_session_field_id:
+                    continue
+                value = item.get("value") or {}
+                text_value = value.get("text") if isinstance(value, dict) else None
+                if text_value:
+                    return str(text_value).strip()
+
+        if card_desc:
+            session_match = re.search(r"Call Session ID:\s*([^\n]+)", card_desc, re.IGNORECASE)
+            if session_match:
+                parsed = session_match.group(1).strip()
+                return parsed or None
+
+        return None
+
     def get_required_fields(self) -> List[Dict]:
         """Get list of required fields"""
         return self.REQUIRED_FIELDS

@@ -60,7 +60,8 @@ class ScheduledCallService:
         # Check if container already exists for this user AND this CRM config (one board per user per CRM)
         board_record = db.query(ScheduledCall).filter(
             ScheduledCall.user_id == user_id,
-            ScheduledCall.tenant_crm_config_id == crm_config_id
+            ScheduledCall.tenant_crm_config_id == crm_config_id,
+            ScheduledCall.resume_interview_id.is_(None),
         ).first()
 
         # Get CRM config (needed for both new and existing records)
@@ -260,6 +261,7 @@ class ScheduledCallService:
     ) -> Optional[ScheduledCall]:
         """Get board for a user. If tenant_crm_config_id given, return that CRM's board; else first (backward compat)."""
         q = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id)
+        q = q.filter(ScheduledCall.resume_interview_id.is_(None))
         if tenant_crm_config_id is not None:
             q = q.filter(ScheduledCall.tenant_crm_config_id == tenant_crm_config_id)
         return q.first()
@@ -269,7 +271,10 @@ class ScheduledCallService:
         """Get all linked boards (one per CRM) for a user. Used for aggregating pending count across CRMs."""
         return (
             db.query(ScheduledCall)
-            .filter(ScheduledCall.user_id == user_id)
+            .filter(
+                ScheduledCall.user_id == user_id,
+                ScheduledCall.resume_interview_id.is_(None),
+            )
             .order_by(ScheduledCall.crm_type)
             .all()
         )
@@ -425,6 +430,32 @@ class ScheduledCallService:
         
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found or doesn't belong to tenant")
+
+        # Build a lookup of tenant active phone numbers so we can attach phone_number_id
+        # for each CSV row even when default_phone_number_id is not provided.
+        tenant_active_numbers = db.query(PhoneNumber).filter(
+            and_(
+                PhoneNumber.tenant_id == tenant_id,
+                PhoneNumber.status == "active",
+            )
+        ).all()
+
+        def _normalize_phone(value: Optional[str]) -> str:
+            if not value:
+                return ""
+            raw = value.strip()
+            if not raw:
+                return ""
+            digits = "".join(ch for ch in raw if ch.isdigit())
+            if raw.startswith("+"):
+                return f"+{digits}" if digits else raw
+            return f"+{digits}" if digits else raw
+
+        phone_number_id_by_number = {}
+        for pn in tenant_active_numbers:
+            normalized = _normalize_phone(pn.phone_number)
+            if normalized:
+                phone_number_id_by_number[normalized] = str(pn.id)
         
         reader = csv.DictReader(io.StringIO(csv_content))
         successful_rows = 0
@@ -446,6 +477,16 @@ class ScheduledCallService:
                 
                 # Use default_agent_id for all rows (no need to check CSV for agent_id)
                 agent_uuid = default_agent_id
+                row_phone_number = row['phone_number'].strip()
+
+                # Resolve phone_number_id priority:
+                # 1) Explicit query param default_phone_number_id
+                # 2) Match row phone_number with tenant active phone numbers
+                resolved_phone_number_id = default_phone_number_id
+                if not resolved_phone_number_id:
+                    resolved_phone_number_id = phone_number_id_by_number.get(
+                        _normalize_phone(row_phone_number)
+                    )
                 
                 # Parse call_time_utc
                 call_time_str = row['call_time_utc'].strip()
@@ -480,13 +521,13 @@ class ScheduledCallService:
                     result = crm_service.create_scheduled_call_item(
                         container_id=board_record.crm_container_id,
                         field_map=field_map,
-                        phone_number=row['phone_number'],
+                        phone_number=row_phone_number,
                         agent_id=str(agent_uuid),
                         call_time_utc=scheduled_time_utc.isoformat(),
                         tenant_id=str(tenant_id),
                         user_id=str(user_id),
                         batch_id=batch_id,  # Same batch_id for all items in this CSV
-                        phone_number_id=default_phone_number_id  # ✅ Pass phone_number_id for all CSV calls
+                        phone_number_id=resolved_phone_number_id  # Pass resolved phone_number_id per row
                     )
                     
                     if result:

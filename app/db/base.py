@@ -34,3 +34,4 @@ from app.models.job_description import JobDescription
 
 # Recruiting / resumes
 from app.models.resume import Resume
+from app.models.resume_interview import ResumeInterview

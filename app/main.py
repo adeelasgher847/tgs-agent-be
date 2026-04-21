@@ -39,7 +39,7 @@ def _patch_binary_formats(schema_obj):
             _patch_binary_formats(v)
     elif isinstance(schema_obj, list):
         for item in schema_obj:
-            _patch_binary_formats(item)
+            _patch_binary_formats(item) 
 
 
 def custom_openapi():
@@ -99,7 +99,7 @@ def read_root():
     return create_success_response(
         {"message": "Welcome to the Multi-Tenant SaaS Voice Agent Backend!"},
         "API is running successfully"
-    )
+    )   
     
 app.include_router(api_router, prefix="/api/v1")
 app.include_router(health_router)
