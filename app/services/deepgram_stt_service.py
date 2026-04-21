@@ -181,16 +181,19 @@ class DeepgramSTTService:
 
             try:
                 endpointing = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 300) or 300)
+                # SDK urlencodes Python bools as True/False; Deepgram requires "true"/"false"
+                # or handshake returns HTTP 400 + dg-error: Invalid query string.
+                interim_q: str = "true" if self._interim_results else "false"
                 with self._client.listen.v1.connect(
                     model=settings.DEEPGRAM_STT_MODEL or "nova-3",
                     encoding=dg_encoding,
                     sample_rate=self._sample_rate,
                     channels=1,
                     language=self._language_code,
-                    interim_results=self._interim_results,
-                    smart_format=True,
+                    interim_results=interim_q,
+                    smart_format="true",
                     endpointing=endpointing,
-                    punctuate=True,
+                    punctuate="true",
                 ) as connection:
                     connection.on(EventType.MESSAGE, on_message)
                     connection.on(EventType.ERROR, on_error)
@@ -267,8 +270,8 @@ class DeepgramSTTService:
                 request=audio_content,
                 model=model,
                 language=lang,
-                smart_format=True,
-                punctuate=True,
+                smart_format="true",
+                punctuate="true",
                 encoding=enc,
                 sample_rate=rate,
             )
