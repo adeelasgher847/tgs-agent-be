@@ -135,6 +135,7 @@ class JobDescriptionListOut(BaseModel):
     employment_type: Optional[EmploymentTypeEnum] = None
     key_responsibilities: List[str] = Field(default_factory=list)
     required_certifications: List[str] = Field(default_factory=list)
+    matching_criteria: Dict[str, Any] = Field(default_factory=dict)
     raw_text: Optional[str] = None
     pass_match_threshold: float = 50.0
     created_at: datetime
