@@ -8,6 +8,25 @@ from app.core.logger import logger
 
 router = APIRouter()
 
+
+def _get_event_value(event, key: str):
+    """Read value from Stripe Event regardless of object/dict shape."""
+    if isinstance(event, dict):
+        return event.get(key)
+    return getattr(event, key, None)
+
+
+def _extract_checkout_session(event):
+    """Extract checkout session object from Stripe event payload safely."""
+    data = _get_event_value(event, "data")
+    if isinstance(data, dict):
+        return data.get("object") or {}
+    if data is None:
+        return {}
+    # Stripe SDK returns StripeObject with attributes.
+    return getattr(data, "object", None) or {}
+
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     """Handle Stripe webhook events. Plan purchase updates subscription only (no credits)."""
@@ -29,12 +48,14 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         )
     
     try:
-        event_type = event['type']
+        event_type = _get_event_value(event, "type")
+        if not event_type:
+            return {"status": "ignored", "reason": "missing_event_type"}
         
         if event_type == 'checkout.session.completed':
             logger.info("STRIPE WEBHOOK: checkout.session.completed")
-            session = event.get('data', {}).get('object', {}) or {}
-            session_id = session.get('id')
+            session = _extract_checkout_session(event)
+            session_id = _get_event_value(session, "id")
             if not session_id:
                 return {"status": "ignored", "reason": "no_session_id"}
 
