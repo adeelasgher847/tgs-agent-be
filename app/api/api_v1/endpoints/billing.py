@@ -7,6 +7,10 @@ from app.services.stripe_service import StripeService
 from app.core.logger import logger
 
 router = APIRouter()
+IGNORED_EVENT_TYPES = {
+    "charge.updated",
+    "payment_intent.created",
+}
 
 
 def _get_event_value(event, key: str):
@@ -66,8 +70,12 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 return {**result, "message": "Webhook processed successfully"}
             return {"status": "failed", "reason": "sync_failed"}
         
+        if event_type in IGNORED_EVENT_TYPES:
+            logger.info(f"Ignored event type: {event_type}")
+            return {"status": "ignored", "event_type": event_type}
+
         logger.info(f"Unhandled event type: {event_type}")
-        return {"status": "success"}
+        return {"status": "success", "event_type": event_type}
     except Exception as e:
         logger.error(f"Error handling webhook: {str(e)}", exc_info=True)
         raise HTTPException(
