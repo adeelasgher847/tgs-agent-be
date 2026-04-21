@@ -88,6 +88,10 @@ class ResumeInterviewCalendarItem(BaseModel):
     )
     job_description_id: UUID | None = None
     call_session_id: UUID | None = None
+    transcript: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Call transcript for linked call session, if available.",
+    )
 
 
 class ResumeInterviewSessionLinkItem(BaseModel):
@@ -118,6 +122,26 @@ class ResumeInterviewCallMediaResponse(BaseModel):
     transcript: list[dict[str, Any]] = Field(
         default_factory=list,
         description='Conversation turns with at least "role" and "content" (from TranscriptMessage rows if any, else call_transcript JSON).',
+    )
+    transcript_source: str = Field(
+        ...,
+        description='One of: "transcript_messages", "call_session", "empty".',
+    )
+
+
+class ResumeInterviewTrelloCallMediaResponse(BaseModel):
+    """Call media resolved from Trello card via resume interview id."""
+
+    resume_interview_id: UUID
+    resume_id: UUID
+    trello_card_id: str
+    call_session_id: UUID
+    recording_url: str | None = None
+    twilio_call_sid: str | None = None
+    call_session_status: str | None = None
+    transcript: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description='Conversation turns with at least "role" and "content".',
     )
     transcript_source: str = Field(
         ...,

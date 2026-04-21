@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
@@ -27,11 +28,13 @@ from app.schemas.resume_interview import (
     ResumeInterviewSessionLinkItem,
     ResumeInterviewScheduleRequest,
     ResumeInterviewStatusUpdateRequest,
+    ResumeInterviewTrelloCallMediaResponse,
 )
 from app.services.scheduled_call_service import ScheduledCallService
 from app.services.transcript_service import transcript_service
 from app.services.crm_config_service import CRMConfigService
 from app.services.phone_number_service import phone_number_service
+from app.services.trello_service import TrelloService
 from app.utils.response import create_success_response
 
 router = APIRouter()
@@ -155,8 +158,13 @@ def _to_calendar_item(
     *,
     interview: ResumeInterview,
     resume: Resume,
+    call_session: CallSession | None,
+    db: Session,
 ) -> ResumeInterviewCalendarItem:
     candidate_name, candidate_email = _calendar_candidate_name_email(resume)
+    transcript: list[dict[str, Any]] = []
+    if call_session:
+        transcript, _ = _transcript_for_call_session(db, call_session)
     return ResumeInterviewCalendarItem(
         interview_id=interview.id,
         resume_id=interview.resume_id,
@@ -169,6 +177,7 @@ def _to_calendar_item(
         candidate_email=candidate_email,
         job_description_id=interview.job_description_id,
         call_session_id=interview.call_session_id,
+        transcript=transcript,
     )
 
 
@@ -603,11 +612,13 @@ def list_resume_interviews_for_calendar(
     range_end = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
 
     rows = (
-        db.query(ResumeInterview, Resume)
+        db.query(ResumeInterview, Resume, CallSession)
         .join(Resume, Resume.id == ResumeInterview.resume_id)
+        .outerjoin(CallSession, CallSession.id == ResumeInterview.call_session_id)
         .filter(
             ResumeInterview.tenant_id == user.current_tenant_id,
             Resume.tenant_id == user.current_tenant_id,
+            or_(CallSession.id.is_(None), CallSession.tenant_id == user.current_tenant_id),
             ResumeInterview.scheduled_at >= range_start,
             ResumeInterview.scheduled_at < range_end,
         )
@@ -616,7 +627,10 @@ def list_resume_interviews_for_calendar(
         .all()
     )
 
-    payload = [_to_calendar_item(interview=interview, resume=resume) for interview, resume in rows]
+    payload = [
+        _to_calendar_item(interview=interview, resume=resume, call_session=call_session, db=db)
+        for interview, resume, call_session in rows
+    ]
     return create_success_response(payload, "Resume interviews for calendar retrieved successfully")
 
 
@@ -795,6 +809,129 @@ def get_resume_interview_call_media(
         transcript_source=transcript_source,
     )
     return create_success_response(payload, "Resume interview call media retrieved successfully")
+
+
+@router.get(
+    "/{resume_interview_id}/call-media-from-trello",
+    response_model=SuccessResponse[ResumeInterviewTrelloCallMediaResponse],
+)
+def get_resume_interview_call_media_from_trello(
+    resume_interview_id: UUID,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Resolve call_session_id from linked Trello card and return transcript/recording.
+
+    Lookup path:
+    ResumeInterview.id -> crm_item_id (Trello card) -> card call_session_id -> CallSession.
+    """
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    interview = (
+        db.query(ResumeInterview)
+        .filter(
+            ResumeInterview.id == resume_interview_id,
+            ResumeInterview.tenant_id == user.current_tenant_id,
+        )
+        .first()
+    )
+    if interview is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume interview not found")
+    if not interview.crm_item_id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No CRM card linked with this resume interview",
+        )
+    if interview.crm_type and interview.crm_type.lower() != "trello":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Resume interview CRM type is '{interview.crm_type}', expected 'trello'",
+        )
+
+    scheduled_link = (
+        db.query(ScheduledCall)
+        .filter(
+            ScheduledCall.resume_interview_id == interview.id,
+            ScheduledCall.tenant_crm_config_id.isnot(None),
+        )
+        .order_by(ScheduledCall.created_at.desc())
+        .first()
+    )
+    crm_config: CRMConfig | None = None
+    if scheduled_link and scheduled_link.tenant_crm_config_id:
+        crm_config = crm_config_service.get_crm_config_by_id(db, scheduled_link.tenant_crm_config_id)
+
+    if not crm_config or crm_config.crm_type.lower() != "trello":
+        crm_config = crm_config_service.get_crm_config_by_type(db, "trello")
+
+    if not crm_config:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Trello CRM configuration not found")
+
+    api_token = None
+    if crm_config.additional_config:
+        try:
+            additional_cfg = json.loads(crm_config.additional_config)
+            if isinstance(additional_cfg, dict):
+                api_token = additional_cfg.get("api_token")
+        except (TypeError, ValueError):
+            api_token = None
+    if not api_token:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Trello api_token missing in CRM configuration",
+        )
+
+    trello = TrelloService(api_key=crm_config.encrypted_api_key, api_token=api_token)
+    call_session_text = trello.get_item_call_session_id(
+        item_id=interview.crm_item_id,
+        container_id=crm_config.container_id,
+    )
+    if not call_session_text:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Call Session ID not found on linked Trello card",
+        )
+
+    try:
+        call_session_uuid = UUID(str(call_session_text).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Invalid Call Session ID on Trello card",
+        )
+
+    call_session = (
+        db.query(CallSession)
+        .filter(
+            CallSession.id == call_session_uuid,
+            CallSession.tenant_id == user.current_tenant_id,
+        )
+        .first()
+    )
+    if call_session is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Call session from Trello card not found in this tenant",
+        )
+
+    transcript, transcript_source = _transcript_for_call_session(db, call_session)
+    payload = ResumeInterviewTrelloCallMediaResponse(
+        resume_interview_id=interview.id,
+        resume_id=interview.resume_id,
+        trello_card_id=interview.crm_item_id,
+        call_session_id=call_session.id,
+        recording_url=call_session.recording_url,
+        twilio_call_sid=call_session.twilio_call_sid or interview.twilio_call_sid,
+        call_session_status=call_session.status,
+        transcript=transcript,
+        transcript_source=transcript_source,
+    )
+    return create_success_response(
+        payload,
+        "Resume interview call media from Trello retrieved successfully",
+    )
 
 
 @router.get(
