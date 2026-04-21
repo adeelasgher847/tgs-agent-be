@@ -627,6 +627,12 @@ def list_resume_interviews_for_calendar(
         .all()
     )
 
+    if not rows:
+        return create_success_response(
+            [],
+            "No resume interviews found for the selected date range",
+        )
+
     payload = [
         _to_calendar_item(interview=interview, resume=resume, call_session=call_session, db=db)
         for interview, resume, call_session in rows
