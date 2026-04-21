@@ -3,33 +3,6 @@ from typing import Optional
 from app.core.logger import logger
 
 
-def get_gather_language(agent) -> str:
-    """Get language code for Twilio Gather based on agent language."""
-    if not agent or not getattr(agent, "language", None):
-        return "en-US"
-
-    # Map agent language to Twilio supported languages
-    language_map = {
-        "en": "en-US",
-        "es": "es-ES",
-        "hi": "hi-IN",
-        "ar": "ar-SA",
-        "zh": "zh-CN",
-        "ur": "ur-PK",
-    }
-
-    return language_map.get(agent.language, "en-US")
-
-
-def get_stt_language_code(agent) -> str:
-    """
-    Canonical STT language code resolver.
-    Keep STT and Gather on the same language mapping so agent language
-    selected during create/update is honored consistently everywhere.
-    """
-    return get_gather_language(agent)
-
-
 def get_agent_voice(agent) -> str:
     """Get the appropriate Twilio voice based on agent's voice type and language."""
     if not agent:

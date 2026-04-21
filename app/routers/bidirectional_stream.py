@@ -149,7 +149,6 @@ from app.voice.conversation_orchestrator import (
 )
 from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
-from app.services.voice_language_service import get_stt_language_code
 
 # Import utilities and services
 from app.utils.audio_utils import (
@@ -481,7 +480,7 @@ class BidirectionalStreamHandler:
             # (Removed first-media DB marker for outbound gating)
             # Lazily create STT pipeline and push audio
             if self._stt_pipeline is None:
-                language_code = get_stt_language_code(self.agent)
+                language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
                 self._stt_pipeline = SttPipeline(
                     language_code=language_code,
                     on_interim=self._maybe_process_interim,

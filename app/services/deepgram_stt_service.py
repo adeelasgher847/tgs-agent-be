@@ -48,7 +48,7 @@ class DeepgramSTTService:
             single_utterance: bool,
         ) -> None:
             self._client = client
-            self._language_code = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en-US"
+            self._language_code = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en"
             self._encoding = encoding.upper() if encoding else "MULAW"
             self._sample_rate = sample_rate or 8000
             self._interim_results = interim_results
@@ -244,7 +244,7 @@ class DeepgramSTTService:
         if not self._client:
             return {"error": "Deepgram client not initialized", "transcript": "", "confidence": 0.0}
 
-        lang = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en-US"
+        lang = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en"
         model = settings.DEEPGRAM_STT_MODEL or "nova-3"
         enc: Optional[str] = None
         rate: int = 8000

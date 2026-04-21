@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"
-    DEEPGRAM_STT_LANGUAGE: str = "en-US"
+    DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
     DEEPGRAM_STT_ENDPOINTING_MS: int = 300  # silence (ms) before utterance end / speech_final
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 

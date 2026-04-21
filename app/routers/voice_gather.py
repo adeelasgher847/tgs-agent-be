@@ -110,21 +110,8 @@ def get_agent_voice(agent) -> str:
     return voice_map.get(language, voice_map["en"]).get(voice_type, "Polly.Joanna")
 
 
-def get_gather_language(agent) -> str:
-    """Get language code for Twilio Gather based on agent language"""
-    if not agent or not agent.language:
-        return "en-US"
-    
-    language_map = {
-        "en": "en-US",
-        "es": "es-ES",
-        "hi": "hi-IN",
-        "ar": "ar-SA",
-        "zh": "zh-CN",
-        "ur": "ur-PK"
-    }
-    
-    return language_map.get(agent.language, "en-US")
+# Twilio Gather speech recognition language (English only for this product path).
+TWILIO_GATHER_LANGUAGE = "en-US"
 
 
 async def add_to_transcript(
@@ -208,7 +195,7 @@ async def gather_greeting_webhook(
         
         # Create TwiML response
         response = VoiceResponse()
-        gather_language = get_gather_language(agent)
+        gather_language = TWILIO_GATHER_LANGUAGE
         
         # GREETING: Say "Hello" when call starts! 👋
         greeting_text = "Hello"
@@ -372,7 +359,7 @@ async def gather_speech_callback_webhook(
                 logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
         
         # Get agent voice and language
-        gather_language = get_gather_language(agent)
+        gather_language = TWILIO_GATHER_LANGUAGE
         
         # Get real-time call duration
         call_duration = get_call_duration_realtime(call_session) if call_session else "00:00"
@@ -411,8 +398,7 @@ async def gather_speech_callback_webhook(
                     # STEP 3 & 4: Convert and transcribe with Deepgram STT
                     stt_start = datetime.now(timezone.utc)
                     
-                    # Get language from agent
-                    stt_language_code = get_gather_language(agent)
+                    stt_language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
                     
                     logger.info(f"🎙️ Transcribing with Deepgram STT (language: {stt_language_code})...")
                     

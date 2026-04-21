@@ -56,11 +56,7 @@ from app.services.voice_conversation_service import (
     get_conversation_state,
     update_conversation_state,
 )
-from app.services.voice_language_service import (
-    get_gather_language,
-    get_agent_voice,
-    get_stt_language_code,
-)
+from app.services.voice_language_service import get_agent_voice
 from app.services.voice_analysis_service import voice_analysis_service
 from app.services.voice_call_service import initiate_call as initiate_call_service
 from app.services.voice_analytics_service import voice_analytics_service
@@ -859,9 +855,8 @@ async def handle_recording_callback(
                 audio_content = audio_response.content
                 logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
                 
-                # Resolve STT language from agent configuration
-                language_code = get_stt_language_code(agent)
-                
+                language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
+
                 logger.debug(f"🎙️ Transcribing with Deepgram STT (language: {language_code})...")
                 
                 from app.services.deepgram_stt_service import deepgram_stt_service
@@ -1133,9 +1128,8 @@ async def handle_gather_speech_webhook(
                 
                 from app.services.deepgram_stt_service import deepgram_stt_service
                 
-                # Resolve STT language from agent configuration
-                language_code = get_stt_language_code(agent)
-                
+                language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
+
                 logger.debug(f"🎙️ Transcribing with Deepgram STT (language: {language_code})...")
                 
                 stt_result = await deepgram_stt_service.transcribe_audio_chunk(
@@ -1208,7 +1202,7 @@ async def handle_gather_speech_webhook(
                         method='POST',
                         enhanced=True,
                         profanity_filter=False,
-                        language=get_gather_language(agent)
+                        language="en-US"
                     )
                     
                     # Fallback
@@ -1244,7 +1238,7 @@ async def handle_gather_speech_webhook(
             method='POST',
             enhanced=True,
             profanity_filter=False,
-            language=get_gather_language(agent)
+            language="en-US"
         )
         
         return HTMLResponse(str(response), media_type="application/xml")
