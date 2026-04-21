@@ -46,8 +46,16 @@ class Settings(BaseSettings):
     GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
-    GOOGLE_STT_SAMPLE_RATE: int = 8000  # Twilio uses 8kHz for MULAW
+    # Deprecated fallback; prefer STT_SAMPLE_RATE for provider-neutral STT settings.
+    GOOGLE_STT_SAMPLE_RATE: int = 8000
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
+
+    # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
+    DEEPGRAM_API_KEY: str = ""
+    DEEPGRAM_STT_MODEL: str = "nova-3"
+    DEEPGRAM_STT_LANGUAGE: str = "en-US"
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 300  # silence (ms) before utterance end / speech_final
+    STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
@@ -67,8 +75,6 @@ class Settings(BaseSettings):
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     VOICE_QUICK_ACK_PROBABILITY: float = 0.38
     
-    FRONTEND_URL: str = "http://localhost:3000"  
-    
     # Stripe settings
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
@@ -82,13 +88,6 @@ class Settings(BaseSettings):
     PRO_PLAN_AGENT_LIMIT: int = 50
     PRO_PLAN_MONTHLY_CALLS: int = 10000
     
-    # Twilio settings
-    TWILIO_ACCOUNT_SID: str = ""
-    TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_PHONE_NUMBER: str = ""
-    
-    # Webhook settings
-    ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
     # Rate limiting settings
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True

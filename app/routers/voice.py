@@ -56,7 +56,11 @@ from app.services.voice_conversation_service import (
     get_conversation_state,
     update_conversation_state,
 )
-from app.services.voice_language_service import get_gather_language, get_agent_voice
+from app.services.voice_language_service import (
+    get_gather_language,
+    get_agent_voice,
+    get_stt_language_code,
+)
 from app.services.voice_analysis_service import voice_analysis_service
 from app.services.voice_call_service import initiate_call as initiate_call_service
 from app.services.voice_analytics_service import voice_analytics_service
@@ -271,13 +275,13 @@ async def handle_call_events_webhook(
         to_number = form_data.get("To", "")
         direction = form_data.get("Direction", "")
         
-        # Note: Speech input is now handled by Google Cloud STT via WebSocket
+        # Note: Speech input is now handled by Deepgram STT via WebSocket
         # The old Twilio SpeechResult is no longer used
         # speech_result = form_data.get("SpeechResult", "")
         # confidence = form_data.get("Confidence", "")
         # speech_duration = form_data.get("SpeechDuration", "")
         
-        logger.info(f"🎤 Speech handling is now managed by Google Cloud STT WebSocket")
+        logger.info(f"🎤 Speech handling is now managed by Deepgram STT WebSocket")
         
         # Get call session using callSessionId first, then fallback to Twilio CallSid.
         call_session = None
@@ -486,7 +490,7 @@ async def handle_call_events_webhook(
             if not call_status:
                 logger.warning(f"⚠️ No call status provided - cannot update status or broadcast")
         
-        # Speech input is now handled by Google Cloud STT via WebSocket
+        # Speech input is now handled by Deepgram STT via WebSocket
         # The WebSocket will transcribe audio and generate responses
         # This webhook now primarily handles call status updates and plays pending responses
         
@@ -769,7 +773,7 @@ async def handle_recording_callback(
     VAPI-style Recording Callback Webhook
     
     When user stops speaking (silence detected), Twilio sends the recording here.
-    We download it, transcribe with Google STT, generate LLM response, and return TwiML.
+    We download it, transcribe with Deepgram STT, generate LLM response, and return TwiML.
     
     This is the simple, synchronous approach similar to feature/openai branch.
     """
@@ -855,25 +859,14 @@ async def handle_recording_callback(
                 audio_content = audio_response.content
                 logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
                 
-                # Get language from agent
-                language_code = "en-US"
-                if agent and hasattr(agent, 'language'):
-                    language_map = {
-                        "en": "en-US",
-                        "es": "es-ES",
-                        "hi": "hi-IN",
-                        "ar": "ar-SA",
-                        "zh": "zh-CN",
-                        "ur": "ur-PK"
-                    }
-                    language_code = language_map.get(agent.language, "en-US")
+                # Resolve STT language from agent configuration
+                language_code = get_stt_language_code(agent)
                 
-                logger.debug(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
+                logger.debug(f"🎙️ Transcribing with Deepgram STT (language: {language_code})...")
                 
-                # Transcribe with Google STT
-                from app.services.google_stt_service import google_stt_service
+                from app.services.deepgram_stt_service import deepgram_stt_service
                 
-                stt_result = await google_stt_service.transcribe_audio_chunk_streaming(
+                stt_result = await deepgram_stt_service.transcribe_audio_chunk(
                     audio_content=audio_content,
                     language_code=language_code
                 )
@@ -881,7 +874,7 @@ async def handle_recording_callback(
                 transcript = stt_result.get("transcript", "").strip()
                 confidence = stt_result.get("confidence", 0.0)
                 
-                logger.info(f"📝 Google STT Transcript: '{transcript}'")
+                logger.info(f"📝 Deepgram STT Transcript: '{transcript}'")
                 logger.debug(f"📊 Confidence: {confidence:.2f}")
                 
                 # If we have a transcript, process it
@@ -908,7 +901,7 @@ async def handle_recording_callback(
                             "call_sid": call_sid,
                             "recording_sid": recording_sid,
                             "agent_id": str(agent.id) if agent else None,
-                            "source": "google_stt"
+                            "source": "deepgram_stt"
                         }
                     )
                     
@@ -975,7 +968,7 @@ async def handle_recording_callback(
                 
                 else:
                     # No transcript - ask user to repeat
-                    logger.info(f"⚠️ No transcript from Google STT")
+                    logger.info(f"⚠️ No transcript from Deepgram STT")
                     response = VoiceResponse()
 
                     # Natural "didn't catch that" response
@@ -1138,38 +1131,26 @@ async def handle_gather_speech_webhook(
                 
                 logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
                 
-                # Send to Google Cloud STT
-                from app.services.google_stt_service import google_stt_service
+                from app.services.deepgram_stt_service import deepgram_stt_service
                 
-                # Get language
-                language_code = "en-US"
-                if agent and hasattr(agent, 'language'):
-                    language_map = {
-                        "en": "en-US",
-                        "es": "es-ES",
-                        "hi": "hi-IN",
-                        "ar": "ar-SA",
-                        "zh": "zh-CN",
-                        "ur": "ur-PK"
-                    }
-                    language_code = language_map.get(agent.language, "en-US")
+                # Resolve STT language from agent configuration
+                language_code = get_stt_language_code(agent)
                 
-                logger.debug(f"🎙️ Transcribing with Google Cloud STT (language: {language_code})...")
+                logger.debug(f"🎙️ Transcribing with Deepgram STT (language: {language_code})...")
                 
-                # Transcribe with Google STT
-                stt_result = await google_stt_service.transcribe_audio_chunk_streaming(
+                stt_result = await deepgram_stt_service.transcribe_audio_chunk(
                     audio_content=audio_content,
                     language_code=language_code
                 )
                 
-                google_transcript = stt_result.get("transcript", "")
-                google_confidence = stt_result.get("confidence", 0.0)
+                dg_transcript = stt_result.get("transcript", "")
+                dg_confidence = stt_result.get("confidence", 0.0)
                 
-                logger.info(f"📝 Google STT Transcript: '{google_transcript}'")
-                logger.debug(f"📊 Google STT Confidence: {google_confidence:.2f}")
+                logger.info(f"📝 Deepgram STT Transcript: '{dg_transcript}'")
+                logger.debug(f"📊 Deepgram STT Confidence: {dg_confidence:.2f}")
                 
-                # Use Google transcript (more accurate)
-                final_transcript = google_transcript if google_transcript else speech_result
+                # Use Deepgram transcript (more accurate)
+                final_transcript = dg_transcript if dg_transcript else speech_result
                 
                 if final_transcript:
                     # Add to transcript
@@ -1179,13 +1160,13 @@ async def handle_gather_speech_webhook(
                         final_transcript, 
                         db,
                         message_type="speech",
-                        confidence=google_confidence
+                        confidence=dg_confidence
                     )
                     
                     # Generate LLM response
                     response_text = await VoiceLoggingService.generate_agent_response(
                         speech_text=final_transcript,
-                        confidence=google_confidence,
+                        confidence=dg_confidence,
                         agent=agent,
                         db=db,
                         call_session_id=call_session.id

@@ -4,7 +4,7 @@ Handles both STT (incoming audio) and TTS (outgoing audio) simultaneously
 Target latency: 400–500ms (Vapi-style).
 
 STT → LLM → TTS FLOW:
-- Twilio sends audio every 20ms (MULAW 8kHz). We push each chunk to Google STT.
+- Twilio sends audio every 20ms (MULAW 8kHz). We push each chunk to Deepgram STT.
 - As soon as ~30ms of STT stream produces interim result → send to LLM (30ms throttle).
 - LLM streams response → each flush (sentence/time ~200ms) → TTS chunk.
 - When VAD detects user silent (final): the TTS we built from interim is already playing/queued;
@@ -41,7 +41,7 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
 
 4. Turn-Taking & Barge-In:
    - ENABLED - Agent stops immediately when user starts speaking
-   - Detection: 2+ words (Google interim confidence is unreliable, often 0.00)
+   - Detection: 2+ words (interim confidence can be noisy; barge-in should not depend on confidence)
    - Checked FIRST before interim gating (highest priority!)
    - TTS queue cleared (prevents old audio from resuming)
    - Waits for final transcript before responding (no partial interruptions)
@@ -120,9 +120,8 @@ import math
 import re
 from app.core.logger import logger
 
-# Google built-in endpointing (VAD) will be used via streaming_recognize
+# Deepgram STT is used via SttPipeline (app/voice/stt_pipeline.py).
 
-from app.services.google_stt_service import google_stt_service
 from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
@@ -150,6 +149,7 @@ from app.voice.conversation_orchestrator import (
 )
 from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
+from app.services.voice_language_service import get_stt_language_code
 
 # Import utilities and services
 from app.utils.audio_utils import (
@@ -213,7 +213,7 @@ class BidirectionalStreamHandler:
         self.agent_id = agent_id
         self.db = db
         
-        # STT (Input) state - Google streaming_recognize with built-in VAD
+        # STT (Input) state - Deepgram streaming with endpointing (speech_final)
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
@@ -429,7 +429,7 @@ class BidirectionalStreamHandler:
             logger.error(f"Error in precache_common_phrases: {e}")
     
     async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio and feed to Google streaming STT"""
+        """Handle incoming audio from Twilio and feed to Deepgram streaming STT"""
         try:
             import time
             
@@ -481,12 +481,13 @@ class BidirectionalStreamHandler:
             # (Removed first-media DB marker for outbound gating)
             # Lazily create STT pipeline and push audio
             if self._stt_pipeline is None:
-                language = getattr(self.agent, "language", None)
-                language_code = (language + "-US") if language == "en" else language
+                language_code = get_stt_language_code(self.agent)
                 self._stt_pipeline = SttPipeline(
                     language_code=language_code,
                     on_interim=self._maybe_process_interim,
                     on_final=self._process_transcript,
+                    call_session_id=self.call_session_id,
+                    agent_id=self.agent_id,
                 )
 
             await self._stt_pipeline.feed_audio_chunk(audio_data)
@@ -494,7 +495,7 @@ class BidirectionalStreamHandler:
         except Exception as e:
             logger.error(f"Error handling media message: {e}", exc_info=True)
     
-    # Removed chunk-based STT processing; relying on Google streaming endpointing
+    # Removed chunk-based STT processing; relying on Deepgram streaming endpointing
     
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
@@ -605,7 +606,7 @@ class BidirectionalStreamHandler:
             # ✅ BARGE-IN CHECK FIRST - Highest priority! Stop agent immediately!
             # Detection: 2+ words, agent currently speaking
             # NOTE: We check this BEFORE interim gate because barge-in should work
-            # even with low confidence (Google interim often returns 0.00 confidence)
+            # even with low confidence (interim confidence can be low/noisy)
             if self._tts_pipeline and self._tts_pipeline.is_speaking and word_count >= 2:
                 # Set cancel flag, clear queue, and mark agent as not speaking
                 await self._tts_pipeline.cancel_current_and_clear_queue()
@@ -3013,9 +3014,19 @@ async def bidirectional_stream_websocket(
     
     except WebSocketDisconnect:
         logger.info(f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}")
+        try:
+            if getattr(handler, "_stt_pipeline", None):
+                handler._stt_pipeline.finish_session()
+        except Exception as e:
+            logger.debug(f"STT cleanup on disconnect failed: {e}")
     
     except Exception as e:
         logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
+        try:
+            if getattr(handler, "_stt_pipeline", None):
+                handler._stt_pipeline.finish_session()
+        except Exception as cleanup_err:
+            logger.debug(f"STT cleanup on exception failed: {cleanup_err}")
     
     finally:
         db.close()

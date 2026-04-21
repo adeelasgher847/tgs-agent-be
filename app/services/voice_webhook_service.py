@@ -90,7 +90,7 @@ async def handle_call_events_webhook(
         direction = form_data.get("Direction", "")
 
         logger.info(
-            "🎤 Speech handling is now managed by Google Cloud STT WebSocket"
+            "🎤 Speech handling is now managed by Deepgram STT WebSocket"
         )
 
         call_session = None
@@ -450,7 +450,7 @@ async def handle_call_events_webhook(
                                 ).isoformat(),
                             },
                         )
-                    ))
+                    )
                 except Exception as e:  # pragma: no cover
                     logger.error("❌ Failed to broadcast call failed event: %s", e)
 

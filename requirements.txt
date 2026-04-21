@@ -28,7 +28,7 @@ bcrypt==4.1.2
 authlib
 google-auth
 google-auth-oauthlib
-google-cloud-speech
+deepgram-sdk
 google-cloud-texttospeech
 sendgrid
 geopy

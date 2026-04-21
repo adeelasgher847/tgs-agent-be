@@ -2,7 +2,7 @@ import asyncio
 from typing import Awaitable, Callable, Optional
 
 from app.core.logger import logger
-from app.services.google_stt_service import google_stt_service
+from app.services.deepgram_stt_service import deepgram_stt_service
 
 
 InterimCallback = Callable[[str, float], Awaitable[None]]
@@ -11,7 +11,7 @@ FinalCallback = Callable[[str, float], Awaitable[None]]
 
 class SttPipeline:
     """
-    Thin wrapper around the Google streaming STT session.
+    Thin wrapper around the Deepgram streaming STT session.
     Responsible for:
     - Managing the underlying streaming session lifecycle.
     - Feeding MULAW audio bytes.
@@ -23,20 +23,23 @@ class SttPipeline:
         language_code: Optional[str],
         on_interim: InterimCallback,
         on_final: FinalCallback,
+        call_session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         self._language_code = language_code
         self._on_interim = on_interim
         self._on_final = on_final
+        self._call_session_id = call_session_id
+        self._agent_id = agent_id
 
         self._stt_session = None
         self._reader_task: Optional[asyncio.Task] = None
-        self._started = False
 
     async def _ensure_session(self) -> None:
         if self._stt_session is not None:
             return
 
-        self._stt_session = google_stt_service.create_streaming_session(
+        self._stt_session = deepgram_stt_service.create_streaming_session(
             language_code=self._language_code,
             encoding="MULAW",
             sample_rate=8000,
@@ -61,7 +64,15 @@ class SttPipeline:
 
                 if not result:
                     continue
+                if result.get("done"):
+                    break
                 if result.get("error"):
+                    logger.warning(
+                        "[STT] session reported error payload: %s (call_session_id=%s, agent_id=%s)",
+                        result.get("error"),
+                        self._call_session_id,
+                        self._agent_id,
+                    )
                     continue
 
                 transcript = (result.get("transcript") or "").strip()
@@ -102,7 +113,21 @@ class SttPipeline:
         try:
             if self._stt_session:
                 self._stt_session.finish()
+            if self._reader_task and not self._reader_task.done():
+                self._reader_task.cancel()
         except Exception:
             # Never raise on shutdown path
             pass
+
+    async def aclose(self) -> None:
+        """
+        Async-friendly shutdown path.
+        Keeps current behavior (`finish_session`) and optionally waits for reader exit.
+        """
+        self.finish_session()
+        if self._reader_task:
+            try:
+                await asyncio.wait_for(self._reader_task, timeout=0.5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
 
