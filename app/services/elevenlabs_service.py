@@ -7,6 +7,16 @@ import requests
 from app.core.config import settings
 from typing import Dict, Any, Optional, Iterator
 
+# ---------------------------------------------------------------------------
+# TEMPORARY: hardcoded key for Render/env debugging only.
+# - Set to "" after you confirm behaviour; then rely on ELEVENLABS_API_KEY only.
+# - Revoke this key in the ElevenLabs dashboard after testing (it will exist in git history).
+# ---------------------------------------------------------------------------
+_ELEVENLABS_KEY_OVERRIDE = (
+    "sk_7632f3116b44b513713bd92e28cd88f6ba6b1aa15b29eee9"
+)
+
+
 class ElevenLabsService:
     """Service class for handling ElevenLabs operations"""
     
@@ -18,8 +28,11 @@ class ElevenLabsService:
     def get_api_key(self) -> str:
         """Get ElevenLabs API key"""
         if self._api_key is None:
-            api_key = (settings.ELEVENLABS_API_KEY or "").strip()
-            
+            override = (_ELEVENLABS_KEY_OVERRIDE or "").strip()
+            env_key = (settings.ELEVENLABS_API_KEY or "").strip()
+            # Override wins when non-empty (use for one-off deploy verification).
+            api_key = override or env_key
+
             if not api_key:
                 raise RuntimeError("ElevenLabs API key not found. Please set ELEVENLABS_API_KEY in your config.")
             
