@@ -64,6 +64,7 @@ class CallInitiateRequest(BaseModel):
     agentId: str
     userPhoneNumber: str
     phone_number_id: Optional[str] = None  # Optional, user ka selected phone number ID (VAPI style)
+    jd_context: Optional[Dict[str, Any]] = None  # Optional JD payload from scheduler/n8n
     tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
     user_id: Optional[str] = None  # Optional, for n8n webhook calls
     

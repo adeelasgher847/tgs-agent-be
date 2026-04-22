@@ -197,6 +197,39 @@ def _parse_utc_datetime(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _extract_jd_context(
+    *,
+    job: JobDescription | None,
+    metadata: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    raw_metadata = metadata if isinstance(metadata, dict) else {}
+    raw_ctx = raw_metadata.get("jd_context")
+    if isinstance(raw_ctx, dict):
+        jd_id = str(raw_ctx.get("jd_id") or "").strip()
+        jd_title = str(raw_ctx.get("jd_title") or "").strip()
+        jd_summary = str(raw_ctx.get("jd_summary") or "").strip()
+        if jd_id or jd_title or jd_summary:
+            return {
+                "jd_id": jd_id,
+                "jd_title": jd_title,
+                "jd_summary": jd_summary,
+            }
+
+    if not job:
+        return None
+
+    jd_id = str(job.id)
+    jd_title = str(job.job_title or "").strip()
+    jd_summary = str(job.raw_text or "").strip()
+    if jd_summary and len(jd_summary) > 500:
+        jd_summary = f"{jd_summary[:500].rstrip()}..."
+    return {
+        "jd_id": jd_id,
+        "jd_title": jd_title,
+        "jd_summary": jd_summary,
+    }
+
+
 def _resolve_crm_config_id(db: Session, user: User, explicit: UUID | None) -> UUID:
     if explicit:
         return explicit
@@ -261,17 +294,31 @@ async def _create_scheduled_interview(
     if resume is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume not found")
 
-    if body.job_description_id:
+    resume_job_description_id = resume.job_description_id
+    if (
+        body.job_description_id
+        and resume_job_description_id
+        and body.job_description_id != resume_job_description_id
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "job_description_id does not match the resume-linked job description",
+        )
+
+    resolved_job_description_id = body.job_description_id or resume_job_description_id
+    job: JobDescription | None = None
+    if resolved_job_description_id:
         job = (
             db.query(JobDescription)
             .filter(
-                JobDescription.id == body.job_description_id,
+                JobDescription.id == resolved_job_description_id,
                 JobDescription.tenant_id == user.current_tenant_id,
             )
             .first()
         )
         if job is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+    jd_context = _extract_jd_context(job=job, metadata=body.metadata)
 
     scheduled_at_utc = _parse_utc_datetime(body.call_time_utc)
 
@@ -294,7 +341,7 @@ async def _create_scheduled_interview(
     interview = ResumeInterview(
         tenant_id=user.current_tenant_id,
         resume_id=body.resume_id,
-        job_description_id=body.job_description_id,
+        job_description_id=resolved_job_description_id,
         agent_id=body.agent_id,
         candidate_phone=body.phone_number,
         scheduled_at=scheduled_at_utc,
@@ -319,6 +366,7 @@ async def _create_scheduled_interview(
             call_time_utc=scheduled_at_utc.isoformat(),
             crm_config_id=crm_config_id,
             phone_number_id=str(body.phone_number_id) if body.phone_number_id else None,
+            jd_context=jd_context,
         )
         interview.status = "IN_PROGRESS"
         interview.crm_item_id = schedule_result.get("item_id")
