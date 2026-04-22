@@ -23,6 +23,9 @@ class TrelloService(BaseCRMService):
         {"key": "batch_id", "title": "Batch ID", "type": "text"},
         {"key": "call_session_id", "title": "Call Session ID", "type": "text"},
         {"key": "phone_number_id", "title": "Phone Number ID", "type": "text"},
+        {"key": "jd_id", "title": "JD ID", "type": "text"},
+        {"key": "jd_title", "title": "JD Title", "type": "text"},
+        {"key": "jd_summary", "title": "JD Summary", "type": "text"},
         {"key": "email_sent", "title": "Email Sent", "type": "dropdown"},
     ]
 
@@ -405,6 +408,49 @@ class TrelloService(BaseCRMService):
             
             return card_data
         except Exception as exc:
+            return None
+
+    def update_item_jd_context(
+        self,
+        *,
+        item_id: str,
+        jd_context: Dict[str, str],
+    ) -> Optional[dict]:
+        """
+        Persist JD context to card description as a resilient fallback.
+        """
+        try:
+            get_url = f"{self.API_URL}/cards/{item_id}"
+            get_params = self._auth_params()
+            get_params.update({"fields": "desc"})
+            get_resp = requests.get(get_url, params=get_params, timeout=20)
+            get_resp.raise_for_status()
+            card = get_resp.json() or {}
+
+            existing_desc = str(card.get("desc") or "").strip()
+            lines = []
+            if jd_context.get("jd_id"):
+                lines.append(f"JD ID: {jd_context['jd_id']}")
+            if jd_context.get("jd_title"):
+                lines.append(f"JD Title: {jd_context['jd_title']}")
+            if jd_context.get("jd_summary"):
+                lines.append(f"JD Summary: {jd_context['jd_summary']}")
+            if not lines:
+                return {"id": item_id}
+
+            jd_block = "\n".join(lines)
+            if existing_desc:
+                new_desc = f"{existing_desc}\n{jd_block}"
+            else:
+                new_desc = jd_block
+
+            update_url = f"{self.API_URL}/cards/{item_id}"
+            update_params = self._auth_params()
+            update_params.update({"desc": new_desc})
+            update_resp = requests.put(update_url, params=update_params, timeout=20)
+            update_resp.raise_for_status()
+            return update_resp.json()
+        except Exception:
             return None
 
     def update_item_status(

@@ -566,7 +566,8 @@ class ScheduledCallService:
         agent_id: uuid.UUID,
         call_time_utc: str,
         crm_config_id: uuid.UUID,
-        phone_number_id: Optional[str] = None  # ✅ Add phone_number_id parameter
+        phone_number_id: Optional[str] = None,  # ✅ Add phone_number_id parameter
+        jd_context: Optional[Dict[str, Any]] = None,
     ) -> dict:
         """
         Create a single scheduled call item in CRM container (Monday.com, ClickUp, Jira, Trello).
@@ -587,6 +588,7 @@ class ScheduledCallService:
         """
         from app.services.crm_config_service import CRMConfigService
         from app.services.crm_service_factory import CRMServiceFactory
+        from app.services.trello_service import TrelloService
         
         # Get or create container for user
         board_record, field_map = ScheduledCallService.get_or_create_board_for_user(
@@ -660,6 +662,15 @@ class ScheduledCallService:
                 raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item")
             
             item_id = result.get("id") or result.get("key") or result.get("shortLink", "")
+
+            # Preserve JD context on Trello cards for n8n -> /voice/call/initiate propagation.
+            if (
+                jd_context
+                and board_record.crm_type == "trello"
+                and isinstance(crm_service, TrelloService)
+                and item_id
+            ):
+                crm_service.update_item_jd_context(item_id=item_id, jd_context=jd_context)
             
             return {
                 "item_id": item_id,

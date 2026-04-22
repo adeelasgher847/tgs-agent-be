@@ -226,6 +226,11 @@ async def initiate_call(
             to_number=call_request.userPhoneNumber,
             call_type="outbound",
         )
+        if call_request.jd_context:
+            call_session.call_metadata = call_session.call_metadata or {}
+            call_session.call_metadata["jd_context"] = call_request.jd_context
+            db.commit()
+            db.refresh(call_session)
 
         webhook_url = (
             f"{base_url}/api/v1/voice/gather/streaming?"
