@@ -110,25 +110,31 @@ class CallSessionService:
                                    ended_reason: str = None, success_evaluation: str = None,
                                    cost: float = None) -> Optional[CallLog]:
         """Update call log entry for a call session"""
-        call_log = db.query(CallLog).filter(CallLog.call_session_id == call_session.id).first()
-        
-        if call_log:
-            if ended_reason:
-                call_log.ended_reason = ended_reason
-            if success_evaluation:
-                call_log.success_evaluation = success_evaluation
-            if cost is not None:
-                call_log.cost = cost
-            if call_session.end_time:
-                call_log.end_time = call_session.end_time
-            if call_session.duration:
-                call_log.duration = call_session.duration
+        try:
+            call_log = db.query(CallLog).filter(CallLog.call_session_id == call_session.id).first()
             
-            call_log.updated_at = datetime.utcnow()
-            db.commit()
-            db.refresh(call_log)
-        
-        return call_log
+            if call_log:
+                if ended_reason:
+                    call_log.ended_reason = ended_reason
+                if success_evaluation:
+                    call_log.success_evaluation = success_evaluation
+                if cost is not None:
+                    call_log.cost = cost
+                if call_session.end_time:
+                    call_log.end_time = call_session.end_time
+                if call_session.duration:
+                    call_log.duration = call_session.duration
+                
+                call_log.updated_at = datetime.utcnow()
+                db.commit()
+                db.refresh(call_log)
+            
+            return call_log
+
+        except Exception as e:
+            db.rollback()
+            logger.error("DB error in _update_call_log_for_session (session=%s): %s", call_session.id, e, exc_info=True)
+            return None
     
     def get_call_session_by_id(self, db: Session, session_id: uuid.UUID) -> Optional[CallSession]:
         """
@@ -173,41 +179,45 @@ class CallSessionService:
         Returns:
             Updated CallSession object or None
         """
-        call_session = self.get_call_session_by_id(db, session_id)
-        if call_session:
-            call_session.status = status
-            
-            # Update ended_reason, success_evaluation, and cost on call_session
-            if ended_reason:
-                call_session.ended_reason = ended_reason
-            if success_evaluation:
-                call_session.success_evaluation = success_evaluation
-            if cost is not None:
-                call_session.cost = cost
-            
-            if status in ["completed", "failed", "busy"]:
-                call_session.end_time = datetime.now(timezone.utc)
-                if call_session.start_time:
-                    duration = (call_session.end_time - call_session.start_time).total_seconds()
-                    call_session.duration = int(duration)
-            
-            db.commit()
-            db.refresh(call_session)
-            
-            # Update associated call log
-            self._update_call_log_for_session(db, call_session, ended_reason, success_evaluation, cost)
+        try:
+            call_session = self.get_call_session_by_id(db, session_id)
+            if call_session:
+                call_session.status = status
+                
+                if ended_reason:
+                    call_session.ended_reason = ended_reason
+                if success_evaluation:
+                    call_session.success_evaluation = success_evaluation
+                if cost is not None:
+                    call_session.cost = cost
+                
+                if status in ["completed", "failed", "busy"]:
+                    call_session.end_time = datetime.now(timezone.utc)
+                    if call_session.start_time:
+                        duration = (call_session.end_time - call_session.start_time).total_seconds()
+                        call_session.duration = int(duration)
+                
+                db.commit()
+                db.refresh(call_session)
+                
+                self._update_call_log_for_session(db, call_session, ended_reason, success_evaluation, cost)
 
-            if (
-                (call_session.call_type or "").lower() == "inbound"
-                and status in ("completed", "failed", "busy")
-                and tenant_has_active_inbound_crm(db, call_session.tenant_id)
-            ):
-                try:
-                    schedule_inbound_crm_sync(call_session.id)
-                except Exception as sync_exc:  # pragma: no cover
-                    logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
-        
-        return call_session
+                if (
+                    (call_session.call_type or "").lower() == "inbound"
+                    and status in ("completed", "failed", "busy")
+                    and tenant_has_active_inbound_crm(db, call_session.tenant_id)
+                ):
+                    try:
+                        schedule_inbound_crm_sync(call_session.id)
+                    except Exception as sync_exc:  # pragma: no cover
+                        logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
+            
+            return call_session
+
+        except Exception as e:
+            db.rollback()
+            logger.error("DB error in update_call_session_status (session=%s status=%s): %s", session_id, status, e, exc_info=True)
+            return None
     
     def add_transcript_entry(self, db: Session, session_id: uuid.UUID, role: str, content: str, 
                            response_time: float = None) -> Optional[CallSession]:

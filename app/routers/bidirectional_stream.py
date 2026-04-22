@@ -279,6 +279,11 @@ class BidirectionalStreamHandler:
         # to Deepgram after the call ends (prevents silence-frame leak post call-end).
         self._stt_active = True
 
+        # Signals the main receive loop to break cleanly when the call ends internally
+        # (goodbye phrase, [END_CALL] token, voicemail, etc.) so the WebSocket closes
+        # without waiting for Twilio to send a `stop` event.
+        self._stop_event = asyncio.Event()
+
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         self._turn_response_seed_text = ""
@@ -2652,8 +2657,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 }
                             )
                         except Exception as e:
-                            logger.debug(f"WebSocket close failed after goodbye: {e}")
-                    
+                            logger.debug(f"WebSocket broadcast failed after goodbye: {e}")
+
+                    # Shut down STT + LLM + TTS and signal the main loop to exit
+                    asyncio.create_task(self._full_shutdown())
                     return True
                     
                 except Exception as e:
@@ -2709,6 +2716,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
                 except Exception as e:
                     logger.debug(f"WebSocket broadcast after [END_CALL]: {e}")
+
+            # Shut down STT + LLM + TTS and signal the main loop to exit
+            asyncio.create_task(self._full_shutdown())
         except Exception as e:
             logger.error(f"Error ending call after [END_CALL]: {e}", exc_info=True)
     
@@ -2800,8 +2810,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 }
                             )
                         except Exception as e:
-                            logger.debug(f"WebSocket close failed after voicemail detection: {e}")
-                    
+                            logger.debug(f"WebSocket broadcast failed after voicemail detection: {e}")
+
+                    # Shut down STT + LLM + TTS and signal the main loop to exit
+                    asyncio.create_task(self._full_shutdown())
                     return True
                     
                 except Exception as e:
@@ -2931,35 +2943,94 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as e:
             logger.error(f"Error in _start_background_audio_with_delay: {e}", exc_info=True)
     
-    async def handle_stop_message(self, message: dict):
-        """Handle stream stop"""
-        try:
-            # Immediately block any further media→STT feed
-            self._stt_active = False
+    async def _full_shutdown(self) -> None:
+        """
+        Unified, idempotent shutdown for all pipelines (STT, LLM, TTS).
 
-            # Stop TTS pipeline worker
-            try:
-                if self._tts_pipeline:
-                    await self._tts_pipeline.shutdown()
-            except (asyncio.TimeoutError, Exception):
-                pass
-            
-            # Stop background audio streaming
-            try:
-                await self._background_audio.stop_loop()
-            except Exception:
-                pass
-            
-            # Close STT session; aclose() sends CloseStream + closes socket so
-            # the Deepgram receive thread exits promptly instead of draining silence.
-            try:
-                if self._stt_pipeline:
-                    await self._stt_pipeline.aclose()
-            except Exception:
-                pass
-        
+        Called from every call-end path:
+          - Twilio `stop` event  (handle_stop_message)
+          - User goodbye phrase  (_check_and_end_call_if_goodbye)
+          - Agent [END_CALL]     (_end_call_after_agent_request)
+          - Voicemail detected   (_check_and_end_call_if_voicemail)
+          - WebSocket finally    (route-level cleanup)
+
+        Sets _stop_event so the main receive loop breaks out immediately
+        instead of hanging at `await websocket.receive_text()`.
+        """
+        # Idempotent guard — first caller wins, rest are no-ops
+        if self._stop_event.is_set():
+            return
+
+        self._stop_event.set()
+        self._stt_active = False
+
+        # Cancel any in-progress LLM streaming (orchestrator checks this flag)
+        if not self._tts_cancel.is_set():
+            self._tts_cancel.set()
+
+        # Shutdown TTS pipeline worker (drains queue, cancels worker task)
+        try:
+            if self._tts_pipeline:
+                await self._tts_pipeline.shutdown()
+        except Exception:
+            pass
+
+        # Stop background audio streaming
+        try:
+            await self._background_audio.stop_loop()
+        except Exception:
+            pass
+
+        # Close STT / Deepgram WebSocket (sends CloseStream, closes socket,
+        # waits up to 5 s for reader task to exit cleanly)
+        try:
+            if self._stt_pipeline:
+                await self._stt_pipeline.aclose()
+        except Exception:
+            pass
+
+    async def handle_stop_message(self, message: dict):
+        """Handle Twilio stream `stop` event — delegates to unified shutdown."""
+        try:
+            await self._full_shutdown()
         except Exception as e:
             logger.error(f"Error in handle_stop_message: {e}", exc_info=True)
+
+
+async def _receive_or_stop(
+    ws: WebSocket, stop_event: asyncio.Event
+) -> Optional[str]:
+    """
+    Race websocket.receive_text() against an internal stop_event.
+
+    Returns:
+        str  — the raw text received from Twilio.
+        None — stop_event fired first (call ended internally).
+
+    Cancels the losing task cleanly so there are no dangling coroutines.
+    """
+    recv_task = asyncio.create_task(ws.receive_text())
+    stop_task = asyncio.create_task(stop_event.wait())
+    try:
+        done, pending = await asyncio.wait(
+            [recv_task, stop_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        # Cancel and await the loser to suppress "task was destroyed" warnings
+        for t in pending:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if stop_task in done:
+            # Internal shutdown — tell the caller to break the loop
+            recv_task.cancel()
+            return None
+        return recv_task.result()
+    except Exception:
+        return None
 
 
 @router.websocket("/ws/bidirectional/{callSessionId}/{agentId}")
@@ -3001,10 +3072,15 @@ async def bidirectional_stream_websocket(
     
     try:
         while True:
-            # Receive message from Twilio
-            data = await websocket.receive_text()
+            # Race: receive next Twilio message OR stop_event (internal call end)
+            data = await _receive_or_stop(websocket, handler._stop_event)
+
+            if data is None:
+                # Internal end-call path triggered _full_shutdown + set _stop_event
+                logger.info(f"🛑 Internal stop event fired for session {callSessionId} — closing WebSocket")
+                break
+
             message = json.loads(data)
-            
             event = message.get("event")
             
             if event == "connected":
@@ -3030,18 +3106,19 @@ async def bidirectional_stream_websocket(
         logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
     
     finally:
-        # Stop media feed gate first so no more audio is pushed while we clean up.
+        # Ensure all pipelines are fully shut down (idempotent — safe if already done)
         if handler is not None:
-            handler._stt_active = False
+            try:
+                await handler._full_shutdown()
+            except Exception as e:
+                logger.debug(f"Pipeline cleanup in finally: {e}")
 
-        # Await async STT teardown: signals Deepgram CloseStream, closes socket,
-        # then waits for the reader task to exit cleanly (up to 5 s).
+        # Explicitly close the WebSocket so Twilio gets an immediate close frame
+        # instead of waiting for the TCP connection to time out.
         try:
-            stt = getattr(handler, "_stt_pipeline", None)
-            if stt is not None:
-                await stt.aclose()
-        except Exception as e:
-            logger.debug(f"STT aclose in finally failed: {e}")
+            await websocket.close()
+        except Exception:
+            pass
 
         db.close()
 

@@ -441,10 +441,10 @@ async def handle_call_events_webhook(
                         broadcast_call_ended(
                             call_session_id=str(call_session.id),
                             reason="failed",
-                            duration=0,
-                            metadata={
+                            final_data={
                                 "call_sid": call_sid,
                                 "direction": direction,
+                                "duration": 0,
                                 "timestamp": datetime.now(
                                     timezone.utc
                                 ).isoformat(),
@@ -493,10 +493,10 @@ async def handle_call_events_webhook(
                         broadcast_call_ended(
                             call_session_id=str(call_session.id),
                             reason="busy",
-                            duration=0,
-                            metadata={
+                            final_data={
                                 "call_sid": call_sid,
                                 "direction": direction,
+                                "duration": 0,
                                 "timestamp": datetime.now(
                                     timezone.utc
                                 ).isoformat(),
@@ -552,10 +552,10 @@ async def handle_call_events_webhook(
                         broadcast_call_ended(
                             call_session_id=str(call_session.id),
                             reason="no-answer",
-                            duration=0,
-                            metadata={
+                            final_data={
                                 "call_sid": call_sid,
                                 "direction": direction,
+                                "duration": 0,
                                 "timestamp": datetime.now(
                                     timezone.utc
                                 ).isoformat(),
