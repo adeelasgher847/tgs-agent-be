@@ -107,27 +107,46 @@ class SttPipeline:
             self._stt_session.push_audio(audio_data)
 
     def finish_session(self) -> None:
-        """
-        Signal the underlying STT session to finish.
+        """Signal the underlying STT session to finish.
+
+        Only pushes the sentinel (None) onto the audio queue so the sender
+        thread calls send_finalize / send_close_stream / socket.close and lets
+        start_listening() unblock naturally.  Do NOT cancel the reader task here:
+        the reader must stay alive to consume the final {"done": True} message
+        that the Deepgram thread emits after the socket closes.  Cancelling it
+        early strands the worker thread and keeps the Deepgram connection busy.
         """
         try:
             if self._stt_session:
                 self._stt_session.finish()
-            if self._reader_task and not self._reader_task.done():
-                self._reader_task.cancel()
         except Exception:
-            # Never raise on shutdown path
             pass
 
     async def aclose(self) -> None:
-        """
-        Async-friendly shutdown path.
-        Keeps current behavior (`finish_session`) and optionally waits for reader exit.
+        """Async-friendly shutdown: signal finish then wait for reader to exit.
+
+        Flow:
+        1. finish_session() → pushes None onto audio queue.
+        2. sender_loop sees None → calls _close_connection (finalize + close_stream
+           + socket.close).
+        3. start_listening() unblocks, emits {"done": True} → reader_loop breaks.
+        4. We wait up to 5 s for the reader to complete cleanly.
+        5. Only if the reader is still alive after the timeout do we cancel it
+           as a last resort (prevents resource leak on hung connections).
         """
         self.finish_session()
-        if self._reader_task:
+        if self._reader_task and not self._reader_task.done():
             try:
-                await asyncio.wait_for(self._reader_task, timeout=0.5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(
+                    asyncio.shield(self._reader_task), timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[STT] reader_loop did not finish within 5 s — cancelling")
+                self._reader_task.cancel()
+                try:
+                    await self._reader_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except asyncio.CancelledError:
                 pass
 

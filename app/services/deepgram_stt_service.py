@@ -158,15 +158,37 @@ class DeepgramSTTService:
                     {"error": str(error), "transcript": "", "confidence": 0.0, "is_final": True}
                 )
 
+            def _close_connection(conn: Any) -> None:
+                """Flush remaining audio, signal end-of-stream to Deepgram, then force
+                the underlying WebSocket closed so `start_listening()` exits promptly.
+                Running in the sender thread (not the thread blocked in start_listening).
+                """
+                try:
+                    conn.send_finalize()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[Deepgram STT] send_finalize: %s", exc)
+                try:
+                    conn.send_close_stream()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[Deepgram STT] send_close_stream: %s", exc)
+                # After CloseStream Deepgram may still keep the socket open briefly.
+                # Force-close the underlying WebSocket so start_listening()'s receive
+                # loop gets an EOF and unblocks without waiting for the server timeout.
+                try:
+                    ws = getattr(conn, "_websocket", None)
+                    if ws is not None:
+                        closer = getattr(ws, "close", None)
+                        if callable(closer):
+                            closer()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[Deepgram STT] websocket.close: %s", exc)
+
             def sender_loop(conn: Any) -> None:
                 while True:
                     chunk = self._audio_q.get()
                     if chunk is None:
                         self._session_end_reason = "client_finish"
-                        try:
-                            conn.send_close_stream()
-                        except Exception as exc:  # noqa: BLE001
-                            logger.debug("[Deepgram STT] send_close_stream: %s", exc)
+                        _close_connection(conn)
                         break
                     if chunk:
                         try:

@@ -275,6 +275,10 @@ class BidirectionalStreamHandler:
         # Goodbye detection state
         self._call_ended = False  # Track if call has been ended due to goodbye detection
 
+        # STT feed gate: set to False on stop/disconnect so media frames are not pushed
+        # to Deepgram after the call ends (prevents silence-frame leak post call-end).
+        self._stt_active = True
+
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         self._turn_response_seed_text = ""
@@ -476,6 +480,10 @@ class BidirectionalStreamHandler:
             # Skip audio if still in grace period (system messages)
             if self._skip_audio_until and time.time() < self._skip_audio_until:
                 return  # Don't send to STT - this is likely system message/ringing
+
+            # Guard: stop feeding after call ends (e.g. Twilio keeps sending silence frames)
+            if not self._stt_active:
+                return
 
             # (Removed first-media DB marker for outbound gating)
             # Lazily create STT pipeline and push audio
@@ -2926,6 +2934,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
     async def handle_stop_message(self, message: dict):
         """Handle stream stop"""
         try:
+            # Immediately block any further media→STT feed
+            self._stt_active = False
+
             # Stop TTS pipeline worker
             try:
                 if self._tts_pipeline:
@@ -2939,10 +2950,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             except Exception:
                 pass
             
-            # Close STT session
+            # Close STT session; aclose() sends CloseStream + closes socket so
+            # the Deepgram receive thread exits promptly instead of draining silence.
             try:
                 if self._stt_pipeline:
-                    self._stt_pipeline.finish_session()
+                    await self._stt_pipeline.aclose()
             except Exception:
                 pass
         
@@ -3013,21 +3025,24 @@ async def bidirectional_stream_websocket(
     
     except WebSocketDisconnect:
         logger.info(f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}")
-        try:
-            if getattr(handler, "_stt_pipeline", None):
-                handler._stt_pipeline.finish_session()
-        except Exception as e:
-            logger.debug(f"STT cleanup on disconnect failed: {e}")
     
     except Exception as e:
         logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
-        try:
-            if getattr(handler, "_stt_pipeline", None):
-                handler._stt_pipeline.finish_session()
-        except Exception as cleanup_err:
-            logger.debug(f"STT cleanup on exception failed: {cleanup_err}")
     
     finally:
+        # Stop media feed gate first so no more audio is pushed while we clean up.
+        if handler is not None:
+            handler._stt_active = False
+
+        # Await async STT teardown: signals Deepgram CloseStream, closes socket,
+        # then waits for the reader task to exit cleanly (up to 5 s).
+        try:
+            stt = getattr(handler, "_stt_pipeline", None)
+            if stt is not None:
+                await stt.aclose()
+        except Exception as e:
+            logger.debug(f"STT aclose in finally failed: {e}")
+
         db.close()
 
 
