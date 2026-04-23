@@ -11,8 +11,15 @@ from app.utils.eleven_tts_background import (
 
 
 def test_parse_eleven_background_none_and_off():
-    assert parse_eleven_background_settings(None) == (None, 0.3)
-    assert parse_eleven_background_settings({})[0] is None
+    # No settings → default to "office" at 0.4
+    bid, lvl = parse_eleven_background_settings(None)
+    assert bid == "office"
+    assert abs(lvl - 0.4) < 1e-6
+
+    # Empty dict → default to "office"
+    assert parse_eleven_background_settings({}) == ("office", 0.4)
+
+    # Explicitly disabled → None
     assert parse_eleven_background_settings({"eleven_background": "none"})[0] is None
     assert parse_eleven_background_settings({"eleven_background": "OFF"})[0] is None
 
@@ -32,13 +39,18 @@ def test_parse_eleven_background_clamps_level():
     assert lvl == 0.55
 
 
-def test_parse_unknown_preset_is_off():
-    assert parse_eleven_background_settings({"eleven_background": "not_a_real_preset"})[0] is None
+def test_parse_unknown_preset_falls_back_to_default():
+    # Unknown preset → fall back to default "office" (not None)
+    assert parse_eleven_background_settings({"eleven_background": "not_a_real_preset"})[0] == "office"
 
 
 def test_cache_key_fragment_empty_without_background():
-    assert cache_key_background_fragment({}) == ""
+    # Explicitly disabled → empty suffix
     assert cache_key_background_fragment({"eleven_background": "none"}) == ""
+    assert cache_key_background_fragment({"eleven_background": "off"}) == ""
+    # Default (no key set) → office is used → non-empty suffix
+    assert cache_key_background_fragment({}) != ""
+    assert cache_key_background_fragment(None) != ""
 
 
 def test_cache_key_fragment_with_background():

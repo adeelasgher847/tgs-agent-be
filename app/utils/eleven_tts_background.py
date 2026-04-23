@@ -2,8 +2,11 @@
 ElevenLabs-only: mix 8 kHz mu-law TTS with looping background beds (presets + optional files).
 
 Agent settings (tts_settings_json):
-- eleven_background: preset id or "none"/"off" to disable
-- eleven_background_level: linear gain on background before sum (0.0–0.55, default 0.3)
+- eleven_background: preset id or "none"/"off" to disable (default: "office")
+- eleven_background_level: mix level 0.0–0.55 (default 0.4)
+
+Mixing formula uses voice headroom to prevent clipping:
+  mixed = int(voice * VOICE_HEADROOM) + int(background * level)
 """
 
 from __future__ import annotations
@@ -19,8 +22,13 @@ from app.utils.audio_utils import (
     ulaw_to_linear_sample,
 )
 
-DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.3
+DEFAULT_ELEVEN_BACKGROUND_PRESET = "office"
+DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.4
 MAX_ELEVEN_BACKGROUND_LEVEL = 0.55
+
+# Voice is scaled to this fraction to leave headroom for background addition.
+# At 0.85 voice + 0.15 headroom: peak sum stays within ±32767.
+VOICE_HEADROOM = 0.85
 
 # Display catalog (API). File override: app/resources/eleven_tts_backgrounds/{id}.ulaw
 ELEVEN_BACKGROUND_CATALOG: list[dict[str, str]] = [
@@ -62,27 +70,35 @@ def parse_eleven_background_settings(
     settings_json: Optional[dict[str, Any]],
 ) -> tuple[Optional[str], float]:
     """
-    Returns (background_id or None if off/invalid, clamped level).
+    Returns (background_id, clamped_level).
+
+    Defaults to ("office", 0.4) when not explicitly configured.
+    Returns (None, level) only when explicitly disabled via "off"/"none"/"false"/"0".
     """
-    if not settings_json:
-        return None, DEFAULT_ELEVEN_BACKGROUND_LEVEL
-
-    raw = settings_json.get("eleven_background")
-    if raw is None:
-        return None, DEFAULT_ELEVEN_BACKGROUND_LEVEL
-    key = str(raw).strip().lower()
-    if key in ("", "none", "off", "false", "0"):
-        return None, DEFAULT_ELEVEN_BACKGROUND_LEVEL
-
-    level_raw = settings_json.get("eleven_background_level", DEFAULT_ELEVEN_BACKGROUND_LEVEL)
+    level_raw = (settings_json or {}).get("eleven_background_level", DEFAULT_ELEVEN_BACKGROUND_LEVEL)
     try:
         level = float(level_raw)
     except (TypeError, ValueError):
         level = DEFAULT_ELEVEN_BACKGROUND_LEVEL
     level = max(0.0, min(MAX_ELEVEN_BACKGROUND_LEVEL, level))
 
+    if not settings_json:
+        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
+
+    raw = settings_json.get("eleven_background")
+    if raw is None:
+        # Not set at all → use default office preset
+        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
+
+    key = str(raw).strip().lower()
+    if key in ("", "none", "off", "false", "0"):
+        # Explicitly disabled
+        return None, level
+
     if key not in _VALID_IDS:
-        return None, DEFAULT_ELEVEN_BACKGROUND_LEVEL
+        # Unknown preset → fall back to default
+        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
+
     return key, level
 
 
@@ -112,13 +128,16 @@ def _synthetic_loop_mulaw(preset_id: str) -> bytes:
     slow = 0.0
     out = bytearray()
 
+    # Gains tuned so that at level=0.4 with VOICE_HEADROOM=0.85 the background
+    # sits at roughly -15 to -20 dB relative to typical voice → audible but not
+    # overwhelming.  Peak sum (voice*0.85 + bg*level) stays within ±32767.
     gains = {
-        "soft_noise": 1200.0,
-        "office": 900.0,
-        "cafe": 1500.0,
-        "outdoor": 1000.0,
+        "soft_noise": 5_000.0,
+        "office": 8_000.0,
+        "cafe": 11_000.0,
+        "outdoor": 9_000.0,
     }
-    gain = gains.get(preset_id, 800.0)
+    gain = gains.get(preset_id, 6_000.0)
 
     for i in range(n):
         p = _pinkish_sample(state, rng)
@@ -161,7 +180,11 @@ def get_background_loop_bytes(preset_id: str) -> bytes:
 
 
 def mix_mulaw_bytes(voice: bytes, background_id: str, level: float) -> bytes:
-    """Mix full mu-law buffer with looping background (byte-aligned 8 kHz)."""
+    """Mix full mu-law buffer with looping background (byte-aligned 8 kHz).
+
+    Voice is scaled by VOICE_HEADROOM (0.85) before summing to guarantee
+    the combined signal never exceeds ±32767 (no hard clipping / distortion).
+    """
     if not voice or level <= 0.0:
         return voice
     loop = get_background_loop_bytes(background_id)
@@ -174,7 +197,7 @@ def mix_mulaw_bytes(voice: bytes, background_id: str, level: float) -> bytes:
         v = ulaw_to_linear_sample(vb)
         b = ulaw_to_linear_sample(loop[pos])
         pos = (pos + 1) % lim
-        m = v + int(b * level)
+        m = int(v * VOICE_HEADROOM) + int(b * level)
         m = max(-32768, min(32767, m))
         out[i] = linear_to_ulaw_sample(m)
     return bytes(out)
@@ -191,6 +214,11 @@ class BackgroundFrameMixer:
         self._pos = 0
 
     def mix_frame(self, frame: bytes) -> bytes:
+        """Mix one 20ms mu-law frame with background.
+
+        Applies VOICE_HEADROOM scale to prevent clipping when adding background.
+        Safe to call on both TTS speech frames and mu-law silence (0xFF) frames.
+        """
         if self._level <= 0.0 or not frame:
             return frame
         lim = len(self._loop)
@@ -199,7 +227,7 @@ class BackgroundFrameMixer:
             v = ulaw_to_linear_sample(vb)
             b = ulaw_to_linear_sample(self._loop[self._pos])
             self._pos = (self._pos + 1) % lim
-            m = v + int(b * self._level)
+            m = int(v * VOICE_HEADROOM) + int(b * self._level)
             m = max(-32768, min(32767, m))
             out[i] = linear_to_ulaw_sample(m)
         return bytes(out)

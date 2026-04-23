@@ -220,6 +220,8 @@ class BidirectionalStreamHandler:
         # Eleven TTS background: one mixer per call; keeps loop phase across sentence chunks
         self._eleven_bg_mixer: Optional[BackgroundFrameMixer] = None
         self._eleven_bg_mixer_key: Optional[tuple] = None  # (preset_id, rounded_level) or None
+        # Continuous background task — runs for the full call duration (ElevenLabs only)
+        self._bg_task: Optional[asyncio.Task] = None
         self._use_ssml = True                # Enable SSML by default
         
         # Session data
@@ -2006,6 +2008,50 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         self._eleven_bg_mixer_key = key
         return self._eleven_bg_mixer
 
+    async def _run_continuous_background(self) -> None:
+        """
+        Vapi-style: stream background audio frames for the entire call duration.
+
+        - During TTS (is_speaking=True): TTS sender already mixes background via
+          _voice_frame_mulaw — this loop skips to avoid doubling the frame rate.
+        - During silence (is_speaking=False): injects one background frame every
+          20 ms so the caller hears a continuous ambient bed, not silence gaps.
+
+        Only active for ElevenLabs agents; returns immediately for Google TTS.
+        """
+        import base64 as _b64
+        from app.utils.audio_utils import MULAW_FRAME_BYTES as _FRM
+
+        SILENT_MULAW = bytes([0xFF]) * _FRM  # mu-law silence carrier for background
+
+        while not self._stop_event.is_set():
+            await asyncio.sleep(0.02)  # 20 ms — one telephony frame interval
+
+            if self._stop_event.is_set() or not self.stream_sid:
+                continue
+
+            if self.is_speaking:
+                # TTS pipeline is actively streaming; its _voice_frame_mulaw handles
+                # background mixing frame-by-frame.  Skip here to keep frame rate = 50 fps.
+                continue
+
+            mixer = self._get_or_create_eleven_bg_mixer()
+            if mixer is None:
+                # Not an ElevenLabs agent, or background explicitly disabled.
+                continue
+
+            bg_frame = mixer.mix_frame(SILENT_MULAW)
+            try:
+                payload = _b64.b64encode(bg_frame).decode("utf-8")
+                await self.websocket.send_json({
+                    "event": "media",
+                    "streamSid": self.stream_sid,
+                    "media": {"payload": payload},
+                })
+            except Exception:
+                # WebSocket closed (hangup) — exit cleanly.
+                break
+
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
@@ -2145,13 +2191,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         need_bridge = False
                                         bridge_sent = True
 
-                                        # bridge length == overlap_bytes => exactly one frame
+                                        # bridge length == overlap_bytes => exactly one frame.
+                                        # Send bridge as-is WITHOUT background mixing — it is
+                                        # already a carefully blended crossfade; applying the
+                                        # background mixer on top would double-process the signal
+                                        # and cause the "chak-chak" distortion artefact.
                                         if fade_needed and bridge:
                                             bridge = apply_micro_fade_in(bridge, duration_ms=25.0)
                                             fade_needed = False
                                         if bridge:
                                             await send_frame(
-                                                _voice_frame_mulaw(bridge[:MULAW_FRAME_BYTES]),
+                                                bridge[:MULAW_FRAME_BYTES],
                                                 pace=True,
                                                 state=pace_state,
                                             )
@@ -2892,9 +2942,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         rec_err,
                     )
 
+            # Start continuous background loop (ElevenLabs agents only).
+            # The loop is a no-op for non-ElevenLabs providers.
+            if self._bg_task is None or self._bg_task.done():
+                self._bg_task = asyncio.create_task(self._run_continuous_background())
+
             # DO NOT start credit monitoring or greeting here!
             # Wait for first media packet (user actually picks up - VAPI-style)
-        
+
         except Exception as e:
             logger.error(f"Error in handle_start_message: {e}", exc_info=True)
     
@@ -2951,6 +3006,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         self._stop_event.set()
         self._stt_active = False
         self._pending_interim_agent_transcript = None
+
+        # Stop continuous background sender (stop_event already signals the loop;
+        # cancel ensures we don't wait for the next 20ms sleep to elapse).
+        if self._bg_task and not self._bg_task.done():
+            self._bg_task.cancel()
+        self._bg_task = None
+
         t = self._llm_response_task
         if t and not t.done():
             t.cancel()

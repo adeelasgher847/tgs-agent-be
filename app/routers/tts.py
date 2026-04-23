@@ -12,13 +12,11 @@ from app.models.tts_voice import TTSVoice
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.tts import (
-    ElevenBackgroundListOut,
     TTSProviderListOut,
     TTSVoiceListOut,
 )
 from app.services.google_tts_service import google_tts_service
 from app.services.tts_catalog_service import tts_catalog_service
-from app.utils.eleven_tts_background import list_eleven_background_catalog
 from app.utils.response import create_success_response
 
 
@@ -36,18 +34,6 @@ def list_tts_providers(
     providers = tts_catalog_service.list_providers(db, active_only=True)
     return create_success_response({"providers": providers}, "TTS providers retrieved successfully")
 
-
-@router.get("/eleven-backgrounds", response_model=SuccessResponse[ElevenBackgroundListOut])
-def list_eleven_tts_backgrounds(
-    user: User = Depends(require_tenant),
-    member_user: User = Depends(require_member_or_admin),
-):
-    """
-    Preset background beds for ElevenLabs telephony TTS only.
-    Agent setting: tts_settings_json.eleven_background (id) and optional eleven_background_level.
-    """
-    catalog = list_eleven_background_catalog()
-    return create_success_response({"backgrounds": catalog}, "ElevenLabs TTS backgrounds retrieved successfully")
 
 
 @router.get("/voices", response_model=SuccessResponse[TTSVoiceListOut])

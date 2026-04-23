@@ -115,9 +115,10 @@ async def generate_mulaw_tts(
                 voice_external_id=external_voice_id,
                 settings_json=settings_json,
             )
-            bg_id, bg_level = parse_eleven_background_settings(settings_json)
-            if bg_id:
-                audio_content = mix_mulaw_bytes(audio_content, bg_id, bg_level)
+            if (provider_slug or "").lower() == "elevenlabs":
+                bg_id, bg_level = parse_eleven_background_settings(settings_json)
+                if bg_id:
+                    audio_content = mix_mulaw_bytes(audio_content, bg_id, bg_level)
 
         # Cache for instant reuse (especially useful for repeated words/phrases)
         audio_cache[cache_key] = audio_content

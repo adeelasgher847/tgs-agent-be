@@ -156,12 +156,9 @@ def test_tts_router_lists_providers_and_voices(client, db):
         assert len(voices_data) == 1
         assert voices_data[0]["preview_audio_url"] == "https://cdn.example.com/voice_1.mp3"
 
+        # eleven-backgrounds endpoint removed; background defaults to office@0.4 automatically.
         bg_res = client.get("/api/v1/tts/eleven-backgrounds")
-        assert bg_res.status_code == 200
-        bg_list = bg_res.json()["data"]["backgrounds"]
-        ids = {b["id"] for b in bg_list}
-        assert "soft_noise" in ids
-        assert "office" in ids
+        assert bg_res.status_code == 404
     finally:
         app.dependency_overrides.pop(require_tenant, None)
         app.dependency_overrides.pop(require_member_or_admin, None)
