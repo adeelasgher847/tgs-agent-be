@@ -65,6 +65,9 @@ class CallInitiateRequest(BaseModel):
     userPhoneNumber: str
     phone_number_id: Optional[str] = None  # Optional, user ka selected phone number ID (VAPI style)
     jd_context: Optional[Dict[str, Any]] = None  # Optional JD payload from scheduler/n8n
+    # Optional: resolve resume + job from DB and enrich the agent prompt (same as jd_context.jd_id / resume_id)
+    jd_id: Optional[str] = None
+    resume_id: Optional[str] = None
     tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
     user_id: Optional[str] = None  # Optional, for n8n webhook calls
     

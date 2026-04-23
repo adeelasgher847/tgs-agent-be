@@ -313,6 +313,59 @@ class BidirectionalStreamHandler:
                 agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
+
+    def _voice_interview_addendum(self) -> str:
+        """Context from /voice/call/initiate (jd_id, resume_id) stored on call session."""
+        if not self.call_session or not self.call_session.call_metadata:
+            return ""
+        v = self.call_session.call_metadata.get("voice_dynamic_context")
+        if not v or not isinstance(v, dict):
+            return ""
+        return (v.get("system_prompt_addendum") or "").strip()
+
+    @staticmethod
+    def _strip_leading_hi_hello(phrase: str) -> str:
+        s = (phrase or "").strip()
+        low = s.lower()
+        for prefix in (
+            "hi there,",
+            "hi there",
+            "hi,",
+            "hi ",
+            "hello there,",
+            "hello there",
+            "hello,",
+            "hello ",
+        ):
+            if low.startswith(prefix):
+                return s[len(prefix) :].lstrip()
+        return s
+
+    def _greeting_text_with_resume_context(self, base: str) -> str:
+        """Greet with Hi {name} when /call/initiate resolved a resume and candidate_name."""
+        base = (base or "").strip() or "hello how are you"
+        v = (self.call_session and self.call_session.call_metadata) or {}
+        v = v.get("voice_dynamic_context") or {}
+        c = (v.get("candidate_name") or "").strip() if isinstance(v, dict) else ""
+        if not c:
+            return base
+        low = base.lower()
+        # Default / generic agent openers — always "Hi {name}, ..."
+        if low in (
+            "hello how are you",
+            "hello, how are you",
+            "hello how are you?",
+            "hi",
+            "hi there",
+            "hello",
+            "hello there",
+        ):
+            return f"Hi {c}, how are you today?"
+        # Custom first_message: lead with "Hi {name}, " + remainder without duplicate hi/hello
+        rest = self._strip_leading_hi_hello(base)
+        if not rest:
+            return f"Hi {c}, how are you today?"
+        return f"Hi {c}, {rest}"
     
     async def _precache_common_phrases(self):
         """
@@ -644,11 +697,14 @@ class BidirectionalStreamHandler:
             
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
-                # Get greeting from agent or use default
-                if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
-                    greeting_text = self.agent.first_message
+                if self.agent and hasattr(self.agent, "first_message") and self.agent.first_message:
+                    greeting_text = self._greeting_text_with_resume_context(
+                        str(self.agent.first_message)
+                    )
                 else:
-                    greeting_text = "hello how are you"
+                    greeting_text = self._greeting_text_with_resume_context(
+                        "hello how are you"
+                    )
                 
                 # Add greeting to transcript
                 await self._add_to_transcript("agent", greeting_text, "greeting")
@@ -771,11 +827,17 @@ class BidirectionalStreamHandler:
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
+            _v_add = self._voice_interview_addendum()
+            v_block = (
+                f"\n\n# THIS CALL — CANDIDATE & ROLE\n{_v_add}\n"
+                if _v_add
+                else ""
+            )
             
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
-
+{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
@@ -807,7 +869,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # CUSTOM INSTRUCTIONS
 {self.agent.system_prompt}
-
+{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
@@ -834,7 +896,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # MODEL INSTRUCTIONS
 {self.agent.model.system_prompt}
-
+{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
