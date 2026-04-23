@@ -65,7 +65,7 @@ api_router.include_router(provider.router, prefix="/providers", tags=["providers
 api_router.include_router(model.router, prefix="/models", tags=["models"])
 api_router.include_router(gemini.router, prefix="/gemini", tags=["gemini"], include_in_schema=False)
 api_router.include_router(openai.router, prefix="/openai", tags=["openai"], include_in_schema=False)
-api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
+api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=True)
 api_router.include_router(tts_router, prefix="/tts", tags=["TTS"])
 api_router.include_router(internal_tts_router, prefix="/internal/tts", tags=["Internal TTS"])
 api_router.include_router(

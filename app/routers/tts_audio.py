@@ -9,8 +9,10 @@ import hashlib
 import base64
 from urllib.parse import quote
 from app.services.google_tts_service import google_tts_service
+from app.services.elevenlabs_service import elevenlabs_service
 from app.core.config import settings
 from app.core.logger import logger
+import requests
 
 router = APIRouter()
 
@@ -126,6 +128,53 @@ async def serve_google_tts_audio(
     except Exception as e:
         logger.error(f"❌ Error generating Google TTS audio: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+
+
+@router.get("/elevenlabs/audio")
+async def serve_elevenlabs_tts_audio(
+    voice_id: str = Query(..., min_length=3, description="ElevenLabs voice ID"),
+    text: str = Query(..., min_length=1, description="Text to convert to speech"),
+    model_id: str = Query("eleven_flash_v2_5", description="ElevenLabs model ID"),
+):
+    """
+    Quick test endpoint for ElevenLabs MP3 synthesis.
+    Useful to compare local vs deployed environment credentials.
+    """
+    try:
+        logger.info(
+            f"🎤 Generating ElevenLabs MP3 TTS ('{text[:50]}...') "
+            f"[voice_id={voice_id}, model_id={model_id}]"
+        )
+        audio_content = elevenlabs_service.text_to_speech(
+            text=text.strip(),
+            voice_id=voice_id.strip(),
+            model_id=model_id.strip(),
+            output_format="mp3_44100_128",
+        )
+        return Response(
+            content=audio_content,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Type": "audio/mpeg",
+                "Content-Disposition": "inline; filename=elevenlabs-test.mp3",
+                "X-Content-Type-Options": "nosniff",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+    except RuntimeError as exc:
+        root_exc = exc.__cause__
+        if isinstance(root_exc, requests.HTTPError):
+            status_code = root_exc.response.status_code if root_exc.response else 502
+            detail = root_exc.response.text if root_exc.response is not None else str(root_exc)
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"ElevenLabs request failed: {detail}",
+            )
+        logger.error(f"❌ Error generating ElevenLabs TTS audio: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(exc)}")
+    except Exception as exc:
+        logger.error(f"❌ Error generating ElevenLabs TTS audio: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(exc)}")
 
 
 @router.get("/google-tts/cache/stats")
