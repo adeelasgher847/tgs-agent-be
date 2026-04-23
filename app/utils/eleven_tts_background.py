@@ -201,12 +201,13 @@ def _load_loop_from_file(preset_id: str) -> Optional[bytes]:
 def get_background_loop_bytes(preset_id: str) -> bytes:
     if preset_id not in _VALID_IDS:
         raise ValueError(f"Unknown ElevenLabs background preset: {preset_id}")
-    if preset_id in _loop_cache:
-        return _loop_cache[preset_id]
     loaded = _load_loop_from_file(preset_id)
     if loaded is not None:
         _loop_cache[preset_id] = loaded
+        _linear_loop_cache.pop(preset_id, None)
         return loaded
+    if preset_id in _loop_cache:
+        return _loop_cache[preset_id]
     synthetic = _synthetic_loop_mulaw(preset_id)
     _loop_cache[preset_id] = synthetic
     return synthetic
@@ -221,6 +222,12 @@ def get_background_loop_linear_samples(preset_id: str) -> list[int]:
     """
     if preset_id not in _VALID_IDS:
         raise ValueError(f"Unknown ElevenLabs background preset: {preset_id}")
+    loaded = _load_loop_from_file(preset_id)
+    if loaded is not None:
+        _loop_cache[preset_id] = loaded
+        linear = [ulaw_to_linear_sample(b) for b in loaded]
+        _linear_loop_cache[preset_id] = linear
+        return linear
     if preset_id in _linear_loop_cache:
         return _linear_loop_cache[preset_id]
     loop = get_background_loop_bytes(preset_id)

@@ -11,6 +11,10 @@ from app.core.config import settings
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
+from app.utils.eleven_tts_text import (
+    build_elevenlabs_audio_tag_prompt_block,
+    supports_elevenlabs_audio_tags,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +273,28 @@ class ConversationOrchestrator:
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
+            tts_provider = getattr(self._h.agent, "tts_provider", None) if self._h.agent else None
+            tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
+            elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
+            output_plain_text_rule = (
+                "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML or XML. "
+                "Sparse ElevenLabs bracketed audio tags like [breathes] are allowed when natural."
+                if elevenlabs_audio_tags_enabled
+                else "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. Prosody is handled by the system."
+            )
+            no_ssml_rule_base = (
+                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only. "
+                "Sparse ElevenLabs bracketed audio tags like [breathes] are allowed when natural."
+                if elevenlabs_audio_tags_enabled
+                else "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+            )
+            no_ssml_rule = (
+                "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML. "
+                "Sparse ElevenLabs bracketed audio tags like [breathes] are allowed when natural."
+                if elevenlabs_audio_tags_enabled
+                else "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
+            )
+            elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
 
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
@@ -279,7 +305,7 @@ You are {agent_name}, having a real-time phone call with a human.
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. Prosody is handled by the system.
+{output_plain_text_rule}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -290,7 +316,9 @@ Previous conversation:
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
+{no_ssml_rule_base}
+
+{elevenlabs_audio_tag_block}
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -306,7 +334,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
+{output_plain_text_rule}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -316,7 +344,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -330,7 +360,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
+{output_plain_text_rule}
 
 # CONVERSATION STATE
 Previous conversation:
@@ -339,7 +369,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
