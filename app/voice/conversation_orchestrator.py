@@ -130,45 +130,9 @@ class ConversationOrchestrator:
 
     async def process_interim(self, transcript: str, confidence: float) -> None:
         """
-        ULTRA-AGGRESSIVE interim processing for minimal latency.
-        Decides when to start LLM generation from interim, and handles barge-in.
+        Delegates to the bidirectional stream handler (single source of truth).
         """
-        if not transcript:
-            return
-
-        # Calculate word count for checks
-        word_count = len(transcript.split())
-
-        # ✅ BARGE-IN CHECK FIRST - Highest priority! Stop agent immediately!
-        # Detection: 2+ words, agent currently speaking
-        if self._h._tts_pipeline and self._h._tts_pipeline.is_speaking and word_count >= 2:
-            # Set cancel flag, clear queue, and mark agent as not speaking
-            await self._h._tts_pipeline.cancel_current_and_clear_queue()
-            # Don't process interim during barge-in - wait for final transcript
-            return
-
-        # Basic gating: confidence and minimum words (for LLM generation only)
-        if confidence < self._h._min_interim_confidence or word_count < self._h._min_interim_words:
-            return
-
-        # Ultra-aggressive throttling: only 100ms between triggers
-        now = asyncio.get_event_loop().time()
-        if (now - self._h._last_interim_sent_ts) < self._h._min_interim_interval_sec:
-            return
-
-        # ULTRA-AGGRESSIVE: Process even small advances (no minimum word requirement)
-        # This ensures we start LLM generation as soon as possible
-        if self._h._last_interim_text and transcript.startswith(self._h._last_interim_text):
-            advanced = transcript[len(self._h._last_interim_text) :].strip()
-            # Skip only if there's literally no new content
-            if not advanced:
-                return
-
-        # Passed heuristics → process immediately to start LLM generation (30ms-style trigger)
-        self._h._last_interim_text = transcript
-        self._h._last_interim_sent_ts = now
-        self._h._turn_response_started = True  # One response per turn; final will not start a second one
-        await self.generate_and_stream_response(transcript, confidence)
+        await self._h._maybe_process_interim(transcript, confidence)
 
     # ---- Quick acknowledgements ---------------------------------------
 
@@ -594,13 +558,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             actions.start_llm_response = bool(getattr(self._h, "_turn_response_started", False))
             return actions
 
-        # Final user utterance: quick-ack + full response.
-        # Quick-ack (if any) is enqueued internally; we still mark that we *may* have sent one.
-        await self.send_quick_acknowledgement(text)
-        actions.quick_ack_text = None  # selection is handled internally for now
-
-        # Full LLM response (streamed into TTS pipeline).
-        await self.generate_and_stream_response(text, confidence, is_greeting=False)
+        # Full LLM path matches bidirectional _process_transcript (commit + no duplicate interim)
+        await self._h._add_to_transcript("client", text, "speech", confidence)
+        self._h._update_booking_memory_from_user_turn(text)
+        await self._h._complete_llm_turn_after_stt_final(text, confidence)
         actions.start_llm_response = True
         actions.should_persist_history = True
 

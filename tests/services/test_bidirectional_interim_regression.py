@@ -1,0 +1,157 @@
+"""
+Regression tests: bidirectional interim → final (one interim LLM per turn, barge-in, regen).
+Remove this file if you prefer integration-only coverage.
+
+Run: pytest tests/services/test_bidirectional_interim_regression.py -q
+"""
+
+from __future__ import annotations
+
+import asyncio
+import types
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from app.routers.bidirectional_stream import BidirectionalStreamHandler as Handler
+
+
+# --- _should_regenerate_on_final (no full __init__) ---
+
+
+def _make_handler_regen(seed: str) -> SimpleNamespace:
+    h = SimpleNamespace()
+    h._turn_response_seed_text = seed
+    h._last_offered_calendar_slots = []
+    h._last_requested_calendar_date = None
+    h._last_selected_calendar_slot = None
+    h._is_booking_intent_turn = types.MethodType(Handler._is_booking_intent_turn, h)
+    h._is_booking_context_active = types.MethodType(Handler._is_booking_context_active, h)
+    h._resolve_cached_calendar_slot = types.MethodType(Handler._resolve_cached_calendar_slot, h)
+    h._normalize_turn_text = Handler._normalize_turn_text
+    h._normalize_calendar_slot_key = Handler._normalize_calendar_slot_key
+    return h
+
+
+def test_regenerate_true_when_final_text_differs() -> None:
+    h = _make_handler_regen("hello I need")
+    assert Handler._should_regenerate_on_final(h, "hello I need a refund") is True
+
+
+def test_regenerate_false_when_final_matches_seed() -> None:
+    h = _make_handler_regen("how are you today")
+    assert Handler._should_regenerate_on_final(h, "How are you today") is False
+
+
+def test_regenerate_true_when_final_empty() -> None:
+    h = _make_handler_regen("something")
+    assert Handler._should_regenerate_on_final(h, "") is True
+
+
+# --- _maybe_process_interim (lightweight __new__ instances) ---
+
+
+def _empty_handler() -> Handler:
+    h = object.__new__(Handler)
+    h._turn_response_started = False
+    h._turn_response_seed_text = ""
+    h._last_interim_text = ""
+    h._last_interim_sent_ts = 0.0
+    h._min_interim_words = 1
+    h._min_interim_confidence = 0.4
+    h._min_interim_interval_sec = 0.0
+    h._tts_pipeline = None
+    h._llm_response_task = None
+    h._pending_interim_agent_transcript = None
+    h.is_speaking = False
+    return h
+
+
+def test_second_interim_does_not_start_second_llm() -> None:
+    """A second, longer interim must not invoke generate again in the same turn."""
+
+    async def _body() -> None:
+        calls: list[str] = []
+
+        async def fake_generate(
+            self,
+            user_text: str,
+            confidence: float,
+            is_greeting: bool = False,
+            commit_agent_transcript: bool = True,
+        ) -> None:
+            calls.append(user_text)
+
+        h = _empty_handler()
+        h._should_defer_interim_response = lambda _t: False  # type: ignore[method-assign]
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._maybe_process_interim(h, "hello I", 0.5)
+            await asyncio.sleep(0)
+            await Handler._maybe_process_interim(h, "hello I need", 0.5)
+            await asyncio.sleep(0)
+
+        assert h._turn_response_started is True
+        assert len(calls) == 1
+        assert calls[0] == "hello I"
+
+    asyncio.run(_body())
+
+
+def test_barge_in_clears_turn_no_generate() -> None:
+    """
+    While the agent TTS is active, a one-word user interim triggers cancel, not a new LLM.
+    """
+
+    async def _body() -> None:
+        calls: list[str] = []
+
+        async def fake_generate(self, *a, **k) -> None:  # noqa: ARG001
+            calls.append("x")
+
+        h = _empty_handler()
+        h._turn_response_started = True
+        h._turn_response_seed_text = "seed"
+        h._last_interim_text = "x"
+        tts = SimpleNamespace(
+            is_speaking=True,
+            cancel_current_and_clear_queue=AsyncMock(),
+        )
+        h._tts_pipeline = tts
+        h._should_defer_interim_response = lambda _t: False  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = types.MethodType(Handler._cancel_inflight_llm_response, h)
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._maybe_process_interim(h, "no", 0.9)
+
+        tts.cancel_current_and_clear_queue.assert_awaited_once()
+        assert h._turn_response_started is False
+        assert h._turn_response_seed_text == ""
+        assert h._last_interim_text == ""
+        assert calls == []
+
+    asyncio.run(_body())
+
+
+def test_complete_final_regen_calls_generate_once_with_commit() -> None:
+    async def _body() -> None:
+        h = _empty_handler()
+        h._turn_response_started = True
+        h._turn_response_seed_text = "short"
+        h._llm_response_task = None
+        h._last_interim_text = "x"
+        h._tts_cancel = asyncio.Event()
+        h._tts_pipeline = SimpleNamespace(cancel_current_and_clear_queue=AsyncMock())
+        h._should_regenerate_on_final = types.MethodType(lambda _self, _ft: True, h)  # type: ignore[misc,assignment]
+        h.generate_and_stream_response = AsyncMock()  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = types.MethodType(Handler._cancel_inflight_llm_response, h)
+
+        await Handler._complete_llm_turn_after_stt_final(h, "a longer final utterance", 0.8)
+
+        assert h._turn_response_started is False
+        h.generate_and_stream_response.assert_awaited_once()  # type: ignore[attr-defined]
+        assert h.generate_and_stream_response.call_args[0][0] == "a longer final utterance"  # type: ignore[attr-defined]
+        assert h.generate_and_stream_response.call_args[1].get("commit_agent_transcript") is True  # type: ignore[attr-defined]
+
+    asyncio.run(_body())

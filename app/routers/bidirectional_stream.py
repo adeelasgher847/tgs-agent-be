@@ -5,10 +5,10 @@ Target latency: 400–500ms (Vapi-style).
 
 STT → LLM → TTS FLOW:
 - Twilio sends audio every 20ms (MULAW 8kHz). We push each chunk to Deepgram STT.
-- As soon as ~30ms of STT stream produces interim result → send to LLM (30ms throttle).
+- First qualifying ~30ms interim can start one background LLM+TTS run (one per user utterance).
 - LLM streams response → each flush (sentence/time ~200ms) → TTS chunk.
-- When VAD detects user silent (final): the TTS we built from interim is already playing/queued;
-  we do NOT start a second response (one response per turn = gapless, no duplicate).
+- When VAD yields the final STT, we either keep that interim result (if text matches) or
+  replace it with a full run using the final transcript (no duplicate stacked replies).
 
 PARALLEL TTS PIPELINE (Vapi-style):
 - User Speech → STT Interim → LLM Chunk 1 → TTS Chunk 1 Playing
@@ -55,12 +55,6 @@ SMART CHUNKING WITH OVERLAP:
            Chunk 2: "great thank" + "uhh" + "you for asking how"
   Result: Seamless transition with spoken fillers, no tak-tak distortion!
 
-5. Ambient Background Noise:
-   - DISABLED by default (caused distortion on some systems)
-   - Can be enabled via self._use_ambient_noise = True
-   - Subtle pink noise mixed with TTS audio (-46dB if enabled)
-   - Note: Use with caution, may cause audio artifacts on certain setups
-
 CACHING & LOW-LATENCY STRATEGIES:
 1. Auto-Greeting on Connect:
    - Agent speaks FIRST when call connects (no waiting for user!)
@@ -105,7 +99,7 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Optional, Dict, Iterable, List
+from typing import Any, Optional, Dict, Iterable, List
 import time
 from datetime import datetime, timezone, date
 import uuid
@@ -135,7 +129,6 @@ from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
-from app.voice.background_audio import BackgroundAudioManager
 from app.voice.conversation_orchestrator import (
     VOICE_TUNABLES,
     ConversationOrchestrator,
@@ -146,17 +139,10 @@ from app.voice.tts_only_session import TtsOnlySession
 
 # Import utilities and services
 from app.utils.audio_utils import (
-    decode_background_audio_from_base64,
-    get_background_audio_chunk,
-    apply_volume_fade,
-    mix_audio_with_background,
     ulaw_to_linear_sample,
-    linear_to_ulaw_sample,
-    iter_mulaw_20ms_frames,
     stream_mulaw_bytes_over_twilio,
     crossfade_mulaw_segments,
     build_crossfade_bridge,
-    add_ambient_noise_to_mulaw,
     MULAW_FRAME_BYTES
 )
 from app.utils.ssml_utils import (
@@ -263,19 +249,12 @@ class BidirectionalStreamHandler:
         # One response per turn (Vapi-style): when we start LLM from interim, final only commits
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         self._turn_response_seed_text = ""
+        # Single in-flight async LLM+TTS per user turn (interim is non-blocking for STT reader)
+        self._llm_response_task: Optional[asyncio.Task] = None
+        # If interim used commit=False, agent history is held here until final matching STT
+        self._pending_interim_agent_transcript: Optional[Dict[str, Any]] = None
         self._auto_greeting_sent = False
         self._recording_started = False
-        
-        # Background audio manager (embedded MP3 / ambient noise)
-        self._background_audio = BackgroundAudioManager(
-            websocket=self.websocket,
-            get_stream_sid=lambda: self.stream_sid,
-            is_speaking_flag=lambda: self.is_speaking,
-        )
-        
-        # Load background audio in background (non-blocking for fast initialization).
-        # This prevents cold start delays on first call after deploy/sleep.
-        asyncio.create_task(self._background_audio.load_from_base64_async())
 
         # Start parallel TTS pipeline worker via TtsPipeline facade
         self._tts_pipeline = TtsPipeline(self)
@@ -442,6 +421,76 @@ class BidirectionalStreamHandler:
             logger.error(f"Error handling media message: {e}", exc_info=True)
     
     # Removed chunk-based STT processing; relying on Deepgram streaming endpointing
+
+    async def _cancel_inflight_llm_response(self) -> None:
+        """Stop background LLM+TTS for this turn (barge-in or final regen)."""
+        self._pending_interim_agent_transcript = None
+        t = self._llm_response_task
+        self._llm_response_task = None
+        if t and not t.done():
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        if self._tts_pipeline:
+            await self._tts_pipeline.cancel_current_and_clear_queue()
+
+    async def _commit_pending_interim_agent_transcript(self) -> None:
+        """Persist agent text from an interim (commit=False) run once the final STT matches."""
+        p = self._pending_interim_agent_transcript
+        if not p:
+            return
+        self._pending_interim_agent_transcript = None
+        text = (p.get("text") or "").strip()
+        if not text:
+            return
+        await self._add_to_transcript(
+            "agent",
+            text,
+            "agent_response",
+            message_metadata=p.get("metadata") or {},
+        )
+
+    async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
+        """
+        Run after the user's final message is in the DB. Picks the correct LLM path:
+        - Interim+final: regenerate if final text differs, else await interim task and commit pending history.
+        - No interim: full generate from final only.
+        """
+        if self._turn_response_started:
+            should_regenerate = self._should_regenerate_on_final(transcript)
+            self._turn_response_started = False
+            self._turn_response_seed_text = ""
+            self._last_interim_text = ""
+            if should_regenerate:
+                await self._cancel_inflight_llm_response()
+                self._tts_cancel.clear()
+                await self.generate_and_stream_response(
+                    transcript,
+                    confidence,
+                    is_greeting=False,
+                    commit_agent_transcript=True,
+                )
+            else:
+                if self._llm_response_task and not self._llm_response_task.done():
+                    try:
+                        await self._llm_response_task
+                    except asyncio.CancelledError:
+                        pass
+                self._llm_response_task = None
+                await self._commit_pending_interim_agent_transcript()
+            return
+
+        self._turn_response_seed_text = ""
+        self._last_interim_text = ""
+        self._tts_cancel.clear()
+        await self.generate_and_stream_response(
+            transcript,
+            confidence,
+            is_greeting=False,
+            commit_agent_transcript=True,
+        )
     
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
@@ -463,83 +512,75 @@ class BidirectionalStreamHandler:
                 await self._send_in_progress_status(transcript, confidence)
                 self._in_progress_sent = True
             
-            # Reset interim state (user finished, ready for new response)
-            self._tts_cancel.clear()
-            self._last_interim_text = ""
-
             # Add to transcript (always)
             await self._add_to_transcript("client", transcript, "speech", confidence)
             self._update_booking_memory_from_user_turn(transcript)
 
-            # One response per turn: if we already started LLM from interim, TTS is already playing/queued
-            # When VAD detects user silent (final), we do NOT start a second response — gapless playback
-            if self._turn_response_started:
-                should_regenerate = self._should_regenerate_on_final(transcript)
-                self._turn_response_started = False
-                self._turn_response_seed_text = ""
-                if should_regenerate:
-                    if self._tts_pipeline:
-                        await self._tts_pipeline.cancel_current_and_clear_queue()
-                    await self.generate_and_stream_response(transcript, confidence)
-                return  # Interim response stays unless final meaningfully corrected it
-
-            # Generate and stream response (no interim was used for this turn, e.g. very short utterance)
-            self._turn_response_seed_text = ""
-            await self.generate_and_stream_response(transcript, confidence)
+            await self._complete_llm_turn_after_stt_final(transcript, confidence)
             
         except Exception as e:
             logger.error(f"Error processing transcript: {e}", exc_info=True)
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
-        ULTRA-AGGRESSIVE interim processing for minimal latency.
-        Processes interim STT results with 40% confidence to start LLM generation ASAP.
+        Start at most ONE early LLM+TTS run per user utterance (low latency).
+        Does not block the STT reader (background task) so the final transcript can be processed
+        while the model streams. Barge-in cancels the in-flight work.
         """
         try:
             if not transcript:
                 return
 
-            # Calculate word count for checks
             word_count = len(transcript.split())
-            
-            # ✅ BARGE-IN CHECK FIRST - Highest priority! Stop agent immediately!
-            # Detection: 2+ words, agent currently speaking
-            # NOTE: We check this BEFORE interim gate because barge-in should work
-            # even with low confidence (interim confidence can be low/noisy)
-            if self._tts_pipeline and self._tts_pipeline.is_speaking and word_count >= 2:
-                # Set cancel flag, clear queue, and mark agent as not speaking
-                await self._tts_pipeline.cancel_current_and_clear_queue()
-                
-                # Don't process interim during barge-in - wait for final transcript
+
+            # Barge-in: any user words while the agent is speaking
+            if self._tts_pipeline and self._tts_pipeline.is_speaking and word_count >= 1:
+                await self._cancel_inflight_llm_response()
+                self._turn_response_started = False
+                self._turn_response_seed_text = ""
+                self._last_interim_text = ""
+                return
+
+            # At most one interim LLM start per user turn; further partials are ignored
+            if self._turn_response_started:
                 return
 
             if self._should_defer_interim_response(transcript):
                 return
-            
-            # Basic gating: confidence and minimum words (for LLM generation only)
-            # NOTE: This comes AFTER barge-in check so that interruption works even with low confidence
+
             if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
                 return
-            
-            # Ultra-aggressive throttling: only 100ms between triggers
+
             now = asyncio.get_event_loop().time()
             if (now - self._last_interim_sent_ts) < self._min_interim_interval_sec:
                 return
-            
-            # ULTRA-AGGRESSIVE: Process even small advances (no minimum word requirement)
-            # This ensures we start LLM generation as soon as possible
+
             if self._last_interim_text and transcript.startswith(self._last_interim_text):
-                advanced = transcript[len(self._last_interim_text):].strip()
-                # Skip only if there's literally no new content
+                advanced = transcript[len(self._last_interim_text) :].strip()
                 if not advanced:
                     return
-            
-            # Passed heuristics → process immediately to start LLM generation (30ms-style trigger)
+
             self._last_interim_text = transcript
             self._last_interim_sent_ts = now
-            self._turn_response_started = True  # One response per turn; final will not start a second one
+            self._turn_response_started = True
             self._turn_response_seed_text = transcript
-            await self.generate_and_stream_response(transcript, confidence)
+
+            async def _run_interim() -> None:
+                try:
+                    await self.generate_and_stream_response(
+                        transcript,
+                        confidence,
+                        is_greeting=False,
+                        commit_agent_transcript=False,
+                    )
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"Error in interim LLM task: {e}", exc_info=True)
+
+            if self._llm_response_task and not self._llm_response_task.done():
+                self._llm_response_task.cancel()
+            self._llm_response_task = asyncio.create_task(_run_interim())
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
     
@@ -582,15 +623,23 @@ class BidirectionalStreamHandler:
             "is_final": False
         })
     
-    async def generate_and_stream_response(self, user_text: str, confidence: float, is_greeting: bool = False):
+    async def generate_and_stream_response(
+        self,
+        user_text: str,
+        confidence: float,
+        is_greeting: bool = False,
+        commit_agent_transcript: bool = True,
+    ):
         """
         Generate AI response and stream TTS in real-time WITH conversation history.
         Uses PARALLEL TTS PIPELINE (Vapi-style) for ultra-low latency.
-        
+
         Args:
             user_text: User's input text (empty for greeting)
             confidence: STT confidence score
             is_greeting: If True, uses agent's first_message instead of calling LLM
+            commit_agent_transcript: If False (interim-only run), do not write agent to DB
+                until a matching final; store pending for later commit.
         """
         try:
             from datetime import datetime, timezone
@@ -632,6 +681,9 @@ class BidirectionalStreamHandler:
             self._tts_cancel.clear()
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
+
+            if commit_agent_transcript:
+                self._pending_interim_agent_transcript = None
             
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
@@ -1187,7 +1239,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             if final_text:
                 # Two-step reliability: if booking intent exists but token is missing, run action extraction.
-                if booking_intent_turn and not self._has_calendar_token(final_text):
+                if commit_agent_transcript and booking_intent_turn and not self._has_calendar_token(final_text):
                     extracted_token = await self._extract_calendar_action_token(
                         llm_service=llm_service,
                         model_name=model_name,
@@ -1208,22 +1260,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if "[BOOK_APPOINTMENT:" in final_text:
                     transcript_text = self._strip_premature_booking_confirmation(transcript_text)
                 if transcript_text:
-                    await self._add_to_transcript(
-                        "agent",
-                        transcript_text,
-                        "agent_response",
-                        message_metadata={
-                            "user_text": user_text,
-                            "rag_trace": rag_trace,
-                        },
-                    )
+                    if commit_agent_transcript:
+                        await self._add_to_transcript(
+                            "agent",
+                            transcript_text,
+                            "agent_response",
+                            message_metadata={
+                                "user_text": user_text,
+                                "rag_trace": rag_trace,
+                            },
+                        )
+                    else:
+                        self._pending_interim_agent_transcript = {
+                            "text": transcript_text,
+                            "metadata": {
+                                "user_text": user_text,
+                                "rag_trace": rag_trace,
+                            },
+                        }
 
                 # Handle calendar tokens (fire-and-forget after TTS is already queued)
-                if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
-                    asyncio.create_task(self._handle_check_slots_token(final_text))
-                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
-                    asyncio.create_task(self._handle_book_appointment_token(final_text))
+                if commit_agent_transcript:
+                    if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
+                        asyncio.create_task(self._handle_check_slots_token(final_text))
+                    elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
+                        asyncio.create_task(self._handle_book_appointment_token(final_text))
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
     
@@ -1306,29 +1370,45 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
     def _should_regenerate_on_final(self, final_transcript: str) -> bool:
         """
-        If an interim-driven response started from incomplete booking speech,
-        allow the final transcript to replace it when it clearly adds/corrects detail.
+        If an interim run used partial STT, decide whether a final run with full text
+        is needed. Always regenerate when final normalized text differs from seed, plus
+        booking slot / correction heuristics.
         """
         if not self._turn_response_seed_text:
-            return False
-        if not self._is_booking_context_active(final_transcript):
             return False
 
         final_norm = self._normalize_turn_text(final_transcript)
         seed_norm = self._normalize_turn_text(self._turn_response_seed_text)
-        if not final_norm or final_norm == seed_norm:
+        if not final_norm:
+            return True
+        if not seed_norm:
+            return True
+
+        if final_norm == seed_norm:
+            # Text matches; only regenerate if a resolved calendar slot changed (booking)
+            if not self._is_booking_context_active(final_transcript):
+                return False
+            final_slot = self._resolve_cached_calendar_slot(final_transcript)
+            seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
+            if final_slot and seed_slot and final_slot != seed_slot:
+                return True
             return False
 
-        final_slot = self._resolve_cached_calendar_slot(final_transcript)
-        seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
-        if final_slot and final_slot != seed_slot:
-            return True
+        if self._is_booking_context_active(final_transcript) or self._is_booking_context_active(
+            self._turn_response_seed_text
+        ):
+            final_slot = self._resolve_cached_calendar_slot(final_transcript)
+            seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
+            if final_slot and seed_slot and final_slot != seed_slot:
+                return True
+            if final_norm.startswith(seed_norm) and len(final_norm) >= len(seed_norm) + 3:
+                return True
+            correction_markers = ("wrong", "no no", "not ", "already", "spell", "11 00", "11 am")
+            if any(marker in final_norm for marker in correction_markers):
+                return True
 
-        if final_norm.startswith(seed_norm) and len(final_norm) >= len(seed_norm) + 3:
-            return True
-
-        correction_markers = ("wrong", "no no", "not ", "already", "spell", "11 00", "11 am")
-        return any(marker in final_norm for marker in correction_markers)
+        # General conversation: final STT differs from what the interim used
+        return True
 
     def _update_booking_memory_from_user_turn(self, transcript: str) -> None:
         if not transcript or not self._last_offered_calendar_slots:
@@ -2175,7 +2255,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 return
                     
                     # Generate TTS audio (Google TTS auto-detects SSML)
-                    # Note: add_office_bg=False because mixing is handled during streaming
                     if self._tts_cancel.is_set() or not self.stream_sid:
                         self._prev_tts_tail = b""
                         return
@@ -2186,7 +2265,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         use_chirp3_hd=True,
                         speaking_rate=1.0,
                         use_ssml=use_ssml,
-                        add_office_bg=False,  # Background mixing handled separately
+                        add_office_bg=False,
                         agent=self.agent,
                     )
                     
@@ -2194,8 +2273,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._prev_tts_tail = b""
                         return
                     
-                    # Stream TTS CLEAN (no background mixing when AI is speaking)
-                    # Background audio loop will automatically pause when is_speaking=True
+                    # Stream TTS to Twilio (clean mu-law; crossfade + fade-in above)
                     if audio_bytes and not self._tts_cancel.is_set():
                         # Apply fade-in only at the start of the utterance to avoid "phat" / pop
                         from app.utils.audio_utils import apply_micro_fade_in
@@ -2229,8 +2307,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         # Prime Twilio jitter buffer (3 frames = 60ms) for first speak only — no sudden buffer noise
                         prime_frames = 0 if self._twilio_buffer_primed else 3
                         
-                        # Always stream clean TTS - background loop handles background separately
-                        # Background loop pauses automatically when is_speaking=True
                         await stream_mulaw_bytes_over_twilio(
                             websocket=self.websocket,
                             stream_sid=self.stream_sid,
@@ -2253,25 +2329,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         
         except Exception as e:
             logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
-    
-    async def _stream_mulaw_with_background(
-        self,
-        audio_bytes: bytes,
-        cancel: Optional[asyncio.Event] = None
-    ):
-        """
-        Stream TTS audio mixed with continuous background audio.
-        Uses proper pacing with drift correction to prevent stuttering.
-        """
-        # Delegate mixing to BackgroundAudioManager, then reuse Twilio helper
-        mixed_bytes = self._background_audio.mix_with_background(audio_bytes)
-        await stream_mulaw_bytes_over_twilio(
-            websocket=self.websocket,
-            stream_sid=self.stream_sid,
-            audio_bytes=mixed_bytes,
-            pace_20ms=True,
-            cancel=cancel,
-        )
     
     async def stream_tts_response(self, text: str):
         """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy.
@@ -2302,7 +2359,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             voice=voice,
                             use_chirp3_hd=True,
                             speaking_rate=1.0,
-                            add_office_bg=True,
+                            add_office_bg=False,
                             agent=self.agent,
                         )
                     ) if suffix else None
@@ -2314,7 +2371,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         voice=voice,
                         use_chirp3_hd=True,
                         speaking_rate=1.0,
-                        add_office_bg=True,
+                        add_office_bg=False,
                         agent=self.agent,
                     )
 
@@ -2808,10 +2865,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in _process_transcript() when confident transcript is detected
             
-            # 🎵 START BACKGROUND AUDIO LOOP - User picked up, start after 3 seconds delay
-            # Handler only decides *when* to start; manager owns implementation.
-            asyncio.create_task(self._start_background_audio_with_delay())
-
             # 👋 Send one-time immediate greeting after pickup for inbound calls.
             if (
                 self.call_session
@@ -2829,17 +2882,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
-    
-    async def _start_background_audio_with_delay(self):
-        """
-        Start background audio after 3 second delay to allow call to establish.
-        This prevents cold start issues and ensures call is fully connected before background audio starts.
-        """
-        try:
-            # Delegate to BackgroundAudioManager, preserving the 3-second delay
-            await self._background_audio.start_loop_if_enabled(delay_seconds=3.0)
-        except Exception as e:
-            logger.error(f"Error in _start_background_audio_with_delay: {e}", exc_info=True)
     
     async def _full_shutdown(self) -> None:
         """
@@ -2861,6 +2903,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
         self._stop_event.set()
         self._stt_active = False
+        self._pending_interim_agent_transcript = None
+        t = self._llm_response_task
+        if t and not t.done():
+            t.cancel()
+        self._llm_response_task = None
 
         # Cancel any in-progress LLM streaming (orchestrator checks this flag)
         if not self._tts_cancel.is_set():
@@ -2870,12 +2917,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             if self._tts_pipeline:
                 await self._tts_pipeline.shutdown()
-        except Exception:
-            pass
-
-        # Stop background audio streaming
-        try:
-            await self._background_audio.stop_loop()
         except Exception:
             pass
 

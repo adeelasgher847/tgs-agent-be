@@ -7,7 +7,6 @@ from typing import Optional, Any
 
 from app.services.google_tts_service import google_tts_service
 from app.routers.tts_audio import audio_cache, generate_cache_key
-from app.utils.audio_utils import add_ambient_noise_to_mulaw
 from app.core.config import settings
 from app.core.logger import logger
 from app.services.tts_adapter import get_tts_adapter
@@ -44,7 +43,7 @@ async def generate_mulaw_tts(
         use_chirp3_hd: Use Chirp 3 HD model
         speaking_rate: Speech rate
         use_ssml: Whether text contains SSML markup
-        add_office_bg: Add office background noise to audio (mixed at audio level)
+        add_office_bg: Deprecated; ignored (kept for call-site compatibility).
     
     Note: Google TTS natively supports SSML. Text starting with <speak> is auto-detected.
     """
@@ -53,7 +52,7 @@ async def generate_mulaw_tts(
         return b''
     
     try:
-        # Cache key aligned with existing cache strategy (include ssml and office_bg flags)
+        # Cache key aligned with existing cache strategy (include ssml flag)
         provider_slug = _resolve_tts_provider_slug(agent) or "google"
         selected_voice = voice
         if provider_slug != "google":
@@ -63,7 +62,6 @@ async def generate_mulaw_tts(
         cache_key = (
             generate_cache_key(text.strip(), lang, f"{provider_slug}:{selected_voice}", use_chirp3_hd, "mulaw")
             + ("_ssml" if use_ssml else "")
-            + ("_officebg" if add_office_bg else "")
         )
 
         if cache_key in audio_cache:
@@ -101,14 +99,6 @@ async def generate_mulaw_tts(
                 voice_external_id=external_voice_id,
                 settings_json=settings_json,
             )
-
-        # Mix office background noise if enabled (NO DOWNLOAD - generates programmatically!)
-        if add_office_bg:
-            audio_content = add_ambient_noise_to_mulaw(
-                audio_content, 
-                noise_level=0.06  # Office background noise (~-24dB) - audible but not distracting
-            )
-            logger.info(f"🔊 Added office background noise to TTS audio (noise_level: 0.06)")
 
         # Cache for instant reuse (especially useful for repeated words/phrases)
         audio_cache[cache_key] = audio_content

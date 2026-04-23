@@ -12,8 +12,8 @@ class TtsPipeline:
     - A queue of TTS tasks (text + flags).
     - A background worker that asks the handler to stream each chunk.
 
-    The heavy lifting of crossfade / jitter-buffer priming / background
-    mixing still lives on the handler via its `_stream_tts_chunk` method.
+    The heavy lifting of crossfade / jitter-buffer priming still lives on the
+    handler via its `_stream_tts_chunk` method.
     This keeps behaviour identical while making responsibilities clearer.
     """
 

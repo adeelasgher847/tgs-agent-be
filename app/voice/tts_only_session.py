@@ -62,7 +62,7 @@ class TtsOnlySession:
             voice=voice,
             use_chirp3_hd=True,
             speaking_rate=1.0,
-            add_office_bg=True,
+            add_office_bg=False,
             agent=self.agent,
         )
 
