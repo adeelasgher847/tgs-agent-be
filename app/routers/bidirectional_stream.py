@@ -34,19 +34,14 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
      * No silent gaps - natural spoken connectors keep audio flowing
    - Example: <speak>Hmm <break time="120ms"/> I think I can help with that.</speak>
 
-3. Backchannels:
-   - "mm-hmm", "I see", "okay", "right", "yeah", "got it"
-   - Triggered during long user monologues (5-7+ seconds)
-   - 30% random chance for naturalness
-
-4. Turn-Taking & Barge-In:
+3. Turn-Taking & Barge-In:
    - ENABLED - Agent stops immediately when user starts speaking
    - Detection: 2+ words (interim confidence can be noisy; barge-in should not depend on confidence)
    - Checked FIRST before interim gating (highest priority!)
    - TTS queue cleared (prevents old audio from resuming)
    - Waits for final transcript before responding (no partial interruptions)
 
-5. Persona & Variability:
+4. Persona & Variability:
    - Subtle prosody variations (95%-105% rate, ±1 semitone pitch)
    - Randomized breath/pause durations
    - Consistent voice persona from agent configuration
@@ -60,7 +55,7 @@ SMART CHUNKING WITH OVERLAP:
            Chunk 2: "great thank" + "uhh" + "you for asking how"
   Result: Seamless transition with spoken fillers, no tak-tak distortion!
 
-6. Ambient Background Noise:
+5. Ambient Background Noise:
    - DISABLED by default (caused distortion on some systems)
    - Can be enabled via self._use_ambient_noise = True
    - Subtle pink noise mixed with TTS audio (-46dB if enabled)
@@ -73,17 +68,16 @@ CACHING & LOW-LATENCY STRATEGIES:
    - Bypasses LLM entirely for instant greeting (<200ms)
    - Eliminates awkward silence at call start
 
-2. Pre-cached Common Phrases:
-   - 36+ common phrases pre-generated at startup
-   - Greetings, acknowledgements, confirmations cached
-   - <50ms response time for cached phrases (vs 500-2900ms generation)
-   - Instant "Hello", "Got it", "Thank you" responses
+2. Pre-cached Common Phrases (disabled — implementation commented in code):
+   - 36+ common phrases were pre-generated at connect to warm the MULAW TTS cache
+   - Greetings, acknowledgements, confirmations; <50ms when cache hit
+   - Re-enable by uncommenting asyncio.create_task(self._precache_common_phrases()) and the method
 
 3. Quick Acknowledgement Pattern (5-Word Rule + Probability):
    - Eligible when user says 5+ words; then only ~38% chance we send "Got it" (more natural).
    - Never used for emotional/serious content (help, emergency, problem, etc.).
-   - Instant from cache when sent; then full response streams in parallel.
-   - Example: "Got it" (50ms) → "checking that now..." (1500ms)
+   - Short ack plays first; full response streams in parallel.
+   - Example: "Got it" → "checking that now..." (full reply)
 
 4. Adaptive Max Tokens:
    - Yes/No queries: 15 tokens (ultra-fast)
@@ -92,7 +86,7 @@ CACHING & LOW-LATENCY STRATEGIES:
    - Complex queries: Full configured tokens
    - 30-60% faster LLM generation for simple queries
 
-4. TTS Client Pre-warming:
+5. TTS Client Pre-warming:
    - Google TTS client initialized at startup
    - Avoids first-call penalty (~500ms saved)
 
@@ -235,25 +229,6 @@ class BidirectionalStreamHandler:
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         self._tts_pipeline: Optional[TtsPipeline] = None
         self._elevenlabs_prev_tts_text = ""
-        
-        # Natural conversation state (backchannels & persona)
-        self._user_speech_duration = 0.0    # Track user monologue duration
-        self._last_backchannel_time = 0.0   # Prevent frequent backchannels
-        self._last_user_speech_start = 0.0  # Track when user started speaking
-        # Backchannels should be SHORT and natural (avoid long phrases that sound like interruptions)
-        self._backchannel_phrases = [
-            "mm-hmm",
-            "uh-huh",
-            "hmm",
-            "I see",
-            "okay",
-            "alright",
-            "right",
-            "yeah",
-            "got it",
-            "oh, I see",
-            "oh, okay",
-        ]
         self._use_ssml = True                # Enable SSML by default
         
         # Session data
@@ -305,9 +280,9 @@ class BidirectionalStreamHandler:
         # Start parallel TTS pipeline worker via TtsPipeline facade
         self._tts_pipeline = TtsPipeline(self)
         self._tts_worker_task = self._tts_pipeline._worker_task
-        
-        # Pre-cache common phrases in background for instant responses
-        asyncio.create_task(self._precache_common_phrases())
+
+        # Pre-cache common phrases in background for instant responses (disabled; uncomment to re-enable)
+        # asyncio.create_task(self._precache_common_phrases())
 
         # Conversation orchestrator encapsulating LLM + policy rules
         self._conversation = ConversationOrchestrator(self)
@@ -366,76 +341,34 @@ class BidirectionalStreamHandler:
                 if greeting_text:
                     return greeting_text
         return None
-    
-    async def _precache_common_phrases(self):
-        """
-        Pre-generate and cache common phrases for instant playback.
-        Runs in background during initialization.
-        """
-        try:
-            # Common phrases for instant responses (greetings, confirmations, acknowledgements)
-            common_phrases = [
-                # Greetings
-                "Hello",
-                "Hi there",
-                "Hi",
-                "Good morning",
-                "Good afternoon",
-                "Good evening",
-                
-                # Acknowledgements (Quick feedback)
-                "Got it",
-                "I see",
-                "Okay",
-                "Sure",
-                "Alright",
-                "Perfect",
-                "Great",
-                "Understood",
-                
-                # Confirmations
-                "Yes",
-                "No",
-                "Absolutely",
-                "Of course",
-                
-                # Thinking/Processing
-                "Let me check that",
-                "One moment please",
-                "Just a second",
-                "Let me see",
-                
-                # Transitions
-                "Thank you",
-                "Thanks",
-                "You're welcome",
-                
-                # Closings
-                "Goodbye",
-                "Have a great day",
-                "Thank you for calling",
-                "Talk to you later",
-            ]
-            
-            lang = self.agent.language if self.agent and self.agent.language else "en"
-            voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
-            
-            for phrase in common_phrases:
-                try:
-                    # Generate and cache (async, non-blocking)
-                    await generate_mulaw_tts(
-                        text=phrase,
-                        lang=lang,
-                        voice=voice,
-                        use_chirp3_hd=True,
-                        speaking_rate=1.0,
-                        use_ssml=False,
-                        agent=self.agent,
-                    )
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.error(f"Error in precache_common_phrases: {e}")
+
+    # ------------------------------------------------------------------
+    # (Disabled) Pre-warm MULAW TTS cache for common short phrases at connect.
+    # To enable: uncomment the method and asyncio.create_task(...) in __init__.
+    # ------------------------------------------------------------------
+    #     async def _precache_common_phrases(self):
+    #         """Pre-generate and cache common phrases for instant playback."""
+    #         try:
+    #             common_phrases = [
+    #                 "Hello", "Hi there", "Hi", "Good morning", "Good afternoon", "Good evening",
+    #                 "Got it", "I see", "Okay", "Sure", "Alright", "Perfect", "Great", "Understood",
+    #                 "Yes", "No", "Absolutely", "Of course",
+    #                 "Let me check that", "One moment please", "Just a second", "Let me see",
+    #                 "Thank you", "Thanks", "You're welcome",
+    #                 "Goodbye", "Have a great day", "Thank you for calling", "Talk to you later",
+    #             ]
+    #             lang = self.agent.language if self.agent and self.agent.language else "en"
+    #             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+    #             for phrase in common_phrases:
+    #                 try:
+    #                     await generate_mulaw_tts(
+    #                         text=phrase, lang=lang, voice=voice, use_chirp3_hd=True,
+    #                         speaking_rate=1.0, use_ssml=False, agent=self.agent,
+    #                     )
+    #                 except Exception:
+    #                     continue
+    #         except Exception as e:
+    #             logger.error(f"Error in precache_common_phrases: {e}")
     
     async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio and feed to Deepgram streaming STT"""
@@ -530,9 +463,6 @@ class BidirectionalStreamHandler:
                 await self._send_in_progress_status(transcript, confidence)
                 self._in_progress_sent = True
             
-            # Reset user speech timer (user finished speaking)
-            self._last_user_speech_start = 0.0
-            
             # Reset interim state (user finished, ready for new response)
             self._tts_cancel.clear()
             self._last_interim_text = ""
@@ -560,59 +490,15 @@ class BidirectionalStreamHandler:
         except Exception as e:
             logger.error(f"Error processing transcript: {e}", exc_info=True)
 
-    async def _maybe_inject_backchannel(self, transcript: str):
-        """
-        Inject backchannel responses during long user monologues.
-        Triggered after 5-7 seconds of continuous user speech.
-        """
-        import random
-        
-        now = time.time()
-        
-        # Track user speech duration
-        if not self._last_user_speech_start:
-            self._last_user_speech_start = now
-        
-        speech_duration = now - self._last_user_speech_start
-        time_since_last_backchannel = now - self._last_backchannel_time
-        
-        # Inject backchannel if:
-        # 1. User has been speaking for 5-7+ seconds
-        # 2. At least 3 seconds since last backchannel
-        # 3. We're not currently speaking
-        # 4. Random chance (30%) for naturalness
-        should_backchannel = (
-            speech_duration >= random.uniform(5.0, 7.0) and
-            time_since_last_backchannel >= 3.0 and
-            not self.is_speaking and
-            random.random() < 0.3
-        )
-        
-        if should_backchannel:
-            backchannel = random.choice(self._backchannel_phrases)
-
-            if self._tts_pipeline:
-                await self._tts_pipeline.queue_tts({
-                    "text": backchannel,
-                    "is_final": True,
-                    "use_ssml": False,
-                })
-
-            self._last_backchannel_time = now
-
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
         ULTRA-AGGRESSIVE interim processing for minimal latency.
         Processes interim STT results with 40% confidence to start LLM generation ASAP.
-        Also tracks user speech for backchannel injection.
         """
         try:
             if not transcript:
                 return
-            
-            # Check for backchannel opportunity during long user speech
-            await self._maybe_inject_backchannel(transcript)
-            
+
             # Calculate word count for checks
             word_count = len(transcript.split())
             
@@ -660,7 +546,6 @@ class BidirectionalStreamHandler:
     async def _send_quick_acknowledgement(self, user_text: str):
         """
         Send instant acknowledgement for longer queries while generating full response.
-        Uses pre-cached phrases for <50ms latency.
         Probability-based (QUICK_ACK_PROBABILITY) so we don't say "Got it" every time — more natural.
         Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
         """
@@ -2053,7 +1938,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         tts_provider_slug = (self.agent.tts_provider.slug or "").lower()
 
                     # Prefer true streaming TTS for longer responses (real-time playback).
-                    # Keep cache-friendly path for very short phrases (ack/backchannel).
+                    # Keep cache-friendly path for very short phrases (e.g. quick ack).
                     word_count = len(clean.split())
                     use_streaming_tts = word_count >= 4
                     if use_streaming_tts and not self._tts_cancel.is_set():

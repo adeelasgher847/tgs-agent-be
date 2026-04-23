@@ -104,7 +104,6 @@ class ConversationActions:
     """
 
     quick_ack_text: Optional[str] = None
-    backchannel_text: Optional[str] = None
     start_llm_response: bool = False
     end_call_after: bool = False
 
@@ -116,7 +115,6 @@ class ConversationActions:
 class ConversationOrchestrator:
     """
     Encapsulates conversation + policy logic for a single bidirectional call:
-    - Backchannel scheduling.
     - Quick-ack rules (length/probability/banned phrases).
     - History windowing and prompt construction.
     - LLM provider/model selection and streaming.
@@ -128,47 +126,6 @@ class ConversationOrchestrator:
     def __init__(self, handler: Any):
         self._h = handler
 
-    # ---- Backchannels -------------------------------------------------
-
-    async def maybe_inject_backchannel(self, transcript: str) -> None:
-        """
-        Inject backchannel responses during long user monologues.
-        Triggered after 5-7 seconds of continuous user speech.
-        """
-        now = time.time()
-
-        # Track user speech duration
-        if not self._h._last_user_speech_start:
-            self._h._last_user_speech_start = now
-
-        speech_duration = now - self._h._last_user_speech_start
-        time_since_last_backchannel = now - self._h._last_backchannel_time
-
-        # Inject backchannel if:
-        # 1. User has been speaking for 5-7+ seconds
-        # 2. At least 3 seconds since last backchannel
-        # 3. We're not currently speaking
-        # 4. Random chance (30%) for naturalness
-        should_backchannel = (
-            speech_duration >= random.uniform(5.0, 7.0)
-            and time_since_last_backchannel >= 3.0
-            and not self._h.is_speaking
-            and random.random() < 0.3
-        )
-
-        if should_backchannel and self._h._tts_pipeline:
-            backchannel = random.choice(self._h._backchannel_phrases)
-            await self._h._tts_pipeline.queue_tts(
-                {
-                    "text": backchannel,
-                    "chunk_id": "backchannel",
-                    "is_backchannel": True,
-                    "is_final": True,
-                    "use_ssml": False,
-                }
-            )
-            self._h._last_backchannel_time = now
-
     # ---- Interim processing / barge-in gating -------------------------
 
     async def process_interim(self, transcript: str, confidence: float) -> None:
@@ -178,9 +135,6 @@ class ConversationOrchestrator:
         """
         if not transcript:
             return
-
-        # Check for backchannel opportunity during long user speech
-        await self.maybe_inject_backchannel(transcript)
 
         # Calculate word count for checks
         word_count = len(transcript.split())
@@ -221,7 +175,6 @@ class ConversationOrchestrator:
     async def send_quick_acknowledgement(self, user_text: str) -> None:
         """
         Send instant acknowledgement for longer queries while generating full response.
-        Uses pre-cached phrases for <50ms latency.
         Probability-based so we don't say "Got it" every time — more natural.
         Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
         """
@@ -624,7 +577,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         High-level decision point for a user speech event.
 
         Returns a ConversationActions description while also performing
-        the underlying side effects (quick-acks, backchannels, LLM/TTS)
+        the underlying side effects (quick-acks, LLM/TTS)
         so the existing handler flow keeps working unchanged.
         """
         actions = ConversationActions()
@@ -635,7 +588,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         confidence = float(audio_stats.get("confidence", 0.0)) if audio_stats else 0.0
 
         if not is_final:
-            # Interim path: barge-in, backchannels, early LLM start.
+            # Interim path: barge-in, early LLM start.
             await self.process_interim(text, confidence)
             # Reflect whether we decided to start an interim-driven response.
             actions.start_llm_response = bool(getattr(self._h, "_turn_response_started", False))
