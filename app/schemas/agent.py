@@ -34,9 +34,10 @@ class AgentBase(BaseModel):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background "
-            "(currently office-only; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.22 linear gain on bed, default 0.10). "
+            "Provider-specific TTS settings. ElevenLabs: if omitted or empty, a light stable "
+            "office ambience bed is applied automatically. Optional eleven_background "
+            "(office-only; use none/off to disable) and optional eleven_background_level "
+            "(0.0–0.24 linear gain on bed; values ≤0 use default 0.14 when bed is on). "
             "Bracketed audio tags like [breathes] are not injected automatically."
         ),
     )
@@ -70,9 +71,10 @@ class AgentUpdate(BaseModel):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background "
-            "(currently office-only; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.22 linear gain on bed, default 0.10). "
+            "Provider-specific TTS settings. ElevenLabs: if omitted or empty, a light stable "
+            "office ambience bed is applied automatically. Optional eleven_background "
+            "(office-only; use none/off to disable) and optional eleven_background_level "
+            "(0.0–0.24 linear gain on bed; values ≤0 use default 0.14 when bed is on). "
             "Bracketed audio tags like [breathes] are not injected automatically."
         ),
     )
@@ -91,9 +93,10 @@ class AgentOut(AgentBase):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background "
-            "(currently office-only; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.22 linear gain on bed, default 0.10). "
+            "Provider-specific TTS settings. ElevenLabs: if omitted or empty, a light stable "
+            "office ambience bed is applied automatically. Optional eleven_background "
+            "(office-only; use none/off to disable) and optional eleven_background_level "
+            "(0.0–0.24 linear gain on bed; values ≤0 use default 0.14 when bed is on). "
             "Bracketed audio tags like [breathes] are not injected automatically."
         ),
     )

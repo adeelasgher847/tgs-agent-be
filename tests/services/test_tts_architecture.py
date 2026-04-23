@@ -319,12 +319,12 @@ def test_generate_mulaw_tts_separate_cache_entries_per_background():
     agent_a = SimpleNamespace(
         tts_provider=SimpleNamespace(slug="elevenlabs"),
         tts_voice=SimpleNamespace(external_voice_id="v1"),
-        tts_settings_json={"eleven_background": "soft_noise"},
+        tts_settings_json={"eleven_background": "soft_noise", "eleven_background_level": 0.12},
     )
     agent_b = SimpleNamespace(
         tts_provider=SimpleNamespace(slug="elevenlabs"),
         tts_voice=SimpleNamespace(external_voice_id="v1"),
-        tts_settings_json={"eleven_background": "cafe"},
+        tts_settings_json={"eleven_background": "cafe", "eleven_background_level": 0.18},
     )
 
     with patch("app.services.bidirectional_stream_service.get_tts_adapter", return_value=adapter):

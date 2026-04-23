@@ -11,15 +11,15 @@ from app.utils.eleven_tts_background import (
 
 
 def test_parse_eleven_background_none_and_off():
-    # No settings → default to "office" at 0.10
+    # No settings → default to "office" at 0.14
     bid, lvl = parse_eleven_background_settings(None)
     assert bid == "office"
-    assert abs(lvl - 0.10) < 1e-6
+    assert abs(lvl - 0.14) < 1e-6
 
-    # Empty dict → default to "office" at 0.10
+    # Empty dict → default to "office" at 0.14
     bid2, lvl2 = parse_eleven_background_settings({})
     assert bid2 == "office"
-    assert abs(lvl2 - 0.10) < 1e-6
+    assert abs(lvl2 - 0.14) < 1e-6
 
     # Explicitly disabled → None
     assert parse_eleven_background_settings({"eleven_background": "none"})[0] is None
@@ -39,7 +39,18 @@ def test_parse_eleven_background_clamps_level():
     _, lvl = parse_eleven_background_settings(
         {"eleven_background": "office", "eleven_background_level": 99.0}
     )
-    assert lvl == 0.22  # MAX_ELEVEN_BACKGROUND_LEVEL
+    assert lvl == 0.24  # MAX_ELEVEN_BACKGROUND_LEVEL
+
+
+def test_parse_zero_level_coerces_to_default_when_bed_on():
+    bid, lvl = parse_eleven_background_settings({"eleven_background_level": 0})
+    assert bid == "office"
+    assert abs(lvl - 0.14) < 1e-6
+    bid2, lvl2 = parse_eleven_background_settings(
+        {"eleven_background": "office", "eleven_background_level": 0}
+    )
+    assert bid2 == "office"
+    assert abs(lvl2 - 0.14) < 1e-6
 
 
 def test_parse_unknown_preset_falls_back_to_default():

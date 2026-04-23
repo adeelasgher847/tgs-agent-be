@@ -1,9 +1,10 @@
 """
 ElevenLabs-only: mix 8 kHz mu-law TTS with looping background beds (presets + optional files).
 
-Agent settings (tts_settings_json):
-- eleven_background: preset id or "none"/"off" to disable (default: "office")
-- eleven_background_level: mix level 0.0–0.40 (default 0.15)
+Agent settings (tts_settings_json), all optional for ElevenLabs:
+- Omitted / null / empty dict → light stable ``office`` bed (safe default level).
+- eleven_background: use ``none``/``off`` to disable; any other preset maps to ``office``.
+- eleven_background_level: linear bed gain; ``<= 0`` with bed on → default level.
 
 Mixing formula uses voice headroom to prevent clipping:
   mixed = int(voice * VOICE_HEADROOM) + int(background * level)
@@ -24,13 +25,13 @@ from app.utils.audio_utils import (
 )
 
 DEFAULT_ELEVEN_BACKGROUND_PRESET = "office"
-DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.10
-MAX_ELEVEN_BACKGROUND_LEVEL = 0.22
+DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.14
+MAX_ELEVEN_BACKGROUND_LEVEL = 0.24
 
 # Do NOT scale voice — keep it full-amplitude.  Background is already quiet
 # enough (gain << 32767) that the sum never clips.  Attenuating the voice
 # at 0.85 makes it sound thin/distorted, which is worse than rare clipping.
-VOICE_HEADROOM = 0.86
+VOICE_HEADROOM = 0.87
 
 # Display catalog (API). Runtime mixing is intentionally pinned to "office"
 # for stable telephony quality.
@@ -70,43 +71,51 @@ def list_eleven_background_catalog() -> list[dict[str, str]]:
     return list(ELEVEN_BACKGROUND_CATALOG)
 
 
+def _coerce_positive_bed_level(level: float) -> float:
+    """If the bed is enabled but level is zero/negative, use the safe default."""
+    if level <= 0.0:
+        return DEFAULT_ELEVEN_BACKGROUND_LEVEL
+    return level
+
+
 def parse_eleven_background_settings(
     settings_json: Optional[dict[str, Any]],
 ) -> tuple[Optional[str], float]:
     """
     Returns (background_id, clamped_level).
 
-    Defaults to ("office", 0.10) when not explicitly configured.
-    Returns (None, level) only when explicitly disabled via "off"/"none"/"false"/"0".
+    When ``eleven_background`` is omitted (including ``None`` or empty ``{}`` JSON),
+    ElevenLabs calls get a light stable ``office`` bed — no JSON required.
+
+    ``eleven_background_level`` <= 0 with the bed enabled is treated as "use
+    default" so mistaken zeros never mute the ambience.
+
+    Returns (None, level) only when ``eleven_background`` explicitly disables
+    via ``none`` / ``off`` / ``false`` / ``0``.
     """
-    level_raw = (settings_json or {}).get("eleven_background_level", DEFAULT_ELEVEN_BACKGROUND_LEVEL)
+    d = dict(settings_json or {})
+    level_raw = d.get("eleven_background_level", DEFAULT_ELEVEN_BACKGROUND_LEVEL)
     try:
         level = float(level_raw)
     except (TypeError, ValueError):
         level = DEFAULT_ELEVEN_BACKGROUND_LEVEL
     level = max(0.0, min(MAX_ELEVEN_BACKGROUND_LEVEL, level))
 
-    if not settings_json:
-        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
-
-    raw = settings_json.get("eleven_background")
+    raw = d.get("eleven_background")
     if raw is None:
-        # Not set at all → use default office preset
-        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
+        return DEFAULT_ELEVEN_BACKGROUND_PRESET, _coerce_positive_bed_level(level)
 
     key = str(raw).strip().lower()
     if key in ("", "none", "off", "false", "0"):
-        # Explicitly disabled
         return None, level
 
     if key not in _VALID_IDS:
-        # Unknown preset → fall back to default
-        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
+        return DEFAULT_ELEVEN_BACKGROUND_PRESET, _coerce_positive_bed_level(level)
 
     # Production hardening: use the validated office loop only.
     if key != "office":
-        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
-    return key, level
+        return DEFAULT_ELEVEN_BACKGROUND_PRESET, _coerce_positive_bed_level(level)
+    return key, _coerce_positive_bed_level(level)
 
 
 def cache_key_background_fragment(settings_json: Optional[dict[str, Any]]) -> str:
@@ -270,7 +279,8 @@ class LinearBackgroundMixer:
 def mix_mulaw_bytes(voice: bytes, background_id: str, level: float) -> bytes:
     """Mix full mu-law buffer with looping background (byte-aligned 8 kHz).
 
-    Voice is kept at full amplitude (VOICE_HEADROOM=1.0).  Background gain
+    Voice is scaled by VOICE_HEADROOM (<1) to reduce clipping with the bed.
+    Background gain
     and level are both small enough that the sum never clips in practice.
     """
     if not voice or level <= 0.0:
