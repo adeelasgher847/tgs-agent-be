@@ -300,6 +300,7 @@ class ConversationOrchestrator:
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
             self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
+            self._h._elevenlabs_prev_tts_text = ""  # Reset provider continuity state per response turn
             self._h._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
             # Send quick acknowledgement for longer queries (instant from cache!)

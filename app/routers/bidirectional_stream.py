@@ -234,6 +234,7 @@ class BidirectionalStreamHandler:
         self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         self._tts_pipeline: Optional[TtsPipeline] = None
+        self._elevenlabs_prev_tts_text = ""
         
         # Natural conversation state (backchannels & persona)
         self._user_speech_duration = 0.0    # Track user monologue duration
@@ -2228,6 +2229,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 adapter = get_tts_adapter(tts_provider_slug)
                                 provider_settings = dict(getattr(self.agent, "tts_settings_json", None) or {})
                                 provider_settings.setdefault("output_format", "ulaw_8000")
+                                if tts_provider_slug == "elevenlabs":
+                                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
+                                    if previous_text:
+                                        # Maintain natural continuity across app-level chunked TTS requests.
+                                        provider_settings["previous_text"] = previous_text[-500:]
                                 sync_iter = adapter.stream_synthesize(
                                     text=streaming_text,
                                     voice_external_id=external_voice_id,
@@ -2235,7 +2241,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 )
 
                                 async def _async_iter_from_sync(sync_source):
-                                    for chunk in sync_source:
+                                    iterator = iter(sync_source)
+                                    sentinel = object()
+                                    while True:
+                                        chunk = await asyncio.to_thread(next, iterator, sentinel)
+                                        if chunk is sentinel:
+                                            break
                                         yield chunk
 
                                 audio_iter = _async_iter_from_sync(sync_iter)
@@ -2267,6 +2278,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 )
 
                             await stream_mulaw_from_audio_iter(audio_iter)
+                            if tts_provider_slug == "elevenlabs" and not self._tts_cancel.is_set():
+                                self._elevenlabs_prev_tts_text = streaming_text[-500:]
                             return  # streaming path complete
                         except Exception as e:
                             logger.warning(f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}")

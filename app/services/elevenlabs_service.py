@@ -7,16 +7,6 @@ import requests
 from app.core.config import settings
 from typing import Dict, Any, Optional, Iterator
 
-# ---------------------------------------------------------------------------
-# TEMPORARY: hardcoded key for Render/env debugging only.
-# - Set to "" after you confirm behaviour; then rely on ELEVENLABS_API_KEY only.
-# - Revoke this key in the ElevenLabs dashboard after testing (it will exist in git history).
-# ---------------------------------------------------------------------------
-_ELEVENLABS_KEY_OVERRIDE = (
-    "sk_7632f3116b44b513713bd92e28cd88f6ba6b1aa15b29eee9"
-)
-
-
 class ElevenLabsService:
     """Service class for handling ElevenLabs operations"""
     
@@ -28,10 +18,8 @@ class ElevenLabsService:
     def get_api_key(self) -> str:
         """Get ElevenLabs API key"""
         if self._api_key is None:
-            override = (_ELEVENLABS_KEY_OVERRIDE or "").strip()
             env_key = (settings.ELEVENLABS_API_KEY or "").strip()
-            # Override wins when non-empty (use for one-off deploy verification).
-            api_key = override or env_key
+            api_key = env_key
 
             if not api_key:
                 raise RuntimeError("ElevenLabs API key not found. Please set ELEVENLABS_API_KEY in your config.")
@@ -57,15 +45,37 @@ class ElevenLabsService:
         text: str,
         model_id: str,
         voice_settings: Optional[Dict[str, Any]],
+        language_code: Optional[str] = None,
+        previous_text: Optional[str] = None,
+        next_text: Optional[str] = None,
+        previous_request_ids: Optional[list[str]] = None,
+        next_request_ids: Optional[list[str]] = None,
+        apply_text_normalization: Optional[str] = None,
+        apply_language_text_normalization: Optional[bool] = None,
     ) -> Dict[str, Any]:
         settings_payload = self._default_voice_settings()
         if voice_settings:
             settings_payload.update(voice_settings)
-        return {
+        payload: Dict[str, Any] = {
             "text": text,
             "model_id": model_id,
             "voice_settings": settings_payload,
         }
+        if language_code:
+            payload["language_code"] = language_code
+        if previous_text:
+            payload["previous_text"] = previous_text
+        if next_text:
+            payload["next_text"] = next_text
+        if previous_request_ids:
+            payload["previous_request_ids"] = previous_request_ids[:3]
+        if next_request_ids:
+            payload["next_request_ids"] = next_request_ids[:3]
+        if apply_text_normalization in {"auto", "on", "off"}:
+            payload["apply_text_normalization"] = apply_text_normalization
+        if apply_language_text_normalization is not None:
+            payload["apply_language_text_normalization"] = bool(apply_language_text_normalization)
+        return payload
 
     def _accept_header_for_output_format(self, output_format: str) -> str:
         if output_format.startswith("ulaw"):
@@ -85,6 +95,13 @@ class ElevenLabsService:
         model_id: str = "eleven_flash_v2_5",
         output_format: str = "ulaw_8000",
         voice_settings: Optional[Dict[str, Any]] = None,
+        language_code: Optional[str] = None,
+        previous_text: Optional[str] = None,
+        next_text: Optional[str] = None,
+        previous_request_ids: Optional[list[str]] = None,
+        next_request_ids: Optional[list[str]] = None,
+        apply_text_normalization: Optional[str] = None,
+        apply_language_text_normalization: Optional[bool] = None,
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
     ) -> bytes:
@@ -117,6 +134,13 @@ class ElevenLabsService:
                 text=text,
                 model_id=model_id,
                 voice_settings=voice_settings,
+                language_code=language_code,
+                previous_text=previous_text,
+                next_text=next_text,
+                previous_request_ids=previous_request_ids,
+                next_request_ids=next_request_ids,
+                apply_text_normalization=apply_text_normalization,
+                apply_language_text_normalization=apply_language_text_normalization,
             )
 
             params = {
@@ -142,6 +166,13 @@ class ElevenLabsService:
         model_id: str = "eleven_flash_v2_5",
         output_format: str = "ulaw_8000",
         voice_settings: Optional[Dict[str, Any]] = None,
+        language_code: Optional[str] = None,
+        previous_text: Optional[str] = None,
+        next_text: Optional[str] = None,
+        previous_request_ids: Optional[list[str]] = None,
+        next_request_ids: Optional[list[str]] = None,
+        apply_text_normalization: Optional[str] = None,
+        apply_language_text_normalization: Optional[bool] = None,
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
         chunk_size: int = 320,
@@ -161,6 +192,13 @@ class ElevenLabsService:
             text=text,
             model_id=model_id,
             voice_settings=voice_settings,
+            language_code=language_code,
+            previous_text=previous_text,
+            next_text=next_text,
+            previous_request_ids=previous_request_ids,
+            next_request_ids=next_request_ids,
+            apply_text_normalization=apply_text_normalization,
+            apply_language_text_normalization=apply_language_text_normalization,
         )
         params = {
             "output_format": output_format,
