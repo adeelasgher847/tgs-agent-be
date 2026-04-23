@@ -31,7 +31,16 @@ class AgentBase(BaseModel):
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
     tts_provider_id: Optional[uuid.UUID] = Field(None, description="TTS provider ID")
     tts_voice_id: Optional[uuid.UUID] = Field(None, description="TTS voice ID")
-    tts_settings_json: Optional[Dict[str, Any]] = Field(None, description="Provider-specific TTS settings")
+    tts_settings_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
+            "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
+            "eleven_background_level (0.0–0.35 linear gain on bed, default 0.2). "
+            "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
+            "known tags are stripped before Google TTS."
+        ),
+    )
     is_inbound_agent: bool = Field(
         default=False,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
@@ -59,7 +68,16 @@ class AgentUpdate(BaseModel):
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
     tts_provider_id: Optional[uuid.UUID] = Field(None, description="TTS provider ID")
     tts_voice_id: Optional[uuid.UUID] = Field(None, description="TTS voice ID")
-    tts_settings_json: Optional[Dict[str, Any]] = Field(None, description="Provider-specific TTS settings")
+    tts_settings_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
+            "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
+            "eleven_background_level (0.0–0.35 linear gain on bed, default 0.2). "
+            "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
+            "known tags are stripped before Google TTS."
+        ),
+    )
     is_inbound_agent: Optional[bool] = Field(
         default=None,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
@@ -72,7 +90,16 @@ class AgentOut(AgentBase):
     provider_id: Optional[uuid.UUID] = None
     tts_provider_id: Optional[uuid.UUID] = None
     tts_voice_id: Optional[uuid.UUID] = None
-    tts_settings_json: Optional[Dict[str, Any]] = None
+    tts_settings_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
+            "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
+            "eleven_background_level (0.0–0.35 linear gain on bed, default 0.2). "
+            "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
+            "known tags are stripped before Google TTS."
+        ),
+    )
     created_at: datetime
     updated_at: Optional[datetime] = None
     created_by: uuid.UUID

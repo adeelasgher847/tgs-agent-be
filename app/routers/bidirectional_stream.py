@@ -154,8 +154,10 @@ from app.utils.ssml_utils import (
 from app.services.bidirectional_stream_service import (
     generate_mulaw_tts,
     build_streaming_twiml,
-    build_tts_only_twiml
+    build_tts_only_twiml,
 )
+from app.utils.eleven_tts_background import BackgroundFrameMixer, parse_eleven_background_settings
+from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 
 
 router = APIRouter()
@@ -2029,6 +2031,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                             # We crossfade at chunk boundaries with a single 20ms overlap for speed.
                             overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)
+                            # ElevenLabs optional background bed (set mixer_ref[0] before streaming).
+                            mixer_ref: list[Optional[BackgroundFrameMixer]] = [None]
 
                             async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
                                 if not frame:
@@ -2071,6 +2075,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 - Single crossfade bridge at chunk boundary (prev tail + next head)
                                 - Tail holdback (20ms) between chunks to avoid clicks/distortion
                                 """
+                                def _voice_frame_mulaw(frame: bytes) -> bytes:
+                                    m = mixer_ref[0]
+                                    return m.mix_frame(frame) if m else frame
+
                                 # Prime Twilio jitter buffer once per utterance (3 frames = 60ms for 400–500ms latency, no sudden noise)
                                 if not self._twilio_buffer_primed:
                                     silent = bytes([0xFF]) * MULAW_FRAME_BYTES
@@ -2114,7 +2122,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                             bridge = apply_micro_fade_in(bridge, duration_ms=25.0)
                                             fade_needed = False
                                         if bridge:
-                                            await send_frame(bridge[:MULAW_FRAME_BYTES], pace=True, state=pace_state)
+                                            await send_frame(
+                                                _voice_frame_mulaw(bridge[:MULAW_FRAME_BYTES]),
+                                                pace=True,
+                                                state=pace_state,
+                                            )
 
                                     # Convert bytes to 20ms frames
                                     while len(byte_buf) >= MULAW_FRAME_BYTES:
@@ -2131,7 +2143,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
-                                        await send_frame(out, pace=True, state=pace_state)
+                                        await send_frame(_voice_frame_mulaw(out), pace=True, state=pace_state)
 
                                 # End of streaming responses: handle remainder
                                 if self._tts_cancel.is_set():
@@ -2157,7 +2169,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
-                                        await send_frame(out, pace=True, state=pace_state)
+                                        await send_frame(_voice_frame_mulaw(out), pace=True, state=pace_state)
                                     pending_frames.clear()
                                     self._prev_tts_tail = b""
                                 else:
@@ -2177,7 +2189,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
-                                        await send_frame(out, pace=True, state=pace_state)
+                                        await send_frame(_voice_frame_mulaw(out), pace=True, state=pace_state)
                                     self._prev_tts_tail = tail_frame
 
                                 self._twilio_buffer_primed = True
@@ -2186,6 +2198,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             # For Google: use native async streaming API.
                             # For ElevenLabs: use HTTP chunk streaming via adapter.
                             streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
+                            streaming_text = prepare_tts_text_for_provider(
+                                streaming_text, tts_provider_slug
+                            )
+                            if not streaming_text or not streaming_text.strip():
+                                return
                             if tts_provider_slug and tts_provider_slug != "google":
                                 tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
                                 external_voice_id = getattr(tts_voice, "external_voice_id", None)
@@ -2241,6 +2258,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     sample_rate_hz=8000,
                                     voice_name_override=google_voice_name,
                                 )
+
+                            mixer_ref[0] = None
+                            if tts_provider_slug == "elevenlabs":
+                                _ebg_id, _ebg_lvl = parse_eleven_background_settings(
+                                    dict(getattr(self.agent, "tts_settings_json", None) or {})
+                                )
+                                if _ebg_id:
+                                    mixer_ref[0] = BackgroundFrameMixer(_ebg_id, _ebg_lvl)
 
                             await stream_mulaw_from_audio_iter(audio_iter)
                             if tts_provider_slug == "elevenlabs" and not self._tts_cancel.is_set():

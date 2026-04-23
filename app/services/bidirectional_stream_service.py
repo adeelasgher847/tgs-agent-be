@@ -10,6 +10,12 @@ from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.core.config import settings
 from app.core.logger import logger
 from app.services.tts_adapter import get_tts_adapter
+from app.utils.eleven_tts_background import (
+    cache_key_background_fragment,
+    mix_mulaw_bytes,
+    parse_eleven_background_settings,
+)
+from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 
 
 def _resolve_tts_provider_slug(agent: Optional[Any]) -> Optional[str]:
@@ -50,18 +56,28 @@ async def generate_mulaw_tts(
     # Skip empty text
     if not text or not text.strip():
         return b''
-    
+
     try:
         # Cache key aligned with existing cache strategy (include ssml flag)
         provider_slug = _resolve_tts_provider_slug(agent) or "google"
+        tts_text = prepare_tts_text_for_provider(text.strip(), provider_slug)
+        if not tts_text:
+            return b""
+
         selected_voice = voice
         if provider_slug != "google":
             tts_voice = getattr(agent, "tts_voice", None) if agent else None
             selected_voice = getattr(tts_voice, "external_voice_id", None) or voice
 
+        bg_suffix = ""
+        if (provider_slug or "").lower() == "elevenlabs":
+            agent_settings = dict(getattr(agent, "tts_settings_json", None) or {}) if agent else {}
+            bg_suffix = cache_key_background_fragment(agent_settings)
+
         cache_key = (
-            generate_cache_key(text.strip(), lang, f"{provider_slug}:{selected_voice}", use_chirp3_hd, "mulaw")
+            generate_cache_key(tts_text, lang, f"{provider_slug}:{selected_voice}", use_chirp3_hd, "mulaw")
             + ("_ssml" if use_ssml else "")
+            + bg_suffix
         )
 
         if cache_key in audio_cache:
@@ -76,7 +92,7 @@ async def generate_mulaw_tts(
             # Let SSML control prosody (use defaults when SSML present, don't override)
             logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [provider=google, chirp3_hd={use_chirp3_hd}, ssml={use_ssml}]")
             audio_content = google_tts_service.text_to_speech(
-                text=text.strip(),
+                text=tts_text,
                 language=lang,
                 voice_type=voice,
                 speaking_rate=1.0 if use_ssml else speaking_rate,  # Use 1.0 (default) for SSML to respect prosody tags
@@ -95,10 +111,13 @@ async def generate_mulaw_tts(
             adapter = get_tts_adapter(provider_slug)
             logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [provider={provider_slug}]")
             audio_content = adapter.synthesize(
-                text=text.strip(),
+                text=tts_text,
                 voice_external_id=external_voice_id,
                 settings_json=settings_json,
             )
+            bg_id, bg_level = parse_eleven_background_settings(settings_json)
+            if bg_id:
+                audio_content = mix_mulaw_bytes(audio_content, bg_id, bg_level)
 
         # Cache for instant reuse (especially useful for repeated words/phrases)
         audio_cache[cache_key] = audio_content

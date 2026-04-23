@@ -31,6 +31,7 @@ from app.routers.general_websocket import broadcast_transcript_update, broadcast
 from urllib.parse import quote
 import hashlib
 from app.routers.bidirectional_stream import build_streaming_twiml
+from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 
 router = APIRouter()
 model_service = ModelService()
@@ -51,8 +52,11 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
     Uses Chirp 3: HD model for ultra-realistic, human-like voices
     """
     try:
+        text = prepare_tts_text_for_provider(text, "google")
+        if not text or not text.strip():
+            return
         cache_key = generate_cache_key(text, language, voice_type, use_chirp3_hd, format)
-        
+
         if cache_key not in audio_cache:
             # Generate audio with Chirp 3: HD model
             voice_label = "Chirp 3: HD" if use_chirp3_hd else "Neural2"
@@ -547,34 +551,32 @@ async def gather_speech_callback_webhook(
         
         tts_start = datetime.now(timezone.utc)
         try:
-            # Check if already cached
-            use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
+            use_websocket_tts = getattr(settings, "USE_WEBSOCKET_TTS", False)
             output_fmt = "mulaw" if use_websocket_tts else "mp3"
-            cache_key = generate_cache_key(response_text, lang, voice, True, output_fmt)
-            
-            if cache_key not in audio_cache:
-                # Pre-generate audio BEFORE sending TwiML
-                logger.debug(f"⚡ Pre-generating TTS audio with Chirp 3: HD: '{response_text[:50]}...'")
-                
-                rate = 0.95  # Optimized for natural conversation
-                audio_content = google_tts_service.text_to_speech(
-                    text=response_text,
-                    language=lang,
-                    voice_type=voice,
-                    speaking_rate=rate,
-                    pitch=0.0,
-                    output_format=output_fmt, # mp3 default
-                    use_chirp3_hd=True  # Use Chirp 3: HD model
-                )
-                
-                # Cache it for instant playback
-                audio_cache[cache_key] = audio_content
-                
-                tts_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
-                logger.info(f"✅ TTS pre-generated: {len(audio_content)} bytes in {tts_time:.2f}s (cached)")
-            else:
-                logger.debug(f"⚡ TTS already cached: '{response_text[:50]}...'")
-                
+            response_tts = prepare_tts_text_for_provider(response_text, "google")
+            if response_tts and response_tts.strip():
+                cache_key = generate_cache_key(response_tts, lang, voice, True, output_fmt)
+                if cache_key not in audio_cache:
+                    logger.debug(
+                        f"⚡ Pre-generating TTS audio with Chirp 3: HD: '{response_tts[:50]}...'"
+                    )
+                    rate = 0.95
+                    audio_content = google_tts_service.text_to_speech(
+                        text=response_tts,
+                        language=lang,
+                        voice_type=voice,
+                        speaking_rate=rate,
+                        pitch=0.0,
+                        output_format=output_fmt,
+                        use_chirp3_hd=True,
+                    )
+                    audio_cache[cache_key] = audio_content
+                    tts_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
+                    logger.info(
+                        f"✅ TTS pre-generated: {len(audio_content)} bytes in {tts_time:.2f}s (cached)"
+                    )
+                else:
+                    logger.debug(f"⚡ TTS already cached: '{response_tts[:50]}...'")
         except Exception as e:
             logger.warning(f"⚠️ TTS pre-generation failed (will generate on-demand): {e}")
         

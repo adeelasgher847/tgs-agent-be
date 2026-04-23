@@ -66,6 +66,8 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         next_request_ids = cfg.pop("next_request_ids", None)
         apply_text_normalization = cfg.pop("apply_text_normalization", None)
         apply_language_text_normalization = cfg.pop("apply_language_text_normalization", None)
+        cfg.pop("eleven_background", None)
+        cfg.pop("eleven_background_level", None)
         return elevenlabs_service.text_to_speech(
             text=text,
             voice_id=voice_external_id,
@@ -99,6 +101,8 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         next_request_ids = cfg.pop("next_request_ids", None)
         apply_text_normalization = cfg.pop("apply_text_normalization", None)
         apply_language_text_normalization = cfg.pop("apply_language_text_normalization", None)
+        cfg.pop("eleven_background", None)
+        cfg.pop("eleven_background_level", None)
         return elevenlabs_service.stream_text_to_speech(
             text=text,
             voice_id=voice_external_id,

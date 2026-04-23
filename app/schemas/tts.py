@@ -47,6 +47,16 @@ class TTSVoiceListOut(BaseModel):
     voices: list[TTSVoiceOut]
 
 
+class ElevenBackgroundOut(BaseModel):
+    id: str
+    label: str
+    description: str
+
+
+class ElevenBackgroundListOut(BaseModel):
+    backgrounds: list[ElevenBackgroundOut]
+
+
 class TTSProviderCreate(BaseModel):
     slug: str = Field(..., min_length=1, max_length=50)
     display_name: str = Field(..., min_length=1, max_length=100)

@@ -138,7 +138,11 @@ def test_tts_router_lists_providers_and_voices(client, db):
     app.dependency_overrides[require_tenant] = _user_override
     app.dependency_overrides[require_member_or_admin] = _user_override
     app.dependency_overrides[require_admin_or_owner] = _user_override
-    app.dependency_overrides[get_db] = lambda: iter([db])
+
+    def _get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = _get_db
 
     try:
         providers_res = client.get("/api/v1/tts/providers")
@@ -151,6 +155,13 @@ def test_tts_router_lists_providers_and_voices(client, db):
         voices_data = voices_res.json()["data"]["voices"]
         assert len(voices_data) == 1
         assert voices_data[0]["preview_audio_url"] == "https://cdn.example.com/voice_1.mp3"
+
+        bg_res = client.get("/api/v1/tts/eleven-backgrounds")
+        assert bg_res.status_code == 200
+        bg_list = bg_res.json()["data"]["backgrounds"]
+        ids = {b["id"] for b in bg_list}
+        assert "soft_noise" in ids
+        assert "office" in ids
     finally:
         app.dependency_overrides.pop(require_tenant, None)
         app.dependency_overrides.pop(require_member_or_admin, None)
@@ -235,3 +246,89 @@ def test_generate_mulaw_tts_uses_provider_adapter_for_agent():
     assert text == "Hello from provider adapter"
     assert voice_external_id == "voice-eleven"
     assert settings_json["output_format"] == "ulaw_8000"
+
+
+def test_generate_mulaw_tts_strips_tags_for_google_agent():
+    """Google path must not send Eleven v3 [tags] to the TTS API."""
+    audio_cache.clear()
+
+    class _FakeG:
+        def text_to_speech(self, **kwargs):
+            t = kwargs.get("text", "")
+            assert "[breathes]" not in t
+            return b"ok"
+
+    fake_agent = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="google"),
+        tts_voice=SimpleNamespace(external_voice_id="en-US-Studio-O"),
+    )
+
+    with patch("app.services.bidirectional_stream_service.google_tts_service", _FakeG()):
+        audio = asyncio.run(
+            generate_mulaw_tts(
+                text="[breathes] Hello world",
+                lang="en",
+                voice="female",
+                agent=fake_agent,
+            )
+        )
+    assert audio == b"ok"
+
+
+def test_generate_mulaw_tts_mixes_eleven_background_when_configured():
+    audio_cache.clear()
+
+    class _FakeAdapter:
+        def synthesize(self, text, voice_external_id, settings_json=None):
+            return b"\xff" * 320
+
+    fake_agent = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="elevenlabs"),
+        tts_voice=SimpleNamespace(external_voice_id="voice-eleven"),
+        tts_settings_json={
+            "eleven_background": "soft_noise",
+            "eleven_background_level": 0.25,
+        },
+    )
+
+    fake_adapter = _FakeAdapter()
+    with patch("app.services.bidirectional_stream_service.get_tts_adapter", return_value=fake_adapter):
+        audio = asyncio.run(
+            generate_mulaw_tts(
+                text="Hello with bed",
+                lang="en",
+                voice="female",
+                agent=fake_agent,
+            )
+        )
+
+    assert len(audio) == 320
+    assert audio != b"\xff" * 320
+
+
+def test_generate_mulaw_tts_separate_cache_entries_per_background():
+    audio_cache.clear()
+    calls = {"n": 0}
+
+    class _FakeAdapter:
+        def synthesize(self, text, voice_external_id, settings_json=None):
+            calls["n"] += 1
+            return b"\xab" * 160
+
+    adapter = _FakeAdapter()
+    agent_a = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="elevenlabs"),
+        tts_voice=SimpleNamespace(external_voice_id="v1"),
+        tts_settings_json={"eleven_background": "soft_noise"},
+    )
+    agent_b = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="elevenlabs"),
+        tts_voice=SimpleNamespace(external_voice_id="v1"),
+        tts_settings_json={"eleven_background": "cafe"},
+    )
+
+    with patch("app.services.bidirectional_stream_service.get_tts_adapter", return_value=adapter):
+        asyncio.run(generate_mulaw_tts(text="Same text", lang="en", voice="female", agent=agent_a))
+        asyncio.run(generate_mulaw_tts(text="Same text", lang="en", voice="female", agent=agent_b))
+
+    assert calls["n"] == 2
