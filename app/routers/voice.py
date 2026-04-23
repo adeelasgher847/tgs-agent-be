@@ -1350,10 +1350,25 @@ async def end_call(
         if call_session.tenant_id != user.current_tenant_id:
             raise HTTPException(status_code=403, detail="Access denied to this call session")
         
-        # End the call using Twilio API if we have the call SID
+        # End the call using Twilio: same account that created the call (DB phone creds)
+        # with env-based fallback (legacy / if DB mapping is missing)
         call_ended = False
         if call_session.twilio_call_sid:
-            call_ended = twilio_service.end_call(call_session.twilio_call_sid)
+            try:
+                account_sid, auth_token = get_twilio_credentials_for_call(
+                    db, call_session
+                )
+                call_ended = twilio_service.end_call_with_credentials(
+                    call_session.twilio_call_sid, account_sid, auth_token
+                )
+            except Exception as cred_err:
+                logger.warning(
+                    "end_call: DB Twilio credentials unavailable for session %s (%s); "
+                    "trying default env client",
+                    call_session.id,
+                    cred_err,
+                )
+                call_ended = twilio_service.end_call(call_session.twilio_call_sid)
         
         # Update call session status
         call_session.status = "completed"

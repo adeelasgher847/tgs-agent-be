@@ -11,7 +11,7 @@ from app.utils.eleven_tts_background import (
 
 
 def test_parse_eleven_background_none_and_off():
-    assert parse_eleven_background_settings(None) == (None, 0.2)
+    assert parse_eleven_background_settings(None) == (None, 0.3)
     assert parse_eleven_background_settings({})[0] is None
     assert parse_eleven_background_settings({"eleven_background": "none"})[0] is None
     assert parse_eleven_background_settings({"eleven_background": "OFF"})[0] is None
@@ -29,7 +29,7 @@ def test_parse_eleven_background_clamps_level():
     _, lvl = parse_eleven_background_settings(
         {"eleven_background": "office", "eleven_background_level": 99.0}
     )
-    assert lvl == 0.35
+    assert lvl == 0.55
 
 
 def test_parse_unknown_preset_is_off():

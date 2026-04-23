@@ -36,7 +36,7 @@ class AgentBase(BaseModel):
         description=(
             "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
             "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.35 linear gain on bed, default 0.2). "
+            "eleven_background_level (0.0–0.55 linear gain on bed, default 0.3). "
             "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
             "known tags are stripped before Google TTS."
         ),
@@ -73,7 +73,7 @@ class AgentUpdate(BaseModel):
         description=(
             "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
             "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.35 linear gain on bed, default 0.2). "
+            "eleven_background_level (0.0–0.55 linear gain on bed, default 0.3). "
             "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
             "known tags are stripped before Google TTS."
         ),
@@ -95,7 +95,7 @@ class AgentOut(AgentBase):
         description=(
             "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
             "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.35 linear gain on bed, default 0.2). "
+            "eleven_background_level (0.0–0.55 linear gain on bed, default 0.3). "
             "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
             "known tags are stripped before Google TTS."
         ),

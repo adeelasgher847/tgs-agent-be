@@ -3,7 +3,7 @@ ElevenLabs-only: mix 8 kHz mu-law TTS with looping background beds (presets + op
 
 Agent settings (tts_settings_json):
 - eleven_background: preset id or "none"/"off" to disable
-- eleven_background_level: linear gain on background before sum (0.0–0.35, default 0.2)
+- eleven_background_level: linear gain on background before sum (0.0–0.55, default 0.3)
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from app.utils.audio_utils import (
     ulaw_to_linear_sample,
 )
 
-DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.2
-MAX_ELEVEN_BACKGROUND_LEVEL = 0.35
+DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.3
+MAX_ELEVEN_BACKGROUND_LEVEL = 0.55
 
 # Display catalog (API). File override: app/resources/eleven_tts_backgrounds/{id}.ulaw
 ELEVEN_BACKGROUND_CATALOG: list[dict[str, str]] = [
@@ -113,10 +113,10 @@ def _synthetic_loop_mulaw(preset_id: str) -> bytes:
     out = bytearray()
 
     gains = {
-        "soft_noise": 900.0,
-        "office": 650.0,
-        "cafe": 1100.0,
-        "outdoor": 800.0,
+        "soft_noise": 1200.0,
+        "office": 900.0,
+        "cafe": 1500.0,
+        "outdoor": 1000.0,
     }
     gain = gains.get(preset_id, 800.0)
 

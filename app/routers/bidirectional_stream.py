@@ -217,6 +217,9 @@ class BidirectionalStreamHandler:
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         self._tts_pipeline: Optional[TtsPipeline] = None
         self._elevenlabs_prev_tts_text = ""
+        # Eleven TTS background: one mixer per call; keeps loop phase across sentence chunks
+        self._eleven_bg_mixer: Optional[BackgroundFrameMixer] = None
+        self._eleven_bg_mixer_key: Optional[tuple] = None  # (preset_id, rounded_level) or None
         self._use_ssml = True                # Enable SSML by default
         
         # Session data
@@ -1978,6 +1981,31 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as e:
             logger.error("Error in _handle_book_appointment_token: %s", e, exc_info=True)
 
+    def _get_or_create_eleven_bg_mixer(self) -> Optional[BackgroundFrameMixer]:
+        """
+        Reuse a single BackgroundFrameMixer for the whole call so the bed does not
+        reset phase on every TTS chunk (sounds like continuous ambience).
+        Recreates if preset or level in agent settings changes, or clears when disabled.
+        """
+        p = getattr(self.agent, "tts_provider", None) if self.agent else None
+        slug = (getattr(p, "slug", None) or "").lower()
+        if slug != "elevenlabs" or not self.agent:
+            self._eleven_bg_mixer = None
+            self._eleven_bg_mixer_key = None
+            return None
+        st = dict(getattr(self.agent, "tts_settings_json", None) or {})
+        bid, blvl = parse_eleven_background_settings(st)
+        if not bid:
+            self._eleven_bg_mixer = None
+            self._eleven_bg_mixer_key = None
+            return None
+        key = (bid, round(blvl, 3))
+        if self._eleven_bg_mixer is not None and self._eleven_bg_mixer_key == key:
+            return self._eleven_bg_mixer
+        self._eleven_bg_mixer = BackgroundFrameMixer(bid, blvl)
+        self._eleven_bg_mixer_key = key
+        return self._eleven_bg_mixer
+
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
@@ -2259,13 +2287,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     voice_name_override=google_voice_name,
                                 )
 
-                            mixer_ref[0] = None
-                            if tts_provider_slug == "elevenlabs":
-                                _ebg_id, _ebg_lvl = parse_eleven_background_settings(
-                                    dict(getattr(self.agent, "tts_settings_json", None) or {})
-                                )
-                                if _ebg_id:
-                                    mixer_ref[0] = BackgroundFrameMixer(_ebg_id, _ebg_lvl)
+                            mixer_ref[0] = self._get_or_create_eleven_bg_mixer()
 
                             await stream_mulaw_from_audio_iter(audio_iter)
                             if tts_provider_slug == "elevenlabs" and not self._tts_cancel.is_set():
