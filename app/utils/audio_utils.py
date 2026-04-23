@@ -133,6 +133,118 @@ def linear_to_ulaw_sample(sample: int) -> int:
     return ulaw_byte
 
 
+def linear_samples_to_ulaw_bytes(samples: Iterable[int]) -> bytes:
+    """Encode an iterable of 16-bit linear PCM samples to mu-law bytes."""
+    return bytes(linear_to_ulaw_sample(int(sample)) for sample in samples)
+
+
+def strip_wav_header(audio_bytes: bytes) -> bytes:
+    """
+    Return the PCM payload if `audio_bytes` contains a RIFF/WAVE header.
+
+    If the payload doesn't look like WAV data, return the bytes unchanged.
+    """
+    if len(audio_bytes) < 12 or audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
+        return audio_bytes
+    idx = audio_bytes.find(b"data")
+    if idx == -1 or idx + 8 > len(audio_bytes):
+        return audio_bytes
+    data_len = int.from_bytes(audio_bytes[idx + 4:idx + 8], "little", signed=False)
+    start = idx + 8
+    end = min(len(audio_bytes), start + data_len) if data_len > 0 else len(audio_bytes)
+    return audio_bytes[start:end]
+
+
+def pcm16le_bytes_to_linear_samples(audio_bytes: bytes) -> list[int]:
+    """Decode raw little-endian 16-bit PCM bytes into signed linear samples."""
+    payload = strip_wav_header(audio_bytes)
+    usable = len(payload) - (len(payload) % 2)
+    out: list[int] = []
+    for i in range(0, usable, 2):
+        out.append(int.from_bytes(payload[i:i + 2], "little", signed=True))
+    return out
+
+
+def downsample_linear_samples(samples: list[int], src_rate_hz: int, dst_rate_hz: int) -> list[int]:
+    """
+    Downsample linear PCM samples using simple box averaging.
+
+    This is intentionally simple and fast. For 16k -> 8k (our ElevenLabs
+    background use-case), averaging each adjacent pair removes enough high
+    frequency energy to avoid harsh aliasing on phone calls.
+    """
+    if not samples or src_rate_hz == dst_rate_hz:
+        return list(samples)
+    if src_rate_hz <= 0 or dst_rate_hz <= 0 or src_rate_hz % dst_rate_hz != 0:
+        raise ValueError(f"Unsupported resample ratio: {src_rate_hz} -> {dst_rate_hz}")
+    factor = src_rate_hz // dst_rate_hz
+    usable = len(samples) - (len(samples) % factor)
+    out: list[int] = []
+    for i in range(0, usable, factor):
+        chunk = samples[i:i + factor]
+        out.append(int(sum(chunk) / factor))
+    return out
+
+
+class PCM16KStreamDownsampler:
+    """
+    Incrementally convert PCM16 LE 16kHz chunks to linear PCM 8kHz samples.
+
+    Handles:
+    - partial byte pairs across HTTP chunks
+    - a one-time WAV header at the start of the stream
+    - 16k -> 8k box-average downsampling
+    """
+
+    __slots__ = ("_buf", "_header_done")
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._header_done = False
+
+    def _strip_header_if_ready(self) -> bool:
+        if self._header_done:
+            return True
+        if len(self._buf) < 12:
+            return False
+        if self._buf[:4] != b"RIFF" or self._buf[8:12] != b"WAVE":
+            self._header_done = True
+            return True
+        idx = self._buf.find(b"data")
+        if idx == -1 or idx + 8 > len(self._buf):
+            return False
+        del self._buf[:idx + 8]
+        self._header_done = True
+        return True
+
+    def feed(self, chunk: bytes) -> list[int]:
+        if chunk:
+            self._buf.extend(chunk)
+        if not self._strip_header_if_ready():
+            return []
+        usable = len(self._buf) - (len(self._buf) % 4)  # two int16 samples -> one 8k sample
+        out: list[int] = []
+        for i in range(0, usable, 4):
+            s1 = int.from_bytes(self._buf[i:i + 2], "little", signed=True)
+            s2 = int.from_bytes(self._buf[i + 2:i + 4], "little", signed=True)
+            out.append((s1 + s2) // 2)
+        if usable:
+            del self._buf[:usable]
+        return out
+
+    def flush(self) -> list[int]:
+        if not self._strip_header_if_ready():
+            return []
+        usable = len(self._buf) - (len(self._buf) % 4)
+        out: list[int] = []
+        for i in range(0, usable, 4):
+            s1 = int.from_bytes(self._buf[i:i + 2], "little", signed=True)
+            s2 = int.from_bytes(self._buf[i + 2:i + 4], "little", signed=True)
+            out.append((s1 + s2) // 2)
+        self._buf.clear()
+        return out
+
+
 def iter_mulaw_20ms_frames(audio_bytes: bytes) -> Iterable[bytes]:
     """
     Yield 20ms mu-law frames (160 bytes at 8kHz).

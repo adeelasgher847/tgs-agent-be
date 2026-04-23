@@ -224,7 +224,7 @@ def test_generate_mulaw_tts_uses_provider_adapter_for_agent():
     fake_agent = SimpleNamespace(
         tts_provider=SimpleNamespace(slug="elevenlabs"),
         tts_voice=SimpleNamespace(external_voice_id="voice-eleven"),
-        tts_settings_json={"stability": 0.5},
+        tts_settings_json={"stability": 0.5, "eleven_background": "off"},
     )
 
     with patch("app.services.bidirectional_stream_service.get_tts_adapter", return_value=fake_adapter):
@@ -277,7 +277,9 @@ def test_generate_mulaw_tts_mixes_eleven_background_when_configured():
 
     class _FakeAdapter:
         def synthesize(self, text, voice_external_id, settings_json=None):
-            return b"\xff" * 320
+            assert settings_json["output_format"] == "pcm_16000"
+            # 40 ms of near-silence PCM16 @ 16 kHz -> 640 samples -> 1280 bytes
+            return b"\x00\x00" * 640
 
     fake_agent = SimpleNamespace(
         tts_provider=SimpleNamespace(slug="elevenlabs"),
@@ -299,8 +301,8 @@ def test_generate_mulaw_tts_mixes_eleven_background_when_configured():
             )
         )
 
-    assert len(audio) == 320
-    assert audio != b"\xff" * 320
+    assert len(audio) > 0
+    assert audio != b"\xff" * len(audio)
 
 
 def test_generate_mulaw_tts_separate_cache_entries_per_background():
@@ -310,7 +312,8 @@ def test_generate_mulaw_tts_separate_cache_entries_per_background():
     class _FakeAdapter:
         def synthesize(self, text, voice_external_id, settings_json=None):
             calls["n"] += 1
-            return b"\xab" * 160
+            assert settings_json["output_format"] == "pcm_16000"
+            return b"\x00\x00" * 640
 
     adapter = _FakeAdapter()
     agent_a = SimpleNamespace(

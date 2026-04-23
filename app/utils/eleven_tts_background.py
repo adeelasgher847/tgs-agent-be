@@ -3,7 +3,7 @@ ElevenLabs-only: mix 8 kHz mu-law TTS with looping background beds (presets + op
 
 Agent settings (tts_settings_json):
 - eleven_background: preset id or "none"/"off" to disable (default: "office")
-- eleven_background_level: mix level 0.0–0.55 (default 0.4)
+- eleven_background_level: mix level 0.0–0.40 (default 0.15)
 
 Mixing formula uses voice headroom to prevent clipping:
   mixed = int(voice * VOICE_HEADROOM) + int(background * level)
@@ -19,6 +19,7 @@ from app.utils.audio_utils import (
     MULAW_FRAME_BYTES,
     MULAW_SAMPLE_RATE_HZ,
     linear_to_ulaw_sample,
+    linear_samples_to_ulaw_bytes,
     ulaw_to_linear_sample,
 )
 
@@ -60,6 +61,7 @@ _VALID_IDS = {entry["id"] for entry in ELEVEN_BACKGROUND_CATALOG}
 _RESOURCES_DIR = Path(__file__).resolve().parent.parent / "resources" / "eleven_tts_backgrounds"
 
 _loop_cache: dict[str, bytes] = {}
+_linear_loop_cache: dict[str, list[int]] = {}
 
 
 def list_eleven_background_catalog() -> list[dict[str, str]]:
@@ -73,7 +75,7 @@ def parse_eleven_background_settings(
     """
     Returns (background_id, clamped_level).
 
-    Defaults to ("office", 0.4) when not explicitly configured.
+    Defaults to ("office", 0.15) when not explicitly configured.
     Returns (None, level) only when explicitly disabled via "off"/"none"/"false"/"0".
     """
     level_raw = (settings_json or {}).get("eleven_background_level", DEFAULT_ELEVEN_BACKGROUND_LEVEL)
@@ -210,6 +212,50 @@ def get_background_loop_bytes(preset_id: str) -> bytes:
     return synthetic
 
 
+def get_background_loop_linear_samples(preset_id: str) -> list[int]:
+    """
+    Return the background loop decoded to 8 kHz linear PCM samples.
+
+    Cached separately so repeated mixing does not keep ulaw-decoding the same
+    ambience loop over and over.
+    """
+    if preset_id not in _VALID_IDS:
+        raise ValueError(f"Unknown ElevenLabs background preset: {preset_id}")
+    if preset_id in _linear_loop_cache:
+        return _linear_loop_cache[preset_id]
+    loop = get_background_loop_bytes(preset_id)
+    linear = [ulaw_to_linear_sample(b) for b in loop]
+    _linear_loop_cache[preset_id] = linear
+    return linear
+
+
+class LinearBackgroundMixer:
+    """Stateful linear-domain mixer that outputs final mu-law bytes."""
+
+    __slots__ = ("_loop", "_level", "_pos")
+
+    def __init__(self, background_id: str, level: float):
+        self._loop = get_background_loop_linear_samples(background_id)
+        self._level = max(0.0, min(MAX_ELEVEN_BACKGROUND_LEVEL, float(level)))
+        self._pos = 0
+
+    def mix_linear_samples_to_ulaw(self, voice_samples: list[int]) -> bytes:
+        """
+        Mix 8 kHz linear PCM voice samples with the background loop and encode
+        the final result to mu-law exactly once.
+        """
+        if self._level <= 0.0 or not voice_samples:
+            return linear_samples_to_ulaw_bytes(voice_samples)
+        lim = len(self._loop)
+        mixed: list[int] = []
+        for voice_sample in voice_samples:
+            bg = self._loop[self._pos]
+            self._pos = (self._pos + 1) % lim
+            sample = int(voice_sample * VOICE_HEADROOM) + int(bg * self._level)
+            mixed.append(max(-32768, min(32767, sample)))
+        return linear_samples_to_ulaw_bytes(mixed)
+
+
 def mix_mulaw_bytes(voice: bytes, background_id: str, level: float) -> bytes:
     """Mix full mu-law buffer with looping background (byte-aligned 8 kHz).
 
@@ -218,7 +264,7 @@ def mix_mulaw_bytes(voice: bytes, background_id: str, level: float) -> bytes:
     """
     if not voice or level <= 0.0:
         return voice
-    loop = get_background_loop_bytes(background_id)
+    loop = get_background_loop_linear_samples(background_id)
     if not loop:
         return voice
     lim = len(loop)
@@ -226,7 +272,7 @@ def mix_mulaw_bytes(voice: bytes, background_id: str, level: float) -> bytes:
     pos = 0
     for i, vb in enumerate(voice):
         v = ulaw_to_linear_sample(vb)
-        b = ulaw_to_linear_sample(loop[pos])
+        b = loop[pos]
         pos = (pos + 1) % lim
         m = int(v * VOICE_HEADROOM) + int(b * level)
         m = max(-32768, min(32767, m))
@@ -240,7 +286,7 @@ class BackgroundFrameMixer:
     __slots__ = ("_loop", "_level", "_pos")
 
     def __init__(self, background_id: str, level: float):
-        self._loop = get_background_loop_bytes(background_id)
+        self._loop = get_background_loop_linear_samples(background_id)
         self._level = max(0.0, min(MAX_ELEVEN_BACKGROUND_LEVEL, float(level)))
         self._pos = 0
 
@@ -256,7 +302,7 @@ class BackgroundFrameMixer:
         out = bytearray(len(frame))
         for i, vb in enumerate(frame):
             v = ulaw_to_linear_sample(vb)
-            b = ulaw_to_linear_sample(self._loop[self._pos])
+            b = self._loop[self._pos]
             self._pos = (self._pos + 1) % lim
             m = int(v * VOICE_HEADROOM) + int(b * self._level)
             m = max(-32768, min(32767, m))

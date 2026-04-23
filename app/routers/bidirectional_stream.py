@@ -143,7 +143,8 @@ from app.utils.audio_utils import (
     stream_mulaw_bytes_over_twilio,
     crossfade_mulaw_segments,
     build_crossfade_bridge,
-    MULAW_FRAME_BYTES
+    MULAW_FRAME_BYTES,
+    PCM16KStreamDownsampler,
 )
 from app.utils.ssml_utils import (
     strip_ssml_tags,
@@ -156,7 +157,11 @@ from app.services.bidirectional_stream_service import (
     build_streaming_twiml,
     build_tts_only_twiml,
 )
-from app.utils.eleven_tts_background import BackgroundFrameMixer, parse_eleven_background_settings
+from app.utils.eleven_tts_background import (
+    BackgroundFrameMixer,
+    LinearBackgroundMixer,
+    parse_eleven_background_settings,
+)
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 
 
@@ -2299,6 +2304,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             )
                             if not streaming_text or not streaming_text.strip():
                                 return
+                            pcm_linear_mixer: Optional[LinearBackgroundMixer] = None
                             if tts_provider_slug and tts_provider_slug != "google":
                                 tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
                                 external_voice_id = getattr(tts_voice, "external_voice_id", None)
@@ -2306,17 +2312,40 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     raise ValueError("TTS voice is not configured for streaming.")
                                 adapter = get_tts_adapter(tts_provider_slug)
                                 provider_settings = dict(getattr(self.agent, "tts_settings_json", None) or {})
-                                provider_settings.setdefault("output_format", "ulaw_8000")
                                 if tts_provider_slug == "elevenlabs":
+                                    bg_id, bg_level = parse_eleven_background_settings(provider_settings)
+                                    if bg_id:
+                                        # Request PCM so we can mix background in linear space and
+                                        # encode to mu-law only once at the transport boundary.
+                                        provider_settings["output_format"] = "pcm_16000"
+                                        pcm_linear_mixer = LinearBackgroundMixer(bg_id, bg_level)
+                                    else:
+                                        provider_settings.setdefault("output_format", "ulaw_8000")
                                     previous_text = (self._elevenlabs_prev_tts_text or "").strip()
                                     if previous_text:
                                         # Maintain natural continuity across app-level chunked TTS requests.
                                         provider_settings["previous_text"] = previous_text[-500:]
+                                else:
+                                    provider_settings.setdefault("output_format", "ulaw_8000")
                                 sync_iter = adapter.stream_synthesize(
                                     text=streaming_text,
                                     voice_external_id=external_voice_id,
                                     settings_json=provider_settings,
                                 )
+
+                                if pcm_linear_mixer is not None:
+                                    downsampler = PCM16KStreamDownsampler()
+
+                                    def _pcm_chunks_to_mulaw_chunks(sync_source):
+                                        for raw_chunk in sync_source:
+                                            samples_8k = downsampler.feed(raw_chunk)
+                                            if samples_8k:
+                                                yield pcm_linear_mixer.mix_linear_samples_to_ulaw(samples_8k)
+                                        trailing = downsampler.flush()
+                                        if trailing:
+                                            yield pcm_linear_mixer.mix_linear_samples_to_ulaw(trailing)
+
+                                    sync_iter = _pcm_chunks_to_mulaw_chunks(sync_iter)
 
                                 async def _async_iter_from_sync(sync_source):
                                     iterator = iter(sync_source)
@@ -2355,7 +2384,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     voice_name_override=google_voice_name,
                                 )
 
-                            mixer_ref[0] = self._get_or_create_eleven_bg_mixer()
+                            mixer_ref[0] = None if pcm_linear_mixer is not None else self._get_or_create_eleven_bg_mixer()
 
                             await stream_mulaw_from_audio_iter(audio_iter)
                             if tts_provider_slug == "elevenlabs" and not self._tts_cancel.is_set():

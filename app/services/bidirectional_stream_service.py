@@ -12,10 +12,11 @@ from app.core.logger import logger
 from app.services.tts_adapter import get_tts_adapter
 from app.utils.eleven_tts_background import (
     cache_key_background_fragment,
-    mix_mulaw_bytes,
+    LinearBackgroundMixer,
     parse_eleven_background_settings,
 )
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+from app.utils.audio_utils import downsample_linear_samples, pcm16le_bytes_to_linear_samples
 
 
 def _resolve_tts_provider_slug(agent: Optional[Any]) -> Optional[str]:
@@ -107,7 +108,15 @@ async def generate_mulaw_tts(
             if not external_voice_id:
                 raise ValueError("TTS voice is not configured for the selected provider.")
             settings_json = dict(getattr(agent, "tts_settings_json", None) or {})
-            settings_json.setdefault("output_format", "ulaw_8000")
+            bg_id = None
+            bg_level = 0.0
+            if (provider_slug or "").lower() == "elevenlabs":
+                bg_id, bg_level = parse_eleven_background_settings(settings_json)
+            if (provider_slug or "").lower() == "elevenlabs" and bg_id:
+                # Mix in linear PCM first, then encode to mu-law once at the end.
+                settings_json["output_format"] = "pcm_16000"
+            else:
+                settings_json.setdefault("output_format", "ulaw_8000")
             adapter = get_tts_adapter(provider_slug)
             logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [provider={provider_slug}]")
             audio_content = adapter.synthesize(
@@ -116,9 +125,28 @@ async def generate_mulaw_tts(
                 settings_json=settings_json,
             )
             if (provider_slug or "").lower() == "elevenlabs":
-                bg_id, bg_level = parse_eleven_background_settings(settings_json)
                 if bg_id:
-                    audio_content = mix_mulaw_bytes(audio_content, bg_id, bg_level)
+                    pcm_samples = pcm16le_bytes_to_linear_samples(audio_content)
+                    voice_8k_samples = downsample_linear_samples(
+                        pcm_samples,
+                        src_rate_hz=16000,
+                        dst_rate_hz=8000,
+                    )
+                    audio_content = LinearBackgroundMixer(bg_id, bg_level).mix_linear_samples_to_ulaw(
+                        voice_8k_samples
+                    )
+                elif settings_json.get("output_format") != "ulaw_8000":
+                    # Defensive fallback: if a custom ElevenLabs PCM format slips in
+                    # without background, still return telephony-ready mu-law bytes.
+                    pcm_samples = pcm16le_bytes_to_linear_samples(audio_content)
+                    voice_8k_samples = downsample_linear_samples(
+                        pcm_samples,
+                        src_rate_hz=16000,
+                        dst_rate_hz=8000,
+                    )
+                    audio_content = LinearBackgroundMixer("office", 0.0).mix_linear_samples_to_ulaw(
+                        voice_8k_samples
+                    )
 
         # Cache for instant reuse (especially useful for repeated words/phrases)
         audio_cache[cache_key] = audio_content
