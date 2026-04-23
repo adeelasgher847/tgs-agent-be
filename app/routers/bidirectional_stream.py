@@ -2014,25 +2014,43 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
         - During TTS (is_speaking=True): TTS sender already mixes background via
           _voice_frame_mulaw — this loop skips to avoid doubling the frame rate.
-        - During silence (is_speaking=False): injects one background frame every
-          20 ms so the caller hears a continuous ambient bed, not silence gaps.
+        - During silence / STT (is_speaking=False): injects one background frame
+          every 20 ms so the caller hears a continuous ambient bed.
 
-        Only active for ElevenLabs agents; returns immediately for Google TTS.
+        Uses perf_counter drift correction so background stays precisely at
+        50 fps (20 ms/frame) even when the asyncio event loop is busy during
+        heavy STT processing.
         """
         import base64 as _b64
+        import time as _time
         from app.utils.audio_utils import MULAW_FRAME_BYTES as _FRM
 
-        SILENT_MULAW = bytes([0xFF]) * _FRM  # mu-law silence carrier for background
+        SILENT_MULAW = bytes([0xFF]) * _FRM  # mu-law silence carrier
+        FRAME_INTERVAL = 0.02  # 20 ms per telephony frame
+
+        next_send = _time.perf_counter() + FRAME_INTERVAL
 
         while not self._stop_event.is_set():
-            await asyncio.sleep(0.02)  # 20 ms — one telephony frame interval
+            # Drift-corrected sleep: sleep only the remaining time until next frame
+            now = _time.perf_counter()
+            sleep_dur = next_send - now
+            if sleep_dur > 0:
+                await asyncio.sleep(sleep_dur)
+            elif sleep_dur < -0.10:
+                # More than 100 ms behind (heavy load) — reset schedule to avoid
+                # a burst of catch-up frames that would overwhelm Twilio's buffer.
+                next_send = _time.perf_counter()
+
+            next_send += FRAME_INTERVAL
 
             if self._stop_event.is_set() or not self.stream_sid:
                 continue
 
             if self.is_speaking:
-                # TTS pipeline is actively streaming; its _voice_frame_mulaw handles
-                # background mixing frame-by-frame.  Skip here to keep frame rate = 50 fps.
+                # TTS pipeline is actively streaming and handles background
+                # mixing internally.  Reset schedule so we resume cleanly the
+                # instant is_speaking flips back to False.
+                next_send = _time.perf_counter() + FRAME_INTERVAL
                 continue
 
             mixer = self._get_or_create_eleven_bg_mixer()

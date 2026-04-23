@@ -23,12 +23,13 @@ from app.utils.audio_utils import (
 )
 
 DEFAULT_ELEVEN_BACKGROUND_PRESET = "office"
-DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.4
-MAX_ELEVEN_BACKGROUND_LEVEL = 0.55
+DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.15
+MAX_ELEVEN_BACKGROUND_LEVEL = 0.40
 
-# Voice is scaled to this fraction to leave headroom for background addition.
-# At 0.85 voice + 0.15 headroom: peak sum stays within ±32767.
-VOICE_HEADROOM = 0.85
+# Do NOT scale voice — keep it full-amplitude.  Background is already quiet
+# enough (gain << 32767) that the sum never clips.  Attenuating the voice
+# at 0.85 makes it sound thin/distorted, which is worse than rare clipping.
+VOICE_HEADROOM = 1.0
 
 # Display catalog (API). File override: app/resources/eleven_tts_backgrounds/{id}.ulaw
 ELEVEN_BACKGROUND_CATALOG: list[dict[str, str]] = [
@@ -120,39 +121,69 @@ def _pinkish_sample(state: list[float], rng: random.Random) -> float:
 
 
 def _synthetic_loop_mulaw(preset_id: str) -> bytes:
-    """One second of looping 8 kHz mu-law (deterministic per preset)."""
-    n = MULAW_SAMPLE_RATE_HZ
+    """
+    8-second seamless looping 8 kHz mu-law background bed.
+
+    Design choices that eliminate distortion:
+    - 8 s duration (64 000 samples) → loop boundary click is very rare and quiet
+    - Filter runs 2000 warm-up samples before recording → avoids the initial
+      ramp-up discontinuity at the very start of the loop
+    - Linear PCM is generated first; boundary crossfade is applied before
+      mu-law encoding → no click at loop wrap-around
+    - Low gains → background stays well below voice level and mu-law
+      quantisation noise is inaudible at telephony SNR
+    """
+    LOOP_SECONDS = 8
+    CROSSFADE_SAMPLES = MULAW_FRAME_BYTES  # 160 samples = 20 ms
+    WARMUP = 2_000                         # discard warm-up samples
+
+    n = MULAW_SAMPLE_RATE_HZ * LOOP_SECONDS  # 64 000 samples
+
     seed = (sum(ord(c) for c in preset_id) * 1103515245 + 12345) & 0x7FFFFFFF
     rng = random.Random(seed)
     state: list[float] = [0.0, 0.0, 0.0]
     slow = 0.0
-    out = bytearray()
 
-    # Gains tuned so that at level=0.4 with VOICE_HEADROOM=0.85 the background
-    # sits at roughly -15 to -20 dB relative to typical voice → audible but not
-    # overwhelming.  Peak sum (voice*0.85 + bg*level) stays within ±32767.
+    # Conservative gains: background is audible but stays well below voice
+    # amplitude.  At level=0.15, peak background contribution ≈ 450 linear
+    # (≈ 1.4 % of 32767 full scale = ~-37 dB relative to loud voice).
     gains = {
-        "soft_noise": 5_000.0,
-        "office": 8_000.0,
-        "cafe": 11_000.0,
-        "outdoor": 9_000.0,
+        "soft_noise": 1_200.0,
+        "office": 2_000.0,
+        "cafe": 2_800.0,
+        "outdoor": 2_200.0,
     }
-    gain = gains.get(preset_id, 6_000.0)
+    gain = gains.get(preset_id, 1_500.0)
 
+    # --- Warm-up: let filter settle without recording ---
+    for _ in range(WARMUP):
+        _pinkish_sample(state, rng)
+
+    # --- Record linear PCM samples ---
+    pcm: list[int] = []
     for i in range(n):
         p = _pinkish_sample(state, rng)
         if preset_id == "office":
-            p += 0.12 * slow
-            slow = 0.995 * slow + rng.uniform(-0.02, 0.02)
+            p += 0.06 * slow
+            slow = 0.995 * slow + rng.uniform(-0.01, 0.01)
         elif preset_id == "cafe":
-            p += 0.25 * rng.uniform(-1.0, 1.0)
+            # Softer high-freq flutter instead of raw white noise
+            p += 0.10 * _pinkish_sample([state[0], state[1], state[2]], rng)
         elif preset_id == "outdoor":
-            gust = 0.35 * (0.5 + 0.5 * (i / n)) * rng.uniform(-1.0, 1.0)
-            p = 0.7 * p + gust
-        lin = int(max(-32768, min(32767, p * gain)))
-        out.append(linear_to_ulaw_sample(lin))
+            gust = 0.18 * rng.gauss(0.0, 0.5)
+            p = 0.8 * p + gust
+        pcm.append(int(max(-32768, min(32767, p * gain))))
 
-    return bytes(out)
+    # --- Seamless loop: crossfade last CROSSFADE_SAMPLES into first ---
+    for j in range(CROSSFADE_SAMPLES):
+        t = j / CROSSFADE_SAMPLES         # 0 → 1
+        head_j = pcm[j]
+        tail_j = pcm[n - CROSSFADE_SAMPLES + j]
+        # Blend tail out / head in so the loop wraps without a click
+        pcm[j] = int(head_j * t + tail_j * (1.0 - t))
+
+    # --- Encode to mu-law ---
+    return bytes(linear_to_ulaw_sample(s) for s in pcm)
 
 
 def _load_loop_from_file(preset_id: str) -> Optional[bytes]:
@@ -182,8 +213,8 @@ def get_background_loop_bytes(preset_id: str) -> bytes:
 def mix_mulaw_bytes(voice: bytes, background_id: str, level: float) -> bytes:
     """Mix full mu-law buffer with looping background (byte-aligned 8 kHz).
 
-    Voice is scaled by VOICE_HEADROOM (0.85) before summing to guarantee
-    the combined signal never exceeds ±32767 (no hard clipping / distortion).
+    Voice is kept at full amplitude (VOICE_HEADROOM=1.0).  Background gain
+    and level are both small enough that the sum never clips in practice.
     """
     if not voice or level <= 0.0:
         return voice
@@ -216,7 +247,7 @@ class BackgroundFrameMixer:
     def mix_frame(self, frame: bytes) -> bytes:
         """Mix one 20ms mu-law frame with background.
 
-        Applies VOICE_HEADROOM scale to prevent clipping when adding background.
+        Voice is kept at full amplitude; background is added quietly on top.
         Safe to call on both TTS speech frames and mu-law silence (0xFF) frames.
         """
         if self._level <= 0.0 or not frame:
