@@ -123,6 +123,8 @@ from app.services.twilio_service import twilio_service
 from app.services.voice_twilio_utils import get_twilio_credentials_for_call
 from app.services.google_tts_service import google_tts_service
 from app.services.tts_adapter import get_tts_adapter
+from app.voice.tone_adapter import tone_adapter
+from app.voice.turn_signals import TurnContext, build_turn_context, build_user_signals_block
 from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
 from app.routers.general_websocket import broadcast_call_status_update
@@ -704,6 +706,13 @@ class BidirectionalStreamHandler:
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
 
+            turn_context = build_turn_context(
+                user_text,
+                confidence,
+                booking_context_active=self._is_booking_context_active(user_text),
+                is_final=commit_agent_transcript,
+            )
+
             # ------- RAG: build knowledge base context in voice layer -------
             tenant_uuid = self.call_session.tenant_id if self.call_session else None
             agent_uuid = self.agent.id if self.agent else None
@@ -995,8 +1004,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # and "past slots" mean. Also injected into appointment booking flow.
             _now_local = datetime.now(timezone.utc)
             _now_str = _now_local.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+            _user_signals = build_user_signals_block(turn_context)
             system_prompt = (
                 f"# CURRENT DATE & TIME\nNow: {_now_str}\n\n"
+                f"{_user_signals}\n\n"
                 + system_prompt
             )
 
@@ -1069,6 +1080,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = False
                 first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
+                deferred_memory_scheduled = False
+
+                def _schedule_deferred_memory_once() -> None:
+                    nonlocal deferred_memory_scheduled
+                    if deferred_memory_scheduled:
+                        return
+                    deferred_memory_scheduled = True
+                    asyncio.create_task(
+                        self._deferred_conversation_memory_update(turn_context, user_text)
+                    )
 
                 def _strip_control_tokens(text: str) -> str:
                     # These are backend/system markers and must NEVER be spoken.
@@ -1185,14 +1206,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             else:
                                 enhanced_text = quick_clean(flush_text)
 
+                            enhanced_text = tone_adapter(enhanced_text, turn_context, self._use_ssml)
+
                             chunk_counter += 1
                             if self._tts_pipeline:
                                 await self._tts_pipeline.queue_tts({
-                                "text": enhanced_text,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": False,
-                            })
+                                    "text": enhanced_text,
+                                    "chunk_id": chunk_counter,
+                                    "use_ssml": self._use_ssml,
+                                    "is_final": False,
+                                })
+                                _schedule_deferred_memory_once()
                             first_tts_chunk = False
                             last_flush_ts = time.perf_counter()
 
@@ -1214,15 +1238,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     else:
                         enhanced_text = quick_clean(tts_buffer)
 
+                    enhanced_text = tone_adapter(enhanced_text, turn_context, self._use_ssml)
+
                     chunk_counter += 1
                     if self._tts_pipeline:
                         await self._tts_pipeline.queue_tts({
-                        "text": enhanced_text,
-                        "chunk_id": chunk_counter,
-                        "use_ssml": self._use_ssml,
-                        "is_final": True,
-                        "end_call_after": end_call_after,
-                    })
+                            "text": enhanced_text,
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._use_ssml,
+                            "is_final": True,
+                            "end_call_after": end_call_after,
+                        })
+                        _schedule_deferred_memory_once()
 
                 return response_accum.strip()
 
@@ -1261,25 +1288,37 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 "",
                                 safe_tts_text,
                             ).replace("[END_CALL]", "").strip()
+                            out_text = tone_adapter(
+                                (safe_tts_text or final_text or "").strip(),
+                                turn_context,
+                                self._use_ssml,
+                            )
                             chunk_counter += 1
                             if self._tts_pipeline:
                                 await self._tts_pipeline.queue_tts({
-                                    "text": safe_tts_text or final_text,
+                                    "text": out_text or (safe_tts_text or final_text),
                                     "use_ssml": self._use_ssml,
                                     "is_final": True,
                                 })
+                                asyncio.create_task(
+                                    self._deferred_conversation_memory_update(turn_context, user_text)
+                                )
                     except Exception as e:
                         logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
                         # Ultimate fallback response
                         final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
+                        utt = tone_adapter(final_text, turn_context, self._use_ssml)
                         chunk_counter += 1
                         if self._tts_pipeline:
                             await self._tts_pipeline.queue_tts({
-                            "text": final_text,
-                            "chunk_id": chunk_counter,
-                            "use_ssml": self._use_ssml,
-                            "is_final": True
-                        })
+                                "text": utt,
+                                "chunk_id": chunk_counter,
+                                "use_ssml": self._use_ssml,
+                                "is_final": True
+                            })
+                            asyncio.create_task(
+                                self._deferred_conversation_memory_update(turn_context, user_text)
+                            )
 
             if final_text:
                 # Two-step reliability: if booking intent exists but token is missing, run action extraction.
@@ -1334,6 +1373,24 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             raise
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+
+    async def _deferred_conversation_memory_update(
+        self, turn_context: TurnContext, user_text: str
+    ) -> None:
+        """
+        Non-blocking hook after first TTS is queued. Extend with embeddings or summaries
+        without adding latency to STT → LLM → TTS.
+        """
+        try:
+            logger.debug(
+                "deferred turn context: mood=%s phase=%s is_final=%s (user chars=%d)",
+                turn_context.mood_label(),
+                turn_context.conversation_phase,
+                turn_context.is_final,
+                len((user_text or "")),
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("deferred conversation memory update failed: %s", e, exc_info=True)
     
     # ── Calendar token handlers ───────────────────────────────────────────────
 
