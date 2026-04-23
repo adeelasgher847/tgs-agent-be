@@ -34,11 +34,10 @@ class AgentBase(BaseModel):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
-            "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.55 linear gain on bed, default 0.3). "
-            "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
-            "known tags are stripped before Google TTS."
+            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background "
+            "(currently office-only; use none/off to disable) and optional "
+            "eleven_background_level (0.0–0.22 linear gain on bed, default 0.10). "
+            "Bracketed audio tags like [breathes] are not injected automatically."
         ),
     )
     is_inbound_agent: bool = Field(
@@ -71,11 +70,10 @@ class AgentUpdate(BaseModel):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
-            "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.55 linear gain on bed, default 0.3). "
-            "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
-            "known tags are stripped before Google TTS."
+            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background "
+            "(currently office-only; use none/off to disable) and optional "
+            "eleven_background_level (0.0–0.22 linear gain on bed, default 0.10). "
+            "Bracketed audio tags like [breathes] are not injected automatically."
         ),
     )
     is_inbound_agent: Optional[bool] = Field(
@@ -93,11 +91,10 @@ class AgentOut(AgentBase):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background preset id "
-            "(see GET /tts/eleven-backgrounds; use none/off to disable) and optional "
-            "eleven_background_level (0.0–0.55 linear gain on bed, default 0.3). "
-            "Eleven v3 audio tags in assistant text (e.g. [breathes]) are kept for ElevenLabs TTS only; "
-            "known tags are stripped before Google TTS."
+            "Provider-specific TTS settings. ElevenLabs only: optional eleven_background "
+            "(currently office-only; use none/off to disable) and optional "
+            "eleven_background_level (0.0–0.22 linear gain on bed, default 0.10). "
+            "Bracketed audio tags like [breathes] are not injected automatically."
         ),
     )
     created_at: datetime

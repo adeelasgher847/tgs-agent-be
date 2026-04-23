@@ -24,15 +24,16 @@ from app.utils.audio_utils import (
 )
 
 DEFAULT_ELEVEN_BACKGROUND_PRESET = "office"
-DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.15
-MAX_ELEVEN_BACKGROUND_LEVEL = 0.40
+DEFAULT_ELEVEN_BACKGROUND_LEVEL = 0.10
+MAX_ELEVEN_BACKGROUND_LEVEL = 0.22
 
 # Do NOT scale voice — keep it full-amplitude.  Background is already quiet
 # enough (gain << 32767) that the sum never clips.  Attenuating the voice
 # at 0.85 makes it sound thin/distorted, which is worse than rare clipping.
-VOICE_HEADROOM = 1.0
+VOICE_HEADROOM = 0.86
 
-# Display catalog (API). File override: app/resources/eleven_tts_backgrounds/{id}.ulaw
+# Display catalog (API). Runtime mixing is intentionally pinned to "office"
+# for stable telephony quality.
 ELEVEN_BACKGROUND_CATALOG: list[dict[str, str]] = [
     {
         "id": "soft_noise",
@@ -75,7 +76,7 @@ def parse_eleven_background_settings(
     """
     Returns (background_id, clamped_level).
 
-    Defaults to ("office", 0.15) when not explicitly configured.
+    Defaults to ("office", 0.10) when not explicitly configured.
     Returns (None, level) only when explicitly disabled via "off"/"none"/"false"/"0".
     """
     level_raw = (settings_json or {}).get("eleven_background_level", DEFAULT_ELEVEN_BACKGROUND_LEVEL)
@@ -102,6 +103,9 @@ def parse_eleven_background_settings(
         # Unknown preset → fall back to default
         return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
 
+    # Production hardening: use the validated office loop only.
+    if key != "office":
+        return DEFAULT_ELEVEN_BACKGROUND_PRESET, level
     return key, level
 
 

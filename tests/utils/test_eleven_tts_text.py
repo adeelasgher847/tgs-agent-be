@@ -49,16 +49,15 @@ def test_default_non_eleven_strips():
 
 
 def test_only_elevenlabs_supports_audio_tags():
-    assert supports_elevenlabs_audio_tags("elevenlabs") is True
-    assert supports_elevenlabs_audio_tags("ElevenLabs") is True
+    assert supports_elevenlabs_audio_tags("elevenlabs") is False
+    assert supports_elevenlabs_audio_tags("ElevenLabs") is False
     assert supports_elevenlabs_audio_tags("google") is False
     assert supports_elevenlabs_audio_tags(None) is False
 
 
 def test_prompt_block_only_emitted_for_elevenlabs():
     block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert "[breathes]" in block
-    assert "BOOK_APPOINTMENT" in block
+    assert block == ""
     assert build_elevenlabs_audio_tag_prompt_block("google") == ""
 
 
@@ -70,7 +69,7 @@ def test_contains_elevenlabs_audio_tag_detects_known_tags():
 def test_breathing_fallback_added_for_long_eleven_text():
     raw = "Hello there, thank you for calling today."
     assert apply_elevenlabs_breathing_fallback(raw) == "[breathes] Hello there, thank you for calling today."
-    assert prepare_tts_text_for_provider(raw, "elevenlabs").startswith("[breathes] ")
+    assert prepare_tts_text_for_provider(raw, "elevenlabs") == raw
 
 
 def test_breathing_fallback_skips_short_or_control_token_text():

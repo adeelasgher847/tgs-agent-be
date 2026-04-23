@@ -17,6 +17,9 @@ from typing import Optional
 _TAG_RE = re.compile(r"\[([^\]]*)\]")
 _CONTROL_TOKEN_RE = re.compile(r"\[(?:END_CALL|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)", re.IGNORECASE)
 
+# Safety default: keep disabled unless model support is explicitly verified.
+ENABLE_ELEVENLABS_AUDIO_TAGS = False
+
 # Normalized: whitespace collapsed, lowercased. Expand as Eleven documents new tags.
 _ELEVEN_V3_TAG_INNERS: frozenset[str] = frozenset(
     {
@@ -100,13 +103,15 @@ def prepare_tts_text_for_provider(text: str, provider_slug: Optional[str]) -> st
     No network; negligible CPU; safe when text has no tags (fast path: no '[').
     """
     if (provider_slug or "").lower() == "elevenlabs":
-        return apply_elevenlabs_breathing_fallback(text)
+        # Pass-through only: do not force-insert [breathes] tags because some
+        # model variants can speak bracket tags literally.
+        return text
     return strip_eleven_v3_style_tags_for_non_eleven_tts(text)
 
 
 def supports_elevenlabs_audio_tags(provider_slug: Optional[str]) -> bool:
     """Return True only for ElevenLabs TTS, where bracketed audio tags are valid."""
-    return (provider_slug or "").lower() == "elevenlabs"
+    return ENABLE_ELEVENLABS_AUDIO_TAGS and (provider_slug or "").lower() == "elevenlabs"
 
 
 def contains_elevenlabs_audio_tag(text: str) -> bool:
