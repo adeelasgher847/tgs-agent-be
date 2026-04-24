@@ -86,6 +86,7 @@ def _empty_handler() -> Handler:
     h._turn_response_seed_text = ""
     h._last_interim_text = ""
     h._last_interim_sent_ts = 0.0
+    h._enable_interim_llm = True  # tests exercise the optional early-LLM path
     h._min_interim_words = 1
     h._min_interim_confidence = 0.4
     h._min_interim_interval_sec = 0.0
@@ -121,6 +122,32 @@ def test_second_interim_does_not_start_second_llm() -> None:
         assert h._turn_response_started is True
         assert len(calls) == 1
         assert calls[0] == "hello I"
+
+    asyncio.run(_body())
+
+
+def test_interim_llm_off_skips_generate() -> None:
+    """Default prod path: VOICE_ENABLE_INTERIM_LLM=False — no LLM on partials."""
+
+    async def _body() -> None:
+        calls: list[str] = []
+
+        async def fake_generate(
+            self,
+            user_text: str,
+            confidence: float,
+            is_greeting: bool = False,
+        ) -> None:
+            calls.append(user_text)
+
+        h = _empty_handler()
+        h._enable_interim_llm = False
+        h._should_defer_interim_response = lambda _t: False  # type: ignore[method-assign]
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._maybe_process_interim(h, "hello I need help now please", 0.9)
+
+        assert calls == []
 
     asyncio.run(_body())
 

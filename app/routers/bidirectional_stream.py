@@ -5,10 +5,12 @@ Target latency: 400–500ms (Vapi-style).
 
 STT → LLM → TTS FLOW:
 - Twilio sends audio every 20ms (MULAW 8kHz). We push each chunk to Deepgram STT.
-- First qualifying ~30ms interim can start one background LLM+TTS run (one per user utterance).
-- LLM streams response → each flush (sentence/time ~200ms) → TTS chunk.
-- When VAD yields the final STT, if the interim already answered and the final is just the
-  same utterance with a few more words, we do NOT run a second LLM+TTS (Vapi-style: one reply per turn).
+- By default, LLM+TTS runs on **final** STT only (`VOICE_ENABLE_INTERIM_LLM=False`), matching
+  stable one-reply-per-utterance behavior. Deepgram emits many more partials than classic
+  Google STT; early interim LLM is opt-in and gated by min word count + confidence.
+- Optional: first qualifying interim can start one LLM+TTS run (see `VOICE_ENABLE_INTERIM_LLM`).
+- When final arrives after an interim run, we regenerate only if `_should_regenerate_on_final` says so
+  (same-utterance extensions skip a second LLM).
 
 PARALLEL TTS PIPELINE (Vapi-style):
 - User Speech → STT Interim → LLM Chunk 1 → TTS Chunk 1 Playing
@@ -39,7 +41,7 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
    - Detection: 2+ words (interim confidence can be noisy; barge-in should not depend on confidence)
    - Checked FIRST before interim gating (highest priority!)
    - TTS queue cleared (prevents old audio from resuming)
-   - Waits for final transcript before responding (no partial interruptions)
+   - Barge-in still uses interim; normal replies prefer final when interim LLM is off
 
 4. Persona & Variability:
    - Subtle prosody variations (95%-105% rate, ±1 semitone pitch)
@@ -206,12 +208,19 @@ class BidirectionalStreamHandler:
         self.call_sid = None
         self.current_speech = ""
         self._stt_pipeline: Optional[SttPipeline] = None
-        # Ultra-aggressive interim processing state (40% confidence)
+        # Interim → early LLM (optional; default off in settings for Deepgram stability)
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
-        self._min_interim_words = 1  # speak sooner on shorter interim
-        self._min_interim_confidence = 0.40  # ULTRA-AGGRESSIVE: process 40% confidence
-        self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0  # 30ms: STT stream → LLM (400–500ms target)
+        self._enable_interim_llm: bool = bool(
+            getattr(settings, "VOICE_ENABLE_INTERIM_LLM", False)
+        )
+        self._min_interim_words: int = max(
+            1, int(getattr(settings, "VOICE_MIN_INTERIM_WORDS", 4))
+        )
+        self._min_interim_confidence: float = float(
+            getattr(settings, "VOICE_MIN_INTERIM_CONFIDENCE", 0.52)
+        )
+        self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0
         
         # TTS (Output) state - Parallel Pipeline
         self.is_speaking = False
@@ -565,9 +574,10 @@ class BidirectionalStreamHandler:
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
-        At most one early LLM+TTS run per user utterance (low latency, dev-style).
-        Awaits generation so agent transcript is committed when the stream finishes (not deferred to final).
-        Barge-in cancels the in-flight task.
+        At most one early LLM+TTS run per user utterance when `VOICE_ENABLE_INTERIM_LLM` is True.
+        Default is False: LLM runs on **final** STT only, avoiding double replies from Deepgram
+        partials (e.g. "I'm" then "I'm feeling sad"). Barge-in still uses interim. When enabled,
+        gates use `VOICE_MIN_INTERIM_WORDS` + `VOICE_MIN_INTERIM_CONFIDENCE`.
         """
         try:
             if not transcript:
@@ -591,6 +601,10 @@ class BidirectionalStreamHandler:
                 self._turn_response_started = False
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
+                return
+
+            # Final-only mode: do not start LLM from partials (barge-in already handled).
+            if not self._enable_interim_llm:
                 return
 
             # At most one interim LLM start per user turn; further partials are ignored

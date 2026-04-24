@@ -72,6 +72,13 @@ class Settings(BaseSettings):
 
     # Voice streaming tunables (phase 6 centralization)
     VOICE_STT_INTERIM_INTERVAL_MS: int = 30
+    # Deepgram fires many more partials than classic Google STT. Running LLM on every
+    # interim → double replies + TTS "breaks." Default: final STT only (one reply per
+    # utterance). Set True for lower first-token latency at the cost of stability.
+    VOICE_ENABLE_INTERIM_LLM: bool = False
+    # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
+    VOICE_MIN_INTERIM_WORDS: int = 4
+    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.52
     VOICE_HISTORY_MAX_MESSAGES: int = 12
     VOICE_TTS_FLUSH_MIN_WORDS: int = 2
     VOICE_TTS_FLUSH_MAX_WORDS: int = 12
