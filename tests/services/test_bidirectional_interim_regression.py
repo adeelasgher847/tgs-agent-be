@@ -48,6 +48,25 @@ def test_regenerate_false_when_final_extends_utterance() -> None:
     assert Handler._should_regenerate_on_final(h, "I need to schedule an appointment.") is False
 
 
+def test_regenerate_false_on_stt_word_level_revision() -> None:
+    """
+    STT corrects a single mishear at the end (e.g. Carlton → Carter). Same intent,
+    re-running the LLM just produces a second "Nice to meet you, …" and that's the
+    double-audio the user complained about. Skip regen.
+    """
+    h = _make_handler_regen("Hello my name is Alex Carlton")
+    assert Handler._should_regenerate_on_final(h, "Hello my name is Alex Carter.") is False
+
+
+def test_regenerate_true_when_new_intent_added_at_end() -> None:
+    """Guardrail: word-revision check must not silence genuine new intent."""
+    h = _make_handler_regen("I want to book an appointment")
+    assert (
+        Handler._should_regenerate_on_final(h, "I want to cancel my appointment and get a refund")
+        is True
+    )
+
+
 def test_regenerate_false_when_final_matches_seed() -> None:
     h = _make_handler_regen("how are you today")
     assert Handler._should_regenerate_on_final(h, "How are you today") is False

@@ -21,6 +21,7 @@ def test_google_strips_known_tags():
         prepare_tts_text_for_provider("[breathes] Hello there.", "google")
         == "Hello there."
     )
+    assert prepare_tts_text_for_provider("[sad] I'm sorry to hear that.", "google") == "I'm sorry to hear that."
     assert (
         strip_eleven_v3_style_tags_for_non_eleven_tts(
             "Start [pause] middle [whispers] end"
@@ -49,16 +50,34 @@ def test_default_non_eleven_strips():
 
 
 def test_only_elevenlabs_supports_audio_tags():
-    assert supports_elevenlabs_audio_tags("elevenlabs") is False
-    assert supports_elevenlabs_audio_tags("ElevenLabs") is False
+    assert supports_elevenlabs_audio_tags("elevenlabs") is True
+    assert supports_elevenlabs_audio_tags("ElevenLabs") is True
     assert supports_elevenlabs_audio_tags("google") is False
     assert supports_elevenlabs_audio_tags(None) is False
 
 
+def test_supports_respects_config_disable(monkeypatch):
+    from app.core import config
+    from app.utils import eleven_tts_text
+
+    monkeypatch.setattr(config.settings, "ENABLE_ELEVENLABS_AUDIO_TAGS", False)
+    # settings is the same object used by the module
+    assert eleven_tts_text.supports_elevenlabs_audio_tags("elevenlabs") is False
+    assert build_elevenlabs_audio_tag_prompt_block("elevenlabs") == ""
+
+
 def test_prompt_block_only_emitted_for_elevenlabs():
+    from app.utils.eleven_tts_text import get_elevenlabs_voice_prompt_rule_lines
+
     block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert block == ""
+    assert "ELEVENLABS" in block
+    assert "[pause]" in block or "[pauses]" in block
+    assert "[excited]" in block
+    assert "[sad]" in block or "sorrowful" in block
     assert build_elevenlabs_audio_tag_prompt_block("google") == ""
+    a, b, c = get_elevenlabs_voice_prompt_rule_lines()
+    assert a.startswith("- OUTPUT")
+    assert "3. NO SSML" in c
 
 
 def test_contains_elevenlabs_audio_tag_detects_known_tags():

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
+    # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
+    # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
+    ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
     
     # Google Cloud Speech-to-Text Configuration
     GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file

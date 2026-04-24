@@ -161,6 +161,7 @@ from app.services.bidirectional_stream_service import (
 )
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
+    get_elevenlabs_voice_prompt_rule_lines,
     prepare_tts_text_for_provider,
     supports_elevenlabs_audio_tags,
 )
@@ -265,7 +266,20 @@ class BidirectionalStreamHandler:
         # Deepgram can emit the same is_final twice within a short window — avoid triple LLM/transcript
         self._stt_last_final_raw: str = ""
         self._stt_last_final_monotonic: float = 0.0
-        self._STT_DEDUP_FINAL_WINDOW_SEC: float = 2.5
+        # Widened from 2.5s to 6.0s: Twilio sometimes re-endpoints the same short utterance
+        # ("Hello?", "Yes", "Okay") up to ~5s apart, producing two finals with identical text
+        # that both trigger the LLM → duplicate agent replies. One STT final per user turn is the goal.
+        self._STT_DEDUP_FINAL_WINDOW_SEC: float = 6.0
+
+        # Turn coordinator: remember the last few (user_norm, agent_norm, ts) pairs so we can
+        #   (a) short-circuit a generate when the same user turn repeats within 15s, and
+        #   (b) suppress duplicate agent transcript writes within 25s (belt-and-suspenders so
+        #       the visible transcript never shows the same agent line twice).
+        # Bounded to the last 5 entries — O(1) cost, no added latency.
+        self._recent_agent_pairs: list[tuple[str, str, float]] = []
+        self._DUP_USER_TURN_WINDOW_SEC: float = 15.0
+        self._AGENT_LINE_DEDUP_WINDOW_SEC: float = 25.0
+        self._RECENT_AGENT_PAIRS_MAX: int = 5
 
         # Background audio manager (dev-branch style embedded ambience loop).
         self._background_audio = BackgroundAudioManager(
@@ -528,6 +542,22 @@ class BidirectionalStreamHandler:
             await self._add_to_transcript("client", transcript, "speech", confidence)
             self._update_booking_memory_from_user_turn(transcript)
 
+            # Turn coordinator: if the same user turn was just handled (e.g. "Hello?" twice
+            # across the pickup/first-second-endpoint boundary), do not generate a second
+            # agent reply. The client line is still saved so the caller sees they repeated.
+            user_turn_norm = self._normalize_turn_text(transcript)
+            if self._has_recent_duplicate_reply_for(user_turn_norm):
+                logger.info(
+                    "TurnCoordinator: suppressing duplicate generate for user turn=%r (within %ss)",
+                    transcript,
+                    self._DUP_USER_TURN_WINDOW_SEC,
+                )
+                # Reset interim-turn flags so the next real user utterance is free to generate.
+                self._turn_response_started = False
+                self._turn_response_seed_text = ""
+                self._last_interim_text = ""
+                return
+
             await self._complete_llm_turn_after_stt_final(transcript, confidence)
             
         except Exception as e:
@@ -545,8 +575,18 @@ class BidirectionalStreamHandler:
 
             word_count = len(transcript.split())
 
-            # Barge-in: any user words while the agent is speaking
-            if self._tts_pipeline and self._tts_pipeline.is_speaking and word_count >= 1:
+            # Barge-in: require real speech (not filler noise) while the agent is speaking.
+            # The previous "any word" gate was triggering on "uh", "mm", and phantom short
+            # STT hits, which cancelled good in-flight replies and produced the "arr arr"
+            # stutter. Two thresholds keep both worlds:
+            #   • ≥2 words with confidence ≥ 0.30 → normal interrupt ("hold on", "wait a second")
+            #   • 1 word only if confidence ≥ 0.55 → strong commands ("stop", "no")
+            # This reduces bad cancels without adding latency to genuine barge-ins.
+            is_barge_in = self._tts_pipeline and self._tts_pipeline.is_speaking and (
+                (word_count >= 2 and confidence >= 0.3)
+                or (word_count >= 1 and confidence >= 0.55)
+            )
+            if is_barge_in:
                 await self._cancel_inflight_llm_response()
                 self._turn_response_started = False
                 self._turn_response_seed_text = ""
@@ -838,24 +878,19 @@ class BidirectionalStreamHandler:
             tts_provider = getattr(self.agent, "tts_provider", None) if self.agent else None
             tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
             elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
-            output_plain_text_rule = (
-                "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML or XML. "
-                "Sparse ElevenLabs bracketed audio tags like [breathes] are allowed when natural."
-                if elevenlabs_audio_tags_enabled
-                else "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. Prosody is handled by the system."
-            )
-            no_ssml_rule_base = (
-                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only. "
-                "Sparse ElevenLabs bracketed audio tags like [breathes] are allowed when natural."
-                if elevenlabs_audio_tags_enabled
-                else "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-            )
-            no_ssml_rule = (
-                "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML. "
-                "Sparse ElevenLabs bracketed audio tags like [breathes] are allowed when natural."
-                if elevenlabs_audio_tags_enabled
-                else "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-            )
+            if elevenlabs_audio_tags_enabled:
+                output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
+                    get_elevenlabs_voice_prompt_rule_lines()
+                )
+            else:
+                output_plain_text_rule = (
+                    "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
+                    "Prosody is handled by the system."
+                )
+                no_ssml_rule_base = (
+                    "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+                )
+                no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
             elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
             
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
@@ -1418,6 +1453,61 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         cleaned = re.sub(r"[^\w\s:]", " ", (text or "").lower())
         return re.sub(r"\s+", " ", cleaned).strip()
 
+    def _has_recent_duplicate_reply_for(self, user_norm: str) -> bool:
+        """
+        True if a committed agent reply already handled this exact user turn within
+        `_DUP_USER_TURN_WINDOW_SEC`. Prevents the "user says 'Hello?' twice → agent
+        repeats the same greeting" failure mode. O(5) cost.
+        """
+        if not user_norm:
+            return False
+        now = time.monotonic()
+        for u_norm, _a_norm, ts in self._recent_agent_pairs:
+            if (now - ts) < self._DUP_USER_TURN_WINDOW_SEC and u_norm and u_norm == user_norm:
+                return True
+        return False
+
+    def _is_duplicate_agent_line(self, user_text: Optional[str], agent_text: str) -> bool:
+        """
+        Transcript-level guard: within `_AGENT_LINE_DEDUP_WINDOW_SEC`, the same agent
+        line (normalized) is treated as a duplicate even if the user turn differs. This
+        is the final safety net that stops the visible transcript from ever showing the
+        same agent message twice in quick succession.
+        """
+        if not agent_text:
+            return False
+        a_norm = self._normalize_turn_text(agent_text)
+        if not a_norm:
+            return False
+        now = time.monotonic()
+        u_norm = self._normalize_turn_text(user_text or "")
+        for prev_u, prev_a, ts in self._recent_agent_pairs:
+            if (now - ts) >= self._AGENT_LINE_DEDUP_WINDOW_SEC:
+                continue
+            if prev_a == a_norm:
+                # Same agent line recently spoken — duplicate regardless of user turn.
+                return True
+            # Very similar (same prefix ≥ 90%) on a non-trivial reply — treat as dup too.
+            if len(a_norm) > 30 and (a_norm.startswith(prev_a) or prev_a.startswith(a_norm)):
+                shorter, longer = sorted((a_norm, prev_a), key=len)
+                if shorter and len(shorter) / max(len(longer), 1) >= 0.9:
+                    # And the user turn matches (or was empty) — safe to dedupe.
+                    if not u_norm or not prev_u or prev_u == u_norm:
+                        return True
+        return False
+
+    def _remember_agent_turn(self, user_text: Optional[str], agent_text: str) -> None:
+        """Append (user_norm, agent_norm, ts) and bound the buffer to the last few entries."""
+        if not agent_text:
+            return
+        a_norm = self._normalize_turn_text(agent_text)
+        if not a_norm:
+            return
+        u_norm = self._normalize_turn_text(user_text or "")
+        self._recent_agent_pairs.append((u_norm, a_norm, time.monotonic()))
+        if len(self._recent_agent_pairs) > self._RECENT_AGENT_PAIRS_MAX:
+            self._recent_agent_pairs = self._recent_agent_pairs[-self._RECENT_AGENT_PAIRS_MAX :]
+
     def _should_defer_interim_response(self, transcript: str) -> bool:
         """
         Avoid early LLM responses for short/ambiguous booking clarifications.
@@ -1523,6 +1613,25 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         # Same line still being dictated — one spoken reply is enough
         if self._is_natural_continuation_of_seed(final_norm, seed_norm):
             return False
+
+        # STT word-level revision (e.g. "Alex Carlton" → "Alex Carter"): a long common
+        # prefix with only the trailing 1–2 words changed is almost always Deepgram
+        # correcting a mishear, not the user adding new intent. Skipping regen avoids
+        # the "first reply uses wrong name, second reply uses right name" double-TTS.
+        seed_words = seed_norm.split()
+        final_words = final_norm.split()
+        if seed_words and final_words and len(seed_words) >= 4:
+            common_prefix = 0
+            for sw, fw in zip(seed_words, final_words):
+                if sw == fw:
+                    common_prefix += 1
+                else:
+                    break
+            if (
+                common_prefix >= len(seed_words) - 1
+                and abs(len(final_words) - len(seed_words)) <= 1
+            ):
+                return False
 
         return True
 
@@ -2982,7 +3091,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             
             # Strip SSML tags before saving to transcript (keep only clean text)
             clean_message = strip_ssml_tags(message)
-            
+
+            # Final dedupe gate for spoken agent replies (agent_response / greeting only —
+            # calendar_slots / calendar_booking are informational and must never be skipped).
+            # If the same line was committed within the last ~25s we skip the DB write AND
+            # the WebSocket broadcast so the user/dashboard never sees duplicate lines.
+            if role == "agent" and message_type in {"agent_response", "greeting"}:
+                user_text_meta = None
+                if message_metadata:
+                    user_text_meta = message_metadata.get("user_text") or message_metadata.get("query")
+                if self._is_duplicate_agent_line(user_text_meta, clean_message):
+                    logger.info(
+                        "TranscriptDedupe: skipping duplicate agent line (type=%s, msg=%r)",
+                        message_type,
+                        clean_message[:80],
+                    )
+                    return
+
             await transcript_service.add_and_broadcast_message(
                 db=self.db,
                 call_session_id=self.call_session.id,
@@ -2994,6 +3119,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 confidence=confidence,
                 metadata=message_metadata
             )
+
+            # Remember committed agent lines for future dedupe / turn-coordination.
+            if role == "agent" and message_type in {"agent_response", "greeting"}:
+                user_text_meta = None
+                if message_metadata:
+                    user_text_meta = message_metadata.get("user_text") or message_metadata.get("query")
+                self._remember_agent_turn(user_text_meta, clean_message)
             
             # Update legacy field
             conversation = transcript_service.get_conversation_array(self.db, self.call_session.id)

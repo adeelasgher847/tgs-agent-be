@@ -1,11 +1,13 @@
 """
-ElevenLabs v3 (and similar) use bracketed *audio tags* in TTS text, e.g. [breathes] [sigh].
+ElevenLabs v3 (and similar) use bracketed *audio tags* in TTS text, e.g. [breathes] [pause] [excited] [sad].
 Those must not reach other providers: Google TTS can speak the brackets and/or mis-handle SSML.
 
 This module:
 - For provider **elevenlabs**: returns text unchanged (no extra work when no [] present).
 - For any other provider: removes only **known** tag inners; unknown `[...]` is left as-is
   to avoid deleting user content like [SKU-100] (digits help distinguish later if needed).
+- LLM/voice prompt guidance and tag enablement: `settings.ENABLE_ELEVENLABS_AUDIO_TAGS` plus
+  `supports_elevenlabs_audio_tags` (ElevenLabs `tts_provider` slug only).
 """
 
 from __future__ import annotations
@@ -13,12 +15,11 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from app.core.config import settings
+
 # Single-pass regex; only substitute when inner normalizes to a known tag
 _TAG_RE = re.compile(r"\[([^\]]*)\]")
 _CONTROL_TOKEN_RE = re.compile(r"\[(?:END_CALL|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)", re.IGNORECASE)
-
-# Safety default: keep disabled unless model support is explicitly verified.
-ENABLE_ELEVENLABS_AUDIO_TAGS = False
 
 # Normalized: whitespace collapsed, lowercased. Expand as Eleven documents new tags.
 _ELEVEN_V3_TAG_INNERS: frozenset[str] = frozenset(
@@ -64,6 +65,8 @@ _ELEVEN_V3_TAG_INNERS: frozenset[str] = frozenset(
         "nervous",
         "calm",
         "excited",
+        "sad",
+        "sadly",
         "sorrowful",
         "nervously",
     }
@@ -110,8 +113,32 @@ def prepare_tts_text_for_provider(text: str, provider_slug: Optional[str]) -> st
 
 
 def supports_elevenlabs_audio_tags(provider_slug: Optional[str]) -> bool:
-    """Return True only for ElevenLabs TTS, where bracketed audio tags are valid."""
-    return ENABLE_ELEVENLABS_AUDIO_TAGS and (provider_slug or "").lower() == "elevenlabs"
+    """
+    Return True when the agent's TTS is ElevenLabs and tag guidance is enabled in settings.
+    All tag-related LLM text and fallbacks should be gated on this.
+    """
+    if (provider_slug or "").lower() != "elevenlabs":
+        return False
+    return bool(getattr(settings, "ENABLE_ELEVENLABS_AUDIO_TAGS", True))
+
+
+def get_elevenlabs_voice_prompt_rule_lines() -> tuple[str, str, str]:
+    """
+    (output_plain_text_rule, no_ssml_rule_base, no_ssml_rule) for the base / custom
+    voice system prompts. Only call when supports_elevenlabs_audio_tags is True
+    to avoid duplicate instruction blocks for non–ElevenLabs TTS.
+    """
+    # Short inline reminder; the detailed policy lives in build_elevenlabs_audio_tag_prompt_block.
+    short = (
+        "Optional: at most ONE ElevenLabs audio tag per reply when it clearly helps: "
+        "[breathes] or [breathe], [pause] or [pauses], [excited], [sad] or [sorrowful] — "
+        "not every line; most replies have zero tags. See # ELEVENLABS AUDIO TAGS below."
+    )
+    return (
+        f"- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML or XML. {short}",
+        f"4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only. {short}",
+        f"3. NO SSML: Plain text only. No <speak>, <prosody>, or XML. {short}",
+    )
 
 
 def contains_elevenlabs_audio_tag(text: str) -> bool:
@@ -152,15 +179,20 @@ def apply_elevenlabs_breathing_fallback(text: str) -> str:
 def build_elevenlabs_audio_tag_prompt_block(provider_slug: Optional[str]) -> str:
     """
     Guidance injected into voice prompts.
-    Only enable bracketed audio tags for ElevenLabs, where the TTS engine can
-    interpret them as non-verbal cues instead of speaking them literally.
+    Only when ElevenLabs TTS is in use and ENABLE_ELEVENLABS_AUDIO_TAGS is True; other
+    providers must never receive this block (brackets can be read aloud or break TTS).
     """
     if not supports_elevenlabs_audio_tags(provider_slug):
         return ""
     return (
         "# ELEVENLABS AUDIO TAGS\n"
-        "- You may use a sparse bracketed audio tag like [breathes] when it would sound natural in speech.\n"
-        "- Use at most one such tag in a normal reply, and skip it for short transactional replies.\n"
-        "- Never put audio tags inside system/control tokens like [CHECK_SLOTS:...], "
-        "[BOOK_APPOINTMENT:...], or [END_CALL].\n"
+        "- This call uses **ElevenLabs** TTS. You *may* add **one** optional bracketed audio tag per reply, "
+        "**only** when the delivery would clearly benefit. Default is **no** tag; do not add tags in every message.\n"
+        "- **Allowed (pick at most one, only when needed):** "
+        "[breathes] or [breathe] (light lead-in); [pause] or [pauses] (a short beat / pacing); "
+        "[excited] (genuine energy); [sad] or [sorrowful] (empathy — use sparingly, professional call tone).\n"
+        "- **When to skip tags:** short transactional replies (yes/no, numbers, times, one-line confirmations), "
+        "or any reply where plain text is enough.\n"
+        "- **Placement:** start of the spoken line, or a single short beat before a sentence—never inside a word.\n"
+        "- **Never** put audio tags inside system tokens: [CHECK_SLOTS:...], [BOOK_APPOINTMENT:...], [END_CALL], or [OUTCOME:...].\n"
     )
