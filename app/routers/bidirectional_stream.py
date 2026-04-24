@@ -249,7 +249,20 @@ class BidirectionalStreamHandler:
         self._in_progress_sent = False  # Track if in-progress status has been sent
         self._skip_audio_until = None  # Timestamp until which to skip audio (system messages)
         self._audio_level_samples = []  # Track audio levels to detect actual user audio
-        self._min_audio_level_threshold = 100  # Minimum audio level to consider as user audio (not silence/system noise)
+        _r = int(getattr(settings, "VOICE_MIN_AUDIO_RMS_FOR_PICKUP", 70) or 70)
+        self._min_audio_level_threshold = max(20, min(250, _r))  # linear RMS; clamp to avoid misconfig
+        self._stt_min_final_confidence: float = float(
+            getattr(settings, "VOICE_STT_MIN_FINAL_CONFIDENCE", 0.26) or 0.26
+        )
+        self._stt_min_final_confidence = max(0.15, min(0.45, self._stt_min_final_confidence))
+        self._barge_in_min_conf: float = float(
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.26) or 0.26
+        )
+        self._barge_in_min_conf = max(0.15, min(0.5, self._barge_in_min_conf))
+        self._barge_in_min_conf_1w: float = float(
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
+        )
+        self._barge_in_min_conf_1w = max(0.4, min(0.75, self._barge_in_min_conf_1w))
         self._audio_samples_needed = 10  # Need 10 consecutive non-silent samples (200ms) to confirm user audio
         
         # Goodbye detection state
@@ -517,7 +530,7 @@ class BidirectionalStreamHandler:
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
         try:
-            if not transcript or confidence < 0.3:
+            if not transcript or confidence < self._stt_min_final_confidence:
                 return
 
             # Skip duplicate finals (e.g. same "Hello?" endpointed multiple times) — Vapi-style single turn
@@ -588,13 +601,12 @@ class BidirectionalStreamHandler:
             # Barge-in: require real speech (not filler noise) while the agent is speaking.
             # The previous "any word" gate was triggering on "uh", "mm", and phantom short
             # STT hits, which cancelled good in-flight replies and produced the "arr arr"
-            # stutter. Two thresholds keep both worlds:
-            #   • ≥2 words with confidence ≥ 0.30 → normal interrupt ("hold on", "wait a second")
-            #   • 1 word only if confidence ≥ 0.55 → strong commands ("stop", "no")
-            # This reduces bad cancels without adding latency to genuine barge-ins.
+            # stutter. Two thresholds keep both worlds (tuned via settings.* for soft speech):
+            #   • ≥2 words → VOICE_BARGE_IN_MIN_CONFIDENCE
+            #   • 1 word  → VOICE_BARGE_IN_MIN_CONFIDENCE_1W
             is_barge_in = self._tts_pipeline and self._tts_pipeline.is_speaking and (
-                (word_count >= 2 and confidence >= 0.3)
-                or (word_count >= 1 and confidence >= 0.55)
+                (word_count >= 2 and confidence >= self._barge_in_min_conf)
+                or (word_count >= 1 and confidence >= self._barge_in_min_conf_1w)
             )
             if is_barge_in:
                 await self._cancel_inflight_llm_response()

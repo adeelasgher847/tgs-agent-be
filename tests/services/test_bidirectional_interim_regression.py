@@ -93,6 +93,9 @@ def _empty_handler() -> Handler:
     h._tts_pipeline = None
     h._llm_response_task = None
     h.is_speaking = False
+    h._barge_in_min_conf = 0.26
+    h._barge_in_min_conf_1w = 0.52
+    h._stt_min_final_confidence = 0.26
     return h
 
 
