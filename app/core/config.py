@@ -82,10 +82,10 @@ class Settings(BaseSettings):
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
     # (legacy default was 100). Too low picks up line noise.
-    VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 65
+    VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 45
     # Drop Deepgram final transcripts below this (0.0–1.0). Default slightly below 0.30 so
     # quiet/soft speech is not rejected as often; too low adds garbage.
-    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.24
+    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.23
     # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
     # Slightly below old 0.30 so a softer "wait" / "hold on" still cancels TTS.
     VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.25
