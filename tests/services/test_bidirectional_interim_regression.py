@@ -63,7 +63,6 @@ def _empty_handler() -> Handler:
     h._min_interim_interval_sec = 0.0
     h._tts_pipeline = None
     h._llm_response_task = None
-    h._pending_interim_agent_transcript = None
     h.is_speaking = False
     return h
 
@@ -79,7 +78,6 @@ def test_second_interim_does_not_start_second_llm() -> None:
             user_text: str,
             confidence: float,
             is_greeting: bool = False,
-            commit_agent_transcript: bool = True,
         ) -> None:
             calls.append(user_text)
 
@@ -134,7 +132,7 @@ def test_barge_in_clears_turn_no_generate() -> None:
     asyncio.run(_body())
 
 
-def test_complete_final_regen_calls_generate_once_with_commit() -> None:
+def test_complete_final_regen_calls_generate_once() -> None:
     async def _body() -> None:
         h = _empty_handler()
         h._turn_response_started = True
@@ -152,6 +150,6 @@ def test_complete_final_regen_calls_generate_once_with_commit() -> None:
         assert h._turn_response_started is False
         h.generate_and_stream_response.assert_awaited_once()  # type: ignore[attr-defined]
         assert h.generate_and_stream_response.call_args[0][0] == "a longer final utterance"  # type: ignore[attr-defined]
-        assert h.generate_and_stream_response.call_args[1].get("commit_agent_transcript") is True  # type: ignore[attr-defined]
+        assert h.generate_and_stream_response.call_args[1].get("is_greeting") is False  # type: ignore[attr-defined]
 
     asyncio.run(_body())

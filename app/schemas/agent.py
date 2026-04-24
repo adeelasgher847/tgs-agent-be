@@ -34,12 +34,18 @@ class AgentBase(BaseModel):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs: if omitted or empty, a light stable "
-            "office ambience bed is applied automatically. Optional eleven_background "
-            "(office-only; use none/off to disable) and optional eleven_background_level "
-            "(0.0–0.24 linear gain on bed; values ≤0 use default 0.14 when bed is on). "
+            "Provider-specific TTS settings. Background controls: "
+            "background_enabled (boolean), background_profile (office/cafe/call_center/none), "
+            "background_volume (0-100; default 50). "
             "Bracketed audio tags like [breathes] are not injected automatically."
         ),
+        examples=[
+            {
+                "background_enabled": True,
+                "background_profile": "office",
+                "background_volume": 50,
+            }
+        ],
     )
     is_inbound_agent: bool = Field(
         default=False,
@@ -71,12 +77,18 @@ class AgentUpdate(BaseModel):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs: if omitted or empty, a light stable "
-            "office ambience bed is applied automatically. Optional eleven_background "
-            "(office-only; use none/off to disable) and optional eleven_background_level "
-            "(0.0–0.24 linear gain on bed; values ≤0 use default 0.14 when bed is on). "
+            "Provider-specific TTS settings. Background controls: "
+            "background_enabled (boolean), background_profile (office/cafe/call_center/none), "
+            "background_volume (0-100; default 50). "
             "Bracketed audio tags like [breathes] are not injected automatically."
         ),
+        examples=[
+            {
+                "background_enabled": True,
+                "background_profile": "office",
+                "background_volume": 50,
+            }
+        ],
     )
     is_inbound_agent: Optional[bool] = Field(
         default=None,
@@ -93,12 +105,18 @@ class AgentOut(AgentBase):
     tts_settings_json: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Provider-specific TTS settings. ElevenLabs: if omitted or empty, a light stable "
-            "office ambience bed is applied automatically. Optional eleven_background "
-            "(office-only; use none/off to disable) and optional eleven_background_level "
-            "(0.0–0.24 linear gain on bed; values ≤0 use default 0.14 when bed is on). "
+            "Provider-specific TTS settings. Background controls: "
+            "background_enabled (boolean), background_profile (office/cafe/call_center/none), "
+            "background_volume (0-100; default 50). "
             "Bracketed audio tags like [breathes] are not injected automatically."
         ),
+        examples=[
+            {
+                "background_enabled": True,
+                "background_profile": "office",
+                "background_volume": 50,
+            }
+        ],
     )
     created_at: datetime
     updated_at: Optional[datetime] = None

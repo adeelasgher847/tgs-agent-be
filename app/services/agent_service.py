@@ -96,6 +96,52 @@ class AgentService:
                 detail="TTS provider credentials must not be passed in request payload.",
             )
 
+        if "background_enabled" in tts_settings_json:
+            raw_enabled = tts_settings_json.get("background_enabled")
+            if isinstance(raw_enabled, bool):
+                pass
+            elif isinstance(raw_enabled, str):
+                normalized = raw_enabled.strip().lower()
+                if normalized not in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            "background_enabled must be a boolean or one of: "
+                            "true/false, 1/0, on/off, yes/no."
+                        ),
+                    )
+            elif raw_enabled is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "background_enabled must be a boolean or one of: "
+                        "true/false, 1/0, on/off, yes/no."
+                    ),
+                )
+
+        if "background_profile" in tts_settings_json:
+            profile = str(tts_settings_json.get("background_profile") or "").strip().lower()
+            if profile and profile not in {"office", "cafe", "call_center", "none"}:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="background_profile must be one of: office, cafe, call_center, none.",
+                )
+
+        if "background_volume" in tts_settings_json:
+            raw_volume = tts_settings_json.get("background_volume")
+            try:
+                volume = float(raw_volume)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="background_volume must be a number between 0 and 100.",
+                )
+            if volume < 0 or volume > 100:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="background_volume must be between 0 and 100.",
+                )
+
     def _auto_ingest_agent_system_prompt(self, db: Session, agent: Agent) -> None:
         """
         Automatically ingest agent system_prompt into RAG (best-effort).

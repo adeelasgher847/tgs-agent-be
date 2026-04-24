@@ -8,9 +8,13 @@ import asyncio
 import time
 import sys
 import math
+import subprocess
+import tempfile
+import os
 from typing import Optional, Iterable
 
 from app.core.logger import logger
+from app.utils.audio_constants import BACKGROUND_AUDIO_BASE64
 
 # Real-time TTS MULAW streaming constants
 MULAW_SAMPLE_RATE_HZ = 8000  # Twilio-friendly
@@ -20,6 +24,113 @@ MULAW_FRAME_BYTES = int(BYTES_PER_SECOND * CHUNK_DURATION_SEC)  # 160 bytes
 
 ULAW_BIAS = 0x84
 ULAW_CLIP = 32635
+
+# Cache for decoded background audio
+_background_audio_mulaw_cache = None
+_background_audio_length_cache = 0
+
+
+def decode_background_audio_from_base64() -> tuple[bytes, int]:
+    """Decode embedded base64 MP3 and convert to MULAW 8kHz."""
+    global _background_audio_mulaw_cache, _background_audio_length_cache
+
+    if _background_audio_mulaw_cache is not None:
+        return _background_audio_mulaw_cache, _background_audio_length_cache
+
+    if not BACKGROUND_AUDIO_BASE64:
+        logger.warning("No embedded background audio configured.")
+        return b"", 0
+
+    mp3_path = None
+    try:
+        mp3_bytes = base64.b64decode(BACKGROUND_AUDIO_BASE64)
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as mp3_file:
+            mp3_file.write(mp3_bytes)
+            mp3_path = mp3_file.name
+
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-i",
+                mp3_path,
+                "-ar",
+                "8000",
+                "-ac",
+                "1",
+                "-f",
+                "s16le",
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+            input=None,
+        )
+
+        pcm_data = result.stdout
+        if not pcm_data:
+            return b"", 0
+
+        linear_samples = []
+        for i in range(0, len(pcm_data), 2):
+            if i + 1 < len(pcm_data):
+                linear_samples.append(int.from_bytes(pcm_data[i : i + 2], byteorder="little", signed=True))
+
+        mulaw_bytes = bytes(linear_to_ulaw_sample(sample) for sample in linear_samples)
+        _background_audio_mulaw_cache = mulaw_bytes
+        _background_audio_length_cache = len(mulaw_bytes)
+        return mulaw_bytes, len(mulaw_bytes)
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
+        logger.error(f"FFmpeg conversion failed: {error_msg}")
+        return b"", 0
+    except FileNotFoundError:
+        logger.error("FFmpeg not found; embedded background audio disabled.")
+        return b"", 0
+    except Exception as e:
+        logger.error(f"Failed to decode embedded background audio: {e}")
+        return b"", 0
+    finally:
+        if mp3_path and os.path.exists(mp3_path):
+            try:
+                os.unlink(mp3_path)
+            except Exception:
+                pass
+
+
+def get_background_audio_chunk(offset: int, length: int, bg_audio: bytes, bg_length: int) -> bytes:
+    if not bg_audio or bg_length == 0:
+        return bytes([0xFF]) * length
+    chunk = bytearray()
+    for i in range(length):
+        idx = (offset + i) % bg_length
+        chunk.append(bg_audio[idx])
+    return bytes(chunk)
+
+
+def mix_audio_with_background(
+    tts_audio: bytes,
+    bg_audio: bytes,
+    bg_length: int,
+    bg_offset: int,
+    volume_level: float = 0.3,
+) -> bytes:
+    if not bg_audio or bg_length == 0 or not tts_audio:
+        return tts_audio
+    try:
+        tts_linear = [ulaw_to_linear_sample(b) for b in tts_audio]
+        bg_chunk = get_background_audio_chunk(bg_offset, len(tts_audio), bg_audio, bg_length)
+        bg_linear = [ulaw_to_linear_sample(b) for b in bg_chunk]
+        mixed = []
+        for i, sample in enumerate(tts_linear):
+            m = sample + int(bg_linear[i] * volume_level)
+            mixed.append(max(-32768, min(32767, m)))
+        return bytes(linear_to_ulaw_sample(s) for s in mixed)
+    except Exception as e:
+        logger.warning(f"Background mix failed; using dry voice. err={e}")
+        return tts_audio
 
 
 def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:
@@ -420,4 +531,54 @@ def build_crossfade_bridge(prev_tail: bytes, next_head: bytes, overlap_bytes: in
         bridge_samples.append(linear_to_ulaw_sample(mixed_sample))
 
     return bytes(bridge_samples)
+
+
+def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) -> bytes:
+    """
+    Add a subtle synthetic office-like ambience bed to mu-law audio.
+    Kept lightweight for telephony latency constraints.
+    """
+    import random
+
+    if not audio_bytes:
+        return audio_bytes
+    try:
+        linear_audio = [ulaw_to_linear_sample(b) for b in audio_bytes]
+        num_samples = len(linear_audio)
+
+        sample_rate = 8000.0
+        hvac_freq = 120.0
+        hvac_phase_step = 2 * math.pi * hvac_freq / sample_rate
+        hvac_phase = random.uniform(0, 2 * math.pi)
+        pink_state = [0.0] * 7
+
+        noise_samples = []
+        for _ in range(num_samples):
+            hvac_phase += hvac_phase_step
+            if hvac_phase > 2 * math.pi:
+                hvac_phase -= 2 * math.pi
+            hvac = math.sin(hvac_phase) * 0.6
+
+            white = random.uniform(-1.0, 1.0)
+            pink_state[0] = 0.99886 * pink_state[0] + white * 0.0555179
+            pink_state[1] = 0.99332 * pink_state[1] + white * 0.0750759
+            pink_state[2] = 0.96900 * pink_state[2] + white * 0.1538520
+            pink_state[3] = 0.86650 * pink_state[3] + white * 0.3104856
+            pink_state[4] = 0.55000 * pink_state[4] + white * 0.5329522
+            pink_state[5] = -0.7616 * pink_state[5] - white * 0.0168980
+            pink = sum(pink_state) * 0.1
+
+            total_noise = hvac + (pink * 0.5)
+            noise_scaled = int(total_noise * 32767 * noise_level)
+            noise_samples.append(max(-32768, min(32767, noise_scaled)))
+
+        mixed_linear = []
+        for i in range(num_samples):
+            mixed = linear_audio[i] + noise_samples[i]
+            mixed_linear.append(max(-32768, min(32767, mixed)))
+
+        return bytes(linear_to_ulaw_sample(sample) for sample in mixed_linear)
+    except Exception as e:
+        logger.warning(f"Ambient noise mix failed, returning dry audio: {e}")
+        return audio_bytes
 

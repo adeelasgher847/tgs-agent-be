@@ -115,6 +115,87 @@ def test_agent_create_rejects_tts_payload_api_key(tts_db):
     assert "credentials must not be passed" in str(excinfo.value.detail)
 
 
+def test_agent_create_rejects_invalid_background_enabled(tts_db):
+    db, tenant, user = tts_db
+    provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
+    db.add(provider)
+    db.flush()
+    voice = TTSVoice(
+        provider_id=provider.id,
+        external_voice_id="voice-eleven",
+        display_name="Voice A",
+        is_active=True,
+    )
+    db.add(voice)
+    db.commit()
+
+    payload = AgentCreate(
+        name="Invalid BG Enabled Agent",
+        tts_provider_id=provider.id,
+        tts_voice_id=voice.id,
+        tts_settings_json={"background_enabled": "maybe"},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent_service.create_agent(db, payload, tenant.id, user.id)
+    assert excinfo.value.status_code == 422
+    assert "background_enabled" in str(excinfo.value.detail)
+
+
+def test_agent_create_rejects_invalid_background_profile(tts_db):
+    db, tenant, user = tts_db
+    provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
+    db.add(provider)
+    db.flush()
+    voice = TTSVoice(
+        provider_id=provider.id,
+        external_voice_id="voice-eleven",
+        display_name="Voice A",
+        is_active=True,
+    )
+    db.add(voice)
+    db.commit()
+
+    payload = AgentCreate(
+        name="Invalid BG Profile Agent",
+        tts_provider_id=provider.id,
+        tts_voice_id=voice.id,
+        tts_settings_json={"background_profile": "airport"},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent_service.create_agent(db, payload, tenant.id, user.id)
+    assert excinfo.value.status_code == 422
+    assert "background_profile" in str(excinfo.value.detail)
+
+
+def test_agent_create_rejects_invalid_background_volume(tts_db):
+    db, tenant, user = tts_db
+    provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
+    db.add(provider)
+    db.flush()
+    voice = TTSVoice(
+        provider_id=provider.id,
+        external_voice_id="voice-eleven",
+        display_name="Voice A",
+        is_active=True,
+    )
+    db.add(voice)
+    db.commit()
+
+    payload = AgentCreate(
+        name="Invalid BG Volume Agent",
+        tts_provider_id=provider.id,
+        tts_voice_id=voice.id,
+        tts_settings_json={"background_volume": 120},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent_service.create_agent(db, payload, tenant.id, user.id)
+    assert excinfo.value.status_code == 422
+    assert "background_volume" in str(excinfo.value.detail)
+
+
 def test_tts_router_lists_providers_and_voices(client, db):
     provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
     db.add(provider)

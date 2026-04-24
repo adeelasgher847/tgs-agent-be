@@ -131,6 +131,7 @@ from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
+from app.voice.background_audio import BackgroundAudioManager
 from app.voice.conversation_orchestrator import (
     VOICE_TUNABLES,
     ConversationOrchestrator,
@@ -146,7 +147,6 @@ from app.utils.audio_utils import (
     crossfade_mulaw_segments,
     build_crossfade_bridge,
     MULAW_FRAME_BYTES,
-    PCM16KStreamDownsampler,
 )
 from app.utils.ssml_utils import (
     strip_ssml_tags,
@@ -158,11 +158,6 @@ from app.services.bidirectional_stream_service import (
     generate_mulaw_tts,
     build_streaming_twiml,
     build_tts_only_twiml,
-)
-from app.utils.eleven_tts_background import (
-    BackgroundFrameMixer,
-    LinearBackgroundMixer,
-    parse_eleven_background_settings,
 )
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
@@ -228,11 +223,6 @@ class BidirectionalStreamHandler:
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         self._tts_pipeline: Optional[TtsPipeline] = None
         self._elevenlabs_prev_tts_text = ""
-        # Eleven TTS background: one mixer per call; keeps loop phase across sentence chunks
-        self._eleven_bg_mixer: Optional[BackgroundFrameMixer] = None
-        self._eleven_bg_mixer_key: Optional[tuple] = None  # (preset_id, rounded_level) or None
-        # Continuous background task — runs for the full call duration (ElevenLabs only)
-        self._bg_task: Optional[asyncio.Task] = None
         self._use_ssml = True                # Enable SSML by default
         
         # Session data
@@ -264,15 +254,21 @@ class BidirectionalStreamHandler:
         # without waiting for Twilio to send a `stop` event.
         self._stop_event = asyncio.Event()
 
-        # One response per turn (Vapi-style): when we start LLM from interim, final only commits
+        # One response per turn: first interim that passes gates starts the LLM (dev-style: commit agent at stream end)
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         self._turn_response_seed_text = ""
-        # Single in-flight async LLM+TTS per user turn (interim is non-blocking for STT reader)
+        # In-flight LLM+TTS; wrapped in a task so barge-in can cancel while we await (like dev, but cancelable)
         self._llm_response_task: Optional[asyncio.Task] = None
-        # If interim used commit=False, agent history is held here until final matching STT
-        self._pending_interim_agent_transcript: Optional[Dict[str, Any]] = None
         self._auto_greeting_sent = False
         self._recording_started = False
+
+        # Background audio manager (dev-branch style embedded ambience loop).
+        self._background_audio = BackgroundAudioManager(
+            websocket=self.websocket,
+            get_stream_sid=lambda: self.stream_sid,
+            is_speaking_flag=lambda: self.is_speaking,
+        )
+        asyncio.create_task(self._background_audio.load_from_base64_async())
 
         # Start parallel TTS pipeline worker via TtsPipeline facade
         self._tts_pipeline = TtsPipeline(self)
@@ -442,7 +438,6 @@ class BidirectionalStreamHandler:
 
     async def _cancel_inflight_llm_response(self) -> None:
         """Stop background LLM+TTS for this turn (barge-in or final regen)."""
-        self._pending_interim_agent_transcript = None
         t = self._llm_response_task
         self._llm_response_task = None
         if t and not t.done():
@@ -454,26 +449,10 @@ class BidirectionalStreamHandler:
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
 
-    async def _commit_pending_interim_agent_transcript(self) -> None:
-        """Persist agent text from an interim (commit=False) run once the final STT matches."""
-        p = self._pending_interim_agent_transcript
-        if not p:
-            return
-        self._pending_interim_agent_transcript = None
-        text = (p.get("text") or "").strip()
-        if not text:
-            return
-        await self._add_to_transcript(
-            "agent",
-            text,
-            "agent_response",
-            message_metadata=p.get("metadata") or {},
-        )
-
     async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
         """
-        Run after the user's final message is in the DB. Picks the correct LLM path:
-        - Interim+final: regenerate if final text differs, else await interim task and commit pending history.
+        Run after the user's final message is in the DB (dev-style):
+        - If interim already ran: regenerate only if final text differs; else let interim run finish, no second LLM.
         - No interim: full generate from final only.
         """
         if self._turn_response_started:
@@ -488,7 +467,6 @@ class BidirectionalStreamHandler:
                     transcript,
                     confidence,
                     is_greeting=False,
-                    commit_agent_transcript=True,
                 )
             else:
                 if self._llm_response_task and not self._llm_response_task.done():
@@ -497,7 +475,6 @@ class BidirectionalStreamHandler:
                     except asyncio.CancelledError:
                         pass
                 self._llm_response_task = None
-                await self._commit_pending_interim_agent_transcript()
             return
 
         self._turn_response_seed_text = ""
@@ -507,7 +484,6 @@ class BidirectionalStreamHandler:
             transcript,
             confidence,
             is_greeting=False,
-            commit_agent_transcript=True,
         )
     
     async def _process_transcript(self, transcript: str, confidence: float):
@@ -541,9 +517,9 @@ class BidirectionalStreamHandler:
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
-        Start at most ONE early LLM+TTS run per user utterance (low latency).
-        Does not block the STT reader (background task) so the final transcript can be processed
-        while the model streams. Barge-in cancels the in-flight work.
+        At most one early LLM+TTS run per user utterance (low latency, dev-style).
+        Awaits generation so agent transcript is committed when the stream finishes (not deferred to final).
+        Barge-in cancels the in-flight task.
         """
         try:
             if not transcript:
@@ -584,21 +560,27 @@ class BidirectionalStreamHandler:
             self._turn_response_seed_text = transcript
 
             async def _run_interim() -> None:
-                try:
-                    await self.generate_and_stream_response(
-                        transcript,
-                        confidence,
-                        is_greeting=False,
-                        commit_agent_transcript=False,
-                    )
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error(f"Error in interim LLM task: {e}", exc_info=True)
+                await self.generate_and_stream_response(
+                    transcript,
+                    confidence,
+                    is_greeting=False,
+                )
 
             if self._llm_response_task and not self._llm_response_task.done():
                 self._llm_response_task.cancel()
+                try:
+                    await self._llm_response_task
+                except asyncio.CancelledError:
+                    pass
             self._llm_response_task = asyncio.create_task(_run_interim())
+            try:
+                await self._llm_response_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Error in interim LLM task: {e}", exc_info=True)
+            finally:
+                self._llm_response_task = None
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
     
@@ -646,18 +628,16 @@ class BidirectionalStreamHandler:
         user_text: str,
         confidence: float,
         is_greeting: bool = False,
-        commit_agent_transcript: bool = True,
     ):
         """
         Generate AI response and stream TTS in real-time WITH conversation history.
         Uses PARALLEL TTS PIPELINE (Vapi-style) for ultra-low latency.
+        Agent reply is always committed to the transcript at end of stream (dev-style for interim and final).
 
         Args:
             user_text: User's input text (empty for greeting)
             confidence: STT confidence score
             is_greeting: If True, uses agent's first_message instead of calling LLM
-            commit_agent_transcript: If False (interim-only run), do not write agent to DB
-                until a matching final; store pending for later commit.
         """
         try:
             from datetime import datetime, timezone
@@ -700,9 +680,6 @@ class BidirectionalStreamHandler:
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
-            if commit_agent_transcript:
-                self._pending_interim_agent_transcript = None
-            
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self._send_quick_acknowledgement(user_text)
 
@@ -710,7 +687,7 @@ class BidirectionalStreamHandler:
                 user_text,
                 confidence,
                 booking_context_active=self._is_booking_context_active(user_text),
-                is_final=commit_agent_transcript,
+                is_final=True,
             )
 
             # ------- RAG: build knowledge base context in voice layer -------
@@ -1322,7 +1299,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             if final_text:
                 # Two-step reliability: if booking intent exists but token is missing, run action extraction.
-                if commit_agent_transcript and booking_intent_turn and not self._has_calendar_token(final_text):
+                if booking_intent_turn and not self._has_calendar_token(final_text):
                     extracted_token = await self._extract_calendar_action_token(
                         llm_service=llm_service,
                         model_name=model_name,
@@ -1343,31 +1320,21 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if "[BOOK_APPOINTMENT:" in final_text:
                     transcript_text = self._strip_premature_booking_confirmation(transcript_text)
                 if transcript_text:
-                    if commit_agent_transcript:
-                        await self._add_to_transcript(
-                            "agent",
-                            transcript_text,
-                            "agent_response",
-                            message_metadata={
-                                "user_text": user_text,
-                                "rag_trace": rag_trace,
-                            },
-                        )
-                    else:
-                        self._pending_interim_agent_transcript = {
-                            "text": transcript_text,
-                            "metadata": {
-                                "user_text": user_text,
-                                "rag_trace": rag_trace,
-                            },
-                        }
+                    await self._add_to_transcript(
+                        "agent",
+                        transcript_text,
+                        "agent_response",
+                        message_metadata={
+                            "user_text": user_text,
+                            "rag_trace": rag_trace,
+                        },
+                    )
 
                 # Handle calendar tokens (fire-and-forget after TTS is already queued)
-                if commit_agent_transcript:
-                    if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
-                        asyncio.create_task(self._handle_check_slots_token(final_text))
-                    elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
-                        asyncio.create_task(self._handle_book_appointment_token(final_text))
+                if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_check_slots_token(final_text))
+                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_book_appointment_token(final_text))
 
         except asyncio.CancelledError:
             raise
@@ -2077,92 +2044,58 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as e:
             logger.error("Error in _handle_book_appointment_token: %s", e, exc_info=True)
 
-    def _get_or_create_eleven_bg_mixer(self) -> Optional[BackgroundFrameMixer]:
+    async def _start_background_audio_with_delay(self):
+        """Start background loop after call stabilizes (dev-branch behavior)."""
+        try:
+            if not self._is_background_audio_enabled():
+                return
+            self._background_audio.set_user_level(self._resolve_background_volume())
+            await self._background_audio.start_loop_if_enabled(delay_seconds=3.0)
+        except Exception as e:
+            logger.error(f"Error in _start_background_audio_with_delay: {e}", exc_info=True)
+
+    def _is_background_audio_enabled(self) -> bool:
         """
-        Reuse a single BackgroundFrameMixer for the whole call so the bed does not
-        reset phase on every TTS chunk (sounds like continuous ambience).
-        Recreates if preset or level in agent settings changes, or clears when disabled.
+        Enable ambient background only when:
+        - agent TTS provider is ElevenLabs
+        - tts_settings_json.background_enabled is not explicitly false
+        - tts_settings_json.background_profile is "office" (or omitted)
         """
-        p = getattr(self.agent, "tts_provider", None) if self.agent else None
-        slug = (getattr(p, "slug", None) or "").lower()
-        if slug != "elevenlabs" or not self.agent:
-            self._eleven_bg_mixer = None
-            self._eleven_bg_mixer_key = None
-            return None
-        st = dict(getattr(self.agent, "tts_settings_json", None) or {})
-        bid, blvl = parse_eleven_background_settings(st)
-        if not bid:
-            self._eleven_bg_mixer = None
-            self._eleven_bg_mixer_key = None
-            return None
-        key = (bid, round(blvl, 3))
-        if self._eleven_bg_mixer is not None and self._eleven_bg_mixer_key == key:
-            return self._eleven_bg_mixer
-        self._eleven_bg_mixer = BackgroundFrameMixer(bid, blvl)
-        self._eleven_bg_mixer_key = key
-        return self._eleven_bg_mixer
+        if not self.agent:
+            return False
+        tts_provider = getattr(self.agent, "tts_provider", None)
+        tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
+        if tts_provider_slug != "elevenlabs":
+            return False
 
-    async def _run_continuous_background(self) -> None:
+        settings_json = dict(getattr(self.agent, "tts_settings_json", None) or {})
+        enabled_raw = settings_json.get("background_enabled", True)
+        if isinstance(enabled_raw, str):
+            enabled = enabled_raw.strip().lower() not in {"false", "0", "off", "no"}
+        else:
+            enabled = bool(enabled_raw)
+        if not enabled:
+            return False
+
+        profile = str(settings_json.get("background_profile") or "office").strip().lower()
+        return profile == "office"
+
+    def _resolve_background_volume(self) -> float:
         """
-        Vapi-style: stream background audio frames for the entire call duration.
-
-        - During TTS (is_speaking=True): TTS sender already mixes background via
-          _voice_frame_mulaw — this loop skips to avoid doubling the frame rate.
-        - During silence / STT (is_speaking=False): injects one background frame
-          every 20 ms so the caller hears a continuous ambient bed.
-
-        Uses perf_counter drift correction so background stays precisely at
-        50 fps (20 ms/frame) even when the asyncio event loop is busy during
-        heavy STT processing.
+        Resolve ambient volume from tts_settings_json.background_volume.
+        Input range is 0..100 from UI slider; default is 50.
+        Returns normalized linear gain in 0.0..1.0.
         """
-        import base64 as _b64
-        import time as _time
-        from app.utils.audio_utils import MULAW_FRAME_BYTES as _FRM
-
-        SILENT_MULAW = bytes([0xFF]) * _FRM  # mu-law silence carrier
-        FRAME_INTERVAL = 0.02  # 20 ms per telephony frame
-
-        next_send = _time.perf_counter() + FRAME_INTERVAL
-
-        while not self._stop_event.is_set():
-            # Drift-corrected sleep: sleep only the remaining time until next frame
-            now = _time.perf_counter()
-            sleep_dur = next_send - now
-            if sleep_dur > 0:
-                await asyncio.sleep(sleep_dur)
-            elif sleep_dur < -0.10:
-                # More than 100 ms behind (heavy load) — reset schedule to avoid
-                # a burst of catch-up frames that would overwhelm Twilio's buffer.
-                next_send = _time.perf_counter()
-
-            next_send += FRAME_INTERVAL
-
-            if self._stop_event.is_set() or not self.stream_sid:
-                continue
-
-            if self.is_speaking:
-                # TTS pipeline is actively streaming and handles background
-                # mixing internally.  Reset schedule so we resume cleanly the
-                # instant is_speaking flips back to False.
-                next_send = _time.perf_counter() + FRAME_INTERVAL
-                continue
-
-            mixer = self._get_or_create_eleven_bg_mixer()
-            if mixer is None:
-                # Not an ElevenLabs agent, or background explicitly disabled.
-                continue
-
-            bg_frame = mixer.mix_frame(SILENT_MULAW)
-            try:
-                payload = _b64.b64encode(bg_frame).decode("utf-8")
-                await self.websocket.send_json({
-                    "event": "media",
-                    "streamSid": self.stream_sid,
-                    "media": {"payload": payload},
-                })
-            except Exception:
-                # WebSocket closed (hangup) — exit cleanly.
-                break
+        if not self.agent:
+            return 0.5
+        settings_json = dict(getattr(self.agent, "tts_settings_json", None) or {})
+        raw = settings_json.get("background_volume", 50)
+        try:
+            pct = float(raw)
+        except (TypeError, ValueError):
+            pct = 50.0
+        pct = max(0.0, min(100.0, pct))
+        return pct / 100.0
 
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
         """
@@ -2217,14 +2150,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                             # We crossfade at chunk boundaries with a single 20ms overlap for speed.
                             overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)
-                            # ElevenLabs optional background bed (set mixer_ref[0] before streaming).
-                            mixer_ref: list[Optional[BackgroundFrameMixer]] = [None]
 
                             async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
                                 if not frame:
                                     return
                                 if self._tts_cancel.is_set() or not self.stream_sid:
                                     return
+                                if self._is_background_audio_enabled():
+                                    frame = self._background_audio.mix_tts_frame(frame)
                                 payload = base64.b64encode(frame).decode("utf-8")
                                 try:
                                     await self.websocket.send_json({
@@ -2261,10 +2194,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 - Single crossfade bridge at chunk boundary (prev tail + next head)
                                 - Tail holdback (20ms) between chunks to avoid clicks/distortion
                                 """
-                                def _voice_frame_mulaw(frame: bytes) -> bytes:
-                                    m = mixer_ref[0]
-                                    return m.mix_frame(frame) if m else frame
-
+                                if self._is_background_audio_enabled():
+                                    self._background_audio.set_user_level(self._resolve_background_volume())
                                 # Prime Twilio jitter buffer once per utterance (3 frames = 60ms for 400–500ms latency, no sudden noise)
                                 if not self._twilio_buffer_primed:
                                     silent = bytes([0xFF]) * MULAW_FRAME_BYTES
@@ -2303,11 +2234,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         need_bridge = False
                                         bridge_sent = True
 
-                                        # bridge length == overlap_bytes => exactly one frame.
-                                        # Send bridge as-is WITHOUT background mixing — it is
-                                        # already a carefully blended crossfade; applying the
-                                        # background mixer on top would double-process the signal
-                                        # and cause the "chak-chak" distortion artefact.
+                                        # bridge length == overlap_bytes => exactly one frame; bed is
+                                        # added in send_frame (ducked) like other frames.
                                         if fade_needed and bridge:
                                             bridge = apply_micro_fade_in(bridge, duration_ms=25.0)
                                             fade_needed = False
@@ -2333,7 +2261,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
-                                        await send_frame(_voice_frame_mulaw(out), pace=True, state=pace_state)
+                                        await send_frame(out, pace=True, state=pace_state)
 
                                 # End of streaming responses: handle remainder
                                 if self._tts_cancel.is_set():
@@ -2359,7 +2287,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
-                                        await send_frame(_voice_frame_mulaw(out), pace=True, state=pace_state)
+                                        await send_frame(out, pace=True, state=pace_state)
                                     pending_frames.clear()
                                     self._prev_tts_tail = b""
                                 else:
@@ -2379,7 +2307,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
-                                        await send_frame(_voice_frame_mulaw(out), pace=True, state=pace_state)
+                                        await send_frame(out, pace=True, state=pace_state)
                                     self._prev_tts_tail = tail_frame
 
                                 self._twilio_buffer_primed = True
@@ -2393,7 +2321,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             )
                             if not streaming_text or not streaming_text.strip():
                                 return
-                            pcm_linear_mixer: Optional[LinearBackgroundMixer] = None
                             if tts_provider_slug and tts_provider_slug != "google":
                                 tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
                                 external_voice_id = getattr(tts_voice, "external_voice_id", None)
@@ -2402,14 +2329,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 adapter = get_tts_adapter(tts_provider_slug)
                                 provider_settings = dict(getattr(self.agent, "tts_settings_json", None) or {})
                                 if tts_provider_slug == "elevenlabs":
-                                    bg_id, bg_level = parse_eleven_background_settings(provider_settings)
-                                    if bg_id:
-                                        # Request PCM so we can mix background in linear space and
-                                        # encode to mu-law only once at the transport boundary.
-                                        provider_settings["output_format"] = "pcm_16000"
-                                        pcm_linear_mixer = LinearBackgroundMixer(bg_id, bg_level)
-                                    else:
-                                        provider_settings.setdefault("output_format", "ulaw_8000")
+                                    provider_settings.setdefault("output_format", "ulaw_8000")
                                     previous_text = (self._elevenlabs_prev_tts_text or "").strip()
                                     if previous_text:
                                         # Maintain natural continuity across app-level chunked TTS requests.
@@ -2421,20 +2341,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     voice_external_id=external_voice_id,
                                     settings_json=provider_settings,
                                 )
-
-                                if pcm_linear_mixer is not None:
-                                    downsampler = PCM16KStreamDownsampler()
-
-                                    def _pcm_chunks_to_mulaw_chunks(sync_source):
-                                        for raw_chunk in sync_source:
-                                            samples_8k = downsampler.feed(raw_chunk)
-                                            if samples_8k:
-                                                yield pcm_linear_mixer.mix_linear_samples_to_ulaw(samples_8k)
-                                        trailing = downsampler.flush()
-                                        if trailing:
-                                            yield pcm_linear_mixer.mix_linear_samples_to_ulaw(trailing)
-
-                                    sync_iter = _pcm_chunks_to_mulaw_chunks(sync_iter)
 
                                 async def _async_iter_from_sync(sync_source):
                                     iterator = iter(sync_source)
@@ -2472,8 +2378,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     sample_rate_hz=8000,
                                     voice_name_override=google_voice_name,
                                 )
-
-                            mixer_ref[0] = None if pcm_linear_mixer is not None else self._get_or_create_eleven_bg_mixer()
 
                             await stream_mulaw_from_audio_iter(audio_iter)
                             if tts_provider_slug == "elevenlabs" and not self._tts_cancel.is_set():
@@ -2536,6 +2440,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         if not self._twilio_buffer_primed and to_stream:
                             to_stream = apply_micro_fade_in(to_stream, duration_ms=25.0)
                             logger.debug("🔊 Applied micro fade-in to first TTS audio (25ms)")
+
+                        # Mix with ambient bed only when explicitly enabled for office profile.
+                        if self._is_background_audio_enabled():
+                            self._background_audio.set_user_level(self._resolve_background_volume())
+                            to_stream = self._background_audio.mix_with_background(to_stream)
                         
                         # Prime Twilio jitter buffer (3 frames = 60ms) for first speak only — no sudden buffer noise
                         prime_frames = 0 if self._twilio_buffer_primed else 3
@@ -3078,11 +2987,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         rec_err,
                     )
 
-            # Start continuous background loop (ElevenLabs agents only).
-            # The loop is a no-op for non-ElevenLabs providers.
-            if self._bg_task is None or self._bg_task.done():
-                self._bg_task = asyncio.create_task(self._run_continuous_background())
-
             # DO NOT start credit monitoring or greeting here!
             # Wait for first media packet (user actually picks up - VAPI-style)
 
@@ -3102,6 +3006,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in _process_transcript() when confident transcript is detected
+
+            # Start ambient background loop after brief stabilization delay.
+            asyncio.create_task(self._start_background_audio_with_delay())
             
             # 👋 Send one-time immediate greeting after pickup for inbound calls.
             if (
@@ -3141,13 +3048,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
         self._stop_event.set()
         self._stt_active = False
-        self._pending_interim_agent_transcript = None
 
-        # Stop continuous background sender (stop_event already signals the loop;
-        # cancel ensures we don't wait for the next 20ms sleep to elapse).
-        if self._bg_task and not self._bg_task.done():
-            self._bg_task.cancel()
-        self._bg_task = None
+        # Stop background audio loop safely.
+        try:
+            await self._background_audio.stop_loop()
+        except Exception:
+            pass
 
         t = self._llm_response_task
         if t and not t.done():
