@@ -361,8 +361,8 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     """
     Refresh endpoint:
     1) If access_token is provided and still valid -> return "still valid"
-    2) If access_token expired but refresh_token valid -> issue new access_token only
-       (reuse the last generated token if it exists)
+    2) If access_token expired but refresh_token valid -> issue new access_token
+       (reuse cached one only if unexpired and same role as current DB state)
     3) If refresh_token invalid/expired -> return 401
     """
 
@@ -391,19 +391,35 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
     role_info = None
+    current_role: Optional[str] = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+            current_role = role.name
 
-    # 3) Check if a new access token was already generated for this refresh token
-    if rt.replaced_access_token and not is_token_expired(rt.replaced_access_token):
-        new_access_token = rt.replaced_access_token
+    # 3) Reuse cached access JWT only if still valid and role claim matches current (login parity)
+    new_access_token: str
+    cached = rt.replaced_access_token
+    if cached and not is_token_expired(cached):
+        cached_payload = verify_token(cached)
+        if cached_payload and cached_payload.get("role") == current_role:
+            new_access_token = cached
+        else:
+            new_access_token = create_user_token(
+                user_id=user.id,
+                email=user.email,
+                tenant_id=current_tenant_id,
+                role=current_role,
+            )
+            rt.replaced_access_token = new_access_token
+            db.add(rt)
     else:
         new_access_token = create_user_token(
             user_id=user.id,
             email=user.email,
-            tenant_id=current_tenant_id
+            tenant_id=current_tenant_id,
+            role=current_role,
         )
         rt.replaced_access_token = new_access_token
         db.add(rt)
