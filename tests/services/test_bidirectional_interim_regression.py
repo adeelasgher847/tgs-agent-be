@@ -31,12 +31,21 @@ def _make_handler_regen(seed: str) -> SimpleNamespace:
     h._resolve_cached_calendar_slot = types.MethodType(Handler._resolve_cached_calendar_slot, h)
     h._normalize_turn_text = Handler._normalize_turn_text
     h._normalize_calendar_slot_key = Handler._normalize_calendar_slot_key
+    h._is_natural_continuation_of_seed = types.MethodType(
+        Handler._is_natural_continuation_of_seed, h
+    )
     return h
 
 
 def test_regenerate_true_when_final_text_differs() -> None:
     h = _make_handler_regen("hello I need")
     assert Handler._should_regenerate_on_final(h, "hello I need a refund") is True
+
+
+def test_regenerate_false_when_final_extends_utterance() -> None:
+    """Vapi-style: user was still dictating; one LLM+TTS is enough (no second reply)."""
+    h = _make_handler_regen("I need to schedule an")
+    assert Handler._should_regenerate_on_final(h, "I need to schedule an appointment.") is False
 
 
 def test_regenerate_false_when_final_matches_seed() -> None:

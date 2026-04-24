@@ -7,8 +7,8 @@ STT → LLM → TTS FLOW:
 - Twilio sends audio every 20ms (MULAW 8kHz). We push each chunk to Deepgram STT.
 - First qualifying ~30ms interim can start one background LLM+TTS run (one per user utterance).
 - LLM streams response → each flush (sentence/time ~200ms) → TTS chunk.
-- When VAD yields the final STT, we either keep that interim result (if text matches) or
-  replace it with a full run using the final transcript (no duplicate stacked replies).
+- When VAD yields the final STT, if the interim already answered and the final is just the
+  same utterance with a few more words, we do NOT run a second LLM+TTS (Vapi-style: one reply per turn).
 
 PARALLEL TTS PIPELINE (Vapi-style):
 - User Speech → STT Interim → LLM Chunk 1 → TTS Chunk 1 Playing
@@ -262,6 +262,11 @@ class BidirectionalStreamHandler:
         self._auto_greeting_sent = False
         self._recording_started = False
 
+        # Deepgram can emit the same is_final twice within a short window — avoid triple LLM/transcript
+        self._stt_last_final_raw: str = ""
+        self._stt_last_final_monotonic: float = 0.0
+        self._STT_DEDUP_FINAL_WINDOW_SEC: float = 2.5
+
         # Background audio manager (dev-branch style embedded ambience loop).
         self._background_audio = BackgroundAudioManager(
             websocket=self.websocket,
@@ -491,6 +496,19 @@ class BidirectionalStreamHandler:
         try:
             if not transcript or confidence < 0.3:
                 return
+
+            # Skip duplicate finals (e.g. same "Hello?" endpointed multiple times) — Vapi-style single turn
+            tstrip = (transcript or "").strip()
+            _now = time.monotonic()
+            if (
+                tstrip
+                and tstrip == self._stt_last_final_raw
+                and (_now - self._stt_last_final_monotonic) < self._STT_DEDUP_FINAL_WINDOW_SEC
+            ):
+                logger.debug("STT: skipping duplicate final within %ss", self._STT_DEDUP_FINAL_WINDOW_SEC)
+                return
+            self._stt_last_final_raw = tstrip
+            self._stt_last_final_monotonic = _now
             
             # 🎯 Check for goodbye words FIRST - end call if detected
             if await self._check_and_end_call_if_goodbye(transcript):
@@ -1436,11 +1454,40 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         )
         return any(marker in f" {normalized} " for marker in clarification_markers)
 
+    def _is_natural_continuation_of_seed(self, final_norm: str, seed_norm: str) -> bool:
+        """
+        True when the final text is the same utterance as the interim, with a bit more
+        at the end (user was still talking). In that case we should NOT run a second
+        LLM+TTS (Vapi-style: one reply per barge-in segment, no double-audio / distortion).
+        """
+        if not seed_norm or not final_norm or final_norm == seed_norm:
+            return False
+        if not final_norm.startswith(seed_norm):
+            return False
+        # Very short interims: always allow final to replace (e.g. "I need" -> "I need a refund")
+        seed_words = seed_norm.split()
+        if len(seed_words) < 3:
+            return False
+        extra = final_norm[len(seed_norm) :].strip()
+        if not extra:
+            return True
+        # New semantic / correction content → second response is appropriate
+        if re.search(
+            r"\b(refund|refunds|help|emergency|cancel|complaint|dispute|manager|operator|"
+            r"supervisor|wrong|problem|lawyer|sue|angry|escalat)\b",
+            extra,
+        ):
+            return False
+        extra_words = extra.split()
+        if len(extra_words) > 6:
+            return False
+        return True
+
     def _should_regenerate_on_final(self, final_transcript: str) -> bool:
         """
         If an interim run used partial STT, decide whether a final run with full text
-        is needed. Always regenerate when final normalized text differs from seed, plus
-        booking slot / correction heuristics.
+        is needed. Skip regeneration when the final is a natural extension of the seed
+        (avoids back-to-back TTS and sounds much closer to Vapi).
         """
         if not self._turn_response_seed_text:
             return False
@@ -1453,7 +1500,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             return True
 
         if final_norm == seed_norm:
-            # Text matches; only regenerate if a resolved calendar slot changed (booking)
             if not self._is_booking_context_active(final_transcript):
                 return False
             final_slot = self._resolve_cached_calendar_slot(final_transcript)
@@ -1462,20 +1508,22 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 return True
             return False
 
+        # Booking: slot/date resolution changed — re-run
         if self._is_booking_context_active(final_transcript) or self._is_booking_context_active(
             self._turn_response_seed_text
         ):
             final_slot = self._resolve_cached_calendar_slot(final_transcript)
             seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
-            if final_slot and seed_slot and final_slot != seed_slot:
-                return True
-            if final_norm.startswith(seed_norm) and len(final_norm) >= len(seed_norm) + 3:
+            if final_slot != seed_slot:
                 return True
             correction_markers = ("wrong", "no no", "not ", "already", "spell", "11 00", "11 am")
             if any(marker in final_norm for marker in correction_markers):
                 return True
 
-        # General conversation: final STT differs from what the interim used
+        # Same line still being dictated — one spoken reply is enough
+        if self._is_natural_continuation_of_seed(final_norm, seed_norm):
+            return False
+
         return True
 
     def _update_booking_memory_from_user_turn(self, transcript: str) -> None:
