@@ -276,6 +276,8 @@ class BidirectionalStreamHandler:
         # (goodbye phrase, [END_CALL] token, voicemail, etc.) so the WebSocket closes
         # without waiting for Twilio to send a `stop` event.
         self._stop_event = asyncio.Event()
+        # Post-call appointment finalization (exactly one task per handler lifetime)
+        self._post_call_orchestration_scheduled = False
 
         # One response per turn: first interim that passes gates starts the LLM (dev-style: commit agent at stream end)
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
@@ -950,16 +952,16 @@ Previous conversation:
 
 # APPOINTMENT BOOKING
 - If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
-- If the user declines or does not provide email, continue booking without email (do not block scheduling).
+- If the user declines or does not provide email, continue without email (do not block scheduling).
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. The token only reserves a temporary hold on the slot; final booking is completed after the call ends.
 - CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
-- If they already booked on this call and want a different time: offer [CHECK_SLOTS:...] again, then emit the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
-- Only book one of the slots that was just offered by the system.
+- If they want a different time on this call: run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot; the new token replaces the previous hold.
+- Only choose among slots that the system has offered for this call.
 - Never book a slot that is in the past (check CURRENT DATE & TIME above).
-- Speak naturally; the system handles the actual booking silently.
+- Speak naturally; the system processes holds and post-call booking in the background.
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -997,14 +999,14 @@ Previous conversation:
 
 # APPOINTMENT BOOKING
 - If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
-- If the user declines or does not provide email, continue booking without email (do not block scheduling).
+- If the user declines or does not provide email, continue without email (do not block scheduling).
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. The token only reserves a temporary hold; final booking completes after the call ends.
 - CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
-- If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
-- Only book one of the slots that was just offered by the system.
+- If they want a different time: run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot; the new hold replaces the previous one.
+- Only choose among system-offered slots.
 - Never book a slot in the past (see CURRENT DATE & TIME).
 
 # GOAL
@@ -1040,14 +1042,14 @@ Previous conversation:
 
 # APPOINTMENT BOOKING
 - If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
-- If the user declines or does not provide email, continue booking without email (do not block scheduling).
+- If the user declines or does not provide email, continue without email (do not block scheduling).
 - To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
 - Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. Emit the booking token and wait; backend will send final confirmation after actual DB success.
+- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. The token only reserves a temporary hold; final booking completes after the call ends.
 - CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
 - Use a short reason with NO commas inside reason= (commas break parsing).
-- If they already booked on this call and want a different time: run [CHECK_SLOTS:...] again, then the same [BOOK_APPOINTMENT:...] with the new slot; the system reschedules automatically.
-- Only book one of the slots that was just offered by the system.
+- If they want a different time: run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot; the new hold replaces the previous one.
+- Only choose among system-offered slots.
 - Never book a slot in the past (see CURRENT DATE & TIME).
 
 # GOAL
@@ -2031,15 +2033,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
     async def _handle_book_appointment_token(self, llm_response: str):
         """
         Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,optional email=...,slot=...,reason=...].
-        Resolves customer_email from the token and/or recent client transcript (spoken-email STT recovery).
-        Books the appointment and speaks the confirmation directly via TTS.
+        Reserves the calendar slot for this call (in-call hold). Final `Appointment` row is created
+        after the call ends (see post_call_appointment_service).
         """
         try:
             import re as _re
             from dataclasses import replace
             from datetime import datetime as _dt
 
-            from app.services.calendar_service import calendar_service as _cal
+            from app.services.appointment_reservation_service import (
+                appointment_reservation_service as _resv,
+            )
             from app.utils.spoken_email import resolve_customer_email_for_booking
 
             m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
@@ -2149,65 +2153,39 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             call_session_id = self.call_session.id
 
             loop = asyncio.get_running_loop()
-
-            def _existing_for_call():
-                return _cal.get_active_appointment_for_call_session(
-                    self.db, tenant_id, call_session_id
-                )
-
-            existing = await loop.run_in_executor(None, _existing_for_call)
             merged_notes = self._merge_pending_email_note(
-                existing.notes if existing else None,
+                None,
                 pending_email=email_resolution.pending_email,
                 source=email_resolution.source,
                 reason=email_resolution.reason,
             )
 
+            metadata = {
+                "customer_name": customer_name,
+                "customer_phone": customer_phone,
+                "customer_email": customer_email_for_storage,
+                "appointment_reason": reason,
+                "notes": merged_notes,
+            }
+
+            def _do_reserve():
+                return _resv.upsert_active_reservation(
+                    db=self.db,
+                    tenant_id=tenant_id,
+                    call_session_id=call_session_id,
+                    agent_id=agent_id,
+                    slot_start=slot_start,
+                    metadata=metadata,
+                )
+
             try:
-                if existing:
-                    appt = await loop.run_in_executor(
-                        None,
-                        lambda: _cal.reschedule_appointment(
-                            db=self.db,
-                            tenant_id=tenant_id,
-                            appointment_id=existing.id,
-                            slot_start=slot_start,
-                            customer_name=customer_name,
-                            customer_phone=customer_phone,
-                            appointment_reason=reason,
-                            customer_email=customer_email_for_storage,
-                            notes=merged_notes,
-                        ),
-                    )
-                    msg = (
-                        f"All set! I've moved your appointment to "
-                        f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
-                        f"Anything else I can help with?"
-                    )
-                    self._last_selected_calendar_slot = appt.slot_start
-                else:
-                    appt = await loop.run_in_executor(
-                        None,
-                        lambda: _cal.book_appointment(
-                            db=self.db,
-                            tenant_id=tenant_id,
-                            customer_name=customer_name,
-                            customer_phone=customer_phone,
-                            slot_start=slot_start,
-                            agent_id=agent_id,
-                            call_session_id=call_session_id,
-                            appointment_reason=reason,
-                            customer_email=customer_email_for_storage,
-                            notes=merged_notes,
-                            created_via="voice_agent",
-                        ),
-                    )
-                    msg = (
-                        f"Done! Your appointment is confirmed for "
-                        f"{appt.slot_start.strftime('%A, %B %d at %I:%M %p')}. "
-                        f"Is there anything else I can help you with?"
-                    )
-                    self._last_selected_calendar_slot = appt.slot_start
+                row = await loop.run_in_executor(None, _do_reserve)
+                self._last_selected_calendar_slot = row.slot_start
+                msg = (
+                    "Got it — I've held that time for you while we're on this call. "
+                    "After we hang up, the system will finalize the booking and send the usual next steps. "
+                    "Anything else I can help with?"
+                )
                 if email_resolution.pending_email and not verified_customer_email:
                     msg += (
                         " I captured an email candidate, but it will stay pending "
@@ -3284,6 +3262,32 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 await self._stt_pipeline.aclose()
         except Exception:
             pass
+
+        # Finalize voice appointment booking from transcript (exactly once per call handler)
+        if not self._post_call_orchestration_scheduled:
+            self._post_call_orchestration_scheduled = True
+            asyncio.create_task(self._post_call_appointment_workflow())
+
+    def _post_call_appointment_sync(self) -> None:
+        from app.db.session import SessionLocal
+        from app.services.post_call_appointment_service import post_call_appointment_service
+
+        db = SessionLocal()
+        try:
+            post_call_appointment_service.process_call_session(
+                db, uuid.UUID(self.call_session_id)
+            )
+        except Exception as e:
+            logger.error("Post-call appointment processing failed: %s", e, exc_info=True)
+        finally:
+            db.close()
+
+    async def _post_call_appointment_workflow(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._post_call_appointment_sync)
+        except Exception as e:
+            logger.error("Post-call appointment workflow error: %s", e, exc_info=True)
 
     async def handle_stop_message(self, message: dict):
         """Handle Twilio stream `stop` event — delegates to unified shutdown."""

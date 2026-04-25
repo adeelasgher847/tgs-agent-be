@@ -356,6 +356,14 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
 
     return create_success_response(token_response, "Login successful via Google")
 
+
+def _expires_at_utc_aware(expires_at: datetime) -> datetime:
+    """SQLite may return naive datetimes; Postgres uses tz-aware. Normalize for comparison."""
+    if expires_at.tzinfo is None:
+        return expires_at.replace(tzinfo=timezone.utc)
+    return expires_at
+
+
 @router.post("/refresh")
 def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     """
@@ -376,8 +384,9 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
             }
 
     # 2) Validate refresh token
+    now_utc = datetime.now(timezone.utc)
     rt = db.query(RefreshToken).filter(RefreshToken.token == req.refresh_token).first()
-    if not rt or rt.revoked or rt.expires_at <= datetime.now(timezone.utc):
+    if not rt or rt.revoked or _expires_at_utc_aware(rt.expires_at) <= now_utc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token"
@@ -398,12 +407,19 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
             current_role = role.name
 
-    # 3) Reuse cached access JWT only if still valid and role claim matches current (login parity)
+    def _cache_matches_context(cached_payload: dict) -> bool:
+        if cached_payload.get("role") != current_role:
+            return False
+        cur_tid = str(current_tenant_id) if current_tenant_id else None
+        cached_tid = cached_payload.get("tenant_id")
+        return cached_tid == cur_tid
+
+    # 3) Reuse cached access JWT only if still valid and claims match current DB (role + tenant)
     new_access_token: str
     cached = rt.replaced_access_token
     if cached and not is_token_expired(cached):
         cached_payload = verify_token(cached)
-        if cached_payload and cached_payload.get("role") == current_role:
+        if cached_payload and _cache_matches_context(cached_payload):
             new_access_token = cached
         else:
             new_access_token = create_user_token(
