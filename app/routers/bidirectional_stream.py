@@ -953,8 +953,8 @@ Previous conversation:
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,phone=<phone>,email=<optional>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, phone, optional email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
 
@@ -995,8 +995,8 @@ Previous conversation:
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,phone=<phone>,email=<optional>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, phone, optional email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
 
@@ -1034,8 +1034,8 @@ Previous conversation:
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,phone=<phone>,email=<optional>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, phone, optional email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
 
@@ -1136,18 +1136,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
 
-                def _strip_control_tokens(text: str) -> str:
-                    # These are backend/system markers and must NEVER be spoken.
-                    if not text:
-                        return ""
-                    text = text.replace("[END_CALL]", "")
-                    text = re.sub(r"\[OUTCOME:[^\]]+\]", "", text)
-                    text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", text)
-                    text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", text)
-                    # Tolerate malformed tokens that miss a closing bracket.
-                    text = re.sub(r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*", "", text)
-                    return text
-
                 def _find_flush_index(buf: str):
                     """
                     Return an index (end-exclusive) where we can safely flush.
@@ -1218,15 +1206,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if "[END_CALL]" in response_accum:
                         end_call_after = True
                         # Remove it from TTS buffer immediately so it never gets spoken
-                        tts_buffer = _strip_control_tokens(tts_buffer)
+                        tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
 
                     # Remove OUTCOME tokens from any in-flight buffer (never spoken)
                     if "[OUTCOME:" in tts_buffer:
-                        tts_buffer = _strip_control_tokens(tts_buffer)
+                        tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
 
                     # Avoid spoken "final confirmation" before backend booking succeeds.
                     if "[BOOK_APPOINTMENT:" in response_accum:
-                        tts_buffer = self._strip_premature_booking_confirmation(_strip_control_tokens(tts_buffer))
+                        tts_buffer = self._prepare_tts_text(tts_buffer)
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
@@ -1239,7 +1227,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         flush_text = tts_buffer[:flush_idx].strip()
                         tts_buffer = tts_buffer[flush_idx:].lstrip()
 
-                        flush_text = _strip_control_tokens(flush_text).strip()
+                        flush_text = self._prepare_tts_text(flush_text)
                         if flush_text:
                             if self._use_ssml:
                                 clean_text = strip_ssml_tags(flush_text)
@@ -1270,7 +1258,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = end_call_after or ("[END_CALL]" in full_response)
 
                 # Never speak control tokens
-                tts_buffer = _strip_control_tokens(tts_buffer).strip()
+                tts_buffer = self._prepare_tts_text(tts_buffer)
 
                 if tts_buffer and not self._tts_cancel.is_set():
                     if self._use_ssml:
@@ -1325,23 +1313,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         )
                         # Queue fallback response
                         if final_text and not self._tts_cancel.is_set():
-                            safe_tts_text = re.sub(r"\[OUTCOME:[^\]]+\]", "", final_text)
-                            safe_tts_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", safe_tts_text)
-                            safe_tts_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", safe_tts_text)
-                            safe_tts_text = re.sub(
-                                r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*",
-                                "",
-                                safe_tts_text,
-                            ).replace("[END_CALL]", "").strip()
-                            out_text = tone_adapter(
-                                (safe_tts_text or final_text or "").strip(),
-                                turn_context,
-                                self._use_ssml,
-                            )
+                            safe_tts_text = self._prepare_tts_text(final_text)
+                            out_text = tone_adapter(safe_tts_text.strip(), turn_context, self._use_ssml)
+                            if not out_text:
+                                out_text = "One moment please."
                             chunk_counter += 1
-                            if self._tts_pipeline:
+                            if self._tts_pipeline and out_text:
                                 await self._tts_pipeline.queue_tts({
-                                    "text": out_text or (safe_tts_text or final_text),
+                                    "text": out_text,
                                     "use_ssml": self._use_ssml,
                                     "is_final": True,
                                 })
@@ -1382,9 +1361,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         final_text = f"{final_text}\n{extracted_token}"
 
                 # Strip control tokens from transcript (never saved to history)
-                transcript_text = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", final_text)
-                transcript_text = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", transcript_text)
-                transcript_text = transcript_text.replace("[END_CALL]", "").strip()
+                transcript_text = self._strip_control_tokens_for_tts(final_text).replace("[END_CALL]", "").strip()
                 if "[BOOK_APPOINTMENT:" in final_text:
                     transcript_text = self._strip_premature_booking_confirmation(transcript_text)
                 if transcript_text:
@@ -1708,6 +1685,63 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             cleaned = re.sub(pattern, "", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
+    @staticmethod
+    def _strip_control_tokens_for_tts(text: str) -> str:
+        """
+        Remove control/action tokens from text before it is spoken.
+        Handles bracketed and malformed/unbracketed variants.
+        """
+        if not text:
+            return ""
+        out = text
+        # Bracketed canonical tokens
+        out = out.replace("[END_CALL]", "")
+        out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
+        out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
+        out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
+        # Malformed bracket-open tokens without closing bracket
+        out = re.sub(r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*", "", out)
+        # Unbracketed control tails occasionally produced by model
+        out = re.sub(
+            r"(?im)\b(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT)\s*:\s*[^\n\r]*",
+            "",
+            out,
+        )
+        return out
+
+    @staticmethod
+    def _looks_like_control_leak(text: str) -> bool:
+        """
+        Detect token-like technical fragments that should never be spoken.
+        """
+        if not text:
+            return False
+        t = text.lower()
+        leak_patterns = (
+            r"\bbook_appointment\b",
+            r"\bcheck_slots\b",
+            r"\boutcome\b",
+            r"\bslot\s*=",
+            r"\breason\s*=",
+            r"\bname\s*=",
+            r"\bemail\s*=",
+            r"\bphone\s*=",
+            r"\bclient phone number slot\b",
+        )
+        return any(re.search(p, t, flags=re.IGNORECASE) for p in leak_patterns)
+
+    def _prepare_tts_text(self, text: str) -> str:
+        """
+        Final text gate before queueing TTS.
+        """
+        cleaned = self._strip_control_tokens_for_tts(text or "")
+        cleaned = self._strip_premature_booking_confirmation(cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if self._looks_like_control_leak(cleaned):
+            logger.warning("TTSGuard: dropped token-like leak text=%r", cleaned[:180])
+            return ""
+        return cleaned
+
     async def _extract_calendar_action_token(
         self,
         *,
@@ -1731,12 +1765,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             "You suggest a single calendar hint line from a phone-call turn. "
             "Output is not authoritative; the server validates everything.\n"
             "Return exactly one line and nothing else:\n"
-            "- [BOOK_APPOINTMENT:name=<placeholder>,phone=<phone>,slot=<slot>,reason=<reason>] "
-            "(optional email=...; use a placeholder for name if unknown)\n"
+            "- [BOOK_APPOINTMENT:name=<placeholder>,slot=<slot>,reason=<reason>] "
+            "(optional phone=...,email=...)\n"
             "- [CHECK_SLOTS:date=YYYY-MM-DD]\n"
             "- NONE\n"
             "Rules:\n"
-            "1) If user selected a concrete offered slot, return BOOK_APPOINTMENT with phone and slot.\n"
+            "1) If user selected a concrete offered slot, return BOOK_APPOINTMENT with slot.\n"
             "2) If user asked to check availability, return CHECK_SLOTS.\n"
             "3) If uncertain, return NONE.\n"
             "4) Keep reason short and without commas.\n"
@@ -1933,7 +1967,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
     async def _handle_book_appointment_token(self, llm_response: str):
         """
         LLM may emit [BOOK_APPOINTMENT:...] as a non-authoritative intent hint.
-        Backend stores only slot / phone / reason in call_metadata.booking_intent.
+        Backend stores only slot / reason in call_metadata.booking_intent.
         Name and email from the token are ignored. No in-call reservation or appointment commit.
         Final booking runs in post_call_appointment_service after validation.
         """
@@ -1959,15 +1993,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             raw_single_line = " ".join((raw or "").split())
 
-            token_email_raw: str | None = None
-            # Robust parse: name, phone, optional email, slot, optional reason (commas in reason).
+            # Robust parse: name, optional phone/email, slot, optional reason (commas in reason).
             strict = _re.search(
-                r"name=(?P<name>.*?),\s*phone=(?P<phone>.*?),\s*(?:email=(?P<email>.*?),\s*)?"
-                r"slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
+                r"name=(?P<name>.*?),\s*(?:phone=(?P<phone>.*?),\s*)?"
+                r"(?:email=(?P<email>.*?),\s*)?slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
                 raw_single_line,
             )
             if strict:
-                customer_phone = (strict.group("phone") or "").strip()
                 slot_raw = (strict.group("slot") or "").strip()
                 reason_val = (strict.group("reason") or "").strip()
                 reason = reason_val or None
@@ -1977,12 +2009,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
                     return km.group(1).strip() if km else ""
 
-                customer_phone = _get("phone")
                 slot_raw = _get("slot")
                 reason = _get("reason") or None
 
-            if not customer_phone or not slot_raw:
-                logger.warning("BOOK_APPOINTMENT token missing phone or slot: %s", raw_single_line[:500])
+            if not slot_raw:
+                logger.warning("BOOK_APPOINTMENT token missing slot: %s", raw_single_line[:500])
                 return
 
             if not self.call_session:
@@ -2002,7 +2033,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self.db,
                 self.call_session,
                 slot_start_iso=slot_iso,
-                customer_phone=customer_phone,
                 appointment_reason=reason,
             )
             self._last_selected_calendar_slot = slot_start

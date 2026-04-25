@@ -2,7 +2,7 @@
 Backend-owned contact intake + booking intent on CallSession.call_metadata.
 
 contact_intake is the primary source of truth for name/email gating.
-booking_intent holds non-PII hints from BOOK_APPOINTMENT tokens (slot, phone, reason).
+booking_intent holds non-PII hints from BOOK_APPOINTMENT tokens (slot, reason).
 """
 from __future__ import annotations
 
@@ -95,14 +95,11 @@ def merge_booking_intent(
     existing: dict[str, Any],
     *,
     slot_start_iso: Optional[str] = None,
-    customer_phone: Optional[str] = None,
     appointment_reason: Optional[str] = None,
 ) -> dict[str, Any]:
     out = dict(existing) if existing else {}
     if slot_start_iso:
         out["slot_start_iso"] = slot_start_iso
-    if customer_phone:
-        out["customer_phone"] = str(customer_phone).strip()
     if appointment_reason:
         out["appointment_reason"] = str(appointment_reason).strip()
     return out
@@ -247,14 +244,12 @@ def persist_booking_intent_fields(
     call_session: CallSession,
     *,
     slot_start_iso: Optional[str],
-    customer_phone: Optional[str],
     appointment_reason: Optional[str],
 ) -> None:
     prev = get_booking_intent(call_session)
     merged = merge_booking_intent(
         prev,
         slot_start_iso=slot_start_iso,
-        customer_phone=customer_phone,
         appointment_reason=appointment_reason,
     )
     _save_booking_intent(db, call_session, merged)

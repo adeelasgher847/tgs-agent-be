@@ -162,7 +162,7 @@ class PostCallAppointmentService:
             not transcript.strip()
             and not intent.get("slot_start_iso")
             and not res
-            and not res_meta.get("customer_phone")
+            and not (cs.from_number or cs.customer_phone_number)
         ):
             self._merge_call_metadata(
                 cs,
@@ -214,11 +214,7 @@ class PostCallAppointmentService:
             reserved_slot=res.slot_start if res else None,
         )
 
-        phone = (
-            (intent.get("customer_phone") or "").strip()
-            or (res_meta.get("customer_phone") or "").strip()
-            or ""
-        ) or None
+        phone = ((cs.from_number or "").strip() or (cs.customer_phone_number or "").strip() or None)
         if not phone or not phone.strip():
             self._merge_call_metadata(
                 cs,

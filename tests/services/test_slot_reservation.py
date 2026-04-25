@@ -98,6 +98,7 @@ def _call_session(db, tenant, u, a) -> CallSession:
         start_time=datetime.now(timezone.utc),
         call_type="inbound",
         status="active",
+        from_number="+15550001111",
     )
     db.add(cs)
     db.commit()
@@ -258,7 +259,6 @@ def test_post_call_success_with_contact_intake(res_db):
         },
         "booking_intent": {
             "slot_start_iso": slot.isoformat(),
-            "customer_phone": "+15551234567",
             "appointment_reason": "checkup",
         },
     }
@@ -277,7 +277,7 @@ def test_post_call_success_with_contact_intake(res_db):
     appts = db.query(Appointment).filter(Appointment.call_session_id == cs.id).all()
     assert len(appts) == 1
     assert appts[0].customer_name == "John"
-    assert appts[0].customer_phone == "+15551234567"
+    assert appts[0].customer_phone == "+15550001111"
 
 
 def test_post_call_fails_when_contact_not_confident(res_db):
@@ -298,7 +298,6 @@ def test_post_call_fails_when_contact_not_confident(res_db):
         },
         "booking_intent": {
             "slot_start_iso": slot.isoformat(),
-            "customer_phone": "+15551234567",
             "appointment_reason": "checkup",
         },
     }
