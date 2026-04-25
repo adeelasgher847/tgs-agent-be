@@ -207,6 +207,55 @@ def apply_micro_fade_in(audio_bytes: bytes, duration_ms: float = 25.0) -> bytes:
         return audio_bytes
 
 
+def apply_micro_fade_out(audio_bytes: bytes, duration_ms: float = 25.0) -> bytes:
+    """
+    Apply a micro linear fade-out to the END of MULAW audio to eliminate the
+    abrupt cut/click that listeners hear when an utterance terminates.
+
+    This is the symmetric counterpart of ``apply_micro_fade_in``. Only the
+    trailing ``duration_ms`` of audio is touched, so the rest of the speech
+    is bit-identical to the original mu-law payload.
+
+    Args:
+        audio_bytes: MULAW audio bytes
+        duration_ms: Duration of fade in milliseconds (default 25ms — same as
+            fade-in for a perceptually balanced envelope on phone calls).
+
+    Returns:
+        Audio bytes with micro fade-out applied to the tail. If anything goes
+        wrong, the original bytes are returned untouched (never silently
+        truncated) to avoid making things worse for live calls.
+    """
+    if not audio_bytes or len(audio_bytes) == 0:
+        return audio_bytes
+
+    try:
+        num_fade_samples = int((duration_ms / 1000.0) * MULAW_SAMPLE_RATE_HZ)
+        num_fade_samples = min(num_fade_samples, len(audio_bytes))
+
+        if num_fade_samples <= 0:
+            return audio_bytes
+
+        head_part = audio_bytes[:-num_fade_samples] if num_fade_samples < len(audio_bytes) else b""
+        fade_part = audio_bytes[-num_fade_samples:]
+
+        linear_samples = [ulaw_to_linear_sample(b) for b in fade_part]
+
+        faded_samples = []
+        for i, sample in enumerate(linear_samples):
+            # Linear ramp from 1.0 down to ~0.0 across the trailing window.
+            volume = 1.0 - (i / num_fade_samples)
+            faded_samples.append(int(sample * volume))
+
+        faded_part_mulaw = bytes([linear_to_ulaw_sample(s) for s in faded_samples])
+
+        return head_part + faded_part_mulaw
+
+    except Exception as e:
+        logger.warning(f"⚠️ Micro fade-out failed: {e}")
+        return audio_bytes
+
+
 def ulaw_to_linear_sample(ulaw_byte: int) -> int:
     """
     Convert a single mu-law encoded byte to 16-bit linear PCM.

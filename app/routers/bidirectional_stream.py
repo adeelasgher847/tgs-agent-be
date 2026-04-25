@@ -767,7 +767,7 @@ class BidirectionalStreamHandler:
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
             # Send quick acknowledgement for longer queries (instant from cache!)
-            await self._send_quick_acknowledgement(user_text)
+            #await self._send_quick_acknowledgement(user_text)
 
             turn_context = build_turn_context(
                 user_text,
@@ -2159,7 +2159,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         try:
                             import base64
                             import time
-                            from app.utils.audio_utils import apply_micro_fade_in, build_crossfade_bridge, MULAW_FRAME_BYTES
+                            from app.utils.audio_utils import (
+                                apply_micro_fade_in,
+                                apply_micro_fade_out,
+                                build_crossfade_bridge,
+                                MULAW_FRAME_BYTES,
+                            )
 
                             # We crossfade at chunk boundaries with a single 20ms overlap for speed.
                             overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)
@@ -2286,7 +2291,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     self._prev_tts_tail = b""
 
                                 if is_final:
-                                    # Flush any partial remainder (pad with silence)
+                                    # Flush any partial remainder (pad with silence so we
+                                    # always send aligned 20ms (160-byte) frames to Twilio).
                                     if byte_buf:
                                         pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
                                         if pad != MULAW_FRAME_BYTES:
@@ -2295,13 +2301,35 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                             pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
                                             del byte_buf[:MULAW_FRAME_BYTES]
 
-                                    # Send all remaining frames
-                                    for out in pending_frames:
-                                        if fade_needed and out:
-                                            out = apply_micro_fade_in(out, duration_ms=25.0)
-                                            fade_needed = False
-                                        await send_frame(out, pace=True, state=pace_state)
-                                    pending_frames.clear()
+                                    # Send all remaining frames. The very last audio frame
+                                    # gets a 25 ms linear fade-out to remove the abrupt
+                                    # cut/click that callers otherwise hear at the end of
+                                    # an utterance (especially over MULAW @ 8 kHz).
+                                    if pending_frames:
+                                        last_idx = len(pending_frames) - 1
+                                        for idx, out in enumerate(pending_frames):
+                                            if self._tts_cancel.is_set():
+                                                break
+                                            if fade_needed and out:
+                                                out = apply_micro_fade_in(out, duration_ms=25.0)
+                                                fade_needed = False
+                                            if idx == last_idx and out:
+                                                out = apply_micro_fade_out(out, duration_ms=25.0)
+                                            await send_frame(out, pace=True, state=pace_state)
+                                        pending_frames.clear()
+
+                                    # Drain Twilio's playout jitter buffer with a short
+                                    # MULAW silence tail (3×20ms = 60ms). Without this,
+                                    # the last 40–80 ms of speech are sometimes clipped
+                                    # because the WebSocket / RTP path closes before the
+                                    # final media frame finishes playing.
+                                    if not self._tts_cancel.is_set():
+                                        silence_drain = bytes([0xFF]) * MULAW_FRAME_BYTES
+                                        for _ in range(3):
+                                            if self._tts_cancel.is_set():
+                                                break
+                                            await send_frame(silence_drain, pace=True, state=pace_state)
+
                                     self._prev_tts_tail = b""
                                 else:
                                     # Keep exactly 1 frame as tail (pad remainder into tail if needed)
@@ -2426,8 +2454,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Stream TTS to Twilio (clean mu-law; crossfade + fade-in above)
                     if audio_bytes and not self._tts_cancel.is_set():
                         # Apply fade-in only at the start of the utterance to avoid "phat" / pop
-                        from app.utils.audio_utils import apply_micro_fade_in
-                        from app.utils.audio_utils import build_crossfade_bridge
+                        from app.utils.audio_utils import (
+                            apply_micro_fade_in,
+                            apply_micro_fade_out,
+                            build_crossfade_bridge,
+                        )
 
                         overlap_bytes = int(getattr(self, "_tts_overlap_bytes", 400) or 400)
 
@@ -2454,6 +2485,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             to_stream = apply_micro_fade_in(to_stream, duration_ms=25.0)
                             logger.debug("🔊 Applied micro fade-in to first TTS audio (25ms)")
 
+                        # Apply a 25 ms fade-out only on the FINAL chunk so the listener
+                        # never hears an abrupt cut at the end of an utterance. We do
+                        # this BEFORE the optional background mix so the bed isn't
+                        # accidentally faded with the voice.
+                        if is_final and to_stream:
+                            to_stream = apply_micro_fade_out(to_stream, duration_ms=25.0)
+
                         # Mix with ambient bed only when explicitly enabled for office profile.
                         if self._is_background_audio_enabled():
                             self._background_audio.set_user_level(self._resolve_background_volume())
@@ -2471,6 +2509,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             prime_frames=prime_frames,
                         )
                         self._twilio_buffer_primed = True
+
+                        # Drain Twilio's playout jitter buffer with a 60ms MULAW silence
+                        # tail on the final chunk so the last word doesn't get clipped
+                        # by the WebSocket / RTP shutdown that can follow immediately
+                        # afterwards (e.g. agent [END_CALL]). This is symmetric with
+                        # the priming we apply at the start of an utterance.
+                        if is_final and not self._tts_cancel.is_set():
+                            try:
+                                silence_drain = bytes([0xFF]) * MULAW_FRAME_BYTES * 3
+                                await stream_mulaw_bytes_over_twilio(
+                                    websocket=self.websocket,
+                                    stream_sid=self.stream_sid,
+                                    audio_bytes=silence_drain,
+                                    pace_20ms=True,
+                                    cancel=self._tts_cancel,
+                                    prime_frames=0,
+                                )
+                            except Exception as drain_err:
+                                logger.debug(
+                                    "Trailing silence drain failed (non-fatal): %s",
+                                    drain_err,
+                                )
 
                         # Update crossfade tail state
                         if self._tts_cancel.is_set():
@@ -2780,10 +2840,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         return False
     
     async def _end_call_after_agent_request(self):
-        """End the call when agent response contained [END_CALL] (after TTS has played)."""
+        """End the call when agent response contained [END_CALL] (after TTS has played).
+
+        We deliberately wait a short grace period (~200ms) AFTER the streaming
+        TTS path has finished pushing its trailing silence drain. Twilio's
+        outbound media buffer plus carrier-side jitter buffers can otherwise
+        drop the last 80–150 ms of the goodbye phrase when the WebSocket /
+        media stream is torn down too aggressively. The grace is well below
+        any human-perceptible "extra silence" but eliminates the clipped
+        goodbye that production has been hitting.
+        """
         if self._call_ended:
             return
         try:
+            try:
+                await asyncio.sleep(0.20)
+            except asyncio.CancelledError:
+                # If the surrounding task is being cancelled (e.g. global
+                # shutdown), continue with hangup instead of raising —
+                # there's no benefit to leaving the call in a half-ended
+                # state.
+                pass
+
             self._call_ended = True
             if self.call_session:
                 updated = call_session_service.update_call_session_status(

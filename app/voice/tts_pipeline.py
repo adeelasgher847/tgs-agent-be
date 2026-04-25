@@ -52,6 +52,10 @@ class TtsPipeline:
         Barge-in helper:
         - Set cancel flag so current streaming stops.
         - Clear any queued-but-not-started TTS tasks.
+        - Reset jitter-buffer priming + crossfade tail so the NEXT utterance
+          starts cleanly (3×20ms priming silence + 25ms fade-in re-applied).
+          Without this, audio resumed after a barge-in can sound clipped at
+          the start because the handler still believes Twilio is primed.
         """
         if not self.cancel_event.is_set():
             self.cancel_event.set()
@@ -67,6 +71,15 @@ class TtsPipeline:
         # Mark the handler as no longer speaking
         if hasattr(self._handler, "is_speaking"):
             self._handler.is_speaking = False
+
+        # Idempotent priming reset: any subsequent TTS chunk must re-prime
+        # Twilio's jitter buffer and re-apply the start-of-utterance fade-in.
+        # The crossfade tail is also dropped because mixing it with a brand
+        # new utterance would produce an audible artefact.
+        if hasattr(self._handler, "_twilio_buffer_primed"):
+            self._handler._twilio_buffer_primed = False
+        if hasattr(self._handler, "_prev_tts_tail"):
+            self._handler._prev_tts_tail = b""
 
     async def shutdown(self) -> None:
         """
