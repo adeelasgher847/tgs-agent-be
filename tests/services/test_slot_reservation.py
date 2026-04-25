@@ -24,6 +24,7 @@ from app.models.slot_reservation import SlotReservation
 from app.schemas.calendar import BusinessHoursUpsert
 from app.services.appointment_reservation_service import appointment_reservation_service
 from app.services.calendar_service import calendar_service
+from app.services.call_session_contact_state import get_contact_intake, sync_contact_intake_after_message
 from app.services.post_call_appointment_service import post_call_appointment_service
 
 
@@ -237,3 +238,98 @@ def test_post_call_existing_appointment_releases_active_hold(res_db):
 
     refreshed = db.query(SlotReservation).filter(SlotReservation.id == hold.id).one()
     assert refreshed.status == "released"
+
+
+def test_post_call_success_with_contact_intake(res_db):
+    db, tenant, u, a = res_db
+    day_slots = calendar_service.get_available_slots(db, tenant.id, MONDAY)
+    slot = day_slots.slots[0].slot_start
+    cs = _call_session(db, tenant, u, a)
+    cs.call_metadata = {
+        "contact_intake": {
+            "name": "John",
+            "email": None,
+            "name_spelled_confirmed": True,
+            "email_spelled_confirmed": False,
+            "name_confident": True,
+            "email_validated": False,
+            "name_spell_failures": 0,
+            "awaiting_spell_field": None,
+        },
+        "booking_intent": {
+            "slot_start_iso": slot.isoformat(),
+            "customer_phone": "+15551234567",
+            "appointment_reason": "checkup",
+        },
+    }
+    db.add(cs)
+    db.commit()
+
+    from app.services.transcript_service import transcript_service
+
+    transcript_service.add_message(db, cs.id, "agent", "Hello.", "speech")
+    transcript_service.add_message(db, cs.id, "client", "Hi.", "speech")
+
+    post_call_appointment_service.process_call_session(db, cs.id)
+
+    db.refresh(cs)
+    assert cs.call_metadata.get("post_call_appointment") == "success"
+    appts = db.query(Appointment).filter(Appointment.call_session_id == cs.id).all()
+    assert len(appts) == 1
+    assert appts[0].customer_name == "John"
+    assert appts[0].customer_phone == "+15551234567"
+
+
+def test_post_call_fails_when_contact_not_confident(res_db):
+    db, tenant, u, a = res_db
+    day_slots = calendar_service.get_available_slots(db, tenant.id, MONDAY)
+    slot = day_slots.slots[0].slot_start
+    cs = _call_session(db, tenant, u, a)
+    cs.call_metadata = {
+        "contact_intake": {
+            "name": None,
+            "email": None,
+            "name_spelled_confirmed": False,
+            "email_spelled_confirmed": False,
+            "name_confident": False,
+            "email_validated": False,
+            "name_spell_failures": 3,
+            "awaiting_spell_field": None,
+        },
+        "booking_intent": {
+            "slot_start_iso": slot.isoformat(),
+            "customer_phone": "+15551234567",
+            "appointment_reason": "checkup",
+        },
+    }
+    db.add(cs)
+    db.commit()
+
+    from app.services.transcript_service import transcript_service
+
+    transcript_service.add_message(db, cs.id, "client", "Hi.", "speech")
+
+    post_call_appointment_service.process_call_session(db, cs.id)
+
+    db.refresh(cs)
+    assert cs.call_metadata.get("post_call_appointment") == "failed"
+    assert cs.call_metadata.get("post_call_appointment_detail") == "contact_not_confident"
+    assert db.query(Appointment).filter(Appointment.call_session_id == cs.id).count() == 0
+
+
+def test_contact_intake_sync_after_spell_flow(res_db):
+    db, tenant, u, a = res_db
+    cs = _call_session(db, tenant, u, a)
+    from app.services.transcript_service import transcript_service
+
+    transcript_service.add_message(db, cs.id, "agent", "Please spell your name for me.", "speech")
+    sync_contact_intake_after_message(
+        db, cs.id, role="agent", message="Please spell your name for me."
+    )
+    transcript_service.add_message(db, cs.id, "client", "J O H N", "speech")
+    sync_contact_intake_after_message(db, cs.id, role="client", message="J O H N")
+    db.refresh(cs)
+    intake = get_contact_intake(cs)
+    assert intake["name_confident"] is True
+    assert intake["name"] == "John"
+    assert intake["name_spelled_confirmed"] is True

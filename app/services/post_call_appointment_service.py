@@ -1,4 +1,4 @@
-"""Finalize voice appointments after the call using transcript + optional in-call hold."""
+"""Finalize voice appointments after the call using transcript + call_metadata (backend-owned)."""
 
 from __future__ import annotations
 
@@ -16,9 +16,19 @@ from app.models.call_session import CallSession
 from app.models.slot_reservation import SlotReservation
 from app.services.appointment_reservation_service import appointment_reservation_service
 from app.services.calendar_service import calendar_service
+from app.services.call_session_contact_state import (
+    booking_allowed,
+    get_booking_intent,
+    get_contact_intake,
+    merge_contact_for_post_call,
+)
 from app.services.call_session_service import call_session_service
 from app.services.openai_service import openai_service
 from app.services.transcript_service import TranscriptService
+from app.utils.voice_contact_extraction import (
+    client_lines_from_transcript_text,
+    extract_contact_from_client_lines,
+)
 
 
 def _parse_llm_json(content: str) -> Dict[str, Any]:
@@ -65,24 +75,25 @@ def _parse_iso_to_utc(s: Optional[str]) -> Optional[datetime]:
 
 
 class PostCallAppointmentService:
-    def _extract_from_llm(
+    def _extract_non_pii_from_llm(
         self,
         transcript: str,
         reserved_slot: Optional[datetime] = None,
     ) -> Dict[str, Any]:
+        """
+        Optional LLM pass for non-PII fields only (reason, slot hint).
+        Never used as authority for customer name or email.
+        """
         if not settings.OPENAI_API_KEY:
             return {}
         system_prompt = (
-            "You extract an appointment request from a phone call transcript. "
-            "Return ONLY a JSON object (no markdown) with these keys: "
-            '"customer_name" (string|null), '
-            '"customer_phone" (string|null), '
-            '"customer_email" (string|null), '
+            "You read a phone call transcript about scheduling. "
+            "Return ONLY JSON (no markdown) with keys: "
             '"appointment_reason" (string|null), '
             '"slot_start_iso" (string|null, ISO-8601 with offset or Z). '
+            "Do NOT output customer_name, customer_email, or customer_phone. "
             "Use null when unknown. "
-            "The phone can include country code. "
-            "If a reserved slot was provided in the user message, still fill slot_start_iso to match it when possible."
+            "If a reserved slot UTC time is given in the user message, align slot_start_iso when possible."
         )
         user_body = f"Transcript:\n{transcript}\n"
         if reserved_slot is not None:
@@ -93,11 +104,11 @@ class PostCallAppointmentService:
                 system_prompt=system_prompt,
                 model_name="gpt-4o-mini",
                 temperature=0.0,
-                max_tokens=500,
+                max_tokens=400,
             )
             return _parse_llm_json(resp.get("content", ""))
         except Exception as exc:
-            logger.warning("Post-call LLM extraction failed: %s", exc)
+            logger.warning("Post-call LLM (non-PII) extraction failed: %s", exc)
             return {}
 
     @staticmethod
@@ -143,9 +154,16 @@ class PostCallAppointmentService:
             db.commit()
             return
 
-        meta: Dict[str, Any] = dict((res.metadata_json or {}) if res else {})
         transcript = _transcript_to_text(db, call_session_id)
-        if not transcript.strip() and not meta.get("customer_name") and not res:
+        intent = get_booking_intent(cs)
+        res_meta: Dict[str, Any] = dict((res.metadata_json or {}) if res else {})
+
+        if (
+            not transcript.strip()
+            and not intent.get("slot_start_iso")
+            and not res
+            and not res_meta.get("customer_phone")
+        ):
             self._merge_call_metadata(
                 cs,
                 {
@@ -156,18 +174,26 @@ class PostCallAppointmentService:
             db.commit()
             return
 
-        llm = self._extract_from_llm(
-            transcript,
-            reserved_slot=res.slot_start if res else None,
-        )
-        name = (llm.get("customer_name") or meta.get("customer_name") or "").strip() or None
-        phone = (llm.get("customer_phone") or meta.get("customer_phone") or "").strip() or None
-        email = (llm.get("customer_email") or meta.get("customer_email") or "").strip() or None
-        reason = (llm.get("appointment_reason") or meta.get("appointment_reason") or "").strip() or None
-        if not reason:
-            reason = None
-        notes = (meta.get("notes") or "").strip() or None
-        if not name or not name.strip():
+        intake = get_contact_intake(cs)
+        client_lines = client_lines_from_transcript_text(transcript)
+        extracted = extract_contact_from_client_lines(client_lines)
+        merged_contact = merge_contact_for_post_call(intake, extracted)
+
+        if not booking_allowed(intake):
+            self._merge_call_metadata(
+                cs,
+                {
+                    "post_call_appointment": "failed",
+                    "post_call_appointment_detail": "contact_not_confident",
+                },
+            )
+            if res:
+                appointment_reservation_service.release_active_for_call_session(db, call_session_id)
+            db.commit()
+            return
+
+        name = (merged_contact.get("customer_name") or "").strip() or None
+        if not name:
             self._merge_call_metadata(
                 cs,
                 {
@@ -179,6 +205,20 @@ class PostCallAppointmentService:
                 appointment_reservation_service.release_active_for_call_session(db, call_session_id)
             db.commit()
             return
+
+        email_raw = merged_contact.get("customer_email")
+        email = (str(email_raw).strip() if email_raw else None) or None
+
+        llm = self._extract_non_pii_from_llm(
+            transcript,
+            reserved_slot=res.slot_start if res else None,
+        )
+
+        phone = (
+            (intent.get("customer_phone") or "").strip()
+            or (res_meta.get("customer_phone") or "").strip()
+            or ""
+        ) or None
         if not phone or not phone.strip():
             self._merge_call_metadata(
                 cs,
@@ -192,11 +232,24 @@ class PostCallAppointmentService:
             db.commit()
             return
 
+        reason = (
+            (intent.get("appointment_reason") or "").strip()
+            or (res_meta.get("appointment_reason") or "").strip()
+            or (llm.get("appointment_reason") or "").strip()
+            or ""
+        ) or None
+        if not reason:
+            reason = None
+        notes = (res_meta.get("notes") or "").strip() or None
+
         slot_utc: Optional[datetime] = None
         if res:
             slot_utc = res.slot_start
-        else:
+        if slot_utc is None:
+            slot_utc = _parse_iso_to_utc(intent.get("slot_start_iso"))
+        if slot_utc is None:
             slot_utc = _parse_iso_to_utc(llm.get("slot_start_iso") if llm else None)
+
         if slot_utc is None:
             self._merge_call_metadata(
                 cs,

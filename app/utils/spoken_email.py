@@ -1,9 +1,8 @@
 """
-Recover, score, and gate email addresses from voice/STT transcripts.
+Recover and normalize email addresses from voice/STT transcripts.
 
-The booking flow must never trust a syntactically valid email blindly just because
-it came from STT or an LLM token. We always prefer transcript reconstruction and
-only allow verified emails to propagate into booking notifications.
+Helpers used by call flows to parse spoken addresses and (in unit tests) the
+`resolve_customer_email_for_booking` scoring path.
 """
 from __future__ import annotations
 
@@ -292,44 +291,18 @@ def best_email_from_client_utterances(utterances_newest_first: list[str]) -> Opt
     return observations[0].email if observations else None
 
 
-def build_email_repair_prompt(
-    *,
-    token_email_raw: Optional[str],
-    transcript_client_lines_newest_first: list[str],
-) -> str:
-    transcript_lines = transcript_client_lines_newest_first[:8]
-    transcript_block = "\n".join(
-        f"- {line}" for line in reversed(transcript_lines) if (line or "").strip()
-    ) or "- <no transcript lines available>"
-    token_block = token_email_raw or "<none>"
-    return f"""You repair customer email addresses from noisy phone-call transcripts.
-
-Rules:
-- Use transcript evidence first. Do not trust fused raw STT emails blindly.
-- If uncertain, respond with NONE.
-- Do not invent characters or domains.
-- Return only one final email address or NONE.
-
-Raw token email:
-{token_block}
-
-Recent customer transcript lines (oldest first):
-{transcript_block}
-"""
-
-
 def resolve_customer_email_for_booking(
     *,
     token_email_raw: Optional[str],
     transcript_client_lines_newest_first: list[str],
 ) -> BookingEmailResolution:
     """
-    Deterministic resolution for booking emails.
+    Deterministic resolution for booking emails (retained for unit tests).
 
     Trust order:
     1. Explicitly user-confirmed transcript email
-    2. Transcript-reconstructed email (pending verification)
-    3. Raw token/STT email (never final authority)
+    2. Transcript-reconstructed email
+    3. Raw token/STT email (low trust)
     """
     transcript_lines = [
         (line or "").strip()

@@ -950,18 +950,13 @@ Previous conversation:
 
 {elevenlabs_audio_tag_block}
 
-# APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
-- If the user declines or does not provide email, continue without email (do not block scheduling).
-- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (use "tomorrow" or ISO date).
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. The token only reserves a temporary hold on the slot; final booking is completed after the call ends.
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
-- Use a short reason with NO commas inside reason= (commas break parsing).
-- If they want a different time on this call: run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot; the new token replaces the previous hold.
-- Only choose among slots that the system has offered for this call.
-- Never book a slot that is in the past (check CURRENT DATE & TIME above).
-- Speak naturally; the system processes holds and post-call booking in the background.
+# CALENDAR ASSIST
+- Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
+- To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,phone=<phone>,email=<optional>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, phone, optional email, slot, reason.
+- If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
+- Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -997,17 +992,13 @@ Previous conversation:
 
 {elevenlabs_audio_tag_block}
 
-# APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
-- If the user declines or does not provide email, continue without email (do not block scheduling).
-- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. The token only reserves a temporary hold; final booking completes after the call ends.
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
-- Use a short reason with NO commas inside reason= (commas break parsing).
-- If they want a different time: run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot; the new hold replaces the previous one.
-- Only choose among system-offered slots.
-- Never book a slot in the past (see CURRENT DATE & TIME).
+# CALENDAR ASSIST
+- Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
+- To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,phone=<phone>,email=<optional>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, phone, optional email, slot, reason.
+- If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
+- Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -1040,17 +1031,13 @@ Previous conversation:
 
 {elevenlabs_audio_tag_block}
 
-# APPOINTMENT BOOKING
-- If user wants to book/schedule an appointment: collect their name, phone number, reason, preferred date/time, and ask for email as optional for confirmations.
-- If the user declines or does not provide email, continue without email (do not block scheduling).
-- To check available slots emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD]
-- Once user confirms a slot emit exactly: [BOOK_APPOINTMENT:name=<name>,phone=<phone>,email=<email if the user provided one; otherwise omit the email= field entirely>,slot=<exact offered ISO datetime or spoken slot label>,reason=<reason>]
-- CRITICAL UX: Do NOT say "appointment confirmed/scheduled/booked" yourself. The token only reserves a temporary hold; final booking completes after the call ends.
-- CALENDAR TOKENS (CRITICAL): [CHECK_SLOTS:...] and [BOOK_APPOINTMENT:...] must be valid for the system to run. Put each token on ONE line. Always end with a closing ] — never omit it, truncate, wrap, or split across lines. Field order must be: name, phone, optional email, slot, reason. Example with email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,email=john@example.com,slot=2026-04-08T10:30:00,reason=Dental checkup]. Example without email: [BOOK_APPOINTMENT:name=John Smith,phone=+15551234567,slot=2026-04-08T10:30:00,reason=Dental checkup]
-- Use a short reason with NO commas inside reason= (commas break parsing).
-- If they want a different time: run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot; the new hold replaces the previous one.
-- Only choose among system-offered slots.
-- Never book a slot in the past (see CURRENT DATE & TIME).
+# CALENDAR ASSIST
+- Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
+- To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,phone=<phone>,email=<optional>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, phone, optional email, slot, reason.
+- If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
+- Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
@@ -1741,18 +1728,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             for slot in self._last_offered_calendar_slots[:16]
         )
         extraction_system_prompt = (
-            "You extract calendar actions from a phone-call turn.\n"
+            "You suggest a single calendar hint line from a phone-call turn. "
+            "Output is not authoritative; the server validates everything.\n"
             "Return exactly one line and nothing else:\n"
-            "- [BOOK_APPOINTMENT:name=<name>,phone=<phone>,slot=<slot>,reason=<reason>] "
-            "(if the user gave an email, use: name=...,phone=...,email=...,slot=...,reason=...)\n"
+            "- [BOOK_APPOINTMENT:name=<placeholder>,phone=<phone>,slot=<slot>,reason=<reason>] "
+            "(optional email=...; use a placeholder for name if unknown)\n"
             "- [CHECK_SLOTS:date=YYYY-MM-DD]\n"
             "- NONE\n"
             "Rules:\n"
-            "1) If user selected a concrete slot that was offered, return BOOK_APPOINTMENT.\n"
+            "1) If user selected a concrete offered slot, return BOOK_APPOINTMENT with phone and slot.\n"
             "2) If user asked to check availability, return CHECK_SLOTS.\n"
-            "3) If uncertain or missing critical fields, return NONE.\n"
+            "3) If uncertain, return NONE.\n"
             "4) Keep reason short and without commas.\n"
-            "5) Include email= only if the user clearly gave an address; field order is name, phone, optional email, slot, reason.\n"
         )
         extraction_prompt = (
             f"Now (UTC): {datetime.now(timezone.utc).isoformat()}\n\n"
@@ -1943,108 +1930,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     break
         return out
 
-    async def _repair_customer_email_with_llm(
-        self,
-        *,
-        token_email_raw: Optional[str],
-        transcript_client_lines_newest_first: list[str],
-    ) -> Optional[str]:
-        """
-        Best-effort repair layer for noisy spoken emails.
-        Returns a validated email or None. Never raises.
-        """
-        from app.utils.spoken_email import (
-            build_email_repair_prompt,
-            coerce_email_from_text,
-            normalize_stored_email,
-        )
-
-        prompt = build_email_repair_prompt(
-            token_email_raw=token_email_raw,
-            transcript_client_lines_newest_first=transcript_client_lines_newest_first,
-        )
-        repair_system_prompt = (
-            "You repair customer email addresses from noisy call transcripts. "
-            "Prefer spelled-out transcript evidence over fused STT literals. "
-            "If uncertain, return NONE. Output only the email or NONE."
-        )
-        loop = asyncio.get_running_loop()
-
-        async def _call_repair(service, model_name: str) -> Optional[str]:
-            def _run():
-                return service.generate_text(
-                    prompt=prompt,
-                    system_prompt=repair_system_prompt,
-                    model_name=model_name,
-                    temperature=0.0,
-                    max_tokens=60,
-                )
-
-            try:
-                payload = await loop.run_in_executor(None, _run)
-            except Exception as e:
-                logger.warning(
-                    "Email repair LLM failed via %s/%s: %s",
-                    service.__class__.__name__,
-                    model_name,
-                    e,
-                )
-                return None
-
-            content = (payload.get("content") or "").strip()
-            if not content or content.upper() == "NONE":
-                return None
-            return normalize_stored_email(content) or coerce_email_from_text(content)
-
-        if settings.GEMINI_API_KEY:
-            repaired = await _call_repair(gemini_service, "gemini-1.5-flash")
-            if repaired:
-                return repaired
-
-        if settings.OPENAI_API_KEY:
-            repaired = await _call_repair(openai_service, "gpt-4o-mini")
-            if repaired:
-                return repaired
-
-        return None
-
-    def _merge_pending_email_note(
-        self,
-        existing_notes: Optional[str],
-        *,
-        pending_email: Optional[str],
-        source: str,
-        reason: str,
-    ) -> Optional[str]:
-        if not pending_email:
-            return existing_notes
-
-        entry = (
-            f"Pending email verification: {pending_email} "
-            f"(source: {source}; reason: {reason})"
-        )
-        base = (existing_notes or "").strip()
-        if pending_email in base and "Pending email verification:" in base:
-            return existing_notes
-        if not base:
-            return entry
-        return f"{base}\n{entry}"
-
     async def _handle_book_appointment_token(self, llm_response: str):
         """
-        Called when LLM emits [BOOK_APPOINTMENT:name=...,phone=...,optional email=...,slot=...,reason=...].
-        Reserves the calendar slot for this call (in-call hold). Final `Appointment` row is created
-        after the call ends (see post_call_appointment_service).
+        LLM may emit [BOOK_APPOINTMENT:...] as a non-authoritative intent hint.
+        Backend stores only slot / phone / reason in call_metadata.booking_intent.
+        Name and email from the token are ignored. No in-call reservation or appointment commit.
+        Final booking runs in post_call_appointment_service after validation.
         """
         try:
             import re as _re
-            from dataclasses import replace
             from datetime import datetime as _dt
 
-            from app.services.appointment_reservation_service import (
-                appointment_reservation_service as _resv,
-            )
-            from app.utils.spoken_email import resolve_customer_email_for_booking
+            from app.services.call_session_contact_state import persist_booking_intent_fields
 
             m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
             if m:
@@ -2070,9 +1967,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 raw_single_line,
             )
             if strict:
-                customer_name = (strict.group("name") or "").strip()
                 customer_phone = (strict.group("phone") or "").strip()
-                token_email_raw = (strict.group("email") or "").strip() or None
                 slot_raw = (strict.group("slot") or "").strip()
                 reason_val = (strict.group("reason") or "").strip()
                 reason = reason_val or None
@@ -2082,63 +1977,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
                     return km.group(1).strip() if km else ""
 
-                customer_name = _get("name")
                 customer_phone = _get("phone")
-                token_email_raw = _get("email") or None
                 slot_raw = _get("slot")
                 reason = _get("reason") or None
 
-            if not customer_name or not customer_phone or not slot_raw:
-                logger.warning("BOOK_APPOINTMENT token missing required fields: %s", raw_single_line[:500])
+            if not customer_phone or not slot_raw:
+                logger.warning("BOOK_APPOINTMENT token missing phone or slot: %s", raw_single_line[:500])
                 return
 
             if not self.call_session:
                 return
-
-            transcript_lines = self._client_transcript_lines_newest_first()
-            email_resolution = resolve_customer_email_for_booking(
-                token_email_raw=token_email_raw,
-                transcript_client_lines_newest_first=transcript_lines,
-            )
-            if (
-                email_resolution.should_attempt_llm_repair
-                and not email_resolution.verified_email
-            ):
-                repaired_email = await self._repair_customer_email_with_llm(
-                    token_email_raw=token_email_raw,
-                    transcript_client_lines_newest_first=transcript_lines,
-                )
-                if repaired_email and repaired_email != email_resolution.pending_email:
-                    email_resolution = replace(
-                        email_resolution,
-                        pending_email=repaired_email,
-                        source="llm_repaired_unverified",
-                        trust_score=max(email_resolution.trust_score, 60),
-                        should_attempt_llm_repair=False,
-                        reason=(
-                            f"{email_resolution.reason} "
-                            "LLM repair produced a validated candidate; still pending confirmation."
-                        ).strip(),
-                    )
-
-            verified_customer_email = email_resolution.verified_email
-            # Demo override: store pending candidate when verified email isn't available.
-            customer_email_for_storage = (
-                verified_customer_email or email_resolution.pending_email
-            )
-            if verified_customer_email:
-                logger.info(
-                    "BOOK_APPOINTMENT: using verified customer_email source=%s trust=%s",
-                    email_resolution.source,
-                    email_resolution.trust_score,
-                )
-            elif email_resolution.pending_email:
-                logger.info(
-                    "BOOK_APPOINTMENT: keeping email pending verification source=%s trust=%s candidate=%s",
-                    email_resolution.source,
-                    email_resolution.trust_score,
-                    email_resolution.pending_email,
-                )
 
             slot_start = self._resolve_cached_calendar_slot(slot_raw)
             if slot_start is None:
@@ -2148,51 +1996,25 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     logger.warning("BOOK_APPOINTMENT: invalid slot datetime: %s", slot_raw)
                     return
 
-            tenant_id = self.call_session.tenant_id
-            agent_id = self.agent.id if self.agent else None
-            call_session_id = self.call_session.id
+            slot_iso = slot_start.isoformat()
 
-            loop = asyncio.get_running_loop()
-            merged_notes = self._merge_pending_email_note(
-                None,
-                pending_email=email_resolution.pending_email,
-                source=email_resolution.source,
-                reason=email_resolution.reason,
+            persist_booking_intent_fields(
+                self.db,
+                self.call_session,
+                slot_start_iso=slot_iso,
+                customer_phone=customer_phone,
+                appointment_reason=reason,
             )
-
-            metadata = {
-                "customer_name": customer_name,
-                "customer_phone": customer_phone,
-                "customer_email": customer_email_for_storage,
-                "appointment_reason": reason,
-                "notes": merged_notes,
-            }
-
-            def _do_reserve():
-                return _resv.upsert_active_reservation(
-                    db=self.db,
-                    tenant_id=tenant_id,
-                    call_session_id=call_session_id,
-                    agent_id=agent_id,
-                    slot_start=slot_start,
-                    metadata=metadata,
-                )
-
+            self._last_selected_calendar_slot = slot_start
             try:
-                row = await loop.run_in_executor(None, _do_reserve)
-                self._last_selected_calendar_slot = row.slot_start
-                msg = (
-                    "Got it — I've held that time for you while we're on this call. "
-                    "After we hang up, the system will finalize the booking and send the usual next steps. "
-                    "Anything else I can help with?"
-                )
-                if email_resolution.pending_email and not verified_customer_email:
-                    msg += (
-                        " I captured an email candidate, but it will stay pending "
-                        "verification until it's confirmed."
-                    )
-            except ValueError as ve:
-                msg = f"{ve} Would you like to choose a different time?"
+                self.db.refresh(self.call_session)
+            except Exception:
+                pass
+
+            msg = (
+                "I've noted your preferred time. After we finish the call, our system will finalize "
+                "your appointment if everything checks out. Anything else I can help with?"
+            )
 
             await self._add_to_transcript("agent", msg, "calendar_booking")
             if self._tts_pipeline:
@@ -3112,7 +2934,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
                     return
 
-            await transcript_service.add_and_broadcast_message(
+            added = await transcript_service.add_and_broadcast_message(
                 db=self.db,
                 call_session_id=self.call_session.id,
                 role=role,
@@ -3123,6 +2945,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 confidence=confidence,
                 metadata=message_metadata
             )
+            if added is None:
+                return
 
             # Remember committed agent lines for future dedupe / turn-coordination.
             if role == "agent" and message_type in {"agent_response", "greeting"}:
@@ -3135,7 +2959,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             conversation = transcript_service.get_conversation_array(self.db, self.call_session.id)
             self.call_session.call_transcript = conversation
             self.db.commit()
-        
+
+            from app.services.call_session_contact_state import sync_contact_intake_after_message
+
+            sync_contact_intake_after_message(
+                self.db,
+                self.call_session.id,
+                role=role,
+                message=clean_message,
+            )
+            try:
+                self.db.refresh(self.call_session)
+            except Exception:
+                pass
+
         except Exception as e:
             logger.error(f"Error in _add_to_transcript: {e}", exc_info=True)
     
