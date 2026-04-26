@@ -66,10 +66,17 @@ class SttPipeline:
 
         async def reader_loop():
             while True:
+                sess = self._stt_session
+                if sess is None:
+                    break
                 try:
-                    result = await self._stt_session.get_result()  # type: ignore[union-attr]
+                    result = await sess.get_result()
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     logger.error(f"[STT] reader loop error: {e}", exc_info=True)
+                    if self._stt_session is None:
+                        break
                     continue
 
                 if not result:

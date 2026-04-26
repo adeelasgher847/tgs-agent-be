@@ -506,6 +506,25 @@ class BidirectionalStreamHandler:
         except Exception as e:
             logger.error(f"Error handling media message: {e}", exc_info=True)
 
+    def _schedule_recreate_stt_for_email_collection(self, agent_text: str) -> None:
+        """
+        Defer STT session reconnect to the next event-loop tick so we never aclose
+        the Deepgram stream from a stack that may still be tied to the active reader
+        (avoids NoneType in reader_loop and re-entrancy deadlocks).
+        """
+        text = (agent_text or "").strip()
+        if not text:
+            return
+
+        async def _deferred() -> None:
+            try:
+                await asyncio.sleep(0)
+                await self._maybe_recreate_stt_for_email_collection(text)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("email-collection STT hook (deferred): %s", exc)
+
+        asyncio.create_task(_deferred())
+
     async def _maybe_recreate_stt_for_email_collection(self, agent_text: str) -> None:
         """
         After the agent asks for an email address, use longer Deepgram endpointing so
@@ -1467,10 +1486,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "rag_trace": rag_trace,
                         },
                     )
-                    try:
-                        await self._maybe_recreate_stt_for_email_collection(transcript_text)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug("email-collection STT hook: %s", exc)
+                    self._schedule_recreate_stt_for_email_collection(transcript_text)
 
                 # Handle calendar tokens (fire-and-forget after TTS is already queued)
                 if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
