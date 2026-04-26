@@ -96,6 +96,9 @@ def _empty_handler() -> Handler:
     h._barge_in_min_conf = 0.26
     h._barge_in_min_conf_1w = 0.52
     h._stt_min_final_confidence = 0.26
+    h._enable_soft_final_fallback = True
+    h._stt_soft_min_final_confidence = 0.16
+    h._stt_soft_min_words = 2
     return h
 
 
@@ -211,3 +214,13 @@ def test_complete_final_regen_calls_generate_once() -> None:
         assert h.generate_and_stream_response.call_args[1].get("is_greeting") is False  # type: ignore[attr-defined]
 
     asyncio.run(_body())
+
+
+def test_should_accept_final_transcript_allows_soft_multword() -> None:
+    h = _empty_handler()
+    assert Handler._should_accept_final_transcript(h, "yes i need help", 0.18) is True
+
+
+def test_should_accept_final_transcript_rejects_soft_filler() -> None:
+    h = _empty_handler()
+    assert Handler._should_accept_final_transcript(h, "uh huh", 0.20) is False

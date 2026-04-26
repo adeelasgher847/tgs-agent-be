@@ -267,6 +267,17 @@ class BidirectionalStreamHandler:
             getattr(settings, "VOICE_STT_MIN_FINAL_CONFIDENCE", 0.26) or 0.26
         )
         self._stt_min_final_confidence = max(0.15, min(0.45, self._stt_min_final_confidence))
+        self._enable_soft_final_fallback: bool = bool(
+            getattr(settings, "VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK", True)
+        )
+        self._stt_soft_min_final_confidence: float = float(
+            getattr(settings, "VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE", 0.16) or 0.16
+        )
+        self._stt_soft_min_final_confidence = max(0.10, min(0.35, self._stt_soft_min_final_confidence))
+        self._stt_soft_min_words: int = int(
+            getattr(settings, "VOICE_STT_SOFT_MIN_WORDS", 2) or 2
+        )
+        self._stt_soft_min_words = max(1, min(6, self._stt_soft_min_words))
         self._barge_in_min_conf: float = float(
             getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.26) or 0.26
         )
@@ -581,11 +592,40 @@ class BidirectionalStreamHandler:
             confidence,
             is_greeting=False,
         )
+
+    def _should_accept_final_transcript(self, transcript: str, confidence: float) -> bool:
+        """
+        Primary gate for Deepgram final transcripts:
+        - Keep strong confidence threshold for normal flow.
+        - Optional soft fallback accepts likely-human speech at lower confidence so
+          soft callers are not dropped mid-call.
+        """
+        text = (transcript or "").strip()
+        if not text:
+            return False
+        if confidence >= self._stt_min_final_confidence:
+            return True
+        if not self._enable_soft_final_fallback:
+            return False
+        if confidence < self._stt_soft_min_final_confidence:
+            return False
+        words = text.split()
+        if len(words) < self._stt_soft_min_words:
+            return False
+        alpha_chars = sum(1 for ch in text if ch.isalpha())
+        if alpha_chars < 3:
+            return False
+        # Ignore pure filler-ish very short low-confidence utterances.
+        low = re.sub(r"[^a-z ]+", "", text.lower()).strip()
+        filler = {"uh", "um", "hmm", "mm", "ah", "er", "huh", "hmm hmm", "uh huh"}
+        if low in filler:
+            return False
+        return True
     
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
         try:
-            if not transcript or confidence < self._stt_min_final_confidence:
+            if not self._should_accept_final_transcript(transcript, confidence):
                 return
 
             # Skip duplicate finals (e.g. same "Hello?" endpointed multiple times) — Vapi-style single turn
