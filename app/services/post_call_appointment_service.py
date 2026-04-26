@@ -53,6 +53,26 @@ def _transcript_worth_llm_recovery(transcript: str) -> bool:
     return bool(_CONTACT_HINT.search(text))
 
 
+def _email_anchored_in_transcript(normalized_email: str, transcript: str) -> bool:
+    """
+    True when a validated normalized email is plausibly grounded in what the caller said,
+    not purely LLM-invented. Reduces false positives vs trusting every syntactic string.
+    """
+    n = (normalized_email or "").strip().lower()
+    if not n or "@" not in n:
+        return False
+    local, _, domain = n.partition("@")
+    if not local or not domain:
+        return False
+    t_raw = (transcript or "").lower()
+    t_compact = re.sub(r"[\s,;]+", "", t_raw)
+    n_compact = re.sub(r"[\s,;]+", "", n)
+    if n_compact in t_compact:
+        return True
+    t_alnum = re.sub(r"[^a-z0-9@.]+", "", t_raw)
+    return local in t_alnum and domain in t_alnum
+
+
 def _parse_llm_json(content: str) -> Dict[str, Any]:
     text = (content or "").strip()
     if not text:
@@ -235,7 +255,14 @@ class PostCallAppointmentService:
             normalized = normalize_stored_email(raw_email.strip())
             if normalized:
                 out["email"] = normalized
-                out["email_confident"] = bool(parsed.get("email_confident"))
+                llm_email_conf = bool(parsed.get("email_confident"))
+                out["email_confident"] = llm_email_conf
+                if (
+                    not llm_email_conf
+                    and getattr(settings, "POST_CALL_LLM_EMAIL_ANCHOR_TRUST", True)
+                    and _email_anchored_in_transcript(normalized, text)
+                ):
+                    out["email_confident"] = True
 
         return out
 
@@ -298,12 +325,31 @@ class PostCallAppointmentService:
         extracted = extract_contact_from_client_lines(client_lines)
         merged_contact = merge_contact_for_post_call(intake, extracted)
 
-        # Last-mile recovery: if strict intake didn't gain confidence (e.g. caller
-        # introduced themselves naturally without spelling), try a flagged LLM
-        # pass that ONLY upgrades — never downgrades — the intake state.
-        if not booking_allowed(intake):
+        # Last-mile recovery: LLM upgrades contact_intake only (never downgrades).
+        # Runs when (a) name gate fails, or (b) name is already confident but email is missing
+        # (POST_CALL_LLM_EMAIL_RECOVERY_WHEN_NAME_OK).
+        recovered: Dict[str, Any] = {}
+        run_contact_llm = False
+        if (
+            getattr(settings, "POST_CALL_LLM_CONTACT_RECOVERY", False)
+            and (settings.OPENAI_API_KEY or "").strip()
+            and _transcript_worth_llm_recovery(transcript)
+        ):
+            if not booking_allowed(intake):
+                run_contact_llm = True
+            elif getattr(settings, "POST_CALL_LLM_EMAIL_RECOVERY_WHEN_NAME_OK", True):
+                has_email = bool(
+                    intake.get("email_validated")
+                    and (str(intake.get("email") or "")).strip()
+                )
+                if not has_email:
+                    run_contact_llm = True
+
+        if run_contact_llm:
             recovered = self._recover_contact_via_llm(transcript)
-            if recovered.get("name") and recovered.get("name_confident"):
+            if (recovered.get("name") and recovered.get("name_confident")) or (
+                recovered.get("email") and recovered.get("email_confident")
+            ):
                 apply_post_call_recovery(
                     db,
                     cs,

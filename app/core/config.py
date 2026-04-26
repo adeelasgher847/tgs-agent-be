@@ -57,7 +57,13 @@ class Settings(BaseSettings):
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"
     DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
-    DEEPGRAM_STT_ENDPOINTING_MS: int = 300  # silence (ms) before utterance end / speech_final
+    # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
+    # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 900
+    # After the agent asks for email, bidirectional stream may reopen STT once with this value.
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 2200
+    # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
+    VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT: bool = True
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
@@ -82,7 +88,7 @@ class Settings(BaseSettings):
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
     # (legacy default was 100). Too low picks up line noise.
-    VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 45
+    VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 40
     # Drop Deepgram final transcripts below this (0.0–1.0). Default slightly below 0.30 so
     # quiet/soft speech is not rejected as often; too low adds garbage.
     VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.23
@@ -109,7 +115,12 @@ class Settings(BaseSettings):
     #    Only invoked AFTER the call ends, behind a flag, and only if OPENAI_API_KEY is set.
     POST_CALL_LLM_CONTACT_RECOVERY: bool = True
     POST_CALL_LLM_CONTACT_RECOVERY_MODEL: str = "gpt-4o-mini"
-    
+    # If name is already confident but email is missing, still run post-call contact LLM once.
+    POST_CALL_LLM_EMAIL_RECOVERY_WHEN_NAME_OK: bool = True
+    # If the model returns a valid normalized email but email_confident=false, trust it when
+    # the same address is clearly present in the transcript (reduces false negatives).
+    POST_CALL_LLM_EMAIL_ANCHOR_TRUST: bool = True
+
     # Stripe settings
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""

@@ -545,7 +545,7 @@ def test_post_call_llm_recovery_handles_openai_exception(res_db, monkeypatch):
 
 
 def test_post_call_llm_recovery_skipped_when_intake_already_confident(res_db, monkeypatch):
-    """LLM must NOT be called when strict intake already cleared the gate."""
+    """Contact-recovery LLM must NOT run when name + validated email already present."""
     db, tenant, u, a = res_db
     monkeypatch.setattr(settings, "POST_CALL_LLM_CONTACT_RECOVERY", True)
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
@@ -556,11 +556,11 @@ def test_post_call_llm_recovery_skipped_when_intake_already_confident(res_db, mo
     cs.call_metadata = {
         "contact_intake": {
             "name": "John",
-            "email": None,
+            "email": "john@example.com",
             "name_spelled_confirmed": True,
-            "email_spelled_confirmed": False,
+            "email_spelled_confirmed": True,
             "name_confident": True,
-            "email_validated": False,
+            "email_validated": True,
             "name_spell_failures": 0,
             "awaiting_spell_field": None,
         },
@@ -585,3 +585,103 @@ def test_post_call_llm_recovery_skipped_when_intake_already_confident(res_db, mo
     db.refresh(cs)
     assert cs.call_metadata.get("post_call_appointment") == "success"
     assert cs.call_metadata.get("post_call_contact_recovery") is None
+
+
+def test_post_call_llm_recovery_fills_email_when_name_already_confident(res_db, monkeypatch):
+    """If name is confident but email missing, contact LLM still runs and can set email."""
+    db, tenant, u, a = res_db
+    monkeypatch.setattr(settings, "POST_CALL_LLM_CONTACT_RECOVERY", True)
+    monkeypatch.setattr(settings, "POST_CALL_LLM_EMAIL_RECOVERY_WHEN_NAME_OK", True)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+
+    day_slots = calendar_service.get_available_slots(db, tenant.id, MONDAY)
+    slot = day_slots.slots[0].slot_start
+    cs = _call_session(db, tenant, u, a)
+    cs.call_metadata = {
+        "contact_intake": {
+            "name": "Alex Carter",
+            "email": None,
+            "name_spelled_confirmed": False,
+            "email_spelled_confirmed": False,
+            "name_confident": True,
+            "email_validated": False,
+            "name_spell_failures": 0,
+            "awaiting_spell_field": None,
+        },
+        "booking_intent": {"slot_start_iso": slot.isoformat(), "appointment_reason": "checkup"},
+    }
+    db.add(cs)
+    db.commit()
+
+    from app.services.transcript_service import transcript_service
+    transcript_service.add_message(db, cs.id, "agent", "What is your email?", "speech")
+    transcript_service.add_message(
+        db, cs.id, "client", "My email is michaeljackson@therategmail.com.", "speech"
+    )
+
+    fake_resp = {
+        "content": (
+            '{"name": null, "email": "michaeljackson@therategmail.com", '
+            '"name_confident": false, "email_confident": false}'
+        )
+    }
+    with patch(
+        "app.services.post_call_appointment_service.openai_service.chat_completion",
+        return_value=fake_resp,
+    ):
+        post_call_appointment_service.process_call_session(db, cs.id)
+
+    db.refresh(cs)
+    intake = get_contact_intake(cs)
+    assert intake.get("email_validated") is True
+    assert intake.get("email") == "michaeljackson@therategmail.com"
+    assert cs.call_metadata.get("post_call_contact_recovery") == "llm_succeeded"
+    appts = db.query(Appointment).filter(Appointment.call_session_id == cs.id).all()
+    assert len(appts) == 1
+    assert appts[0].customer_email == "michaeljackson@therategmail.com"
+
+
+def test_recover_contact_llm_anchor_trust_off_keeps_conservative_email(res_db, monkeypatch):
+    monkeypatch.setattr(settings, "POST_CALL_LLM_CONTACT_RECOVERY", True)
+    monkeypatch.setattr(settings, "POST_CALL_LLM_EMAIL_ANCHOR_TRUST", False)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+    tr = (
+        "AGENT: Thank you — can you provide your email address please?\n"
+        "CLIENT: michaeljackson@therategmail.com.\n"
+    )
+    fake_resp = {
+        "content": (
+            '{"name": null, "email": "michaeljackson@therategmail.com", '
+            '"name_confident": false, "email_confident": false}'
+        )
+    }
+    with patch(
+        "app.services.post_call_appointment_service.openai_service.chat_completion",
+        return_value=fake_resp,
+    ):
+        out = post_call_appointment_service._recover_contact_via_llm(tr)
+    assert out.get("email") == "michaeljackson@therategmail.com"
+    assert out.get("email_confident") is False
+
+
+def test_recover_contact_llm_anchor_trust_on_promotes_email(res_db, monkeypatch):
+    monkeypatch.setattr(settings, "POST_CALL_LLM_CONTACT_RECOVERY", True)
+    monkeypatch.setattr(settings, "POST_CALL_LLM_EMAIL_ANCHOR_TRUST", True)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+    tr = (
+        "AGENT: Thank you — can you provide your email address please?\n"
+        "CLIENT: michaeljackson@therategmail.com.\n"
+    )
+    fake_resp = {
+        "content": (
+            '{"name": null, "email": "michaeljackson@therategmail.com", '
+            '"name_confident": false, "email_confident": false}'
+        )
+    }
+    with patch(
+        "app.services.post_call_appointment_service.openai_service.chat_completion",
+        return_value=fake_resp,
+    ):
+        out = post_call_appointment_service._recover_contact_via_llm(tr)
+    assert out.get("email") == "michaeljackson@therategmail.com"
+    assert out.get("email_confident") is True

@@ -171,6 +171,18 @@ from app.utils.eleven_tts_text import (
 
 router = APIRouter()
 
+# Vapi-style customEndpointingRules analogue: when the agent asks for email, we either
+# defer a longer Deepgram endpointing for the first STT session or reconnect once with
+# DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED so spelling pauses do not split finals prematurely.
+_EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE = re.compile(
+    r"(?i)(?:"
+    r"(?:provide|share|send|give)\s+(?:us\s+)?(?:your\s+)?(?:e-?mail\s+address|e-?mail|email)|"
+    r"(?:what(?:'s|\s+is)|may\s+i\s+have|can\s+i\s+(?:have|get))\s+(?:your\s+)?(?:e-?mail|email)(?:\s+address)?|"
+    r"(?:your\s+)?(?:e-?mail|email)\s+address(?:,?\s*please)?|"
+    r"\bspell\b.*\b(?:e-?mail|email)|\b(?:e-?mail|email)\b.*\bspell\b"
+    r")",
+)
+
 
 class BidirectionalStreamHandler:
     """Handles real-time bidirectional voice streaming (400–500ms target, Vapi-style gapless TTS)."""
@@ -278,6 +290,9 @@ class BidirectionalStreamHandler:
         self._stop_event = asyncio.Event()
         # Post-call appointment finalization (exactly one task per handler lifetime)
         self._post_call_orchestration_scheduled = False
+        # Longer Deepgram endpointing after agent asks for email (one-time upgrade per call).
+        self._email_stt_endpointing_upgraded = False
+        self._stt_deferred_endpointing_ms: Optional[int] = None
 
         # One response per turn: first interim that passes gates starts the LLM (dev-style: commit agent at stream end)
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
@@ -464,18 +479,56 @@ class BidirectionalStreamHandler:
             # Lazily create STT pipeline and push audio
             if self._stt_pipeline is None:
                 language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
+                deferred_ep = self._stt_deferred_endpointing_ms
+                self._stt_deferred_endpointing_ms = None
                 self._stt_pipeline = SttPipeline(
                     language_code=language_code,
                     on_interim=self._maybe_process_interim,
                     on_final=self._process_transcript,
                     call_session_id=self.call_session_id,
                     agent_id=self.agent_id,
+                    endpointing_ms=deferred_ep,
                 )
 
             await self._stt_pipeline.feed_audio_chunk(audio_data)
         
         except Exception as e:
             logger.error(f"Error handling media message: {e}", exc_info=True)
+
+    async def _maybe_recreate_stt_for_email_collection(self, agent_text: str) -> None:
+        """
+        After the agent asks for an email address, use longer Deepgram endpointing so
+        the caller does not need to speak unnaturally fast or loud across @ / dot pauses.
+        """
+        if not getattr(settings, "VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT", True):
+            return
+        if self._email_stt_endpointing_upgraded:
+            return
+        t = (agent_text or "").strip()
+        if not t or not _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE.search(t):
+            return
+        ext = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED", 2200) or 2200)
+        base = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 900) or 900)
+        if ext <= base:
+            self._email_stt_endpointing_upgraded = True
+            return
+        try:
+            if self._stt_pipeline is None:
+                self._stt_deferred_endpointing_ms = ext
+                self._email_stt_endpointing_upgraded = True
+                logger.info(
+                    "[STT] deferred extended endpointing_ms=%s until first audio (email prompt)",
+                    ext,
+                )
+                return
+            await self._stt_pipeline.recreate_with_endpointing(ext)
+            self._email_stt_endpointing_upgraded = True
+            logger.info(
+                "[STT] upgraded to extended endpointing_ms=%s after email-collection prompt",
+                ext,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[STT] extended endpointing upgrade skipped: %s", exc, exc_info=True)
     
     # Removed chunk-based STT processing; relying on Deepgram streaming endpointing
 
@@ -1374,6 +1427,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "rag_trace": rag_trace,
                         },
                     )
+                    try:
+                        await self._maybe_recreate_stt_for_email_collection(transcript_text)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("email-collection STT hook: %s", exc)
 
                 # Handle calendar tokens (fire-and-forget after TTS is already queued)
                 if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):

@@ -1,6 +1,7 @@
 import asyncio
 from typing import Awaitable, Callable, Optional
 
+from app.core.config import settings
 from app.core.logger import logger
 from app.services.deepgram_stt_service import deepgram_stt_service
 
@@ -25,15 +26,23 @@ class SttPipeline:
         on_final: FinalCallback,
         call_session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        endpointing_ms: Optional[int] = None,
     ) -> None:
         self._language_code = language_code
         self._on_interim = on_interim
         self._on_final = on_final
         self._call_session_id = call_session_id
         self._agent_id = agent_id
+        # None → Deepgram uses settings.DEEPGRAM_STT_ENDPOINTING_MS when connecting
+        self._endpointing_ms: Optional[int] = endpointing_ms
 
         self._stt_session = None
         self._reader_task: Optional[asyncio.Task] = None
+
+    def _effective_endpointing_ms(self) -> int:
+        if self._endpointing_ms is not None:
+            return int(self._endpointing_ms)
+        return int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 900) or 900)
 
     async def _ensure_session(self) -> None:
         if self._stt_session is not None:
@@ -45,6 +54,7 @@ class SttPipeline:
             sample_rate=8000,
             interim_results=True,
             single_utterance=False,
+            endpointing_ms=self._endpointing_ms,
         )
 
         async def consume_results():
@@ -57,7 +67,7 @@ class SttPipeline:
         async def reader_loop():
             while True:
                 try:
-                    result = await self._stt_session.get_result()
+                    result = await self._stt_session.get_result()  # type: ignore[union-attr]
                 except Exception as e:
                     logger.error(f"[STT] reader loop error: {e}", exc_info=True)
                     continue
@@ -106,6 +116,24 @@ class SttPipeline:
         if self._stt_session:
             self._stt_session.push_audio(audio_data)
 
+    async def recreate_with_endpointing(self, endpointing_ms: int) -> None:
+        """
+        Close the current Deepgram session and reopen with a new endpointing (ms) value.
+        Used after the agent asks for email so spelling pauses are less likely to split finals.
+        """
+        want = int(endpointing_ms)
+        if want == self._effective_endpointing_ms() and self._stt_session is not None:
+            return
+        await self.aclose()
+        self._endpointing_ms = want
+        self._stt_session = None
+        self._reader_task = None
+        logger.info(
+            "[STT] recreated session with endpointing_ms=%s (call_session_id=%s)",
+            want,
+            self._call_session_id,
+        )
+
     def finish_session(self) -> None:
         """Signal the underlying STT session to finish.
 
@@ -149,4 +177,6 @@ class SttPipeline:
                     pass
             except asyncio.CancelledError:
                 pass
+        self._stt_session = None
+        self._reader_task = None
 

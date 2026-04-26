@@ -46,6 +46,7 @@ class DeepgramSTTService:
             sample_rate: int,
             interim_results: bool,
             single_utterance: bool,
+            endpointing_ms: Optional[int] = None,
         ) -> None:
             self._client = client
             self._language_code = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en"
@@ -53,6 +54,8 @@ class DeepgramSTTService:
             self._sample_rate = sample_rate or 8000
             self._interim_results = interim_results
             self._single_utterance = single_utterance  # unused — stream stays open like Google
+            # None → use settings.DEEPGRAM_STT_ENDPOINTING_MS at connect time
+            self._endpointing_ms: Optional[int] = endpointing_ms
 
             self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue()
             self._results_q: "queue.Queue[dict]" = queue.Queue()
@@ -202,7 +205,13 @@ class DeepgramSTTService:
                             break
 
             try:
-                endpointing = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 300) or 300)
+                endpointing = self._endpointing_ms
+                if endpointing is None:
+                    endpointing = int(
+                        getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 900) or 900
+                    )
+                else:
+                    endpointing = int(endpointing)
                 # SDK urlencodes Python bools as True/False; Deepgram requires "true"/"false"
                 # or handshake returns HTTP 400 + dg-error: Invalid query string.
                 interim_q: str = "true" if self._interim_results else "false"
@@ -247,6 +256,7 @@ class DeepgramSTTService:
         sample_rate: Optional[int] = None,
         interim_results: bool = True,
         single_utterance: bool = False,
+        endpointing_ms: Optional[int] = None,
     ) -> "DeepgramSTTService.StreamingSTTSession":
         if not self._client:
             raise RuntimeError("Deepgram client not initialized — set DEEPGRAM_API_KEY")
@@ -257,6 +267,7 @@ class DeepgramSTTService:
             sample_rate=sample_rate or settings.STT_SAMPLE_RATE or settings.GOOGLE_STT_SAMPLE_RATE or 8000,
             interim_results=interim_results,
             single_utterance=single_utterance,
+            endpointing_ms=endpointing_ms,
         )
 
     def _transcribe_sync(
