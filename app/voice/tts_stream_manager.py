@@ -117,6 +117,13 @@ class TTSStreamManager:
         chunk_id = self._next_chunk_id
         self._next_chunk_id += 1
 
+        # Setup event chain for ordered playback
+        if not hasattr(self, '_playback_events'):
+            self._playback_events = {0: asyncio.Event()}
+            self._playback_events[0].set()
+            
+        self._playback_events[chunk_id + 1] = asyncio.Event()
+
         self._is_speaking = True
 
         task = asyncio.create_task(
@@ -143,6 +150,8 @@ class TTSStreamManager:
         self._prev_tts_tail = b""
         self._next_chunk_id = 0
         self._is_speaking = False
+        self._playback_events = {0: asyncio.Event()}
+        self._playback_events[0].set()  # First chunk can play immediately
 
     @property
     def is_speaking(self) -> bool:
@@ -186,7 +195,7 @@ class TTSStreamManager:
             self._provider_slug = TTSProfile.ELEVENLABS
 
         # Voice configuration
-        voice = getattr(agent, "voice", None)
+        voice = getattr(agent, "tts_voice", None)
         if voice:
             self._voice_id = getattr(voice, "external_voice_id", "") or ""
             settings_json = getattr(voice, "settings_json", None) or {}
@@ -226,6 +235,8 @@ class TTSStreamManager:
                     f"[{self.call_id}] TTS cache hit: '{text[:20]}' "
                     f"({len(cached_audio)} bytes)"
                 )
+                if hasattr(self, '_playback_events'):
+                    await self._playback_events[chunk_id].wait()
                 await self._stream_bytes(
                     cached_audio, cancellation_token, chunk_id, is_final, end_call_after
                 )
@@ -263,11 +274,15 @@ class TTSStreamManager:
                 f"[{self.call_id}] TTS chunk {chunk_id} error: {e}", exc_info=True
             )
         finally:
+            # ALWAYS unblock the next chunk in the chain
+            if hasattr(self, '_playback_events') and (chunk_id + 1) in self._playback_events:
+                self._playback_events[chunk_id + 1].set()
+                
             self._synthesis_tasks.pop(chunk_id, None)
             # Mark speaking done only when ALL tasks are gone
             if not self._synthesis_tasks:
                 self._is_speaking = False
-                if is_final:
+                if is_final and not cancellation_token.is_cancelled():
                     await self.orchestrator.on_tts_complete(end_call_after=end_call_after)
 
     async def _synthesize_elevenlabs(
@@ -347,6 +362,11 @@ class TTSStreamManager:
         # Concatenate to cache + stream
         audio_bytes = b"".join(raw_chunks)
         self._add_to_cache(cache_key, audio_bytes)
+        
+        # WAIT FOR OUR TURN IN THE SEQUENCE
+        if hasattr(self, '_playback_events'):
+            await self._playback_events[chunk_id].wait()
+            
         await self._stream_bytes(
             audio_bytes, cancellation_token, chunk_id, is_final, end_call_after
         )
@@ -360,32 +380,60 @@ class TTSStreamManager:
         end_call_after: bool,
         cache_key: str,
     ) -> None:
-        """Stream Google TTS asynchronously (native async streaming)."""
+        """Stream Google TTS asynchronously with parallel buffering."""
         from app.services.google_tts_service import google_tts_service
 
         try:
-            audio_bytes = b""
-            async for chunk in google_tts_service.stream_text_to_speech(
-                text=text,
-                language=self._language,
-                voice_type=self._voice_type,
-                speaking_rate=1.0,
-                output_format="mulaw",
-                use_chirp3_hd=self._use_chirp3_hd,
-                sample_rate_hz=MULAW_SAMPLE_RATE,
-            ):
+            chunk_queue = asyncio.Queue()
+            fetch_done = asyncio.Event()
+            full_audio = []
+
+            async def _fetch():
+                try:
+                    async for g_chunk in google_tts_service.stream_text_to_speech(
+                        text=text,
+                        language=self._language,
+                        voice_type=self._voice_type,
+                        speaking_rate=1.0,
+                        output_format="mulaw",
+                        use_chirp3_hd=self._use_chirp3_hd,
+                        sample_rate_hz=MULAW_SAMPLE_RATE,
+                    ):
+                        if cancellation_token.is_cancelled():
+                            break
+                        await chunk_queue.put(g_chunk)
+                        full_audio.append(g_chunk)
+                except Exception as ex:
+                    logger.error(f"[{self.call_id}] Google TTS fetch error: {ex}")
+                finally:
+                    fetch_done.set()
+                    await chunk_queue.put(None)  # EOF
+
+            # Start fetching in background immediately
+            fetch_task = asyncio.create_task(_fetch())
+
+            # Wait for our turn to play
+            if hasattr(self, '_playback_events'):
+                await self._playback_events[chunk_id].wait()
+
+            # Stream chunks as they arrive in the queue
+            while True:
                 if cancellation_token.is_cancelled():
-                    return
-                audio_bytes += chunk
-                # Stream immediately as chunks arrive
+                    break
+                chunk = await chunk_queue.get()
+                if chunk is None:
+                    break
                 await self._emit_frame(chunk, cancellation_token)
 
+            # Wait for fetch to complete cleanly
+            await fetch_task
+
             # Cache full audio for reuse
+            audio_bytes = b"".join(full_audio)
             if audio_bytes:
                 self._add_to_cache(cache_key, audio_bytes)
 
-            if is_final and not cancellation_token.is_cancelled():
-                await self.orchestrator.on_tts_complete(end_call_after=end_call_after)
+            # on_tts_complete handled in finally block of _synthesize_chunk
 
         except Exception as e:
             logger.error(
