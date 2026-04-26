@@ -3409,6 +3409,26 @@ async def bidirectional_stream_websocket(
     """
     # Accept connection
     try:
+        if settings.ENABLE_VOICE_ORCHESTRATOR_V2:
+            # Delegate entirely to V2 handler
+            logger.info(f"🚀 Routing call {callSessionId} to VoiceOrchestrator V2")
+            from app.routers.bidirectional_stream_v2 import BidirectionalStreamV2Handler
+            from app.db.session import SessionLocal
+            
+            await websocket.accept()
+            db = SessionLocal()
+            try:
+                v2_handler = BidirectionalStreamV2Handler(
+                    websocket=websocket,
+                    call_session_id=callSessionId,
+                    agent_id=agentId,
+                    db=db
+                )
+                await v2_handler.handle()
+            finally:
+                db.close()
+            return
+
         await websocket.accept()
     except Exception as e:
         logger.error(f"Failed to accept bidirectional WebSocket: {e}")

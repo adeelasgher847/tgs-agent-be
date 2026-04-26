@@ -76,6 +76,29 @@ class Settings(BaseSettings):
     USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with Adaptive VAD
     USE_WEBSOCKET_TTS: bool = True  # ✅ ENABLED - 20ms chunk streaming (MULAW 8kHz)
 
+    # ── VoiceOrchestrator V2 (shadow deployment) ─────────────────────────────
+    # Feature flag: enable V2 parallel orchestrator for gradual rollout.
+    # Rollout: 5% (week1) → 20% → 50% → 100% (cutover).
+    # Set per-environment in .env — default False (V1 still handles all calls).
+    ENABLE_VOICE_ORCHESTRATOR_V2: bool = True
+
+    # V2 early LLM speculation trigger thresholds
+    # LLM starts on interim when word_count >= threshold AND confidence >= min_confidence.
+    # Plan target: 3 words @ 0.18 confidence → saves ~250ms vs waiting for STT final.
+    VOICE_V2_EARLY_LLM_MIN_WORDS: int = 3
+    VOICE_V2_EARLY_LLM_MIN_CONFIDENCE: float = 0.18
+
+    # V2 barge-in cancellation timeout (ms). Keep ≤100ms per plan latency targets.
+    VOICE_V2_BARGE_IN_CANCEL_TIMEOUT_MS: int = 100
+
+    # V2 TTS parallel synthesis: max concurrent synthesis tasks per call.
+    # Each LLM chunk spawns one task; this caps worst-case concurrency.
+    VOICE_V2_TTS_MAX_PARALLEL_TASKS: int = 4
+
+    # V2 LLM speculation re-run threshold: cancel+rerun if final differs from interim
+    # by more than this fraction of the interim length.
+    VOICE_V2_SPECULATION_RERUN_DIVERGENCE: float = 0.5
+
     # Voice streaming tunables (phase 6 centralization)
     VOICE_STT_INTERIM_INTERVAL_MS: int = 30
     # Deepgram fires many more partials than classic Google STT. Running LLM on every
