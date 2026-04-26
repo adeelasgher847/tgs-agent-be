@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.logger import logger
 from app.models.call_session import CallSession
 from app.models.transcript_message import TranscriptMessage
@@ -32,6 +33,63 @@ _SPELL_EMAIL_AGENT = re.compile(
     r"\bspell\b.*\b(e-?mail|email\s*address)\b|\b(e-?mail)\b.*\bspell\b",
     flags=re.IGNORECASE,
 )
+
+# Vapi-style natural confirmation: agent repeats a name and caller affirms.
+# Triggers we look for in the agent line (case-insensitive).
+_AGENT_NAME_CONFIRM_TRIGGER = re.compile(
+    r"\b(?:"
+    r"your\s+name\s+is|"
+    r"you\s+said\s+your\s+name\s+is|"
+    r"you\s+said\s+your\s+name'?s|"
+    r"to\s+confirm,?\s+your\s+name\s+is|"
+    r"just\s+to\s+confirm,?\s+your\s+name\s+is|"
+    r"so\s+that'?s\s+|"
+    r"can\s+i\s+call\s+you|"
+    r"i\s+have\s+your\s+name\s+as"
+    r")\s*",
+    flags=re.IGNORECASE,
+)
+# Caller affirmation patterns ("yes", "correct", "that's right", …).
+_CLIENT_AFFIRMATION = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|correct|that'?s\s+right|that\s+is\s+right|"
+    r"that'?s\s+correct|right|exactly|confirmed|absolutely|sure|"
+    r"100%|hundred\s+percent)\b",
+    flags=re.IGNORECASE,
+)
+_NAME_CANDIDATE = re.compile(
+    r"([A-Z][a-zA-Z\-']{1,24}(?:\s+[A-Z][a-zA-Z\-']{1,24}){0,2})",
+)
+_NAME_BLOCKLIST = {
+    "the", "a", "an", "is", "at", "that", "right", "correct", "confirmed",
+    "ok", "okay", "yes", "no", "ai", "assistant", "agent", "bot",
+}
+
+
+def _extract_confirmed_name_from_agent_text(agent_text: str) -> Optional[str]:
+    """
+    Pull the most recent capitalized name candidate that the agent stated
+    after a confirmation trigger. Conservative: requires Title-Case tokens
+    and rejects obvious non-names. Returns None if no plausible candidate.
+    """
+    text = (agent_text or "").strip()
+    if not text:
+        return None
+    trigger = _AGENT_NAME_CONFIRM_TRIGGER.search(text)
+    if not trigger:
+        return None
+    rest = text[trigger.end():].lstrip(" ,:;-")
+    name_match = _NAME_CANDIDATE.match(rest)
+    if not name_match:
+        return None
+    candidate = name_match.group(1).strip(" ,.;:-")
+    if not candidate:
+        return None
+    tokens = [t for t in candidate.split() if t]
+    if not tokens or any(tok.lower() in _NAME_BLOCKLIST for tok in tokens):
+        return None
+    if len(candidate) < 2 or len(candidate) > 60:
+        return None
+    return candidate
 
 
 def default_contact_intake() -> dict[str, Any]:
@@ -161,7 +219,62 @@ def apply_transcript_turn(
                     intake["name_spelled_confirmed"] = False
                 intake["awaiting_spell_field"] = None
 
+        else:
+            # Vapi-style natural confirmation: agent repeated a name and the caller
+            # affirmed. Only fires when no spelling context is active and no name
+            # is already confident (never overwrites stronger signals).
+            if (
+                getattr(settings, "VOICE_NATURAL_NAME_CONFIRMATION", True)
+                and not intake.get("name_confident")
+                and not intake.get("awaiting_spell_field")
+                and _CLIENT_AFFIRMATION.match(text)
+            ):
+                candidate = _extract_confirmed_name_from_agent_text(prev)
+                if candidate:
+                    intake["name"] = candidate
+                    intake["name_confident"] = True
+                    # Deliberately do NOT set name_spelled_confirmed: this is a
+                    # different (softer) provenance than letter-by-letter spelling.
+
     _save_contact_intake(db, call_session, intake)
+
+
+def apply_post_call_recovery(
+    db: Session,
+    call_session: CallSession,
+    *,
+    name: Optional[str] = None,
+    email: Optional[str] = None,
+    name_confident: bool = False,
+    email_confident: bool = False,
+) -> dict[str, Any]:
+    """
+    Post-call upgrade-only recovery for contact intake.
+
+    Use AFTER the call has ended to recover signals that the strict in-call
+    extractors missed (e.g. caller said "My full name is Alex Carter" and the
+    agent confirmed naturally). This function NEVER downgrades existing
+    confidence: it only fills in missing fields or upgrades unconfident ones.
+
+    Returns the updated intake dict.
+    """
+    intake = get_contact_intake(call_session)
+    changed = False
+    if name and name_confident and not intake.get("name_confident"):
+        clean_name = str(name).strip()
+        if clean_name:
+            intake["name"] = clean_name
+            intake["name_confident"] = True
+            changed = True
+    if email and email_confident and not intake.get("email_validated"):
+        clean_email = str(email).strip()
+        if clean_email:
+            intake["email"] = clean_email
+            intake["email_validated"] = True
+            changed = True
+    if changed:
+        _save_contact_intake(db, call_session, intake)
+    return intake
 
 
 def sync_contact_intake_after_message(

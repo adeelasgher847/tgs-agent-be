@@ -9,28 +9,77 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from app.core.config import settings
 from app.utils.spoken_email import coerce_email_from_text
 
 # Minimum single-letter tokens to treat a line as a spelled name
 _MIN_SPELL_LETTERS = 3
+
+# Conservative span around '@': may contain stray commas/semicolons inserted by STT.
+# Anchored on a TLD (".xx{2,}") so we don't fuse unrelated tokens together.
+# Whitespace is intentionally NOT in the character classes so we don't swallow
+# preceding words like "My email is ...".
+_SLOPPY_EMAIL_SPAN = re.compile(
+    r"[A-Za-z0-9._%+\-,;]+@[A-Za-z0-9._\-,;]+\.[A-Za-z]{2,}",
+)
+
+
+def _clean_email_stt_artifacts(text: str) -> str:
+    """
+    STT often inserts stray commas/semicolons inside an email
+    (e.g. "ali.sa,ee,b@gmail.com"). Strip those artifacts INSIDE the first
+    email-like span only; leave the rest of the line untouched. Idempotent.
+    """
+    raw = text or ""
+    if not raw or "@" not in raw:
+        return raw
+    match = _SLOPPY_EMAIL_SPAN.search(raw)
+    if not match:
+        return raw
+    sloppy = match.group(0)
+    cleaned = re.sub(r"[,;]+", "", sloppy)
+    if not cleaned or cleaned == sloppy:
+        return raw
+    if cleaned.count("@") != 1:
+        return raw
+    return raw[: match.start()] + cleaned + raw[match.end():]
 
 
 def strict_contact_email_from_text(text: str) -> Optional[str]:
     """
     Return normalized email or None. Rules: exactly one '@', at least one '.',
     syntactically valid via email_validator (via spoken_email helpers).
+
+    When EMAIL_STT_CLEANUP_ENABLED is on (default), an STT-artifact cleanup pass
+    runs in parallel and is preferred when it yields a strictly longer / more
+    specific email than the raw match. This recovers cases like
+    "ali.sa,ee,b@gmail.com" where the literal regex would otherwise lock onto
+    just "b@gmail.com" (the substring after the last comma).
     """
     if not (text or "").strip():
         return None
     candidate = coerce_email_from_text(text)
-    if not candidate:
+
+    cleaned_candidate: Optional[str] = None
+    if getattr(settings, "EMAIL_STT_CLEANUP_ENABLED", True):
+        cleaned_text = _clean_email_stt_artifacts(text)
+        if cleaned_text != text:
+            cleaned_candidate = coerce_email_from_text(cleaned_text)
+
+    chosen = candidate
+    if cleaned_candidate and (
+        not candidate or len(cleaned_candidate) > len(candidate)
+    ):
+        chosen = cleaned_candidate
+
+    if not chosen:
         return None
-    if candidate.count("@") != 1:
+    if chosen.count("@") != 1:
         return None
-    local, _, domain = candidate.partition("@")
+    local, _, domain = chosen.partition("@")
     if not local or not domain or "." not in domain:
         return None
-    return candidate
+    return chosen
 
 
 def extract_spelled_name_from_line(line: str) -> Optional[str]:

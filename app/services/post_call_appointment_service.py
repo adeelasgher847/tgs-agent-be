@@ -17,6 +17,7 @@ from app.models.slot_reservation import SlotReservation
 from app.services.appointment_reservation_service import appointment_reservation_service
 from app.services.calendar_service import calendar_service
 from app.services.call_session_contact_state import (
+    apply_post_call_recovery,
     booking_allowed,
     get_booking_intent,
     get_contact_intake,
@@ -25,10 +26,31 @@ from app.services.call_session_contact_state import (
 from app.services.call_session_service import call_session_service
 from app.services.openai_service import openai_service
 from app.services.transcript_service import TranscriptService
+from app.utils.spoken_email import normalize_stored_email
 from app.utils.voice_contact_extraction import (
     client_lines_from_transcript_text,
     extract_contact_from_client_lines,
 )
+
+_LLM_NAME_BLOCKLIST = re.compile(
+    r"\b(assistant|agent|ai|bot|receptionist|customer\s+service|"
+    r"the\s+caller|the\s+user)\b",
+    flags=re.IGNORECASE,
+)
+# Cheap pre-flight: only invoke LLM recovery if the transcript could plausibly
+# carry a name/email signal. Saves API cost + latency on trivial calls.
+_CONTACT_HINT = re.compile(
+    r"\b(name|i\s+am|my\s+name|i'?m|i\s+go\s+by|call\s+me|"
+    r"email|e-?mail|@|gmail|yahoo|outlook|hotmail)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _transcript_worth_llm_recovery(transcript: str) -> bool:
+    text = (transcript or "").strip()
+    if len(text) < 30:
+        return False
+    return bool(_CONTACT_HINT.search(text))
 
 
 def _parse_llm_json(content: str) -> Dict[str, Any]:
@@ -120,6 +142,103 @@ class PostCallAppointmentService:
         base.update({k: v for k, v in patch.items() if v is not None})
         call_session.call_metadata = base  # type: ignore[assignment]
 
+    def _recover_contact_via_llm(self, transcript: str) -> Dict[str, Any]:
+        """
+        Strict, schema-validated LLM extraction of caller name + email used as a
+        last-mile recovery when deterministic intake is not confident.
+
+        Returns: {
+            "name": str | None,
+            "email": str | None,
+            "name_confident": bool,
+            "email_confident": bool,
+        }
+
+        Always defensive: bad/empty LLM output yields {} (no recovery applied).
+        Email is re-validated locally before being marked confident.
+        """
+        text = (transcript or "").strip()
+        if not text:
+            return {}
+        if not getattr(settings, "POST_CALL_LLM_CONTACT_RECOVERY", False):
+            return {}
+        if not settings.OPENAI_API_KEY:
+            return {}
+        if not _transcript_worth_llm_recovery(text):
+            return {}
+
+        system_prompt = (
+            "You analyze a phone-call transcript between an AI assistant and a caller. "
+            "Extract ONLY the caller's contact details (never the assistant's). "
+            "Return STRICT JSON (no markdown, no prose) matching this schema:\n"
+            "{\n"
+            '  "name": string|null,\n'
+            '  "email": string|null,\n'
+            '  "name_confident": boolean,\n'
+            '  "email_confident": boolean\n'
+            "}\n"
+            "Rules:\n"
+            "- name: caller's full name as they introduced themselves. Title-cased.\n"
+            "  Use null if unclear or only the assistant's name appears.\n"
+            "- email: caller's email. If the speech-to-text transcript inserted commas, "
+            "spaces, or stray separators inside the email, reconstruct the most likely "
+            "valid form (e.g. 'ali.sa,ee,b@gmail.com' -> 'ali.saeeb@gmail.com'). "
+            "Use null if no email was given or it cannot be repaired into a valid form.\n"
+            "- name_confident: true only when the caller clearly stated or affirmed their "
+            "own name (e.g. 'My name is X', spelled it out, or said 'yes' after the "
+            "assistant repeated it).\n"
+            "- email_confident: true only when the email is unambiguous and not later "
+            "contradicted by the caller.\n"
+            "- Never invent values. When in doubt, set the field to null and the "
+            "corresponding *_confident to false."
+        )
+        try:
+            resp = openai_service.chat_completion(
+                messages=[{"role": "user", "content": f"Transcript:\n{text}"}],
+                system_prompt=system_prompt,
+                model_name=getattr(
+                    settings,
+                    "POST_CALL_LLM_CONTACT_RECOVERY_MODEL",
+                    "gpt-4o-mini",
+                ),
+                temperature=0.0,
+                max_tokens=300,
+            )
+            parsed = _parse_llm_json(resp.get("content", ""))
+        except Exception as exc:
+            logger.warning("Post-call LLM contact recovery failed: %s", exc)
+            return {}
+
+        if not isinstance(parsed, dict):
+            return {}
+
+        out: Dict[str, Any] = {
+            "name": None,
+            "email": None,
+            "name_confident": False,
+            "email_confident": False,
+        }
+
+        raw_name = parsed.get("name")
+        if isinstance(raw_name, str):
+            cand = raw_name.strip().strip(".,;:")
+            if (
+                cand
+                and 2 <= len(cand) <= 80
+                and not _LLM_NAME_BLOCKLIST.search(cand)
+            ):
+                out["name"] = cand
+                out["name_confident"] = bool(parsed.get("name_confident"))
+
+        raw_email = parsed.get("email")
+        if isinstance(raw_email, str) and raw_email.strip():
+            normalized = normalize_stored_email(raw_email.strip())
+            if normalized:
+                out["email"] = normalized
+                out["email_confident"] = bool(parsed.get("email_confident"))
+
+        return out
+
     def process_call_session(
         self,
         db: Session,
@@ -178,6 +297,38 @@ class PostCallAppointmentService:
         client_lines = client_lines_from_transcript_text(transcript)
         extracted = extract_contact_from_client_lines(client_lines)
         merged_contact = merge_contact_for_post_call(intake, extracted)
+
+        # Last-mile recovery: if strict intake didn't gain confidence (e.g. caller
+        # introduced themselves naturally without spelling), try a flagged LLM
+        # pass that ONLY upgrades — never downgrades — the intake state.
+        if not booking_allowed(intake):
+            recovered = self._recover_contact_via_llm(transcript)
+            if recovered.get("name") and recovered.get("name_confident"):
+                apply_post_call_recovery(
+                    db,
+                    cs,
+                    name=recovered.get("name"),
+                    email=recovered.get("email"),
+                    name_confident=bool(recovered.get("name_confident")),
+                    email_confident=bool(recovered.get("email_confident")),
+                )
+                try:
+                    db.refresh(cs)
+                except Exception:
+                    pass
+                intake = get_contact_intake(cs)
+                merged_contact = merge_contact_for_post_call(intake, extracted)
+                self._merge_call_metadata(
+                    cs,
+                    {
+                        "post_call_contact_recovery": "llm_succeeded",
+                        "post_call_contact_recovery_model": getattr(
+                            settings,
+                            "POST_CALL_LLM_CONTACT_RECOVERY_MODEL",
+                            "gpt-4o-mini",
+                        ),
+                    },
+                )
 
         if not booking_allowed(intake):
             self._merge_call_metadata(

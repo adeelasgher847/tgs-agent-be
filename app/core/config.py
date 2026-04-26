@@ -96,6 +96,19 @@ class Settings(BaseSettings):
     VOICE_TTS_FLUSH_MAX_WORDS: int = 12
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     VOICE_QUICK_ACK_PROBABILITY: float = 0.38
+
+    # Vapi-style intelligent contact recovery (additive — never downgrades intake confidence).
+    # 1) Deterministic email STT-artifact cleanup: strip commas/spaces inside an email span
+    #    ("ali.sa,ee,b@gmail.com" -> "ali.saeeb@gmail.com") before strict validation.
+    EMAIL_STT_CLEANUP_ENABLED: bool = True
+    # 2) Natural confirmation path: when the agent repeats a name ("just to confirm, your
+    #    name is Alex Carter") and the caller affirms ("yes" / "correct"), mark name_confident
+    #    without requiring letter-by-letter spelling.
+    VOICE_NATURAL_NAME_CONFIRMATION: bool = True
+    # 3) Post-call LLM recovery for contact (name/email) when strict intake gate would fail.
+    #    Only invoked AFTER the call ends, behind a flag, and only if OPENAI_API_KEY is set.
+    POST_CALL_LLM_CONTACT_RECOVERY: bool = True
+    POST_CALL_LLM_CONTACT_RECOVERY_MODEL: str = "gpt-4o-mini"
     
     # Stripe settings
     STRIPE_PUBLISHABLE_KEY: str = ""
