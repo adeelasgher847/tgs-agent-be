@@ -88,11 +88,11 @@ class BidirectionalStreamHandler:
         self._call_ended: bool = False
         self._stop_event: asyncio.Event = asyncio.Event()
 
-        # Background audio manager (dev-branch style embedded ambience loop).
+        # Background audio manager
         self._background_audio = BackgroundAudioManager(
-            agent_id=self.agent_id,
-            tenant_id=self.call_session.tenant_id if self.call_session else None,
-            db=self.db,
+            websocket=self.websocket,
+            get_stream_sid=lambda: self.stream_sid,
+            is_speaking_flag=lambda: self._orchestrator.state_mgr.agent_is_speaking if self._orchestrator else False,
         )
         asyncio.create_task(self._background_audio.load_from_base64_async())
 
