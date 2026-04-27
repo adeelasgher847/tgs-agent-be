@@ -63,6 +63,7 @@ class VoiceOrchestrator:
         agent_id: str,
         agent_config: Dict[str, Any],
         send_twilio_frame_callback: Callable[[bytes], Any],
+        on_first_speech_callback: Optional[Callable[[str, float], Any]] = None,
     ) -> None:
         """
         Initialize orchestrator and all sub-managers.
@@ -77,6 +78,7 @@ class VoiceOrchestrator:
         self.agent_id = agent_id
         self.agent_config = agent_config
         self._send_twilio_frame = send_twilio_frame_callback
+        self._on_first_speech_callback = on_first_speech_callback
 
         # --- Core state ---
         self.state_mgr = ConversationStateManager(call_id, agent_config)
@@ -184,6 +186,16 @@ class VoiceOrchestrator:
 
         CRITICAL: asyncio.create_task() here — NOT blocking.
         """
+        if self._on_first_speech_callback and confidence > 0.8:
+            try:
+                import asyncio
+                if asyncio.iscoroutinefunction(self._on_first_speech_callback):
+                    await self._on_first_speech_callback(text, confidence)
+                else:
+                    self._on_first_speech_callback(text, confidence)
+            except Exception as e:
+                logger.debug(f"[{self.call_id}] on_first_speech_callback error: {e}")
+
         self.state_mgr.set_interim_text(text)
 
         # --- Barge-in check (highest priority) ---

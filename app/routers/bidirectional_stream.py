@@ -20,6 +20,8 @@ from app.core.config import settings
 from app.services.agent_service import agent_service
 from app.services.call_session_service import call_session_service
 from app.services.voice_logging_service import VoiceLoggingService
+from app.services.credit_service import credit_service
+from app.routers.general_websocket import broadcast_call_status_update
 from app.voice.orchestrator import VoiceOrchestrator
 from app.voice.stt_stream_manager import EndpointingMode
 from app.voice.background_audio import BackgroundAudioManager
@@ -86,6 +88,7 @@ class BidirectionalStreamHandler:
         self._skip_audio_until: Optional[float] = None
         self._auto_greeting_sent: bool = False
         self._call_ended: bool = False
+        self._in_progress_sent: bool = False
         self._stop_event: asyncio.Event = asyncio.Event()
 
         # Background audio manager
@@ -147,6 +150,7 @@ class BidirectionalStreamHandler:
             agent_id=self.agent_id,
             agent_config=self._agent_config,
             send_twilio_frame_callback=self._send_twilio_audio_frame,
+            on_first_speech_callback=self._send_in_progress_status,
         )
         await self._orchestrator.start_call()
 
@@ -252,6 +256,46 @@ class BidirectionalStreamHandler:
         except Exception as e:
             logger.debug(f"[V2] Frame send error (websocket may be closing): {e}")
 
+    async def _send_in_progress_status(self, transcript: str, confidence: float) -> None:
+        if self._in_progress_sent or not self.call_session:
+            return
+        
+        try:
+            self._in_progress_sent = True
+            from datetime import datetime, timezone
+            
+            if self.call_session.status != "in-progress":
+                self.call_session.status = "in-progress"
+                if not self.call_session.start_time:
+                    self.call_session.start_time = datetime.now(timezone.utc)
+                self.db.commit()
+
+            # Broadcast "in-progress" event (confident word detected)
+            await broadcast_call_status_update(
+                call_session_id=str(self.call_session.id),
+                status="in-progress",
+                metadata={
+                    "call_sid": self.call_sid,
+                    "stream_sid": self.stream_sid,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "message": "connected",
+                    "event": "confident_speech_detected",
+                    "detected_word": transcript,
+                    "confidence": confidence
+                }
+            )
+
+            # Start billing when connected status is sent (first confident speech)
+            if str(self.call_session.id) not in credit_service._active_monitors:
+                asyncio.create_task(credit_service.start_credit_monitoring(
+                    db=self.db,
+                    call_session_id=self.call_session.id,
+                    tenant_id=self.call_session.tenant_id,
+                    agent_id=self.call_session.agent_id
+                ))
+        except Exception as e:
+            logger.error(f"Error in _send_in_progress_status: {e}", exc_info=True)
+
     def _detect_user_audio(self, audio_data: bytes) -> bool:
         if not audio_data:
             return False
@@ -348,7 +392,7 @@ class BidirectionalStreamHandler:
                         ended_reason = "Call completed normally" if call_summary.get("state") == "completed" else "Call ended abruptly"
                         call_session_service.update_call_session_status(
                             db=self.db,
-                            call_session_id=self.call_session.id,
+                            session_id=self.call_session.id,
                             status="completed",
                             ended_reason=ended_reason
                         )
