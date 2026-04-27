@@ -383,26 +383,6 @@ class VoiceOrchestrator:
         self.state_mgr.agent_speaking_end()
         self.barge_in_ctrl.disarm()
 
-        # Persist agent transcript row once the TTS turn completes
-        call_session = self.agent_config.get("call_session")
-        agent = self.agent_config.get("agent")
-        response_text = self.llm_mgr.get_agent_response_text().strip()
-        if response_text and call_session is not None and self.db is not None:
-            try:
-                await add_to_transcript(
-                    call_session=call_session,
-                    role="agent",
-                    message=response_text,
-                    db=self.db,
-                    message_type="agent_response",
-                    agent_id=str(agent.id) if agent is not None else None,
-                )
-            except Exception as e:
-                logger.error(
-                    f"[{self.call_id}] Failed to persist agent transcript: {e}",
-                    exc_info=True,
-                )
-
         await self.state_mgr.transition_state(ConversationState.WAITING_FOR_INPUT)
 
         logger.debug(f"[{self.call_id}] TTS complete, waiting for next input")

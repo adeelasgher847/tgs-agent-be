@@ -101,14 +101,9 @@ def strip_eleven_v3_style_tags_for_non_eleven_tts(text: str) -> str:
 
 def prepare_tts_text_for_provider(text: str, provider_slug: Optional[str]) -> str:
     """
-    ElevenLabs: pass through unchanged (keeps v3 audio tags in the string).
-    All other TTS providers: strip known Eleven-style bracket tags.
-    No network; negligible CPU; safe when text has no tags (fast path: no '[').
+    Strip known Eleven-style bracket tags from text before sending to any TTS provider.
+    This prevents audio tags from being spoken literally.
     """
-    if (provider_slug or "").lower() == "elevenlabs":
-        # Pass-through only: do not force-insert [breathes] tags because some
-        # model variants can speak bracket tags literally.
-        return text
     return strip_eleven_v3_style_tags_for_non_eleven_tts(text)
 
 

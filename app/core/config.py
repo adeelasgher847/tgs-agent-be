@@ -59,9 +59,9 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
     # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
     # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
-    DEEPGRAM_STT_ENDPOINTING_MS: int = 300
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 900
     # After the agent asks for email, bidirectional stream may reopen STT once with this value.
-    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 600
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 2200
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
     VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT: bool = True
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     # LLM starts on interim when word_count >= threshold AND confidence >= min_confidence.
     # Plan target: 3 words @ 0.18 confidence → saves ~250ms vs waiting for STT final.
     VOICE_V2_EARLY_LLM_MIN_WORDS: int = 3
-    VOICE_V2_EARLY_LLM_MIN_CONFIDENCE: float = 0.18
+    VOICE_V2_EARLY_LLM_MIN_CONFIDENCE: float = 0.15
 
     # V2 barge-in cancellation timeout (ms). Keep ≤100ms per plan latency targets.
     VOICE_V2_BARGE_IN_CANCEL_TIMEOUT_MS: int = 100
@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 40
     # Drop Deepgram final transcripts below this (0.0–1.0). Default slightly below 0.30 so
     # quiet/soft speech is not rejected as often; too low adds garbage.
-    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.21
+    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.16
     # Optional adaptive fallback: accept lower-confidence finals when they still look like
     # real speech (multi-word, alpha content). Helps callers with soft volume mid-call.
     VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK: bool = True

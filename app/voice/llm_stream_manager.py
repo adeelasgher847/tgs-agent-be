@@ -386,26 +386,19 @@ class LLMStreamManager:
 
     def _configure_tts_rules(self) -> None:
         """Build SSML output rules based on TTS provider capabilities."""
-        slug = self._tts_provider_slug.lower()
-        self._use_elevenlabs_audio_tags = supports_elevenlabs_audio_tags(slug)
+        # Disable ElevenLabs audio tags to prevent leakage into TTS speech
+        self._use_elevenlabs_audio_tags = False
 
-        if self._use_elevenlabs_audio_tags:
-            (
-                self._output_plain_text_rule,
-                self._no_ssml_rule_base,
-                self._no_ssml_rule,
-            ) = get_elevenlabs_voice_prompt_rule_lines()
-        else:
-            self._output_plain_text_rule = (
-                "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
-                "Prosody is handled by the system."
-            )
-            self._no_ssml_rule_base = (
-                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-            )
-            self._no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
+        self._output_plain_text_rule = (
+            "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
+            "Prosody is handled by the system."
+        )
+        self._no_ssml_rule_base = (
+            "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+        )
+        self._no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
 
-        self._elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(slug)
+        self._elevenlabs_audio_tag_block = ""
 
     def build_system_prompt(
         self,
@@ -518,6 +511,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             end_call_after=False,
             is_quick_ack=False,
         )
+        # Persist greeting as agent response
+        await self.orchestrator.on_llm_response(greeting_text)
 
     async def _run_llm_stream(
         self,
@@ -634,6 +629,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         # Notify orchestrator if END_CALL but no final text
         if end_call_after and not final_text and not cancellation_token.is_cancelled():
             await self.orchestrator.on_llm_end_call()
+
+        # Notify orchestrator of complete response for transcript persistence
+        clean_response_text = self.get_agent_response_text()
+        await self.orchestrator.on_llm_response(clean_response_text)
 
         logger.info(
             f"[{self.call_id}] LLM stream complete "
