@@ -201,21 +201,30 @@ def _extract_jd_context(
     *,
     job: JobDescription | None,
     metadata: dict[str, Any] | None,
+    resume_id: UUID | None = None,
 ) -> dict[str, str] | None:
     raw_metadata = metadata if isinstance(metadata, dict) else {}
     raw_ctx = raw_metadata.get("jd_context")
+    resume_id_str = str(resume_id) if resume_id else ""
     if isinstance(raw_ctx, dict):
         jd_id = str(raw_ctx.get("jd_id") or "").strip()
         jd_title = str(raw_ctx.get("jd_title") or "").strip()
         jd_summary = str(raw_ctx.get("jd_summary") or "").strip()
-        if jd_id or jd_title or jd_summary:
-            return {
+        r_from_meta = str(raw_ctx.get("resume_id") or "").strip()
+        if jd_id or jd_title or jd_summary or r_from_meta:
+            out: dict[str, str] = {
                 "jd_id": jd_id,
                 "jd_title": jd_title,
                 "jd_summary": jd_summary,
             }
+            rid = resume_id_str or r_from_meta
+            if rid:
+                out["resume_id"] = rid
+            return out
 
     if not job:
+        if resume_id_str:
+            return {"resume_id": resume_id_str}
         return None
 
     jd_id = str(job.id)
@@ -223,11 +232,14 @@ def _extract_jd_context(
     jd_summary = str(job.raw_text or "").strip()
     if jd_summary and len(jd_summary) > 500:
         jd_summary = f"{jd_summary[:500].rstrip()}..."
-    return {
+    out = {
         "jd_id": jd_id,
         "jd_title": jd_title,
         "jd_summary": jd_summary,
     }
+    if resume_id_str:
+        out["resume_id"] = resume_id_str
+    return out
 
 
 def _resolve_crm_config_id(db: Session, user: User, explicit: UUID | None) -> UUID:
@@ -318,7 +330,9 @@ async def _create_scheduled_interview(
         )
         if job is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
-    jd_context = _extract_jd_context(job=job, metadata=body.metadata)
+    jd_context = _extract_jd_context(
+        job=job, metadata=body.metadata, resume_id=body.resume_id
+    )
 
     scheduled_at_utc = _parse_utc_datetime(body.call_time_utc)
 

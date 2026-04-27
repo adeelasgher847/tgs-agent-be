@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.models.call_session import CallSession
 from app.models.user import User
 from app.schemas.twilio import (
     CallInitiateRequest,
@@ -21,6 +20,10 @@ from app.services.call_session_service import call_session_service
 from app.services.credit_service import credit_service
 from app.services.phone_number_service import phone_number_service
 from app.services.twilio_service import twilio_service
+from app.services.voice_interview_context_service import (
+    build_voice_interview_enrichment,
+    parse_optional_uuid,
+)
 from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.utils.response import create_success_response
 from app.routers.general_websocket import broadcast_call_status_update
@@ -226,9 +229,48 @@ async def initiate_call(
             to_number=call_request.userPhoneNumber,
             call_type="outbound",
         )
-        if call_request.jd_context:
+        # Optional: enrich from jd_id + resume_id (or jd_context only) without breaking n8n callers
+        _ctx = call_request.jd_context or {}
+        _jd = parse_optional_uuid(
+            call_request.jd_id
+            or (
+                str(_ctx.get("jd_id"))
+                if _ctx.get("jd_id") is not None
+                and str(_ctx.get("jd_id")).strip()
+                else None
+            )
+        )
+        _resume = parse_optional_uuid(
+            call_request.resume_id
+            or (
+                str(_ctx.get("resume_id"))
+                if _ctx.get("resume_id") is not None
+                and str(_ctx.get("resume_id")).strip()
+                else None
+            )
+        )
+        if call_request.jd_context or _jd or _resume:
+            try:
+                enrich = build_voice_interview_enrichment(
+                    db,
+                    tenant_id=tenant_id_filter,
+                    jd_id=_jd,
+                    resume_id=_resume,
+                    existing_jd_context=call_request.jd_context,
+                )
+            except Exception as exc:  # pragma: no cover - defensive; never block calls
+                logger.warning("Voice interview enrichment skipped: %s", exc, exc_info=True)
+                enrich = {
+                    "merged_jd_context": {**(call_request.jd_context or {})},
+                    "voice_dynamic_context": None,
+                }
             call_session.call_metadata = call_session.call_metadata or {}
-            call_session.call_metadata["jd_context"] = call_request.jd_context
+            md: dict = {**(call_session.call_metadata or {})}
+            if enrich.get("merged_jd_context"):
+                md["jd_context"] = enrich["merged_jd_context"]
+            if enrich.get("voice_dynamic_context"):
+                md["voice_dynamic_context"] = enrich["voice_dynamic_context"]
+            call_session.call_metadata = md
             db.commit()
             db.refresh(call_session)
 

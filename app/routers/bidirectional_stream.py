@@ -367,70 +367,75 @@ class BidirectionalStreamHandler:
                 agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
-
-    def _extract_greeting_from_prompt(self) -> Optional[str]:
+    
+    async def _precache_common_phrases(self):
         """
-        Extract explicit greeting from prompt text, if configured.
-        Supported formats:
-        - GREETING: Hello and welcome ...
-        - FIRST_MESSAGE: Hello and welcome ...
-        - OPENING: Hello and welcome ...
-        - [GREETING:Hello and welcome ...]
+        Pre-generate and cache common phrases for instant playback.
+        Runs in background during initialization.
         """
-        candidate_prompts: List[str] = []
-        if self.agent and getattr(self.agent, "system_prompt", None):
-            candidate_prompts.append(self.agent.system_prompt or "")
-        if (
-            self.agent
-            and getattr(self.agent, "model", None)
-            and getattr(self.agent.model, "system_prompt", None)
-        ):
-            candidate_prompts.append(self.agent.model.system_prompt or "")
-
-        patterns = [
-            r"(?im)^\s*(?:GREETING|FIRST_MESSAGE|OPENING)\s*:\s*(.+?)\s*$",
-            r"(?is)\[\s*GREETING\s*:\s*(.+?)\s*\]",
-        ]
-
-        for prompt_text in candidate_prompts:
-            if not prompt_text:
-                continue
-            for pattern in patterns:
-                match = re.search(pattern, prompt_text)
-                if not match:
+        try:
+            # Common phrases for instant responses (greetings, confirmations, acknowledgements)
+            common_phrases = [
+                # Greetings
+                "Hello",
+                "Hi there",
+                "Hi",
+                "Good morning",
+                "Good afternoon",
+                "Good evening",
+                
+                # Acknowledgements (Quick feedback)
+                "Got it",
+                "I see",
+                "Okay",
+                "Sure",
+                "Alright",
+                "Perfect",
+                "Great",
+                "Understood",
+                
+                # Confirmations
+                "Yes",
+                "No",
+                "Absolutely",
+                "Of course",
+                
+                # Thinking/Processing
+                "Let me check that",
+                "One moment please",
+                "Just a second",
+                "Let me see",
+                
+                # Transitions
+                "Thank you",
+                "Thanks",
+                "You're welcome",
+                
+                # Closings
+                "Goodbye",
+                "Have a great day",
+                "Thank you for calling",
+                "Talk to you later",
+            ]
+            
+            lang = self.agent.language if self.agent and self.agent.language else "en"
+            voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+            
+            for phrase in common_phrases:
+                try:
+                    # Generate and cache (async, non-blocking)
+                    await generate_mulaw_tts(
+                        text=phrase,
+                        lang=lang,
+                        voice=voice,
+                        use_chirp3_hd=True,
+                        speaking_rate=1.0,
+                        use_ssml=False
+                    )
+                except Exception:
                     continue
-                greeting_text = (match.group(1) or "").strip().strip('"').strip("'")
-                if greeting_text:
-                    return greeting_text
-        return None
-
-    # ------------------------------------------------------------------
-    # (Disabled) Pre-warm MULAW TTS cache for common short phrases at connect.
-    # To enable: uncomment the method and asyncio.create_task(...) in __init__.
-    # ------------------------------------------------------------------
-    #     async def _precache_common_phrases(self):
-    #         """Pre-generate and cache common phrases for instant playback."""
-    #         try:
-    #             common_phrases = [
-    #                 "Hello", "Hi there", "Hi", "Good morning", "Good afternoon", "Good evening",
-    #                 "Got it", "I see", "Okay", "Sure", "Alright", "Perfect", "Great", "Understood",
-    #                 "Yes", "No", "Absolutely", "Of course",
-    #                 "Let me check that", "One moment please", "Just a second", "Let me see",
-    #                 "Thank you", "Thanks", "You're welcome",
-    #                 "Goodbye", "Have a great day", "Thank you for calling", "Talk to you later",
-    #             ]
-    #             lang = self.agent.language if self.agent and self.agent.language else "en"
-    #             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
-    #             for phrase in common_phrases:
-    #                 try:
-    #                     await generate_mulaw_tts(
-    #                         text=phrase, lang=lang, voice=voice, use_chirp3_hd=True,
-    #                         speaking_rate=1.0, use_ssml=False, agent=self.agent,
-    #                     )
-    #                 except Exception:
-    #                     continue
-    #         except Exception as e:
-    #             logger.error(f"Error in precache_common_phrases: {e}")
+        except Exception as e:
+            logger.error(f"Error in precache_common_phrases: {e}")
     
     async def handle_media_message(self, message: dict):
         """Handle incoming audio from Twilio and feed to Deepgram streaming STT"""
@@ -847,13 +852,7 @@ class BidirectionalStreamHandler:
                 if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
                     greeting_text = self.agent.first_message
                 else:
-                    prompt_greeting = self._extract_greeting_from_prompt()
-                    if prompt_greeting:
-                        greeting_text = prompt_greeting
-                    elif self.call_session and self.call_session.call_type == "inbound":
-                        greeting_text = "Thank you for calling. How may I assist you today?"
-                    else:
-                        greeting_text = "hello how are you"
+                    greeting_text = "hello how are you"
                 
                 # Add greeting to transcript
                 await self._add_to_transcript("agent", greeting_text, "greeting")
@@ -1015,28 +1014,11 @@ class BidirectionalStreamHandler:
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
-            tts_provider = getattr(self.agent, "tts_provider", None) if self.agent else None
-            tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
-            elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
-            if elevenlabs_audio_tags_enabled:
-                output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
-                    get_elevenlabs_voice_prompt_rule_lines()
-                )
-            else:
-                output_plain_text_rule = (
-                    "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
-                    "Prosody is handled by the system."
-                )
-                no_ssml_rule_base = (
-                    "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-                )
-                no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-            elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
             
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
-
+{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
@@ -1081,7 +1063,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # CUSTOM INSTRUCTIONS
 {self.agent.system_prompt}
-
+{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
@@ -1121,7 +1103,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # MODEL INSTRUCTIONS
 {self.agent.model.system_prompt}
-
+{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.

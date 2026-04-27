@@ -431,10 +431,8 @@ class TrelloService(BaseCRMService):
             lines = []
             if jd_context.get("jd_id"):
                 lines.append(f"JD ID: {jd_context['jd_id']}")
-            if jd_context.get("jd_title"):
-                lines.append(f"JD Title: {jd_context['jd_title']}")
-            if jd_context.get("jd_summary"):
-                lines.append(f"JD Summary: {jd_context['jd_summary']}")
+            if jd_context.get("resume_id"):
+                lines.append(f"Resume ID: {jd_context['resume_id']}")
             if not lines:
                 return {"id": item_id}
 
