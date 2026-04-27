@@ -151,7 +151,12 @@ class TTSStreamManager:
         self._next_chunk_id = 0
         self._is_speaking = False
         self._playback_events = {0: asyncio.Event()}
-        self._playback_events[0].set()  # First chunk can play immediately
+        # Playback is held until start_playback() is explicitly called
+
+    def start_playback(self) -> None:
+        """Allow the first chunk to start playing (used after STT final)."""
+        if hasattr(self, '_playback_events') and 0 in self._playback_events:
+            self._playback_events[0].set()
 
     @property
     def is_speaking(self) -> bool:
@@ -481,12 +486,17 @@ class TTSStreamManager:
 
         # Jitter buffer priming (3×20ms silence on first frame of new utterance)
         if not self._twilio_buffer_primed:
+            self._twilio_buffer_primed = True
+            
+            # Notify orchestrator that audio is starting exactly now
+            if hasattr(self.orchestrator, 'on_tts_started'):
+                await self.orchestrator.on_tts_started()
+
             silence_frame = bytes([0x7F]) * MULAW_FRAME_BYTES
             for _ in range(3):
                 if cancellation_token.is_cancelled():
                     return
                 await self.orchestrator.on_tts_frame_ready(silence_frame)
-            self._twilio_buffer_primed = True
 
         await self.orchestrator.on_tts_frame_ready(frame)
 

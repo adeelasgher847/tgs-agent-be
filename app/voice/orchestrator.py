@@ -231,6 +231,11 @@ class VoiceOrchestrator:
                 f"[{self.call_id}] STT final diverges from interim — re-running LLM. "
                 f"Interim: '{interim[:30]}' | Final: '{text[:30]}'"
             )
+            
+            # Cancel TTS from bad speculation
+            await self.tts_mgr.stop()
+            self.tts_mgr.reset_for_new_turn()
+
             system_prompt = self._build_system_prompt()
             history = self.state_mgr.get_messages_for_llm()
             await self.llm_mgr.finalize_and_rerun(
@@ -239,9 +244,14 @@ class VoiceOrchestrator:
                 conversation_history=history,
                 system_prompt=system_prompt,
             )
+            self.tts_mgr.start_playback()
         elif not self._speculation_started:
             # No speculation yet (very short interim or low confidence) → start now
             await self._start_speculation(text)
+            self.tts_mgr.start_playback()
+        else:
+            # Speculation was correct and is ready to play
+            self.tts_mgr.start_playback()
 
         # Reset speculation flag for next turn
         self._speculation_started = False
@@ -266,11 +276,7 @@ class VoiceOrchestrator:
         if self.cancellation_token.is_cancelled():
             return
 
-        # Mark agent as speaking on first content chunk
-        if not self.state_mgr.agent_is_speaking and not is_quick_ack:
-            self.state_mgr.agent_speaking_start()
-            self.barge_in_ctrl.arm()
-            await self.state_mgr.transition_state(ConversationState.AGENT_SPEAKING)
+        # Agent speaking state is now triggered by on_tts_started when the first audio frame actually emits.
 
         # Spawn TTS synthesis as background task (non-blocking)
         tts_task = asyncio.create_task(
@@ -293,6 +299,13 @@ class VoiceOrchestrator:
         """
         logger.info(f"[{self.call_id}] LLM requested end call (no final text)")
         await self.on_tts_complete(end_call_after=True)
+
+    async def on_tts_started(self) -> None:
+        """Called by TTSStreamManager when the first frame of a turn is emitted."""
+        if not self.state_mgr.agent_is_speaking:
+            self.state_mgr.agent_speaking_start()
+            self.barge_in_ctrl.arm()
+            await self.state_mgr.transition_state(ConversationState.AGENT_SPEAKING)
 
     # ------------------------------------------------------------------
     # TTS event handlers (called by TTSStreamManager)
@@ -383,7 +396,7 @@ class VoiceOrchestrator:
                 greeting_text = first_message
 
         self.tts_mgr.reset_for_new_turn()
-        self.state_mgr.agent_speaking_start()
+        self.tts_mgr.start_playback()
 
         tts_task = asyncio.create_task(
             self.tts_mgr.enqueue_chunk(
