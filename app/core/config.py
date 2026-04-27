@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # utterance). Set True for lower first-token latency at the cost of stability.
     VOICE_ENABLE_INTERIM_LLM: bool = False
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
-    VOICE_MIN_INTERIM_WORDS: int = 4
+    VOICE_MIN_INTERIM_WORDS: int = 3
     VOICE_MIN_INTERIM_CONFIDENCE: float = 0.52
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
@@ -91,15 +91,15 @@ class Settings(BaseSettings):
     VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 40
     # Drop Deepgram final transcripts below this (0.0–1.0). Default slightly below 0.30 so
     # quiet/soft speech is not rejected as often; too low adds garbage.
-    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.21
+    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.16
     # Optional adaptive fallback: accept lower-confidence finals when they still look like
     # real speech (multi-word, alpha content). Helps callers with soft volume mid-call.
     VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK: bool = True
-    VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.16
+    VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.12
     VOICE_STT_SOFT_MIN_WORDS: int = 2
     # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
     # Slightly below old 0.30 so a softer "wait" / "hold on" still cancels TTS.
-    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.25
+    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.20
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.52
     VOICE_HISTORY_MAX_MESSAGES: int = 12
