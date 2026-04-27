@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
     DEEPGRAM_STT_ENDPOINTING_MS: int = 300
     # After the agent asks for email, bidirectional stream may reopen STT once with this value.
-    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 600
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
     VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT: bool = True
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)

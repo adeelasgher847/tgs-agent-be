@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.models.call_session import CallSession
 from app.models.transcript_message import TranscriptMessage
+from app.utils.spoken_email import normalize_stored_email
 from app.utils.voice_contact_extraction import (
     extract_spelled_name_from_line,
     strict_contact_email_from_text,
@@ -100,6 +101,7 @@ def default_contact_intake() -> dict[str, Any]:
         "email_spelled_confirmed": False,
         "name_confident": False,
         "email_validated": False,
+        "email_collection": False,
         "name_spell_failures": 0,
         "awaiting_spell_field": None,
     }
@@ -193,9 +195,17 @@ def apply_transcript_turn(
         if email_context and not name_context:
             email = strict_contact_email_from_text(text)
             if email:
-                intake["email"] = email
-                intake["email_validated"] = True
-                intake["email_spelled_confirmed"] = True
+                normalized_email = normalize_stored_email(email)
+                if normalized_email:
+                    intake["email"] = normalized_email
+                    intake["email_validated"] = True
+                    intake["email_spelled_confirmed"] = True
+                    intake["email_collection"] = True
+                else:
+                    intake["email"] = email
+                    intake["email_validated"] = True
+                    intake["email_spelled_confirmed"] = True
+                    intake["email_collection"] = True
                 intake["awaiting_spell_field"] = None
             elif awaiting == "email":
                 intake["awaiting_spell_field"] = None
@@ -267,10 +277,11 @@ def apply_post_call_recovery(
             intake["name_confident"] = True
             changed = True
     if email and email_confident and not intake.get("email_validated"):
-        clean_email = str(email).strip()
+        clean_email = normalize_stored_email(str(email).strip())
         if clean_email:
             intake["email"] = clean_email
             intake["email_validated"] = True
+            intake["email_collection"] = True
             changed = True
     if changed:
         _save_contact_intake(db, call_session, intake)
