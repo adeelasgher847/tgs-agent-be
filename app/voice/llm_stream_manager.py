@@ -29,6 +29,8 @@ from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
     supports_elevenlabs_audio_tags,
+    prepare_tts_text_for_provider,
+    apply_elevenlabs_breathing_fallback,
 )
 from app.voice.cancellation import CancellationToken
 
@@ -582,6 +584,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if to_speak:
                     self._chunk_counter += 1
                     self._last_flush_ts = now
+                    
+                    # Apply ElevenLabs tags & format for provider
+                    is_first = (self._chunk_counter == 1)
+                    if is_first and self._use_elevenlabs_audio_tags:
+                        to_speak = apply_elevenlabs_breathing_fallback(to_speak)
+                    to_speak = prepare_tts_text_for_provider(to_speak, self._tts_provider_slug)
+
                     await self.orchestrator.on_llm_chunk(
                         text=to_speak,
                         is_final=False,
@@ -593,6 +602,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         final_text = _strip_control_tokens(tts_buffer).strip()
         if final_text and not cancellation_token.is_cancelled():
             self._chunk_counter += 1
+            
+            # Apply tags & format
+            is_first = (self._chunk_counter == 1)
+            if is_first and self._use_elevenlabs_audio_tags:
+                final_text = apply_elevenlabs_breathing_fallback(final_text)
+            final_text = prepare_tts_text_for_provider(final_text, self._tts_provider_slug)
+
             await self.orchestrator.on_llm_chunk(
                 text=final_text,
                 is_final=True,

@@ -15,7 +15,6 @@ from app.api.api_v1.endpoints import (
 )
 from app.routers.agent import router as agent_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
-from app.routers.bidirectional_stream_v2 import router as bidirectional_stream_v2_router
 from app.routers.call_logs import router as call_logs_router
 from app.routers.call_sessions import router as call_sessions_router
 from app.routers.clickup_oauth import router as clickup_oauth_router
@@ -73,11 +72,6 @@ api_router.include_router(
     bidirectional_stream_router,
     prefix="/stream",
     tags=["Bidirectional Streaming"],
-    include_in_schema=False,
-)
-api_router.include_router(
-    bidirectional_stream_v2_router,
-    tags=["Bidirectional Streaming V2 (Shadow)"],
     include_in_schema=False,
 )
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
