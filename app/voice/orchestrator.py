@@ -104,9 +104,11 @@ class VoiceOrchestrator:
 
         # --- Early LLM trigger threshold (from settings) ---
         from app.core.config import settings
-        self._early_llm_min_words: int = getattr(settings, "VOICE_MIN_INTERIM_WORDS", 3)
+        self._early_llm_min_words: int = getattr(
+            settings, "VOICE_V2_EARLY_LLM_MIN_WORDS", 3
+        )
         self._early_llm_min_confidence: float = getattr(
-            settings, "VOICE_MIN_INTERIM_CONFIDENCE", 0.18
+            settings, "VOICE_V2_EARLY_LLM_MIN_CONFIDENCE", 0.15
         )
 
         # --- Configure TTS provider slug in LLM manager for SSML ---
