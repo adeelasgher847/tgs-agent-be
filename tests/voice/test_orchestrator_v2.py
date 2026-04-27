@@ -429,6 +429,24 @@ class TestVoiceOrchestratorIntegration:
         # Allow background task to run
         await asyncio.sleep(0)
         assert orch._speculation_started is True
+        assert orch.state_mgr.state == ConversationState.PROCESSING
+
+    @pytest.mark.asyncio
+    async def test_interim_transitions_to_user_speaking(self):
+        """
+        on_stt_interim should transition from WAITING_FOR_INPUT to USER_SPEAKING.
+        """
+        orch, _ = self._make_orchestrator()
+        orch._call_active = True
+        assert orch.state_mgr.state == ConversationState.WAITING_FOR_INPUT
+
+        await orch.on_stt_interim(
+            text="hello there",
+            confidence=0.65,
+            word_count=2,
+        )
+
+        assert orch.state_mgr.state == ConversationState.USER_SPEAKING
 
     @pytest.mark.asyncio
     async def test_no_speculation_below_word_threshold(self):

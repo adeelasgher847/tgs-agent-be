@@ -16,6 +16,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Optional
 
+from app.utils.eleven_tts_text import strip_eleven_v3_style_tags_for_non_eleven_tts
 from app.voice.cancellation import CancellationToken
 
 if TYPE_CHECKING:
@@ -303,13 +304,14 @@ class TTSStreamManager:
         from app.services.elevenlabs_service import elevenlabs_service
 
         if not self._voice_id:
-            # Fallback to Google if no voice configured
+            # Fallback to Google if no ElevenLabs voice configured
             logger.warning(
                 f"[{self.call_id}] ElevenLabs: no voice_id configured, "
                 f"falling back to Google TTS"
             )
+            fallback_text = strip_eleven_v3_style_tags_for_non_eleven_tts(text)
             await self._synthesize_google(
-                text=text,
+                text=fallback_text,
                 chunk_id=chunk_id,
                 cancellation_token=cancellation_token,
                 is_final=is_final,

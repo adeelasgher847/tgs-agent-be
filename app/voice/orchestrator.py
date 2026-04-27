@@ -35,6 +35,8 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from sqlalchemy.orm import Session
+from app.services.voice_conversation_service import add_to_transcript
 from app.voice.cancellation import CancellationToken
 from app.voice.conversation_state_manager import ConversationState, ConversationStateManager
 from app.voice.stt_stream_manager import STTStreamManager, EndpointingMode
@@ -62,7 +64,8 @@ class VoiceOrchestrator:
         call_id: str,
         agent_id: str,
         agent_config: Dict[str, Any],
-        send_twilio_frame_callback: Callable[[bytes], Any],
+        db: Optional[Session] = None,
+        send_twilio_frame_callback: Callable[[bytes], Any] = lambda _: None,
         on_first_speech_callback: Optional[Callable[[str, float], Any]] = None,
     ) -> None:
         """
@@ -77,6 +80,7 @@ class VoiceOrchestrator:
         self.call_id = call_id
         self.agent_id = agent_id
         self.agent_config = agent_config
+        self.db = db
         self._send_twilio_frame = send_twilio_frame_callback
         self._on_first_speech_callback = on_first_speech_callback
 
@@ -198,6 +202,13 @@ class VoiceOrchestrator:
 
         self.state_mgr.set_interim_text(text)
 
+        # Ensure we enter a valid user-speaking state before speculation.
+        if self.state_mgr.state in (
+            ConversationState.WAITING_FOR_INPUT,
+            ConversationState.INTERRUPTED,
+        ):
+            await self.state_mgr.transition_state(ConversationState.USER_SPEAKING)
+
         # --- Barge-in check (highest priority) ---
         if self.state_mgr.agent_is_speaking:
             await self.barge_in_ctrl.check_trigger(text, confidence)
@@ -209,6 +220,7 @@ class VoiceOrchestrator:
             and word_count >= self._early_llm_min_words
             and confidence >= self._early_llm_min_confidence
         ):
+            await self.state_mgr.transition_state(ConversationState.PROCESSING)
             await self._start_speculation(text)
 
     async def on_stt_final(self, text: str, confidence: float) -> None:
@@ -223,9 +235,37 @@ class VoiceOrchestrator:
         - "Significant" = final text does NOT start with interim prefix
         """
         self.state_mgr.set_final_text(text)
-        await self.state_mgr.transition_state(ConversationState.PROCESSING)
+
+        if self.state_mgr.state in (
+            ConversationState.WAITING_FOR_INPUT,
+            ConversationState.INTERRUPTED,
+        ):
+            await self.state_mgr.transition_state(ConversationState.USER_SPEAKING)
+
+        if self.state_mgr.state == ConversationState.USER_SPEAKING:
+            await self.state_mgr.transition_state(ConversationState.PROCESSING)
 
         # Add user turn to history
+        # Persist user transcript row
+        call_session = self.agent_config.get("call_session")
+        agent = self.agent_config.get("agent")
+        if call_session is not None and self.db is not None:
+            try:
+                await add_to_transcript(
+                    call_session=call_session,
+                    role="client",
+                    message=text,
+                    db=self.db,
+                    message_type="speech",
+                    agent_id=str(agent.id) if agent is not None else None,
+                    confidence=confidence,
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.call_id}] Failed to persist user transcript: {e}",
+                    exc_info=True,
+                )
+
         await self.state_mgr.add_to_history(
             role="user",
             text=text,
@@ -343,9 +383,26 @@ class VoiceOrchestrator:
         self.state_mgr.agent_speaking_end()
         self.barge_in_ctrl.disarm()
 
-        # Add agent turn to history
-        # (text accumulated by LLM manager — we use interim_text as proxy)
-        # Full text tracking is handled per-turn via llm_mgr response_accum
+        # Persist agent transcript row once the TTS turn completes
+        call_session = self.agent_config.get("call_session")
+        agent = self.agent_config.get("agent")
+        response_text = self.llm_mgr.get_agent_response_text().strip()
+        if response_text and call_session is not None and self.db is not None:
+            try:
+                await add_to_transcript(
+                    call_session=call_session,
+                    role="agent",
+                    message=response_text,
+                    db=self.db,
+                    message_type="agent_response",
+                    agent_id=str(agent.id) if agent is not None else None,
+                )
+            except Exception as e:
+                logger.error(
+                    f"[{self.call_id}] Failed to persist agent transcript: {e}",
+                    exc_info=True,
+                )
+
         await self.state_mgr.transition_state(ConversationState.WAITING_FOR_INPUT)
 
         logger.debug(f"[{self.call_id}] TTS complete, waiting for next input")

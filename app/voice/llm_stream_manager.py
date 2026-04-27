@@ -31,6 +31,7 @@ from app.utils.eleven_tts_text import (
     supports_elevenlabs_audio_tags,
     prepare_tts_text_for_provider,
     apply_elevenlabs_breathing_fallback,
+    strip_eleven_v3_style_tags_for_non_eleven_tts,
 )
 from app.voice.cancellation import CancellationToken
 
@@ -169,6 +170,7 @@ class LLMStreamManager:
         self._token_buffer: str = ""
         self._chunk_counter: int = 0
         self._last_flush_ts: float = 0.0
+        self._clean_response_accum: str = ""
 
         # Speculation tracking
         self.has_speculation: bool = False
@@ -223,6 +225,7 @@ class LLMStreamManager:
         self._token_buffer = ""
         self._chunk_counter = 0
         self._last_flush_ts = time.perf_counter()
+        self._clean_response_accum = ""
 
         try:
             if is_greeting:
@@ -264,6 +267,7 @@ class LLMStreamManager:
 
         self._token_buffer = ""
         self._chunk_counter = 0
+        self._clean_response_accum = ""
         self.has_speculation = False
 
         # Reset cancellation token for re-run (barge-in cleared)
@@ -589,6 +593,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     is_first = (self._chunk_counter == 1)
                     if is_first and self._use_elevenlabs_audio_tags:
                         to_speak = apply_elevenlabs_breathing_fallback(to_speak)
+
+                    # Store transcript-safe text without bracket tags for DB/UI
+                    clean_chunk = strip_eleven_v3_style_tags_for_non_eleven_tts(to_speak)
+                    if clean_chunk:
+                        self._clean_response_accum += clean_chunk + " "
+
                     to_speak = prepare_tts_text_for_provider(to_speak, self._tts_provider_slug)
 
                     await self.orchestrator.on_llm_chunk(
@@ -607,6 +617,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             is_first = (self._chunk_counter == 1)
             if is_first and self._use_elevenlabs_audio_tags:
                 final_text = apply_elevenlabs_breathing_fallback(final_text)
+
+            clean_final = strip_eleven_v3_style_tags_for_non_eleven_tts(final_text)
+            if clean_final:
+                self._clean_response_accum += clean_final + " "
+
             final_text = prepare_tts_text_for_provider(final_text, self._tts_provider_slug)
 
             await self.orchestrator.on_llm_chunk(
@@ -624,3 +639,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             f"[{self.call_id}] LLM stream complete "
             f"({self._chunk_counter} chunks, end_call={end_call_after})"
         )
+
+    def get_agent_response_text(self) -> str:
+        """Return the clean, transcript-safe agent response text."""
+        return self._clean_response_accum.strip()

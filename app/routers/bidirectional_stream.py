@@ -149,6 +149,7 @@ class BidirectionalStreamHandler:
             call_id=self.call_session_id,
             agent_id=self.agent_id,
             agent_config=self._agent_config,
+            db=self.db,
             send_twilio_frame_callback=self._send_twilio_audio_frame,
             on_first_speech_callback=self._send_in_progress_status,
         )
