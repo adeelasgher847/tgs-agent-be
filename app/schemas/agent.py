@@ -31,7 +31,22 @@ class AgentBase(BaseModel):
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
     tts_provider_id: Optional[uuid.UUID] = Field(None, description="TTS provider ID")
     tts_voice_id: Optional[uuid.UUID] = Field(None, description="TTS voice ID")
-    tts_settings_json: Optional[Dict[str, Any]] = Field(None, description="Provider-specific TTS settings")
+    tts_settings_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Provider-specific TTS settings. Background controls: "
+            "background_enabled (boolean), background_profile (office/cafe/call_center/none), "
+            "background_volume (0-100; default 50). "
+            "Bracketed audio tags like [breathes] are not injected automatically."
+        ),
+        examples=[
+            {
+                "background_enabled": True,
+                "background_profile": "office",
+                "background_volume": 50,
+            }
+        ],
+    )
     is_inbound_agent: bool = Field(
         default=False,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
@@ -59,7 +74,22 @@ class AgentUpdate(BaseModel):
     agent_max_tokens: Optional[int] = Field(None, gt=0, description="Agent-specific max tokens")
     tts_provider_id: Optional[uuid.UUID] = Field(None, description="TTS provider ID")
     tts_voice_id: Optional[uuid.UUID] = Field(None, description="TTS voice ID")
-    tts_settings_json: Optional[Dict[str, Any]] = Field(None, description="Provider-specific TTS settings")
+    tts_settings_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Provider-specific TTS settings. Background controls: "
+            "background_enabled (boolean), background_profile (office/cafe/call_center/none), "
+            "background_volume (0-100; default 50). "
+            "Bracketed audio tags like [breathes] are not injected automatically."
+        ),
+        examples=[
+            {
+                "background_enabled": True,
+                "background_profile": "office",
+                "background_volume": 50,
+            }
+        ],
+    )
     is_inbound_agent: Optional[bool] = Field(
         default=None,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
@@ -72,7 +102,22 @@ class AgentOut(AgentBase):
     provider_id: Optional[uuid.UUID] = None
     tts_provider_id: Optional[uuid.UUID] = None
     tts_voice_id: Optional[uuid.UUID] = None
-    tts_settings_json: Optional[Dict[str, Any]] = None
+    tts_settings_json: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Provider-specific TTS settings. Background controls: "
+            "background_enabled (boolean), background_profile (office/cafe/call_center/none), "
+            "background_volume (0-100; default 50). "
+            "Bracketed audio tags like [breathes] are not injected automatically."
+        ),
+        examples=[
+            {
+                "background_enabled": True,
+                "background_profile": "office",
+                "background_volume": 50,
+            }
+        ],
+    )
     created_at: datetime
     updated_at: Optional[datetime] = None
     created_by: uuid.UUID

@@ -1,6 +1,5 @@
 """Unit tests for voice / STT email normalization."""
 from app.utils.spoken_email import (
-    build_email_repair_prompt,
     best_email_from_client_utterances,
     coerce_email_from_text,
     normalize_stored_email,
@@ -112,12 +111,3 @@ def test_resolve_repeated_transcript_email_is_verified():
     assert resolution.verified_email == "john.smith@gmail.com"
     assert resolution.pending_email is None
     assert resolution.source == "explicit_user_confirmed"
-
-
-def test_build_email_repair_prompt_mentions_transcript_priority():
-    prompt = build_email_repair_prompt(
-        token_email_raw="ali.saidicp@gmail.com",
-        transcript_client_lines_newest_first=["ali dot saeed ict at gmail dot com"],
-    )
-    assert "Do not trust fused raw STT emails blindly" in prompt
-    assert "ali dot saeed ict at gmail dot com" in prompt

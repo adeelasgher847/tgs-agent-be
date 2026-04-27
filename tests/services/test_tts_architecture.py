@@ -115,6 +115,87 @@ def test_agent_create_rejects_tts_payload_api_key(tts_db):
     assert "credentials must not be passed" in str(excinfo.value.detail)
 
 
+def test_agent_create_rejects_invalid_background_enabled(tts_db):
+    db, tenant, user = tts_db
+    provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
+    db.add(provider)
+    db.flush()
+    voice = TTSVoice(
+        provider_id=provider.id,
+        external_voice_id="voice-eleven",
+        display_name="Voice A",
+        is_active=True,
+    )
+    db.add(voice)
+    db.commit()
+
+    payload = AgentCreate(
+        name="Invalid BG Enabled Agent",
+        tts_provider_id=provider.id,
+        tts_voice_id=voice.id,
+        tts_settings_json={"background_enabled": "maybe"},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent_service.create_agent(db, payload, tenant.id, user.id)
+    assert excinfo.value.status_code == 422
+    assert "background_enabled" in str(excinfo.value.detail)
+
+
+def test_agent_create_rejects_invalid_background_profile(tts_db):
+    db, tenant, user = tts_db
+    provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
+    db.add(provider)
+    db.flush()
+    voice = TTSVoice(
+        provider_id=provider.id,
+        external_voice_id="voice-eleven",
+        display_name="Voice A",
+        is_active=True,
+    )
+    db.add(voice)
+    db.commit()
+
+    payload = AgentCreate(
+        name="Invalid BG Profile Agent",
+        tts_provider_id=provider.id,
+        tts_voice_id=voice.id,
+        tts_settings_json={"background_profile": "airport"},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent_service.create_agent(db, payload, tenant.id, user.id)
+    assert excinfo.value.status_code == 422
+    assert "background_profile" in str(excinfo.value.detail)
+
+
+def test_agent_create_rejects_invalid_background_volume(tts_db):
+    db, tenant, user = tts_db
+    provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
+    db.add(provider)
+    db.flush()
+    voice = TTSVoice(
+        provider_id=provider.id,
+        external_voice_id="voice-eleven",
+        display_name="Voice A",
+        is_active=True,
+    )
+    db.add(voice)
+    db.commit()
+
+    payload = AgentCreate(
+        name="Invalid BG Volume Agent",
+        tts_provider_id=provider.id,
+        tts_voice_id=voice.id,
+        tts_settings_json={"background_volume": 120},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        agent_service.create_agent(db, payload, tenant.id, user.id)
+    assert excinfo.value.status_code == 422
+    assert "background_volume" in str(excinfo.value.detail)
+
+
 def test_tts_router_lists_providers_and_voices(client, db):
     provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs")
     db.add(provider)
@@ -138,7 +219,11 @@ def test_tts_router_lists_providers_and_voices(client, db):
     app.dependency_overrides[require_tenant] = _user_override
     app.dependency_overrides[require_member_or_admin] = _user_override
     app.dependency_overrides[require_admin_or_owner] = _user_override
-    app.dependency_overrides[get_db] = lambda: iter([db])
+
+    def _get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = _get_db
 
     try:
         providers_res = client.get("/api/v1/tts/providers")
@@ -151,6 +236,10 @@ def test_tts_router_lists_providers_and_voices(client, db):
         voices_data = voices_res.json()["data"]["voices"]
         assert len(voices_data) == 1
         assert voices_data[0]["preview_audio_url"] == "https://cdn.example.com/voice_1.mp3"
+
+        # eleven-backgrounds endpoint removed; background defaults to office@0.4 automatically.
+        bg_res = client.get("/api/v1/tts/eleven-backgrounds")
+        assert bg_res.status_code == 404
     finally:
         app.dependency_overrides.pop(require_tenant, None)
         app.dependency_overrides.pop(require_member_or_admin, None)
@@ -216,7 +305,7 @@ def test_generate_mulaw_tts_uses_provider_adapter_for_agent():
     fake_agent = SimpleNamespace(
         tts_provider=SimpleNamespace(slug="elevenlabs"),
         tts_voice=SimpleNamespace(external_voice_id="voice-eleven"),
-        tts_settings_json={"stability": 0.5},
+        tts_settings_json={"stability": 0.5, "eleven_background": "off"},
     )
 
     with patch("app.services.bidirectional_stream_service.get_tts_adapter", return_value=fake_adapter):
@@ -235,3 +324,92 @@ def test_generate_mulaw_tts_uses_provider_adapter_for_agent():
     assert text == "Hello from provider adapter"
     assert voice_external_id == "voice-eleven"
     assert settings_json["output_format"] == "ulaw_8000"
+
+
+def test_generate_mulaw_tts_strips_tags_for_google_agent():
+    """Google path must not send Eleven v3 [tags] to the TTS API."""
+    audio_cache.clear()
+
+    class _FakeG:
+        def text_to_speech(self, **kwargs):
+            t = kwargs.get("text", "")
+            assert "[breathes]" not in t
+            return b"ok"
+
+    fake_agent = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="google"),
+        tts_voice=SimpleNamespace(external_voice_id="en-US-Studio-O"),
+    )
+
+    with patch("app.services.bidirectional_stream_service.google_tts_service", _FakeG()):
+        audio = asyncio.run(
+            generate_mulaw_tts(
+                text="[breathes] Hello world",
+                lang="en",
+                voice="female",
+                agent=fake_agent,
+            )
+        )
+    assert audio == b"ok"
+
+
+def test_generate_mulaw_tts_mixes_eleven_background_when_configured():
+    audio_cache.clear()
+
+    class _FakeAdapter:
+        def synthesize(self, text, voice_external_id, settings_json=None):
+            assert settings_json["output_format"] == "pcm_16000"
+            # 40 ms of near-silence PCM16 @ 16 kHz -> 640 samples -> 1280 bytes
+            return b"\x00\x00" * 640
+
+    fake_agent = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="elevenlabs"),
+        tts_voice=SimpleNamespace(external_voice_id="voice-eleven"),
+        tts_settings_json={
+            "eleven_background": "soft_noise",
+            "eleven_background_level": 0.25,
+        },
+    )
+
+    fake_adapter = _FakeAdapter()
+    with patch("app.services.bidirectional_stream_service.get_tts_adapter", return_value=fake_adapter):
+        audio = asyncio.run(
+            generate_mulaw_tts(
+                text="Hello with bed",
+                lang="en",
+                voice="female",
+                agent=fake_agent,
+            )
+        )
+
+    assert len(audio) > 0
+    assert audio != b"\xff" * len(audio)
+
+
+def test_generate_mulaw_tts_separate_cache_entries_per_background():
+    audio_cache.clear()
+    calls = {"n": 0}
+
+    class _FakeAdapter:
+        def synthesize(self, text, voice_external_id, settings_json=None):
+            calls["n"] += 1
+            assert settings_json["output_format"] == "pcm_16000"
+            return b"\x00\x00" * 640
+
+    adapter = _FakeAdapter()
+    agent_a = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="elevenlabs"),
+        tts_voice=SimpleNamespace(external_voice_id="v1"),
+        tts_settings_json={"eleven_background": "soft_noise", "eleven_background_level": 0.12},
+    )
+    agent_b = SimpleNamespace(
+        tts_provider=SimpleNamespace(slug="elevenlabs"),
+        tts_voice=SimpleNamespace(external_voice_id="v1"),
+        tts_settings_json={"eleven_background": "cafe", "eleven_background_level": 0.18},
+    )
+
+    with patch("app.services.bidirectional_stream_service.get_tts_adapter", return_value=adapter):
+        asyncio.run(generate_mulaw_tts(text="Same text", lang="en", voice="female", agent=agent_a))
+        asyncio.run(generate_mulaw_tts(text="Same text", lang="en", voice="female", agent=agent_b))
+
+    assert calls["n"] == 2

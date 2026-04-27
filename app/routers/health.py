@@ -6,4 +6,4 @@ router = APIRouter()
 
 @router.get("/health", response_model=SuccessResponse[dict])
 def health_check():
-    return create_success_response({"status": "ok"}, "Health check successful") 
+    return create_success_response({"status": "ok"}, "Health check successful")

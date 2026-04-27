@@ -17,6 +17,7 @@ from app.core.logger import logger
 from app.models.business_hours import BusinessHours
 from app.models.blocked_slot import BlockedSlot
 from app.models.appointment import Appointment
+from app.models.slot_reservation import SlotReservation
 from app.models.call_session import CallSession
 from app.models.user import User
 from app.schemas.calendar import (
@@ -163,6 +164,44 @@ class CalendarService:
         if exclude_appointment_id is not None:
             q = q.filter(Appointment.id != exclude_appointment_id)
         return q.order_by(Appointment.slot_start.asc()).first()
+
+    def _get_overlapping_reservation(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        slot_start: datetime,
+        slot_end: datetime,
+        exclude_reservation_id: Optional[uuid.UUID] = None,
+    ) -> Optional[SlotReservation]:
+        q = (
+            db.query(SlotReservation)
+            .filter(
+                SlotReservation.tenant_id == tenant_id,
+                SlotReservation.status == "active",
+                SlotReservation.slot_start < slot_end,
+                SlotReservation.slot_end > slot_start,
+            )
+        )
+        if exclude_reservation_id is not None:
+            q = q.filter(SlotReservation.id != exclude_reservation_id)
+        return q.order_by(SlotReservation.slot_start.asc()).first()
+
+    def resolve_slot_window(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        slot_start: datetime,
+        duration_minutes: Optional[int] = None,
+    ) -> tuple[BusinessHours, tzinfo, datetime, datetime, datetime, datetime, int]:
+        """
+        Public wrapper for booking time-window resolution (same as internal booking path).
+        """
+        return self._resolve_booking_context(
+            db=db,
+            tenant_id=tenant_id,
+            slot_start=slot_start,
+            duration_minutes=duration_minutes,
+        )
 
     def _validate_slot_bookable(
         self,
@@ -508,6 +547,18 @@ class CalendarService:
         )
         booked_ranges = [(_ensure_utc(bs), _ensure_utc(be)) for bs, be in booked]
 
+        resv = (
+            db.query(SlotReservation.slot_start, SlotReservation.slot_end)
+            .filter(
+                SlotReservation.tenant_id == tenant_id,
+                SlotReservation.status == "active",
+                SlotReservation.slot_start < day_end,
+                SlotReservation.slot_end > day_start,
+            )
+            .all()
+        )
+        reserved_ranges = [(_ensure_utc(bs), _ensure_utc(be)) for bs, be in resv]
+
         available: List[AvailableSlot] = []
         for s_start, s_end in all_slots:
             s_utc = s_start.astimezone(timezone.utc)
@@ -520,6 +571,9 @@ class CalendarService:
                 continue
 
             if any(bs < s_end_utc and be > s_utc for bs, be in booked_ranges):
+                continue
+
+            if any(rs < s_end_utc and re_ > s_utc for rs, re_ in reserved_ranges):
                 continue
 
             available.append(AvailableSlot(
@@ -552,11 +606,14 @@ class CalendarService:
         created_via: str = "voice_agent",
         duration_minutes: Optional[int] = None,
         notify_user_id: Optional[uuid.UUID] = None,
+        consuming_reservation_id: Optional[uuid.UUID] = None,
     ) -> Appointment:
         """
         Book a slot. Raises ValueError if the slot is unavailable, in the past,
         outside business hours, or blocked.
         Uses DB-level unique constraints as the final guard against races.
+        `consuming_reservation_id` excludes that active hold when checking conflicts
+        (used when finalizing a voice in-call reservation post-call).
         """
         (
             bh,
@@ -591,6 +648,19 @@ class CalendarService:
             slot_end=slot_end_utc,
         )
         if conflict:
+            raise ValueError(
+                f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
+                "Please choose another time."
+            )
+
+        res_hold = self._get_overlapping_reservation(
+            db=db,
+            tenant_id=tenant_id,
+            slot_start=slot_start_utc,
+            slot_end=slot_end_utc,
+            exclude_reservation_id=consuming_reservation_id,
+        )
+        if res_hold:
             raise ValueError(
                 f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
                 "Please choose another time."
@@ -716,6 +786,18 @@ class CalendarService:
             exclude_appointment_id=appointment_id,
         )
         if conflict:
+            raise ValueError(
+                f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
+                "Please choose another time."
+            )
+
+        res_hold = self._get_overlapping_reservation(
+            db=db,
+            tenant_id=tenant_id,
+            slot_start=slot_start_utc,
+            slot_end=slot_end_utc,
+        )
+        if res_hold:
             raise ValueError(
                 f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
                 "Please choose another time."

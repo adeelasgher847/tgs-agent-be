@@ -356,13 +356,21 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
 
     return create_success_response(token_response, "Login successful via Google")
 
+
+def _expires_at_utc_aware(expires_at: datetime) -> datetime:
+    """SQLite may return naive datetimes; Postgres uses tz-aware. Normalize for comparison."""
+    if expires_at.tzinfo is None:
+        return expires_at.replace(tzinfo=timezone.utc)
+    return expires_at
+
+
 @router.post("/refresh")
 def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     """
     Refresh endpoint:
     1) If access_token is provided and still valid -> return "still valid"
-    2) If access_token expired but refresh_token valid -> issue new access_token only
-       (reuse the last generated token if it exists)
+    2) If access_token expired but refresh_token valid -> issue new access_token
+       (reuse cached one only if unexpired and same role as current DB state)
     3) If refresh_token invalid/expired -> return 401
     """
 
@@ -376,8 +384,9 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
             }
 
     # 2) Validate refresh token
+    now_utc = datetime.now(timezone.utc)
     rt = db.query(RefreshToken).filter(RefreshToken.token == req.refresh_token).first()
-    if not rt or rt.revoked or rt.expires_at <= datetime.now(timezone.utc):
+    if not rt or rt.revoked or _expires_at_utc_aware(rt.expires_at) <= now_utc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token"
@@ -391,19 +400,42 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
     role_info = None
+    current_role: Optional[str] = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+            current_role = role.name
 
-    # 3) Check if a new access token was already generated for this refresh token
-    if rt.replaced_access_token and not is_token_expired(rt.replaced_access_token):
-        new_access_token = rt.replaced_access_token
+    def _cache_matches_context(cached_payload: dict) -> bool:
+        if cached_payload.get("role") != current_role:
+            return False
+        cur_tid = str(current_tenant_id) if current_tenant_id else None
+        cached_tid = cached_payload.get("tenant_id")
+        return cached_tid == cur_tid
+
+    # 3) Reuse cached access JWT only if still valid and claims match current DB (role + tenant)
+    new_access_token: str
+    cached = rt.replaced_access_token
+    if cached and not is_token_expired(cached):
+        cached_payload = verify_token(cached)
+        if cached_payload and _cache_matches_context(cached_payload):
+            new_access_token = cached
+        else:
+            new_access_token = create_user_token(
+                user_id=user.id,
+                email=user.email,
+                tenant_id=current_tenant_id,
+                role=current_role,
+            )
+            rt.replaced_access_token = new_access_token
+            db.add(rt)
     else:
         new_access_token = create_user_token(
             user_id=user.id,
             email=user.email,
-            tenant_id=current_tenant_id
+            tenant_id=current_tenant_id,
+            role=current_role,
         )
         rt.replaced_access_token = new_access_token
         db.add(rt)

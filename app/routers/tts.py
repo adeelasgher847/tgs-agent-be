@@ -11,7 +11,10 @@ from app.api.deps import get_db, require_member_or_admin, require_tenant
 from app.models.tts_voice import TTSVoice
 from app.models.user import User
 from app.schemas.base import SuccessResponse
-from app.schemas.tts import TTSProviderListOut, TTSVoiceListOut
+from app.schemas.tts import (
+    TTSProviderListOut,
+    TTSVoiceListOut,
+)
 from app.services.google_tts_service import google_tts_service
 from app.services.tts_catalog_service import tts_catalog_service
 from app.utils.response import create_success_response
@@ -30,6 +33,7 @@ def list_tts_providers(
 ):
     providers = tts_catalog_service.list_providers(db, active_only=True)
     return create_success_response({"providers": providers}, "TTS providers retrieved successfully")
+
 
 
 @router.get("/voices", response_model=SuccessResponse[TTSVoiceListOut])

@@ -47,6 +47,7 @@ class TTSVoiceListOut(BaseModel):
     voices: list[TTSVoiceOut]
 
 
+
 class TTSProviderCreate(BaseModel):
     slug: str = Field(..., min_length=1, max_length=50)
     display_name: str = Field(..., min_length=1, max_length=100)

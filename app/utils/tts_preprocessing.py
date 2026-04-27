@@ -226,7 +226,7 @@ def add_breath(sentence: str, emotion: str) -> str:
 
 def wrap_in_ssml(
     text: str,
-    add_office_bg: bool = True,
+    add_office_bg: bool = False,
     start_break_ms: int = 150,
     between_sentence_break_ms: int = 150,
 ) -> str:
@@ -235,7 +235,7 @@ def wrap_in_ssml(
     
     Args:
         text: Text to wrap
-        add_office_bg: (Deprecated - office background now handled at audio level in bidirectional_stream.py)
+        add_office_bg: Deprecated; ignored (SSML <par> office ambience was never enabled).
         start_break_ms: Optional break at start of utterance (ms). Use 0 for no leading silence.
         between_sentence_break_ms: Break inserted between sentences (ms). Use 0 to disable.
     """
@@ -254,8 +254,6 @@ def wrap_in_ssml(
     if start_break_ms and start_break_ms > 0:
         ssml += f'<break time="{int(start_break_ms)}ms"/>'
     
-    # Office background now handled at audio level (not SSML - Google TTS doesn't support <par> tags)
-    # Audio-level mixing in bidirectional_stream.py provides better control
     use_par_tags = False
 
     # Apply SAME prosody to all sentences (prevents clicks/tak sounds)
@@ -307,7 +305,7 @@ def preprocess_for_tts(
     5. Detect emotions (happy, sad, uncertain, confident)
     6. VAPI-STYLE: No mid-sentence fillers (eliminates clicking sounds)
     7. Add breathing (subtle, 3% on very long sentences only)
-    8. Add office background (DISABLED by default, can enable if needed)
+    8. Optional office background flag (deprecated; ignored)
     9. Generate SSML with prosody
     
     Args:
