@@ -1014,6 +1014,16 @@ class BidirectionalStreamHandler:
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
+            v_add = ""
+            if self.call_session and self.call_session.call_metadata:
+                voice_ctx = self.call_session.call_metadata.get("voice_dynamic_context")
+                if isinstance(voice_ctx, dict):
+                    v_add = (voice_ctx.get("system_prompt_addendum") or "").strip()
+            v_block = (
+                f"\n\n# THIS CALL — CANDIDATE & ROLE\n{v_add}\n"
+                if v_add
+                else ""
+            )
             
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
