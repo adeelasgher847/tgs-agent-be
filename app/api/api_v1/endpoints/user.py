@@ -490,10 +490,12 @@ def logout(current_user: User = Depends(get_current_user_jwt), db: Session = Dep
 
 @router.get("/token-info", response_model=SuccessResponse[dict])
 def get_token_information(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
 ):
     """Get detailed information about the current token including expiration"""
     from app.core.security import get_token_info
+    from app.services.role_service import get_user_product_in_tenant
     
     token = credentials.credentials
     token_info = get_token_info(token)
@@ -503,9 +505,28 @@ def get_token_information(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"
         )
+
+    product_id = None
+    product_name = None
+    user_id_val = token_info.get("user_id")
+    tenant_id_val = token_info.get("tenant_id")
+    if user_id_val and tenant_id_val:
+        try:
+            product = get_user_product_in_tenant(
+                db=db,
+                user_id=uuid.UUID(str(user_id_val)),
+                tenant_id=uuid.UUID(str(tenant_id_val)),
+            )
+            if product:
+                product_id = product.id
+                product_name = product.name
+        except (ValueError, TypeError):
+            pass
     
     return create_success_response({
         "token_info": token_info,
+        "product_id": product_id,
+        "product_name": product_name,
         "message": "Token expires in 15 minutes from creation"
     }, "Token information retrieved successfully")
 
