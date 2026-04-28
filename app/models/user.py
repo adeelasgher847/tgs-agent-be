@@ -10,7 +10,8 @@ user_tenant_association = Table(
     Column('user_id', UUID(as_uuid=True), ForeignKey('user.id')),
     Column('tenant_id', UUID(as_uuid=True), ForeignKey('tenant.id')),
     Column('is_creator', Boolean, nullable=False, default=False),
-    Column('role_id', UUID(as_uuid=True), ForeignKey('role.id'), nullable=True)
+    Column('role_id', UUID(as_uuid=True), ForeignKey('role.id'), nullable=True),
+    Column('product_id', UUID(as_uuid=True), ForeignKey('product.id'), nullable=True),
 )
 
 class User(Base):

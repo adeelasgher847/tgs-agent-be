@@ -17,6 +17,7 @@ from app.models.refresh_token import RefreshToken
 from sqlalchemy import update
 from app.core.logger import logger
 from app.services.stripe_service import StripeService
+from app.services.role_service import get_default_product_id
 
 router = APIRouter()
 
@@ -72,6 +73,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     db.add(db_tenant)
     db.commit()
     db.refresh(db_tenant)
+    default_product_id = get_default_product_id(db)
     
     # Get admin role by name
     admin_role = db.query(Role).filter(Role.name == settings.ADMIN_ROLE).first()
@@ -91,7 +93,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     stmt = update(user_tenant_association).where(
         (user_tenant_association.c.user_id == current_user.id) &
         (user_tenant_association.c.tenant_id == db_tenant.id)
-    ).values(role_id=admin_role.id)
+    ).values(role_id=admin_role.id, product_id=default_product_id)
     
     db.execute(stmt)
     

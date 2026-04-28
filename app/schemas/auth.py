@@ -18,6 +18,7 @@ class TokenResponse(BaseModel):
     user_id: uuid.UUID
     email: str
     tenant_id: Optional[uuid.UUID] = None
+    product_id: Optional[uuid.UUID] = None
     tenant_ids: Optional[List[uuid.UUID]] =  Field(default=None, exclude=True)
     role: Optional[RoleInfo] = None
     refresh_token: Optional[str] = None

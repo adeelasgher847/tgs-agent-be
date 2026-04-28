@@ -10,6 +10,7 @@ from app.core.security import verify_token,create_user_token, create_refresh_tok
 from app.models.refresh_token import RefreshToken
 from app.schemas.auth import TokenResponse, RoleInfo
 from app.services.role_service import is_admin_in_tenant
+from app.services.role_service import get_user_product_in_tenant
 import uuid
 
 security = HTTPBearer()
@@ -349,11 +350,18 @@ def issue_tokens_for_user(
     db.add(rt)
     db.commit()
 
+    product_id = None
+    if current_tenant_id:
+        product = get_user_product_in_tenant(db, user.id, current_tenant_id)
+        if product:
+            product_id = product.id
+
     return TokenResponse(
         access_token=access_token,
         user_id=user.id,
         email=user.email,
         tenant_id=current_tenant_id,
+        product_id=product_id,
         tenant_ids=[t.id for t in user.tenants],
         role=role_info,
         refresh_token=rt_value

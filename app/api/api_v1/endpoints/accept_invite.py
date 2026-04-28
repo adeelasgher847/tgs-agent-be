@@ -9,6 +9,7 @@ from app.schemas.base import SuccessResponse
 from app.core.security import get_password_hash, create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.models.refresh_token import RefreshToken
 from app.utils.response import create_success_response
+from app.services.role_service import get_default_product_id
 from datetime import datetime, timezone
 import uuid
 import logging
@@ -107,11 +108,13 @@ def accept_invite(
         )
     
     # Insert into user_tenant_association table
+    default_product_id = get_default_product_id(db)
     db.execute(
         user_tenant_association.insert().values(
             user_id=user.id,
             tenant_id=invite.tenant_id,
-            role_id=member_role.id
+            role_id=member_role.id,
+            product_id=default_product_id
         )
     )
     

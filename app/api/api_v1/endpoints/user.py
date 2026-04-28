@@ -28,6 +28,7 @@ import uuid
 from typing import Optional
 import re
 from app.core.logger import logger
+from app.services.role_service import get_default_product_id
 
 router = APIRouter()
 
@@ -80,6 +81,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     db.add(db_tenant)
     db.commit()
     db.refresh(db_tenant)
+    default_product_id = get_default_product_id(db)
     
     # Get owner role
     owner_role = db.query(Role).filter(Role.name == "owner").first()
@@ -92,7 +94,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     stmt = update(user_tenant_association).where(
         (user_tenant_association.c.user_id == db_user.id) &
         (user_tenant_association.c.tenant_id == db_tenant.id)
-    ).values(role_id=owner_role.id)
+    ).values(role_id=owner_role.id, product_id=default_product_id)
     
     db.execute(stmt)
     
@@ -156,8 +158,13 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     # Get role information for the current tenant
     role_info = None
     current_role = None
+    current_product_id = None
     if current_tenant_id:
-        from app.services.role_service import get_user_role_in_tenant, assign_role_to_user_tenant
+        from app.services.role_service import (
+            get_user_role_in_tenant,
+            get_user_product_in_tenant,
+            assign_role_to_user_tenant,
+        )
         
         # Check if user has a role in this tenant
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
@@ -169,6 +176,9 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
                 description=role.description
             )
             current_role = role.name
+        product = get_user_product_in_tenant(db, user.id, current_tenant_id)
+        if product:
+            current_product_id = product.id
     
     access_token = create_user_token(
         user_id=user.id,
@@ -193,6 +203,7 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         user_id=user.id,
         email=user.email,
         tenant_id=current_tenant_id,
+        product_id=current_product_id,
         tenant_ids=tenant_ids,
         role=role_info,
         refresh_token=rt_value
@@ -286,6 +297,7 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
         db.add(db_tenant)
         db.commit()
         db.refresh(db_tenant)
+        default_product_id = get_default_product_id(db)
 
         owner_role = db.query(Role).filter(Role.name == "owner").first()
 
@@ -295,7 +307,7 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
         stmt = update(user_tenant_association).where(
             (user_tenant_association.c.user_id == db_user.id) &
             (user_tenant_association.c.tenant_id == db_tenant.id)
-        ).values(role_id=owner_role.id)
+        ).values(role_id=owner_role.id, product_id=default_product_id)
         db.execute(stmt)
 
         db_user.current_tenant_id = db_tenant.id
@@ -696,7 +708,7 @@ def get_user_profile(
         role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
-    
+
     # Create user profile response
     user_profile = UserProfile(
         id=user.id,
@@ -767,7 +779,7 @@ def update_user_profile(
         role = get_user_role_in_tenant(db, current_user.id, current_user.current_tenant_id)
         if role:
             role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
-    
+
     # Create updated user profile response
     user_profile = UserProfile(
         id=current_user.id,
