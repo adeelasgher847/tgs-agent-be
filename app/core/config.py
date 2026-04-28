@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     VOICE_ENABLE_INTERIM_LLM: bool = False
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
     VOICE_MIN_INTERIM_WORDS: int = 3
-    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.25
+    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.19
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
     # (legacy default was 100). Too low picks up line noise.
