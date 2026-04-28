@@ -1018,7 +1018,6 @@ class BidirectionalStreamHandler:
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
-{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
@@ -1063,7 +1062,6 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # CUSTOM INSTRUCTIONS
 {self.agent.system_prompt}
-{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
@@ -1103,7 +1101,6 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # MODEL INSTRUCTIONS
 {self.agent.model.system_prompt}
-{v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
