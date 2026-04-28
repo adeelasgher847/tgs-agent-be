@@ -11,6 +11,11 @@ from app.core.config import settings
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
+from app.utils.eleven_tts_text import (
+    build_elevenlabs_audio_tag_prompt_block,
+    get_elevenlabs_voice_prompt_rule_lines,
+    supports_elevenlabs_audio_tags,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +109,6 @@ class ConversationActions:
     """
 
     quick_ack_text: Optional[str] = None
-    backchannel_text: Optional[str] = None
     start_llm_response: bool = False
     end_call_after: bool = False
 
@@ -116,7 +120,6 @@ class ConversationActions:
 class ConversationOrchestrator:
     """
     Encapsulates conversation + policy logic for a single bidirectional call:
-    - Backchannel scheduling.
     - Quick-ack rules (length/probability/banned phrases).
     - History windowing and prompt construction.
     - LLM provider/model selection and streaming.
@@ -128,100 +131,19 @@ class ConversationOrchestrator:
     def __init__(self, handler: Any):
         self._h = handler
 
-    # ---- Backchannels -------------------------------------------------
-
-    async def maybe_inject_backchannel(self, transcript: str) -> None:
-        """
-        Inject backchannel responses during long user monologues.
-        Triggered after 5-7 seconds of continuous user speech.
-        """
-        now = time.time()
-
-        # Track user speech duration
-        if not self._h._last_user_speech_start:
-            self._h._last_user_speech_start = now
-
-        speech_duration = now - self._h._last_user_speech_start
-        time_since_last_backchannel = now - self._h._last_backchannel_time
-
-        # Inject backchannel if:
-        # 1. User has been speaking for 5-7+ seconds
-        # 2. At least 3 seconds since last backchannel
-        # 3. We're not currently speaking
-        # 4. Random chance (30%) for naturalness
-        should_backchannel = (
-            speech_duration >= random.uniform(5.0, 7.0)
-            and time_since_last_backchannel >= 3.0
-            and not self._h.is_speaking
-            and random.random() < 0.3
-        )
-
-        if should_backchannel and self._h._tts_pipeline:
-            backchannel = random.choice(self._h._backchannel_phrases)
-            await self._h._tts_pipeline.queue_tts(
-                {
-                    "text": backchannel,
-                    "chunk_id": "backchannel",
-                    "is_backchannel": True,
-                    "is_final": True,
-                    "use_ssml": False,
-                }
-            )
-            self._h._last_backchannel_time = now
-
     # ---- Interim processing / barge-in gating -------------------------
 
     async def process_interim(self, transcript: str, confidence: float) -> None:
         """
-        ULTRA-AGGRESSIVE interim processing for minimal latency.
-        Decides when to start LLM generation from interim, and handles barge-in.
+        Delegates to the bidirectional stream handler (single source of truth).
         """
-        if not transcript:
-            return
-
-        # Check for backchannel opportunity during long user speech
-        await self.maybe_inject_backchannel(transcript)
-
-        # Calculate word count for checks
-        word_count = len(transcript.split())
-
-        # ✅ BARGE-IN CHECK FIRST - Highest priority! Stop agent immediately!
-        # Detection: 2+ words, agent currently speaking
-        if self._h._tts_pipeline and self._h._tts_pipeline.is_speaking and word_count >= 2:
-            # Set cancel flag, clear queue, and mark agent as not speaking
-            await self._h._tts_pipeline.cancel_current_and_clear_queue()
-            # Don't process interim during barge-in - wait for final transcript
-            return
-
-        # Basic gating: confidence and minimum words (for LLM generation only)
-        if confidence < self._h._min_interim_confidence or word_count < self._h._min_interim_words:
-            return
-
-        # Ultra-aggressive throttling: only 100ms between triggers
-        now = asyncio.get_event_loop().time()
-        if (now - self._h._last_interim_sent_ts) < self._h._min_interim_interval_sec:
-            return
-
-        # ULTRA-AGGRESSIVE: Process even small advances (no minimum word requirement)
-        # This ensures we start LLM generation as soon as possible
-        if self._h._last_interim_text and transcript.startswith(self._h._last_interim_text):
-            advanced = transcript[len(self._h._last_interim_text) :].strip()
-            # Skip only if there's literally no new content
-            if not advanced:
-                return
-
-        # Passed heuristics → process immediately to start LLM generation (30ms-style trigger)
-        self._h._last_interim_text = transcript
-        self._h._last_interim_sent_ts = now
-        self._h._turn_response_started = True  # One response per turn; final will not start a second one
-        await self.generate_and_stream_response(transcript, confidence)
+        await self._h._maybe_process_interim(transcript, confidence)
 
     # ---- Quick acknowledgements ---------------------------------------
 
     async def send_quick_acknowledgement(self, user_text: str) -> None:
         """
         Send instant acknowledgement for longer queries while generating full response.
-        Uses pre-cached phrases for <50ms latency.
         Probability-based so we don't say "Got it" every time — more natural.
         Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
         """
@@ -300,6 +222,7 @@ class ConversationOrchestrator:
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
             self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
+            self._h._elevenlabs_prev_tts_text = ""  # Reset provider continuity state per response turn
             self._h._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
             # Send quick acknowledgement for longer queries (instant from cache!)
@@ -351,6 +274,23 @@ class ConversationOrchestrator:
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
+            tts_provider = getattr(self._h.agent, "tts_provider", None) if self._h.agent else None
+            tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
+            elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
+            if elevenlabs_audio_tags_enabled:
+                output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
+                    get_elevenlabs_voice_prompt_rule_lines()
+                )
+            else:
+                output_plain_text_rule = (
+                    "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
+                    "Prosody is handled by the system."
+                )
+                no_ssml_rule_base = (
+                    "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+                )
+                no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
+            elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
 
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
@@ -361,7 +301,7 @@ You are {agent_name}, having a real-time phone call with a human.
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. Prosody is handled by the system.
+{output_plain_text_rule}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -372,7 +312,9 @@ Previous conversation:
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.
+{no_ssml_rule_base}
+
+{elevenlabs_audio_tag_block}
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -388,7 +330,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
+{output_plain_text_rule}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -398,7 +340,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -412,7 +356,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or tags. Prosody is handled by the system.
+{output_plain_text_rule}
 
 # CONVERSATION STATE
 Previous conversation:
@@ -421,7 +365,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
@@ -623,7 +569,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         High-level decision point for a user speech event.
 
         Returns a ConversationActions description while also performing
-        the underlying side effects (quick-acks, backchannels, LLM/TTS)
+        the underlying side effects (quick-acks, LLM/TTS)
         so the existing handler flow keeps working unchanged.
         """
         actions = ConversationActions()
@@ -634,19 +580,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         confidence = float(audio_stats.get("confidence", 0.0)) if audio_stats else 0.0
 
         if not is_final:
-            # Interim path: barge-in, backchannels, early LLM start.
+            # Interim path: barge-in, early LLM start.
             await self.process_interim(text, confidence)
             # Reflect whether we decided to start an interim-driven response.
             actions.start_llm_response = bool(getattr(self._h, "_turn_response_started", False))
             return actions
 
-        # Final user utterance: quick-ack + full response.
-        # Quick-ack (if any) is enqueued internally; we still mark that we *may* have sent one.
-        await self.send_quick_acknowledgement(text)
-        actions.quick_ack_text = None  # selection is handled internally for now
-
-        # Full LLM response (streamed into TTS pipeline).
-        await self.generate_and_stream_response(text, confidence, is_greeting=False)
+        # Full LLM path matches bidirectional _process_transcript (commit + no duplicate interim)
+        await self._h._add_to_transcript("client", text, "speech", confidence)
+        self._h._update_booking_memory_from_user_turn(text)
+        await self._h._complete_llm_turn_after_stt_final(text, confidence)
         actions.start_llm_response = True
         actions.should_persist_history = True
 

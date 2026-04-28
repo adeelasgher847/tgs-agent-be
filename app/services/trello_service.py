@@ -101,6 +101,46 @@ class TrelloService(BaseCRMService):
             "token": self.get_api_token(),
         }
 
+    @staticmethod
+    def parse_board_id_from_url_or_id(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        v = value.strip()
+        if not v:
+            return None
+        m = re.search(r"(?:https?://)?(?:www\.)?trello\.com/b/([^/?#]+)", v, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+        return v
+
+    def delete_card(self, card_id: str) -> bool:
+        if not card_id:
+            return False
+        url = f"{self.API_URL}/cards/{card_id}"
+        try:
+            response = requests.delete(url, params=self._auth_params(), timeout=20)
+            if response.status_code in (200, 204):
+                return True
+            if response.status_code == 404:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def delete_board(self, board_id: str) -> bool:
+        if not board_id:
+            return False
+        url = f"{self.API_URL}/boards/{board_id}"
+        try:
+            response = requests.delete(url, params=self._auth_params(), timeout=30)
+            if response.status_code in (200, 204):
+                return True
+            if response.status_code == 404:
+                return True
+            return False
+        except Exception:
+            return False
+
     def create_container(self, container_name: str, **kwargs) -> Dict[str, str]:
         """
         Create a Trello board for scheduled calls.
@@ -967,4 +1007,89 @@ class TrelloService(BaseCRMService):
                 updated_count += 1
         
         return updated_count
+
+    # --- Inbound call log → CRM (tenant boards; separate from scheduled calls) ---
+
+    INBOUND_LIST_NAME_DEFAULT = "Inbound call logs"
+    TRELLO_DESC_MAX_CHARS = 16300
+
+    def validate_credentials(self) -> Dict[str, str]:
+        url = f"{self.API_URL}/members/me"
+        params = self._auth_params()
+        params["fields"] = "id,username,fullName"
+        response = requests.get(url, params=params, timeout=20)
+        if response.status_code == 401:
+            raise ValueError("Trello authentication failed — check API key and token.")
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "id": data.get("id", ""),
+            "username": data.get("username", ""),
+            "fullName": data.get("fullName", ""),
+        }
+
+    def ensure_inbound_call_logs_list(self, board_id: str, list_name: Optional[str] = None) -> str:
+        name = list_name or self.INBOUND_LIST_NAME_DEFAULT
+        url = f"{self.API_URL}/boards/{board_id}/lists"
+        params = self._auth_params()
+        params["filter"] = "open"
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        for lst in response.json():
+            if lst.get("name", "").strip() == name:
+                return lst["id"]
+        create_url = f"{self.API_URL}/lists"
+        create_params = self._auth_params()
+        create_params.update({"name": name, "idBoard": board_id, "pos": "top"})
+        create_resp = requests.post(create_url, params=create_params, timeout=20)
+        create_resp.raise_for_status()
+        created = create_resp.json()
+        lid = created.get("id", "")
+        if not lid:
+            raise ValueError("Trello did not return a list id after create")
+        return lid
+
+    def _truncate_desc(self, text: str) -> str:
+        if len(text) <= self.TRELLO_DESC_MAX_CHARS:
+            return text
+        tail = "\n\n…(truncated)"
+        return text[: self.TRELLO_DESC_MAX_CHARS - len(tail)] + tail
+
+    def create_inbound_call_log_card(self, list_id: str, card_name: str, description: str) -> Dict[str, str]:
+        url = f"{self.API_URL}/cards"
+        params = self._auth_params()
+        params.update(
+            {
+                "idList": list_id,
+                "name": card_name[:256] if len(card_name) > 256 else card_name,
+                "desc": self._truncate_desc(description or ""),
+            }
+        )
+        response = requests.post(url, params=params, timeout=30)
+        if response.status_code == 401:
+            raise ValueError("Trello authentication failed while creating card.")
+        response.raise_for_status()
+        data = response.json()
+        cid = data.get("id", "")
+        card_url = data.get("shortUrl") or data.get("url") or ""
+        if not cid:
+            raise ValueError("Trello did not return card id")
+        return {"id": cid, "url": card_url}
+
+    def update_inbound_call_log_card(
+        self, card_id: str, card_name: Optional[str] = None, description: Optional[str] = None
+    ) -> Dict[str, str]:
+        url = f"{self.API_URL}/cards/{card_id}"
+        params = self._auth_params()
+        if card_name is not None:
+            params["name"] = card_name[:256] if len(card_name) > 256 else card_name
+        if description is not None:
+            params["desc"] = self._truncate_desc(description)
+        response = requests.put(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "id": data.get("id", card_id),
+            "url": data.get("shortUrl") or data.get("url") or "",
+        }
 

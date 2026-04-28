@@ -1,5 +1,5 @@
 """
-Fast Conversational AI Router using Twilio Gather + Google STT + LLM + TTS
+Fast Conversational AI Router using Twilio Gather + Deepgram STT + LLM + TTS
 Optimized for 3-4 second latency per turn
 """
 
@@ -19,7 +19,7 @@ from app.api.deps import get_db
 from app.services.twilio_service import twilio_service
 from app.services.agent_service import agent_service
 from app.services.call_session_service import call_session_service
-from app.services.google_stt_service import google_stt_service
+from app.services.deepgram_stt_service import deepgram_stt_service
 from app.services.google_tts_service import google_tts_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.gemini_service import gemini_service
@@ -31,6 +31,7 @@ from app.routers.general_websocket import broadcast_transcript_update, broadcast
 from urllib.parse import quote
 import hashlib
 from app.routers.bidirectional_stream import build_streaming_twiml
+from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 
 router = APIRouter()
 model_service = ModelService()
@@ -51,8 +52,11 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
     Uses Chirp 3: HD model for ultra-realistic, human-like voices
     """
     try:
+        text = prepare_tts_text_for_provider(text, "google")
+        if not text or not text.strip():
+            return
         cache_key = generate_cache_key(text, language, voice_type, use_chirp3_hd, format)
-        
+
         if cache_key not in audio_cache:
             # Generate audio with Chirp 3: HD model
             voice_label = "Chirp 3: HD" if use_chirp3_hd else "Neural2"
@@ -110,21 +114,8 @@ def get_agent_voice(agent) -> str:
     return voice_map.get(language, voice_map["en"]).get(voice_type, "Polly.Joanna")
 
 
-def get_gather_language(agent) -> str:
-    """Get language code for Twilio Gather based on agent language"""
-    if not agent or not agent.language:
-        return "en-US"
-    
-    language_map = {
-        "en": "en-US",
-        "es": "es-ES",
-        "hi": "hi-IN",
-        "ar": "ar-SA",
-        "zh": "zh-CN",
-        "ur": "ur-PK"
-    }
-    
-    return language_map.get(agent.language, "en-US")
+# Twilio Gather speech recognition language (English only for this product path).
+TWILIO_GATHER_LANGUAGE = "en-US"
 
 
 async def add_to_transcript(
@@ -208,7 +199,7 @@ async def gather_greeting_webhook(
         
         # Create TwiML response
         response = VoiceResponse()
-        gather_language = get_gather_language(agent)
+        gather_language = TWILIO_GATHER_LANGUAGE
         
         # GREETING: Say "Hello" when call starts! 👋
         greeting_text = "Hello"
@@ -325,7 +316,7 @@ async def gather_speech_callback_webhook(
     Flow:
     1. Receive speech input from Twilio Gather
     2. Download audio recording
-    3. Transcribe with Google Cloud STT
+    3. Transcribe with Deepgram STT
     4. Pass transcript to LLM (Gemini/GPT)
     5. Generate AI response text
     6. Return TwiML with <Say> + <Gather> to continue conversation
@@ -372,7 +363,7 @@ async def gather_speech_callback_webhook(
                 logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
         
         # Get agent voice and language
-        gather_language = get_gather_language(agent)
+        gather_language = TWILIO_GATHER_LANGUAGE
         
         # Get real-time call duration
         call_duration = get_call_duration_realtime(call_session) if call_session else "00:00"
@@ -408,26 +399,14 @@ async def gather_speech_callback_webhook(
                     
                     logger.info(f"✅ Downloaded {len(audio_content)} bytes in {download_time:.2f}s")
                     
-                    # STEP 3 & 4: Convert and transcribe with Google STT
+                    # STEP 3 & 4: Convert and transcribe with Deepgram STT
                     stt_start = datetime.now(timezone.utc)
                     
-                    # Get language from agent
-                    stt_language_code = "en-US"
-                    if agent and hasattr(agent, 'language'):
-                        language_map = {
-                            "en": "en-US",
-                            "es": "es-ES",
-                            "hi": "hi-IN",
-                            "ar": "ar-SA",
-                            "zh": "zh-CN",
-                            "ur": "ur-PK"
-                        }
-                        stt_language_code = language_map.get(agent.language, "en-US")
+                    stt_language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
                     
-                    logger.info(f"🎙️ Transcribing with Google Cloud STT (language: {stt_language_code})...")
+                    logger.info(f"🎙️ Transcribing with Deepgram STT (language: {stt_language_code})...")
                     
-                    # Transcribe with Google STT
-                    stt_result = await google_stt_service.transcribe_audio_chunk_streaming(
+                    stt_result = await deepgram_stt_service.transcribe_audio_chunk(
                         audio_content=audio_content,
                         language_code=stt_language_code
                     )
@@ -436,14 +415,14 @@ async def gather_speech_callback_webhook(
                     stt_confidence = stt_result.get("confidence", 0.0)
                     stt_time = (datetime.now(timezone.utc) - stt_start).total_seconds()
                     
-                    logger.info(f"✅ Google STT: '{transcript}' (confidence: {stt_confidence:.2f}, time: {stt_time:.2f}s)")
+                    logger.info(f"✅ Deepgram STT: '{transcript}' (confidence: {stt_confidence:.2f}, time: {stt_time:.2f}s)")
                 else:
                     logger.warning(f"⚠️ Failed to download audio: HTTP {audio_response.status_code}")
             
             except Exception as e:
                 logger.error(f"⚠️ Error processing audio: {e}", exc_info=True)
         
-        # Fallback to Twilio's transcript if Google STT failed
+        # Fallback to Twilio's transcript if Deepgram STT failed
         if not transcript and speech_result:
             transcript = speech_result
             stt_confidence = float(confidence)
@@ -511,7 +490,7 @@ async def gather_speech_callback_webhook(
                 metadata={
                     "call_sid": call_sid,
                     "agent_id": str(agent.id) if agent else None,
-                    "source": "google_stt" if recording_url else "twilio"
+                    "source": "deepgram_stt" if recording_url else "twilio"
                 }
             ))
         
@@ -572,34 +551,32 @@ async def gather_speech_callback_webhook(
         
         tts_start = datetime.now(timezone.utc)
         try:
-            # Check if already cached
-            use_websocket_tts = getattr(settings, 'USE_WEBSOCKET_TTS', False)
+            use_websocket_tts = getattr(settings, "USE_WEBSOCKET_TTS", False)
             output_fmt = "mulaw" if use_websocket_tts else "mp3"
-            cache_key = generate_cache_key(response_text, lang, voice, True, output_fmt)
-            
-            if cache_key not in audio_cache:
-                # Pre-generate audio BEFORE sending TwiML
-                logger.debug(f"⚡ Pre-generating TTS audio with Chirp 3: HD: '{response_text[:50]}...'")
-                
-                rate = 0.95  # Optimized for natural conversation
-                audio_content = google_tts_service.text_to_speech(
-                    text=response_text,
-                    language=lang,
-                    voice_type=voice,
-                    speaking_rate=rate,
-                    pitch=0.0,
-                    output_format=output_fmt, # mp3 default
-                    use_chirp3_hd=True  # Use Chirp 3: HD model
-                )
-                
-                # Cache it for instant playback
-                audio_cache[cache_key] = audio_content
-                
-                tts_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
-                logger.info(f"✅ TTS pre-generated: {len(audio_content)} bytes in {tts_time:.2f}s (cached)")
-            else:
-                logger.debug(f"⚡ TTS already cached: '{response_text[:50]}...'")
-                
+            response_tts = prepare_tts_text_for_provider(response_text, "google")
+            if response_tts and response_tts.strip():
+                cache_key = generate_cache_key(response_tts, lang, voice, True, output_fmt)
+                if cache_key not in audio_cache:
+                    logger.debug(
+                        f"⚡ Pre-generating TTS audio with Chirp 3: HD: '{response_tts[:50]}...'"
+                    )
+                    rate = 0.95
+                    audio_content = google_tts_service.text_to_speech(
+                        text=response_tts,
+                        language=lang,
+                        voice_type=voice,
+                        speaking_rate=rate,
+                        pitch=0.0,
+                        output_format=output_fmt,
+                        use_chirp3_hd=True,
+                    )
+                    audio_cache[cache_key] = audio_content
+                    tts_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
+                    logger.info(
+                        f"✅ TTS pre-generated: {len(audio_content)} bytes in {tts_time:.2f}s (cached)"
+                    )
+                else:
+                    logger.debug(f"⚡ TTS already cached: '{response_tts[:50]}...'")
         except Exception as e:
             logger.warning(f"⚠️ TTS pre-generation failed (will generate on-demand): {e}")
         
@@ -753,7 +730,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "voice-gather-conversation",
-        "description": "Fast conversational AI using Twilio Gather + Google STT + LLM",
+        "description": "Fast conversational AI using Twilio Gather + Deepgram STT + LLM",
         "target_latency": "3-4 seconds per turn",
         "endpoints": {
             "greeting": "/api/v1/voice/gather/greeting",

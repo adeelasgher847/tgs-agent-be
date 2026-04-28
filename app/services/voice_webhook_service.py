@@ -23,7 +23,7 @@ from app.routers.general_websocket import (
 )
 from app.core.config import settings
 from app.services.voice_conversation_service import add_to_transcript
-from app.services.voice_language_service import get_gather_language, get_agent_voice
+from app.services.voice_language_service import get_agent_voice
 from app.services.voice_twilio_utils import get_twilio_credentials_for_call
 from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.response import create_success_response
@@ -90,7 +90,7 @@ async def handle_call_events_webhook(
         direction = form_data.get("Direction", "")
 
         logger.info(
-            "🎤 Speech handling is now managed by Google Cloud STT WebSocket"
+            "🎤 Speech handling is now managed by Deepgram STT WebSocket"
         )
 
         call_session = None
@@ -441,16 +441,16 @@ async def handle_call_events_webhook(
                         broadcast_call_ended(
                             call_session_id=str(call_session.id),
                             reason="failed",
-                            duration=0,
-                            metadata={
+                            final_data={
                                 "call_sid": call_sid,
                                 "direction": direction,
+                                "duration": 0,
                                 "timestamp": datetime.now(
                                     timezone.utc
                                 ).isoformat(),
                             },
                         )
-                    ))
+                    )
                 except Exception as e:  # pragma: no cover
                     logger.error("❌ Failed to broadcast call failed event: %s", e)
 
@@ -493,10 +493,10 @@ async def handle_call_events_webhook(
                         broadcast_call_ended(
                             call_session_id=str(call_session.id),
                             reason="busy",
-                            duration=0,
-                            metadata={
+                            final_data={
                                 "call_sid": call_sid,
                                 "direction": direction,
+                                "duration": 0,
                                 "timestamp": datetime.now(
                                     timezone.utc
                                 ).isoformat(),
@@ -552,10 +552,10 @@ async def handle_call_events_webhook(
                         broadcast_call_ended(
                             call_session_id=str(call_session.id),
                             reason="no-answer",
-                            duration=0,
-                            metadata={
+                            final_data={
                                 "call_sid": call_sid,
                                 "direction": direction,
+                                "duration": 0,
                                 "timestamp": datetime.now(
                                     timezone.utc
                                 ).isoformat(),

@@ -27,11 +27,14 @@ from app.routers.resume import router as resume_router
 from app.routers.resume_interviews import router as resume_interviews_router
 from app.routers.scheduled_calls import router as scheduled_calls_router
 from app.routers.tts_audio import router as tts_audio_router
+from app.routers.tts import router as tts_router
 from app.routers.voice import router as voice_router
 from app.routers.voice_gather import router as voice_gather_router
 from app.routers.live_voice import router as live_voice_router
 from app.routers.general_websocket import router as general_websocket_router
-
+from app.routers.calendar import router as calendar_router
+from app.routers.inbound_crm import router as inbound_crm_router
+from app.routers.internal_tts import router as internal_tts_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -64,6 +67,8 @@ api_router.include_router(model.router, prefix="/models", tags=["models"])
 api_router.include_router(gemini.router, prefix="/gemini", tags=["gemini"], include_in_schema=False)
 api_router.include_router(openai.router, prefix="/openai", tags=["openai"], include_in_schema=False)
 api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
+api_router.include_router(tts_router, prefix="/tts", tags=["TTS"])
+api_router.include_router(internal_tts_router, prefix="/internal/tts", tags=["Internal TTS"])
 api_router.include_router(
     bidirectional_stream_router,
     prefix="/stream",
@@ -79,6 +84,8 @@ api_router.include_router(
     include_in_schema=False,
 )
 api_router.include_router(knowledge_base_router, prefix="/kb", tags=["Knowledge Base"])
+api_router.include_router(calendar_router, prefix="/calendar", tags=["Calendar"])
+api_router.include_router(inbound_crm_router, prefix="/inbound-crm", tags=["Inbound CRM — Call logs"])
 api_router.include_router(
     job_description_router,
     prefix="/recruiting/job-descriptions",

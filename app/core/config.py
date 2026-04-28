@@ -41,13 +41,30 @@ class Settings(BaseSettings):
     
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
+    # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
+    # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
+    ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
     
     # Google Cloud Speech-to-Text Configuration
     GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
-    GOOGLE_STT_SAMPLE_RATE: int = 8000  # Twilio uses 8kHz for MULAW
+    # Deprecated fallback; prefer STT_SAMPLE_RATE for provider-neutral STT settings.
+    GOOGLE_STT_SAMPLE_RATE: int = 8000
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
+
+    # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
+    DEEPGRAM_API_KEY: str = ""
+    DEEPGRAM_STT_MODEL: str = "nova-3"
+    DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
+    # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
+    # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 300
+    # After the agent asks for email, bidirectional stream may reopen STT once with this value.
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
+    # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
+    VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT: bool = True
+    STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
@@ -61,14 +78,54 @@ class Settings(BaseSettings):
 
     # Voice streaming tunables (phase 6 centralization)
     VOICE_STT_INTERIM_INTERVAL_MS: int = 30
+    # Deepgram fires many more partials than classic Google STT. Running LLM on every
+    # interim → double replies + TTS "breaks." Default: final STT only (one reply per
+    # utterance). Set True for lower first-token latency at the cost of stability.
+    VOICE_ENABLE_INTERIM_LLM: bool = False
+    # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
+    VOICE_MIN_INTERIM_WORDS: int = 3
+    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.52
+    # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
+    # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
+    # (legacy default was 100). Too low picks up line noise.
+    VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 40
+    # Drop Deepgram final transcripts below this (0.0–1.0). Default slightly below 0.30 so
+    # quiet/soft speech is not rejected as often; too low adds garbage.
+    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.16
+    # Optional adaptive fallback: accept lower-confidence finals when they still look like
+    # real speech (multi-word, alpha content). Helps callers with soft volume mid-call.
+    VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK: bool = True
+    VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.12
+    VOICE_STT_SOFT_MIN_WORDS: int = 2
+    # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
+    # Slightly below old 0.30 so a softer "wait" / "hold on" still cancels TTS.
+    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.20
+    # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.52
     VOICE_HISTORY_MAX_MESSAGES: int = 12
     VOICE_TTS_FLUSH_MIN_WORDS: int = 2
     VOICE_TTS_FLUSH_MAX_WORDS: int = 12
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     VOICE_QUICK_ACK_PROBABILITY: float = 0.38
-    
-    FRONTEND_URL: str = "http://localhost:3000"  
-    
+
+    # Vapi-style intelligent contact recovery (additive — never downgrades intake confidence).
+    # 1) Deterministic email STT-artifact cleanup: strip commas/spaces inside an email span
+    #    ("ali.sa,ee,b@gmail.com" -> "ali.saeeb@gmail.com") before strict validation.
+    EMAIL_STT_CLEANUP_ENABLED: bool = True
+    # 2) Natural confirmation path: when the agent repeats a name ("just to confirm, your
+    #    name is Alex Carter") and the caller affirms ("yes" / "correct"), mark name_confident
+    #    without requiring letter-by-letter spelling.
+    VOICE_NATURAL_NAME_CONFIRMATION: bool = True
+    # 3) Post-call LLM recovery for contact (name/email) when strict intake gate would fail.
+    #    Only invoked AFTER the call ends, behind a flag, and only if OPENAI_API_KEY is set.
+    POST_CALL_LLM_CONTACT_RECOVERY: bool = True
+    POST_CALL_LLM_CONTACT_RECOVERY_MODEL: str = "gpt-4o-mini"
+    # If name is already confident but email is missing, still run post-call contact LLM once.
+    POST_CALL_LLM_EMAIL_RECOVERY_WHEN_NAME_OK: bool = True
+    # If the model returns a valid normalized email but email_confident=false, trust it when
+    # the same address is clearly present in the transcript (reduces false negatives).
+    POST_CALL_LLM_EMAIL_ANCHOR_TRUST: bool = True
+
     # Stripe settings
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
@@ -82,13 +139,6 @@ class Settings(BaseSettings):
     PRO_PLAN_AGENT_LIMIT: int = 50
     PRO_PLAN_MONTHLY_CALLS: int = 10000
     
-    # Twilio settings
-    TWILIO_ACCOUNT_SID: str = ""
-    TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_PHONE_NUMBER: str = ""
-    
-    # Webhook settings
-    ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
     # Rate limiting settings
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True
@@ -155,6 +205,10 @@ class Settings(BaseSettings):
     # Higher means more trust in vector similarity.
     RAG_RERANK_VECTOR_WEIGHT: float = 0.8
     
+    # Trello — platform-managed inbound call boards (optional)
+    TRELLO_PLATFORM_API_KEY: str = ""
+    TRELLO_PLATFORM_API_TOKEN: str = ""
+
     # Monday.com Configuration
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls

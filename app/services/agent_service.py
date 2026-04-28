@@ -1,9 +1,12 @@
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
 from app.models.model import Model
 from app.models.knowledge_base_document import KnowledgeBaseDocument
+from app.models.tts_provider import TTSProvider
+from app.models.tts_voice import TTSVoice
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
@@ -11,13 +14,134 @@ from app.services.rag_service import rag_service
 from app.core.config import settings
 from fastapi import HTTPException, status
 import uuid
+import re
 from app.core.logger import logger
 
 class AgentService:
     """
     Agent service with business logic for agent operations
     """
-    
+
+    def _validate_tts_selection(
+        self,
+        db: Session,
+        *,
+        tts_provider_id: Optional[uuid.UUID],
+        tts_voice_id: Optional[uuid.UUID],
+    ) -> Dict[str, Any]:
+        """
+        Validate optional TTS provider/voice selection.
+        Returns normalized ids where provider can be inferred from voice.
+        """
+        normalized = {
+            "tts_provider_id": tts_provider_id,
+            "tts_voice_id": tts_voice_id,
+        }
+
+        if not tts_provider_id and not tts_voice_id:
+            return normalized
+
+        provider = None
+        if tts_provider_id:
+            provider = db.query(TTSProvider).filter(TTSProvider.id == tts_provider_id).first()
+            if not provider or not provider.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid tts_provider_id. Provider not found or inactive.",
+                )
+
+        if tts_voice_id:
+            voice = db.query(TTSVoice).filter(TTSVoice.id == tts_voice_id).first()
+            if not voice or not voice.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid tts_voice_id. Voice not found or inactive.",
+                )
+
+            if provider and voice.provider_id != provider.id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Selected TTS voice does not belong to the selected provider.",
+                )
+
+            normalized["tts_provider_id"] = provider.id if provider else voice.provider_id
+            normalized["tts_voice_id"] = voice.id
+        elif provider:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="tts_voice_id is required when selecting a tts_provider_id.",
+            )
+
+        return normalized
+
+    def _validate_tts_settings_payload(self, tts_settings_json: Optional[Dict[str, Any]]) -> None:
+        if not tts_settings_json:
+            return
+        suspicious_key_pattern = re.compile(r"(api[_-]?key|token|secret|authorization|credential|xi[_-]?api[_-]?key)", re.IGNORECASE)
+
+        def _walk(value: Any) -> bool:
+            if isinstance(value, dict):
+                for raw_key, nested_value in value.items():
+                    if suspicious_key_pattern.search(str(raw_key or "")):
+                        return True
+                    if _walk(nested_value):
+                        return True
+            elif isinstance(value, list):
+                return any(_walk(item) for item in value)
+            return False
+
+        if _walk(tts_settings_json):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="TTS provider credentials must not be passed in request payload.",
+            )
+
+        if "background_enabled" in tts_settings_json:
+            raw_enabled = tts_settings_json.get("background_enabled")
+            if isinstance(raw_enabled, bool):
+                pass
+            elif isinstance(raw_enabled, str):
+                normalized = raw_enabled.strip().lower()
+                if normalized not in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            "background_enabled must be a boolean or one of: "
+                            "true/false, 1/0, on/off, yes/no."
+                        ),
+                    )
+            elif raw_enabled is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "background_enabled must be a boolean or one of: "
+                        "true/false, 1/0, on/off, yes/no."
+                    ),
+                )
+
+        if "background_profile" in tts_settings_json:
+            profile = str(tts_settings_json.get("background_profile") or "").strip().lower()
+            if profile and profile not in {"office", "cafe", "call_center", "none"}:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="background_profile must be one of: office, cafe, call_center, none.",
+                )
+
+        if "background_volume" in tts_settings_json:
+            raw_volume = tts_settings_json.get("background_volume")
+            try:
+                volume = float(raw_volume)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="background_volume must be a number between 0 and 100.",
+                )
+            if volume < 0 or volume > 100:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="background_volume must be between 0 and 100.",
+                )
+
     def _auto_ingest_agent_system_prompt(self, db: Session, agent: Agent) -> None:
         """
         Automatically ingest agent system_prompt into RAG (best-effort).
@@ -165,10 +289,39 @@ class AgentService:
         agent_data['tenant_id'] = tenant_id
         agent_data['created_by'] = user_id
         agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
+
+        normalized_tts = self._validate_tts_selection(
+            db,
+            tts_provider_id=agent_data.get("tts_provider_id"),
+            tts_voice_id=agent_data.get("tts_voice_id"),
+        )
+        agent_data["tts_provider_id"] = normalized_tts.get("tts_provider_id")
+        agent_data["tts_voice_id"] = normalized_tts.get("tts_voice_id")
+        self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
+
+        # Enforce one dedicated inbound agent per tenant.
+        if agent_data.get("is_inbound_agent"):
+            existing_inbound_agent = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_inbound_agent == True,
+            ).first()
+            if existing_inbound_agent:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only one dedicated inbound agent is allowed per tenant.",
+                )
         
         db_agent = Agent(**agent_data)
         db.add(db_agent)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Only one dedicated inbound agent is allowed per tenant.",
+            )
         db.refresh(db_agent)
         self._auto_ingest_agent_system_prompt(db, db_agent)
         
@@ -275,6 +428,29 @@ class AgentService:
                     detail="Invalid model_id. Model not found or is archived."
                 )
 
+        # Enforce one dedicated inbound agent per tenant.
+        if update_dict.get("is_inbound_agent") is True:
+            existing_inbound_agent = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_inbound_agent == True,
+                Agent.id != agent_id,
+            ).first()
+            if existing_inbound_agent:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only one dedicated inbound agent is allowed per tenant.",
+                )
+
+        normalized_tts = self._validate_tts_selection(
+            db,
+            tts_provider_id=update_dict.get("tts_provider_id", agent.tts_provider_id),
+            tts_voice_id=update_dict.get("tts_voice_id", agent.tts_voice_id),
+        )
+        update_dict["tts_provider_id"] = normalized_tts.get("tts_provider_id")
+        update_dict["tts_voice_id"] = normalized_tts.get("tts_voice_id")
+        self._validate_tts_settings_payload(update_dict.get("tts_settings_json"))
+
         # If name is being updated, check for duplicates
         if "name" in update_dict and update_dict["name"]:
             new_name = update_dict["name"].strip()
@@ -319,10 +495,129 @@ class AgentService:
         # Update the updated_by field
         agent.updated_by = user_id
         
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Only one dedicated inbound agent is allowed per tenant.",
+            )
         db.refresh(agent)
         self._auto_ingest_agent_system_prompt(db, agent)
         return agent
+
+    def get_inbound_agent_knowledge_snapshot(
+        self, db: Session, inbound_agent_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> Dict[str, Any]:
+        """
+        Returns a tenant-wide context snapshot for an inbound agent:
+        - other active agents' prompts
+        - active KB documents in the tenant
+        """
+        inbound_agent = self.get_agent_by_id(db, inbound_agent_id, tenant_id)
+        if not inbound_agent.is_inbound_agent:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Requested agent is not marked as an inbound agent.",
+            )
+
+        agent_prompts = db.query(Agent).filter(
+            Agent.tenant_id == tenant_id,
+            Agent.is_deleted == False,
+            Agent.id != inbound_agent_id,
+        ).all()
+
+        kb_documents = db.query(KnowledgeBaseDocument).filter(
+            KnowledgeBaseDocument.tenant_id == tenant_id,
+            KnowledgeBaseDocument.is_active == True,  # noqa: E712
+        ).all()
+
+        return {
+            "inbound_agent_id": str(inbound_agent.id),
+            "tenant_id": str(tenant_id),
+            "agent_prompts": [
+                {
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "system_prompt": agent.system_prompt,
+                }
+                for agent in agent_prompts
+                if agent.system_prompt
+            ],
+            "knowledge_documents": [
+                {
+                    "document_id": str(doc.id),
+                    "title": doc.title,
+                    "source_type": doc.source_type,
+                    "source_ref": doc.source_ref,
+                    "agent_id": str(doc.agent_id) if doc.agent_id else None,
+                }
+                for doc in kb_documents
+            ],
+        }
+
+    def build_inbound_prompt_context_block(
+        self, db: Session, inbound_agent_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> str:
+        """
+        Build a compact prompt block containing all other tenant agents' system prompts.
+        Intended to be appended to the inbound agent's runtime system prompt.
+        """
+        snapshot = self.get_inbound_agent_knowledge_snapshot(
+            db=db, inbound_agent_id=inbound_agent_id, tenant_id=tenant_id
+        )
+        prompts = snapshot.get("agent_prompts", [])
+
+        if not prompts:
+            return """
+# TENANT AGENT PROMPT CONTEXT
+No additional tenant agent prompts were found.
+"""
+
+        lines = [
+            "# TENANT AGENT PROMPT CONTEXT",
+            "You are the tenant's dedicated inbound agent.",
+            "Use the following prompt intents from other tenant agents as reference context.",
+            "Do not claim actions/capabilities unless supported by conversation context and KB.",
+            "",
+        ]
+        for idx, item in enumerate(prompts, start=1):
+            lines.append(f"[{idx}] Agent: {item.get('agent_name', 'Unknown')}")
+            lines.append(item.get("system_prompt", ""))
+            lines.append("")
+        return "\n".join(lines)
+
+    def build_inbound_kb_documents_context_block(
+        self, db: Session, inbound_agent_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> str:
+        """
+        Build a compact context block listing active tenant KB documents for inbound agent use.
+        """
+        snapshot = self.get_inbound_agent_knowledge_snapshot(
+            db=db, inbound_agent_id=inbound_agent_id, tenant_id=tenant_id
+        )
+        docs = snapshot.get("knowledge_documents", [])
+
+        if not docs:
+            return """
+# TENANT KNOWLEDGE BASE DOCUMENTS
+No active tenant knowledge base documents were found.
+"""
+
+        lines = [
+            "# TENANT KNOWLEDGE BASE DOCUMENTS",
+            "The following active tenant knowledge documents are available for this call context.",
+            "Use this list with the retrieved KB chunk context above.",
+            "",
+        ]
+        for idx, doc in enumerate(docs, start=1):
+            lines.append(
+                f"[{idx}] Title: {doc.get('title', 'Unknown')} | "
+                f"Type: {doc.get('source_type', 'unknown')} | "
+                f"Ref: {doc.get('source_ref', '')}"
+            )
+        return "\n".join(lines)
     
     def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
         """
@@ -344,6 +639,21 @@ class AgentService:
             Agent.tenant_id == tenant_id,
             Agent.is_deleted == False
         ).all()
+
+    def get_inbound_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Optional[Agent]:
+        """
+        Get the dedicated inbound agent for a tenant.
+        Returns None if no inbound agent is configured.
+        """
+        return (
+            db.query(Agent)
+            .filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_inbound_agent == True,
+            )
+            .first()
+        )
     
     def search_agents(
         self, 

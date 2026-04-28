@@ -9,6 +9,7 @@ import hashlib
 import base64
 from urllib.parse import quote
 from app.services.google_tts_service import google_tts_service
+from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 from app.core.config import settings
 from app.core.logger import logger
 
@@ -60,7 +61,11 @@ async def serve_google_tts_audio(
         valid_formats = ["mp3", "mulaw"]
         if format not in valid_formats:
             format = "mp3"
-        
+
+        text = prepare_tts_text_for_provider(text, "google")
+        if not text or not text.strip():
+            raise HTTPException(status_code=400, detail="Text is empty after cleaning.")
+
         # Generate cache key
         cache_key = generate_cache_key(text, lang, voice, chirp3_hd, format)
         
@@ -78,7 +83,7 @@ async def serve_google_tts_audio(
             rate = 0.95  # Slightly slower and more natural
             
             audio_content = google_tts_service.text_to_speech(
-                text=text,
+                text=text,  # Eleven-style [tags] stripped (this route is Google-only)
                 language=lang,
                 voice_type=voice,
                 speaking_rate=rate,  # Optimized for natural conversation

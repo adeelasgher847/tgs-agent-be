@@ -225,6 +225,26 @@ class GoogleTTSService:
         }
         
         return language_code_map.get(language, "en-US")
+
+    def list_supported_voices(self) -> list[dict]:
+        """
+        Return a curated provider catalog for Google TTS voices.
+        These are stable voice names that work with existing language/gender flow.
+        """
+        return [
+            {"voice_name": "en-US-Chirp3-HD-Achernar", "display_name": "Google Achernar (Female)", "language_code": "en-US", "gender": "female", "accent": "US"},
+            {"voice_name": "en-US-Chirp3-HD-Achird", "display_name": "Google Achird (Male)", "language_code": "en-US", "gender": "male", "accent": "US"},
+            {"voice_name": "en-US-Neural2-C", "display_name": "Google Neural2 C (Female)", "language_code": "en-US", "gender": "female", "accent": "US"},
+            {"voice_name": "en-US-Neural2-A", "display_name": "Google Neural2 A (Male)", "language_code": "en-US", "gender": "male", "accent": "US"},
+            {"voice_name": "es-US-Journey-F", "display_name": "Google Journey F (Female)", "language_code": "es-US", "gender": "female", "accent": "US"},
+            {"voice_name": "es-US-Journey-D", "display_name": "Google Journey D (Male)", "language_code": "es-US", "gender": "male", "accent": "US"},
+            {"voice_name": "hi-IN-Neural2-A", "display_name": "Google Neural2 A (Female Hindi)", "language_code": "hi-IN", "gender": "female", "accent": "IN"},
+            {"voice_name": "hi-IN-Neural2-B", "display_name": "Google Neural2 B (Male Hindi)", "language_code": "hi-IN", "gender": "male", "accent": "IN"},
+            {"voice_name": "ar-XA-Wavenet-A", "display_name": "Google Wavenet A (Female Arabic)", "language_code": "ar-XA", "gender": "female", "accent": "XA"},
+            {"voice_name": "ar-XA-Wavenet-B", "display_name": "Google Wavenet B (Male Arabic)", "language_code": "ar-XA", "gender": "male", "accent": "XA"},
+            {"voice_name": "cmn-CN-Wavenet-A", "display_name": "Google Wavenet A (Female Mandarin)", "language_code": "cmn-CN", "gender": "female", "accent": "CN"},
+            {"voice_name": "cmn-CN-Wavenet-B", "display_name": "Google Wavenet B (Male Mandarin)", "language_code": "cmn-CN", "gender": "male", "accent": "CN"},
+        ]
     
     def text_to_speech(
         self, 
@@ -234,7 +254,8 @@ class GoogleTTSService:
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
         output_format: str = "mp3",
-        use_chirp3_hd: bool = False
+        use_chirp3_hd: bool = False,
+        voice_name_override: Optional[str] = None,
     ) -> bytes:
         """
         Convert text to speech using Google Cloud TTS API with Chirp 3: HD model
@@ -262,7 +283,7 @@ class GoogleTTSService:
                 synthesis_input = texttospeech.SynthesisInput(text=text)
             
             # Get voice name and language code
-            voice_name = self.get_voice_name(language, voice_type, use_chirp3_hd)
+            voice_name = (voice_name_override or "").strip() or self.get_voice_name(language, voice_type, use_chirp3_hd)
             language_code = self.get_language_code(language)
             
             # Build the voice request
@@ -315,6 +336,7 @@ class GoogleTTSService:
         output_format: str = "mulaw",
         use_chirp3_hd: bool = True,
         sample_rate_hz: int = 8000,
+        voice_name_override: Optional[str] = None,
     ) -> AsyncIterator[bytes]:
         """
         Bidirectional streaming TTS (StreamingSynthesize).
@@ -329,7 +351,7 @@ class GoogleTTSService:
             raise Exception("Google TTS async client not available")
 
         # Streaming is only supported for specific voices (Chirp 3: HD per docs).
-        voice_name = self.get_voice_name(language, voice_type, use_chirp3_hd=True if use_chirp3_hd else False)
+        voice_name = (voice_name_override or "").strip() or self.get_voice_name(language, voice_type, use_chirp3_hd=True if use_chirp3_hd else False)
         language_code = self.get_language_code(language)
         if use_chirp3_hd and "Chirp3" not in voice_name:
             raise Exception(f"Streaming TTS requires Chirp3-HD voice; got '{voice_name}'")

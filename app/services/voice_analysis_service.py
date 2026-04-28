@@ -1,11 +1,14 @@
+import re
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from fastapi import HTTPException
 
 from app.core.logger import logger
+from app.models.call_log import CallLog
 from app.models.call_session import CallSession
 from app.services.agent_service import agent_service
 from app.services.model_service import ModelService
@@ -24,7 +27,8 @@ class VoiceAnalysisService:
         db: Session,
         call_session: CallSession,
         user_id,
-    ) -> Dict[str, Any]:
+        raise_on_no_transcript: bool = True,
+    ) -> Optional[Dict[str, Any]]:
         """Behavior-preserving refactor of `analyze_call_transcript` logic from `voice.py`."""
         from uuid import UUID
 
@@ -120,10 +124,16 @@ class VoiceAnalysisService:
         )
 
         if not transcript_messages:
-            raise HTTPException(
-                status_code=404,
-                detail="No transcript messages found for this call session",
+            if raise_on_no_transcript:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No transcript messages found for this call session",
+                )
+            logger.info(
+                "Skipping transcript analysis — no messages (session %s)",
+                call_session.id,
             )
+            return None
 
         # Format transcript for analysis
         transcript_text = ""
@@ -144,6 +154,9 @@ class VoiceAnalysisService:
         - Outcome/resolution
 
         Keep it concise and to the point.
+
+        On the very last line only, add exactly one line in this format (for CRM display):
+        CALLER_NAME: <name as stated by the customer> or CALLER_NAME: Unknown
         """
 
         sentiment_prompt = f"""
@@ -159,6 +172,18 @@ class VoiceAnalysisService:
 
         Keep it brief and concise.
         """
+
+        outcome_prompt = f"""
+Based only on this call transcript, judge whether the interaction achieved a successful outcome
+for the customer and the agent's apparent goal (e.g. issue resolved, appointment booked, or not).
+
+Call Transcript:
+{transcript_text}
+
+Reply in exactly two lines, no other text:
+OUTCOME: success OR fail OR unclear
+REASON: one short sentence (max 25 words)
+"""
 
         # Create recommendations prompt based on agent's instructions
         recommendations_prompt = f"""
@@ -240,12 +265,14 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
         # Perform analysis with automatic fallback on quota errors
         summary_result = None
         sentiment_result = None
+        outcome_result = None
         recommendations_result = None
         used_model = None
         last_error_local: Optional[Exception] = None
 
         for model_name in fallback_models:
             try:
+                outcome_result = None
                 current_model = self.model_service.get_model_by_name(db, model_name)
                 if not current_model:
                     continue
@@ -266,6 +293,21 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                 sentiment_result = generate_analysis_text(
                     current_model, current_api_key, sentiment_prompt, max_tokens=150
                 )
+
+                try:
+                    outcome_result = generate_analysis_text(
+                        current_model,
+                        current_api_key,
+                        outcome_prompt,
+                        max_tokens=120,
+                    )
+                except Exception as oe:  # pragma: no cover - defensive
+                    logger.warning(
+                        "⚠️ Outcome classification failed on %s: %s",
+                        current_model.model_name,
+                        oe,
+                    )
+                    outcome_result = None
 
                 if agent_prompt:
                     try:
@@ -310,14 +352,41 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             logger.error("❌ %s", error_msg)
             raise HTTPException(status_code=500, detail=error_msg)
 
+        raw_summary = summary_result["content"].strip()
+        caller_name = "Unknown"
+        summary_lines: List[str] = []
+        for line in raw_summary.split("\n"):
+            cm = re.match(r"^\s*CALLER_NAME:\s*(.+)\s*$", line, re.IGNORECASE)
+            if cm:
+                caller_name = (cm.group(1) or "").strip() or "Unknown"
+                continue
+            summary_lines.append(line)
+        display_summary = "\n".join(summary_lines).strip()
+
+        success_eval_llm: Optional[str] = None
+        if outcome_result:
+            raw_o = (outcome_result.get("content") or "").strip()
+            om = re.search(r"^\s*OUTCOME:\s*(\S+)", raw_o, re.MULTILINE | re.IGNORECASE)
+            rm = re.search(r"^\s*REASON:\s*(.+)$", raw_o, re.MULTILINE | re.IGNORECASE)
+            tag = om.group(1).strip().lower() if om else None
+            reason = rm.group(1).strip() if rm else None
+            if tag and reason:
+                success_eval_llm = f"{tag} — {reason}"
+            elif tag:
+                success_eval_llm = tag
+            elif raw_o:
+                success_eval_llm = raw_o[:400]
+
         analysis_data: Dict[str, Any] = {
-            "summary": summary_result["content"].strip(),
+            "summary": display_summary,
             "sentiment": sentiment_result["content"].strip(),
+            "caller_name": caller_name,
+            "success_evaluation": success_eval_llm
+            or "unclear — could not classify outcome from transcript",
         }
 
         if recommendations_result:
             recommendations_text = recommendations_result["content"].strip()
-            import re
 
             recommendations_list: List[str] = []
             lines = recommendations_text.split("\n")
@@ -347,6 +416,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                 "Unable to generate recommendations at this time."
             )
 
+        ts = datetime.now(timezone.utc).isoformat()
         result = {
             "call_session_id": str(call_session.id),
             "transcript_message_count": len(transcript_messages),
@@ -354,8 +424,30 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             "call_status": call_session.status,
             "analysis": analysis_data,
             "model_used": used_model,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": ts,
         }
+
+        analysis_block = {
+            "analysis": analysis_data,
+            "model_used": used_model,
+            "timestamp": ts,
+        }
+        if call_session.call_metadata is None:
+            call_session.call_metadata = {}
+        call_session.call_metadata["llm_call_analysis"] = analysis_block
+        flag_modified(call_session, "call_metadata")
+        db.add(call_session)
+
+        log_row = db.query(CallLog).filter(CallLog.call_session_id == call_session.id).first()
+        if log_row:
+            if log_row.call_metadata is None:
+                log_row.call_metadata = {}
+            log_row.call_metadata["llm_call_analysis"] = analysis_block
+            flag_modified(log_row, "call_metadata")
+            db.add(log_row)
+
+        db.commit()
+        db.refresh(call_session)
 
         logger.info(
             "✅ Transcript analysis completed for session %s using %s",

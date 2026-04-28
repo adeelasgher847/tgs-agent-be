@@ -1,41 +1,61 @@
-import hmac
-import hashlib
-import base64
-from fastapi import Request, HTTPException
+from fastapi import Request
+from twilio.request_validator import RequestValidator
 from app.core.config import settings
 from app.core.logger import logger
 
 
-def validate_twilio_signature(request: Request, body: str) -> bool:
-    """Validate Twilio webhook signature"""
+def _first_header_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.split(",")[0].strip()
+
+
+def build_twilio_validation_url(request: Request) -> str:
+    """
+    Build a proxy-aware URL for Twilio signature validation.
+    Twilio signs the publicly reachable URL, which can differ behind proxies.
+    """
+    forwarded_proto = _first_header_value(request.headers.get("X-Forwarded-Proto"))
+    forwarded_host = _first_header_value(request.headers.get("X-Forwarded-Host"))
+
+    scheme = forwarded_proto or request.url.scheme
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+
+    path = request.url.path
+    query = request.url.query
+    if query:
+        return f"{scheme}://{host}{path}?{query}"
+    return f"{scheme}://{host}{path}"
+
+
+def validate_twilio_signature_with_token(
+    request: Request, params: dict, auth_token: str
+) -> bool:
+    """
+    Validate Twilio webhook signature with an explicit auth token.
+    `params` must be a dict of the parsed form fields (not a raw body string).
+    Twilio's RequestValidator signs form params as a sorted key-value dict.
+    """
     try:
-        # Get the signature from headers
-        signature = request.headers.get('X-Twilio-Signature')
+        signature = request.headers.get("X-Twilio-Signature")
         if not signature:
             return False
-        
-        # Get the full URL
-        url = str(request.url)
-        
-        # Get auth token from settings
-        auth_token = settings.TWILIO_AUTH_TOKEN
+
         if not auth_token:
             return False
-        
-        # Create expected signature
-        expected_signature = base64.b64encode(
-            hmac.new(
-                auth_token.encode('utf-8'),
-                (url + body).encode('utf-8'),
-                hashlib.sha1
-            ).digest()
-        ).decode('utf-8')
-        
-        return hmac.compare_digest(signature, expected_signature)
-    
+
+        url = build_twilio_validation_url(request)
+        validator = RequestValidator(auth_token)
+        return validator.validate(url, params, signature)
+
     except Exception as e:
         logger.error(f"Error validating Twilio signature: {e}")
         return False
+
+
+def validate_twilio_signature(request: Request, params: dict) -> bool:
+    """Validate Twilio webhook signature using global settings token."""
+    return validate_twilio_signature_with_token(request, params, settings.TWILIO_AUTH_TOKEN)
 
 
 def validate_webrtc_auth(request: Request) -> bool:
