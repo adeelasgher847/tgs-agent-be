@@ -1014,6 +1014,33 @@ class BidirectionalStreamHandler:
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
             agent_language = self.agent.language if self.agent and self.agent.language else "en"
+            v_add = ""
+            if self.call_session and self.call_session.call_metadata:
+                voice_ctx = self.call_session.call_metadata.get("voice_dynamic_context")
+                if isinstance(voice_ctx, dict):
+                    v_add = (voice_ctx.get("system_prompt_addendum") or "").strip()
+            v_block = (
+                f"\n\n# THIS CALL — CANDIDATE & ROLE\n{v_add}\n"
+                if v_add
+                else ""
+            )
+            tts_provider = getattr(self.agent, "tts_provider", None) if self.agent else None
+            tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
+            elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
+            if elevenlabs_audio_tags_enabled:
+                output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
+                    get_elevenlabs_voice_prompt_rule_lines()
+                )
+            else:
+                output_plain_text_rule = (
+                    "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
+                    "Prosody is handled by the system."
+                )
+                no_ssml_rule_base = (
+                    "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+                )
+                no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
+            elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
             
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
