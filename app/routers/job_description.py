@@ -83,8 +83,9 @@ def list_job_descriptions(
     db: Session = Depends(get_db),
 ):
     """List job descriptions"""
-    tenant_ids = job_description_service.tenant_ids_for_user(db, user.id)
-    rows = job_description_service.list_by_tenant_ids(db=db, tenant_ids=tenant_ids)
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+    rows = job_description_service.list_by_tenant(db=db, tenant_id=user.current_tenant_id)
     out: list[JobDescriptionListOut] = []
     for jd in rows:
         job_description_service.normalize_for_read_response(jd)
@@ -137,9 +138,12 @@ def get_job_description(
     db: Session = Depends(get_db),
 ):
     """Single job description: DB read only. No LLM."""
-    tenant_ids = job_description_service.tenant_ids_for_user(db, user.id)
-    jd = job_description_service.get_by_id_in_tenants(
-        db=db, job_description_id=job_description_id, tenant_ids=tenant_ids
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+    jd = job_description_service.get_by_id(
+        db=db,
+        job_description_id=job_description_id,
+        tenant_id=user.current_tenant_id,
     )
     job_description_service.normalize_for_read_response(jd)
     return create_success_response(JobDescriptionListOut.model_validate(jd), "Job description fetched successfully")
@@ -151,11 +155,12 @@ def get_job_description_status(
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
 ):
-    tenant_ids = job_description_service.tenant_ids_for_user(db, user.id)
-    processing_status = job_description_service.get_status_in_tenants(
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+    processing_status = job_description_service.get_status(
         db=db,
         job_description_id=job_description_id,
-        tenant_ids=tenant_ids,
+        tenant_id=user.current_tenant_id,
     )
     return create_success_response(
         {"id": str(job_description_id), "processing_status": processing_status},
