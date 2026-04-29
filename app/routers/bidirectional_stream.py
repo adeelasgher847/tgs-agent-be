@@ -930,6 +930,7 @@ class BidirectionalStreamHandler:
 
             inbound_prompt_context_block = ""
             inbound_kb_docs_context_block = ""
+            business_knowledge_block = ""
             if self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
                 try:
                     inbound_prompt_context_block = (
@@ -949,6 +950,23 @@ class BidirectionalStreamHandler:
                 except Exception as e:
                     logger.warning(
                         "Failed to build inbound context blocks for agent %s: %s",
+                        agent_uuid,
+                        e,
+                        exc_info=True,
+                    )
+
+            if tenant_uuid:
+                try:
+                    business_knowledge_block = (
+                        agent_service.build_business_knowledge_context_block(
+                            db=self.db,
+                            tenant_id=tenant_uuid,
+                            agent_id=agent_uuid,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to build business knowledge block for agent %s: %s",
                         agent_uuid,
                         e,
                         exc_info=True,
@@ -1062,7 +1080,7 @@ Previous conversation:
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
-
+{business_knowledge_block}
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
@@ -1105,7 +1123,7 @@ Previous conversation:
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
-
+{business_knowledge_block}
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
@@ -1144,7 +1162,7 @@ Previous conversation:
 {rag_context_block}
 {inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
-
+{business_knowledge_block}
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].

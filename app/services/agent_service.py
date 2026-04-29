@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
 from app.models.model import Model
 from app.models.knowledge_base_document import KnowledgeBaseDocument
+from app.models.business_knowledge import BusinessKnowledge
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
@@ -715,5 +716,99 @@ No active tenant knowledge base documents were found.
         }
         
         return effective_config
+
+    def get_business_knowledge_for_agent(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        agent_id: Optional[uuid.UUID] = None,
+    ) -> List[BusinessKnowledge]:
+        """
+        Return active business knowledge records for the given tenant/agent.
+        Agent-scoped records come first; tenant-wide records follow as fallback.
+        Multiple active records are supported and all are returned.
+        """
+        records: List[BusinessKnowledge] = []
+
+        if agent_id:
+            agent_records = (
+                db.query(BusinessKnowledge)
+                .filter(
+                    BusinessKnowledge.tenant_id == tenant_id,
+                    BusinessKnowledge.agent_id == agent_id,
+                    BusinessKnowledge.is_active == True,  # noqa: E712
+                )
+                .order_by(BusinessKnowledge.created_at)
+                .all()
+            )
+            records.extend(agent_records)
+
+        tenant_records = (
+            db.query(BusinessKnowledge)
+            .filter(
+                BusinessKnowledge.tenant_id == tenant_id,
+                BusinessKnowledge.agent_id == None,  # noqa: E711
+                BusinessKnowledge.is_active == True,  # noqa: E712
+            )
+            .order_by(BusinessKnowledge.created_at)
+            .all()
+        )
+        records.extend(tenant_records)
+
+        return records
+
+    def build_business_knowledge_context_block(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        agent_id: Optional[uuid.UUID] = None,
+    ) -> str:
+        """
+        Build a prompt block containing active business knowledge for the agent.
+        Returns an empty string when no knowledge is configured so existing prompts
+        are not affected.
+        """
+        records = self.get_business_knowledge_for_agent(db, tenant_id, agent_id)
+        if not records:
+            return ""
+
+        lines = [
+            "# BUSINESS KNOWLEDGE",
+            "Use the following business information when answering caller questions.",
+            "All details below are provided in natural spoken form — say them exactly as written.",
+            "",
+        ]
+
+        for rec in records:
+            if rec.business_name:
+                lines.append(f"Business Name: {rec.business_name}")
+            if rec.business_type:
+                lines.append(f"Business Type: {rec.business_type}")
+            if rec.business_description:
+                lines.append(f"About: {rec.business_description}")
+            if rec.address:
+                lines.append(f"Address: {rec.address}")
+            if rec.phone:
+                lines.append(f"Phone: {rec.phone}")
+            if rec.email:
+                lines.append(f"Email: {rec.email}")
+            if rec.website_url:
+                lines.append(f"Website: {rec.website_url}")
+            if rec.primary_service:
+                lines.append(f"Primary Service: {rec.primary_service}")
+            if rec.secondary_service:
+                lines.append(f"Secondary Service: {rec.secondary_service}")
+            if rec.service_areas:
+                lines.append(f"Service Areas: {rec.service_areas}")
+            if rec.specializations:
+                lines.append(f"Specializations: {rec.specializations}")
+            if rec.pricing_information:
+                lines.append(f"Pricing: {rec.pricing_information}")
+            if rec.additional_information:
+                lines.append(f"Additional Info: {rec.additional_information}")
+            lines.append("")
+
+        return "\n".join(lines)
+
 
 agent_service = AgentService()
