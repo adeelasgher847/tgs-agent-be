@@ -265,7 +265,7 @@ class AgentService:
 
         # Sanitize string fields
         agent_data = agent_in.model_dump()
-        for field in ['name', 'system_prompt', 'fallback_response']:
+        for field in ['name', 'system_prompt', 'fallback_response', 'greeting_message']:
             if field in agent_data and agent_data[field]:
                 agent_data[field] = agent_data[field].strip()
         
@@ -469,7 +469,7 @@ class AgentService:
             update_dict["name"] = new_name
 
         # Sanitize string fields
-        for field in ['system_prompt', 'fallback_response']:
+        for field in ['system_prompt', 'fallback_response', 'greeting_message']:
             if field in update_dict and update_dict[field]:
                 update_dict[field] = update_dict[field].strip()
 

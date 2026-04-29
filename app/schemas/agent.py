@@ -47,6 +47,10 @@ class AgentBase(BaseModel):
             }
         ],
     )
+    greeting_message: Optional[str] = Field(
+        None,
+        description="Custom greeting spoken at call start and when the caller says hi/hello. Leave blank to skip auto-greeting.",
+    )
     is_inbound_agent: bool = Field(
         default=False,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
@@ -89,6 +93,10 @@ class AgentUpdate(BaseModel):
                 "background_volume": 50,
             }
         ],
+    )
+    greeting_message: Optional[str] = Field(
+        None,
+        description="Custom greeting spoken at call start and when the caller says hi/hello.",
     )
     is_inbound_agent: Optional[bool] = Field(
         default=None,
