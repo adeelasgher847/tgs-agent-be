@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin
+from app.api.deps import get_db, require_admin_or_owner
 from app.models.agent import Agent
 from app.models.business_knowledge import BusinessKnowledge
 from app.schemas.base import SuccessResponse
@@ -48,7 +48,7 @@ def _get_record_or_404(
 )
 def create_business_knowledge(
     payload: BusinessKnowledgeCreate,
-    user=Depends(require_admin),
+    user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
     tenant_id: uuid.UUID = user.current_tenant_id
@@ -90,7 +90,7 @@ def create_business_knowledge(
 def list_business_knowledge(
     agent_id: Optional[uuid.UUID] = None,
     include_inactive: bool = False,
-    user=Depends(require_admin),
+    user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
     tenant_id: uuid.UUID = user.current_tenant_id
@@ -122,7 +122,7 @@ def list_business_knowledge(
 )
 def get_business_knowledge(
     record_id: uuid.UUID,
-    user=Depends(require_admin),
+    user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
     tenant_id: uuid.UUID = user.current_tenant_id
@@ -140,7 +140,7 @@ def get_business_knowledge(
 def update_business_knowledge(
     record_id: uuid.UUID,
     payload: BusinessKnowledgeUpdate,
-    user=Depends(require_admin),
+    user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
     tenant_id: uuid.UUID = user.current_tenant_id
@@ -182,7 +182,7 @@ def update_business_knowledge(
 )
 def delete_business_knowledge(
     record_id: uuid.UUID,
-    user=Depends(require_admin),
+    user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
     tenant_id: uuid.UUID = user.current_tenant_id
