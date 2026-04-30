@@ -1283,10 +1283,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
-                    # If punctuation-based flush isn't available, do a time-based flush (~200ms for 400–500ms latency)
+                    # If punctuation-based flush isn't available, do a time-based flush (~150ms)
                     if flush_idx is None:
                         now_ts = time.perf_counter()
-                        if (now_ts - last_flush_ts) >= 0.20:
+                        if (now_ts - last_flush_ts) >= 0.15:
                             flush_idx = _find_time_flush_index(tts_buffer)
                     if flush_idx is not None and not self._tts_cancel.is_set():
                         flush_text = tts_buffer[:flush_idx].strip()
@@ -2280,15 +2280,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 """
                                 if self._is_background_audio_enabled():
                                     self._background_audio.set_user_level(self._resolve_background_volume())
-                                # Prime Twilio jitter buffer once per utterance (3 frames = 60ms for 400–500ms latency, no sudden noise)
-                                if not self._twilio_buffer_primed:
-                                    silent = bytes([0xFF]) * MULAW_FRAME_BYTES
-                                    for _ in range(3):
-                                        if self._tts_cancel.is_set():
-                                            return
-                                        await send_frame(silent, pace=False)
 
                                 pace_state = {"send_interval": 0.02, "first": True, "next_send": time.perf_counter()}
+
+                                # Prime Twilio jitter buffer once per utterance (2 frames = 40ms, paced so
+                                # they arrive at proper 20ms intervals and actually fill the buffer).
+                                if not self._twilio_buffer_primed:
+                                    silent = bytes([0xFF]) * MULAW_FRAME_BYTES
+                                    for _ in range(2):
+                                        if self._tts_cancel.is_set():
+                                            return
+                                        await send_frame(silent, pace=True, state=pace_state)
 
                                 # Frame buffers
                                 byte_buf = bytearray()
@@ -2335,10 +2337,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         frame = bytes(byte_buf[:MULAW_FRAME_BYTES])
                                         del byte_buf[:MULAW_FRAME_BYTES]
                                         pending_frames.append(frame)
-
-                                        # Hold back 1 frame for crossfade tail unless final
-                                        if not is_final and len(pending_frames) <= 1:
-                                            continue
 
                                         # Send oldest frame
                                         out = pending_frames.pop(0)
@@ -2398,7 +2396,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                                     self._prev_tts_tail = b""
                                 else:
-                                    # Keep exactly 1 frame as tail (pad remainder into tail if needed)
+                                    # Non-final chunk: send all remaining frames (no tail holdback).
+                                    # Holding back 1 frame for a crossfade bridge sounds good in theory,
+                                    # but between chunks there is always a TTS API generation gap
+                                    # (200–500 ms) during which Twilio's buffer drains to zero.
+                                    # Crossfading a stale 20 ms tail with fresh audio after that gap
+                                    # creates an audible click/stutter that is worse than a clean cut.
                                     if byte_buf:
                                         pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
                                         if pad != MULAW_FRAME_BYTES:
@@ -2407,15 +2410,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                             pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
                                             del byte_buf[:MULAW_FRAME_BYTES]
 
-                                    # Keep last frame as tail; send earlier pending frames
-                                    tail_frame = pending_frames[-1] if pending_frames else bytes([0xFF]) * MULAW_FRAME_BYTES
-                                    frames_to_send = pending_frames[:-1]
-                                    for out in frames_to_send:
+                                    for out in pending_frames:
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
                                         await send_frame(out, pace=True, state=pace_state)
-                                    self._prev_tts_tail = tail_frame
+                                    self._prev_tts_tail = b""
 
                                 self._twilio_buffer_primed = True
 
