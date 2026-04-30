@@ -139,6 +139,7 @@ from app.voice.conversation_orchestrator import (
     ConversationOrchestrator,
     should_send_quick_ack,
 )
+from app.voice.voice_orchestrator import VoiceOrchestrator
 from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
 
@@ -339,15 +340,21 @@ class BidirectionalStreamHandler:
         )
         asyncio.create_task(self._background_audio.load_from_base64_async())
 
-        # Start parallel TTS pipeline worker via TtsPipeline facade
-        self._tts_pipeline = TtsPipeline(self)
-        self._tts_worker_task = self._tts_pipeline._worker_task
+        # ── OLD direct pipeline wiring (replaced by VoiceOrchestrator below) ──
+        # self._tts_pipeline = TtsPipeline(self)
+        # self._tts_worker_task = self._tts_pipeline._worker_task
+        # self._conversation = ConversationOrchestrator(self)
+        # ─────────────────────────────────────────────────────────────────────
 
         # Pre-cache common phrases in background for instant responses (disabled; uncomment to re-enable)
         # asyncio.create_task(self._precache_common_phrases())
 
-        # Conversation orchestrator encapsulating LLM + policy rules
-        self._conversation = ConversationOrchestrator(self)
+        # ── Voice Orchestration Layer ─────────────────────────────────────────
+        # VoiceOrchestrator owns SttPipeline + TtsPipeline lifecycle and
+        # coordinates the full turn flow (pickup → STT → barge-in → LLM → TTS).
+        # It writes _tts_pipeline and _tts_worker_task back onto this handler
+        # so all existing methods that reference self._tts_pipeline keep working.
+        self._voice_orchestrator = VoiceOrchestrator(self)
     
     def _load_session_data(self):
         """Load call session and agent data"""
@@ -438,132 +445,50 @@ class BidirectionalStreamHandler:
             logger.error(f"Error in precache_common_phrases: {e}")
     
     async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio and feed to Deepgram streaming STT"""
+        """
+        Handle incoming MULAW audio from Twilio.
+
+        The heavy lifting (pickup detection, grace period, STT pipeline lifecycle,
+        barge-in, and STT callbacks) now lives in VoiceOrchestrator.on_audio_chunk().
+        This method is intentionally thin — it just decodes the base64 payload and
+        hands the raw bytes to the orchestrator.
+
+        ── OLD direct pipeline code (now owned by VoiceOrchestrator) ────────────
+        # if not self._user_picked_up:  ... RMS pickup detection ...
+        # if self._skip_audio_until ... grace period ...
+        # if not self._stt_active: return
+        # if self._stt_pipeline is None: ... SttPipeline(...) ...
+        # await self._stt_pipeline.feed_audio_chunk(audio_data)
+        # ────────────────────────────────────────────────────────────────────────
+        """
         try:
-            import time
-            
-            media = message.get("media", {})
-            payload = media.get("payload")
-            
+            payload = message.get("media", {}).get("payload")
             if not payload:
                 return
-            
-            # Decode audio (MULAW from Twilio)
+
             audio_data = base64.b64decode(payload)
-            
-            # ✅ DETECT ACTUAL USER AUDIO (not Twilio system messages/music)
-            if not self._first_media_received:
-                self._first_media_received = True
-            
-            # Calculate audio level (RMS) to detect actual user audio vs silence/system noise
-            if not self._user_picked_up:
-                # Convert MULAW to linear and calculate RMS (Root Mean Square) audio level
-                audio_level = 0
-                if len(audio_data) > 0:
-                    linear_samples = [ulaw_to_linear_sample(b) for b in audio_data]
-                    # Calculate RMS
-                    sum_squares = sum(s * s for s in linear_samples)
-                    audio_level = int((sum_squares / len(linear_samples)) ** 0.5)
-                
-                # Track audio levels
-                self._audio_level_samples.append(audio_level)
-                if len(self._audio_level_samples) > self._audio_samples_needed * 2:
-                    self._audio_level_samples.pop(0)  # Keep last 20 samples
-                
-                # Check if we have enough samples and enough non-silent audio (actual user audio)
-                if len(self._audio_level_samples) >= self._audio_samples_needed:
-                    non_silent_count = sum(1 for level in self._audio_level_samples[-self._audio_samples_needed:] if level > self._min_audio_level_threshold)
-                    
-                    if non_silent_count >= self._audio_samples_needed:
-                        # Actual user audio detected! Set in-progress status
-                        await self._handle_user_pickup()  # User actually picked up with real audio!
-                        
-                        # Skip first few seconds for STT (system messages might still be there)
-                        self._skip_audio_until = time.time() + 3.0
-                else:
-                    return  # Don't process until we have actual user audio
-            
-            # Skip audio if still in grace period (system messages)
-            if self._skip_audio_until and time.time() < self._skip_audio_until:
-                return  # Don't send to STT - this is likely system message/ringing
+            await self._voice_orchestrator.on_audio_chunk(audio_data)
 
-            # Guard: stop feeding after call ends (e.g. Twilio keeps sending silence frames)
-            if not self._stt_active:
-                return
-
-            # (Removed first-media DB marker for outbound gating)
-            # Lazily create STT pipeline and push audio
-            if self._stt_pipeline is None:
-                language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
-                deferred_ep = self._stt_deferred_endpointing_ms
-                self._stt_deferred_endpointing_ms = None
-                self._stt_pipeline = SttPipeline(
-                    language_code=language_code,
-                    on_interim=self._maybe_process_interim,
-                    on_final=self._process_transcript,
-                    call_session_id=self.call_session_id,
-                    agent_id=self.agent_id,
-                    endpointing_ms=deferred_ep,
-                )
-
-            await self._stt_pipeline.feed_audio_chunk(audio_data)
-        
         except Exception as e:
             logger.error(f"Error handling media message: {e}", exc_info=True)
 
     def _schedule_recreate_stt_for_email_collection(self, agent_text: str) -> None:
         """
-        Defer STT session reconnect to the next event-loop tick so we never aclose
-        the Deepgram stream from a stack that may still be tied to the active reader
-        (avoids NoneType in reader_loop and re-entrancy deadlocks).
+        Defer STT session reconnect to the next event-loop tick.
+        Delegates to VoiceOrchestrator which owns the SttPipeline lifecycle.
+
+        ── OLD direct implementation (now in VoiceOrchestrator) ─────────────────
+        # async def _deferred(): await self._maybe_recreate_stt_for_email_collection(text)
+        # asyncio.create_task(_deferred())
+        # ────────────────────────────────────────────────────────────────────────
         """
-        text = (agent_text or "").strip()
-        if not text:
-            return
+        self._voice_orchestrator.schedule_stt_recreate_for_email(agent_text)
 
-        async def _deferred() -> None:
-            try:
-                await asyncio.sleep(0)
-                await self._maybe_recreate_stt_for_email_collection(text)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("email-collection STT hook (deferred): %s", exc)
-
-        asyncio.create_task(_deferred())
-
+    # _maybe_recreate_stt_for_email_collection is now handled inside
+    # VoiceOrchestrator._maybe_upgrade_stt_for_email — kept as a no-op stub
+    # for any call-site that might reference it directly.
     async def _maybe_recreate_stt_for_email_collection(self, agent_text: str) -> None:
-        """
-        After the agent asks for an email address, use longer Deepgram endpointing so
-        the caller does not need to speak unnaturally fast or loud across @ / dot pauses.
-        """
-        if not getattr(settings, "VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT", True):
-            return
-        if self._email_stt_endpointing_upgraded:
-            return
-        t = (agent_text or "").strip()
-        if not t or not _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE.search(t):
-            return
-        ext = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED", 2200) or 2200)
-        base = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 900) or 900)
-        if ext <= base:
-            self._email_stt_endpointing_upgraded = True
-            return
-        try:
-            if self._stt_pipeline is None:
-                self._stt_deferred_endpointing_ms = ext
-                self._email_stt_endpointing_upgraded = True
-                logger.info(
-                    "[STT] deferred extended endpointing_ms=%s until first audio (email prompt)",
-                    ext,
-                )
-                return
-            await self._stt_pipeline.recreate_with_endpointing(ext)
-            self._email_stt_endpointing_upgraded = True
-            logger.info(
-                "[STT] upgraded to extended endpointing_ms=%s after email-collection prompt",
-                ext,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[STT] extended endpointing upgrade skipped: %s", exc, exc_info=True)
+        await self._voice_orchestrator._maybe_upgrade_stt_for_email(agent_text)
     
     # Removed chunk-based STT processing; relying on Deepgram streaming endpointing
 
@@ -3229,6 +3154,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         """Handle stream start - Just WebSocket connection (NOT user pickup!)"""
         try:
             self.stream_sid = message.get("streamSid")
+            # Notify orchestrator so it can perform any stream-SID-dependent setup.
+            self._voice_orchestrator.set_stream_sid(self.stream_sid)
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
 
@@ -3325,27 +3252,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception:
             pass
 
-        t = self._llm_response_task
-        if t and not t.done():
-            t.cancel()
-        self._llm_response_task = None
-
-        # Cancel any in-progress LLM streaming (orchestrator checks this flag)
-        if not self._tts_cancel.is_set():
-            self._tts_cancel.set()
-
-        # Shutdown TTS pipeline worker (drains queue, cancels worker task)
+        # ── VoiceOrchestrator handles LLM cancel + TTS shutdown + STT close ────
+        # OLD direct code (now delegated to orchestrator):
+        # t = self._llm_response_task; t.cancel(); self._llm_response_task = None
+        # self._tts_cancel.set()
+        # await self._tts_pipeline.shutdown()
+        # await self._stt_pipeline.aclose()
+        # ────────────────────────────────────────────────────────────────────────
         try:
-            if self._tts_pipeline:
-                await self._tts_pipeline.shutdown()
-        except Exception:
-            pass
-
-        # Close STT / Deepgram WebSocket (sends CloseStream, closes socket,
-        # waits up to 5 s for reader task to exit cleanly)
-        try:
-            if self._stt_pipeline:
-                await self._stt_pipeline.aclose()
+            await self._voice_orchestrator.shutdown()
         except Exception:
             pass
 
