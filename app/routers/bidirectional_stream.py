@@ -1082,15 +1082,16 @@ Previous conversation:
 {booking_memory_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
-{business_knowledge_block}
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+4. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
 
+{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
@@ -1123,14 +1124,15 @@ Previous conversation:
 {booking_memory_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
-{business_knowledge_block}
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
+{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
@@ -1160,14 +1162,15 @@ Previous conversation:
 {booking_memory_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
-{business_knowledge_block}
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
+{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].

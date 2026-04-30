@@ -773,9 +773,11 @@ No active tenant knowledge base documents were found.
             return ""
 
         lines = [
-            "# BUSINESS KNOWLEDGE",
-            "Use the following business information when answering caller questions.",
-            "All details below are provided in natural spoken form — say them exactly as written.",
+            "# AUTHORITATIVE BUSINESS FACTS",
+            "The following information is verified and authoritative.",
+            "ALWAYS use these facts when the caller asks about the business name, address, phone, email, website, services, or pricing.",
+            "Say the details exactly as written — they are already in natural spoken form.",
+            "This section overrides any conflicting or missing information elsewhere in the prompt.",
             "",
         ]
 
