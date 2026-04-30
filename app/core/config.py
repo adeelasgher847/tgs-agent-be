@@ -59,9 +59,9 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
     # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
     # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
-    DEEPGRAM_STT_ENDPOINTING_MS: int = 300
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 200
     # After the agent asks for email, bidirectional stream may reopen STT once with this value.
-    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 300
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
     VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT: bool = True
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     VOICE_ENABLE_INTERIM_LLM: bool = False
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
     VOICE_MIN_INTERIM_WORDS: int = 3
-    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.19
+    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.14
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
     # (legacy default was 100). Too low picks up line noise.
@@ -99,9 +99,9 @@ class Settings(BaseSettings):
     VOICE_STT_SOFT_MIN_WORDS: int = 2
     # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
     # Slightly below old 0.30 so a softer "wait" / "hold on" still cancels TTS.
-    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.20
+    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.18
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
-    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.25
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
     VOICE_HISTORY_MAX_MESSAGES: int = 12
     VOICE_TTS_FLUSH_MIN_WORDS: int = 2
     VOICE_TTS_FLUSH_MAX_WORDS: int = 12
