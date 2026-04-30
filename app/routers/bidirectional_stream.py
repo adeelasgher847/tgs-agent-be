@@ -848,15 +848,21 @@ class BidirectionalStreamHandler:
             
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
-                # Get greeting from agent or use default
-                if self.agent and hasattr(self.agent, 'first_message') and self.agent.first_message:
-                    greeting_text = self.agent.first_message
-                else:
-                    greeting_text = "hello how are you"
-                
+                # Priority: greeting_message → first_message → skip (no hardcoded fallback)
+                greeting_text = None
+                if self.agent:
+                    if getattr(self.agent, 'greeting_message', None):
+                        greeting_text = self.agent.greeting_message.strip()
+                    elif getattr(self.agent, 'first_message', None):
+                        greeting_text = self.agent.first_message.strip()
+
+                if not greeting_text:
+                    # No greeting configured — wait for user to speak first
+                    return
+
                 # Add greeting to transcript
                 await self._add_to_transcript("agent", greeting_text, "greeting")
-                
+
                 # Queue greeting TTS directly (skip LLM!)
                 if not self._tts_pipeline:
                     return
@@ -866,10 +872,10 @@ class BidirectionalStreamHandler:
                     "use_ssml": self._use_ssml,
                     "is_final": True
                 })
-                
+
                 # Mark as not primed for the greeting
                 self._twilio_buffer_primed = False
-                
+
                 return  # Done! No LLM needed for greeting
             
             # Reset TTS state for new response generation
@@ -928,17 +934,10 @@ class BidirectionalStreamHandler:
                 rag_trace["status"] = "failure"
                 rag_trace["error"] = str(e)
 
-            inbound_prompt_context_block = ""
             inbound_kb_docs_context_block = ""
+            business_knowledge_block = ""
             if self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
                 try:
-                    inbound_prompt_context_block = (
-                        agent_service.build_inbound_prompt_context_block(
-                            db=self.db,
-                            inbound_agent_id=agent_uuid,
-                            tenant_id=tenant_uuid,
-                        )
-                    )
                     inbound_kb_docs_context_block = (
                         agent_service.build_inbound_kb_documents_context_block(
                             db=self.db,
@@ -948,7 +947,24 @@ class BidirectionalStreamHandler:
                     )
                 except Exception as e:
                     logger.warning(
-                        "Failed to build inbound context blocks for agent %s: %s",
+                        "Failed to build inbound KB docs block for agent %s: %s",
+                        agent_uuid,
+                        e,
+                        exc_info=True,
+                    )
+
+            if tenant_uuid:
+                try:
+                    business_knowledge_block = (
+                        agent_service.build_business_knowledge_context_block(
+                            db=self.db,
+                            tenant_id=tenant_uuid,
+                            agent_id=agent_uuid,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to build business knowledge block for agent %s: %s",
                         agent_uuid,
                         e,
                         exc_info=True,
@@ -1041,7 +1057,13 @@ class BidirectionalStreamHandler:
                 )
                 no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
             elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
-            
+
+            _greeting_msg = (getattr(self.agent, 'greeting_message', None) or "").strip() if self.agent else ""
+            greeting_instruction_block = (
+                f"\n- GREETING: When the caller says hi, hello, or any greeting, respond with exactly: {_greeting_msg}\n"
+                if _greeting_msg else ""
+            )
+
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
@@ -1052,25 +1074,24 @@ You are {agent_name}, having a real-time phone call with a human.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
-
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
 
 {booking_memory_block}
 {rag_context_block}
-{inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
-
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+4. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
 
+{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
@@ -1095,24 +1116,23 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
-
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
 
 {booking_memory_block}
 {rag_context_block}
-{inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
-
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
+{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
@@ -1134,24 +1154,23 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-{output_plain_text_rule}
-
+{output_plain_text_rule}{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
 
 {booking_memory_block}
 {rag_context_block}
-{inbound_prompt_context_block}
 {inbound_kb_docs_context_block}
-
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
+{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].

@@ -28,6 +28,9 @@ class Agent(Base):
     agent_temperature = Column(Integer, nullable=True)  # Agent-specific temperature (0-100)
     agent_max_tokens = Column(Integer, nullable=True)   # Agent-specific max tokens
     
+    # Custom greeting spoken at call start and in response to hi/hello
+    greeting_message = Column(Text, nullable=True)
+
     # Soft delete
     is_deleted = Column(Boolean, default=False, nullable=False, server_default='false')
     # Dedicated inbound entry point agent (max one active per tenant)

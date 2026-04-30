@@ -34,6 +34,9 @@ from app.models.tenant_inbound_crm_config import TenantInboundCRMConfig
 from app.models.call_log_crm_sync import CallLogCRMSync
 from app.models.job_description import JobDescription
 
+# Business knowledge base
+from app.models.business_knowledge import BusinessKnowledge
+
 # Recruiting / resumes
 from app.models.resume import Resume
 from app.models.resume_interview import ResumeInterview
