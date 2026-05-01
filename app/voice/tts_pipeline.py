@@ -382,7 +382,7 @@ class TtsPipeline:
             # Runs in parallel with previous chunks' Twilio frame streaming.
             t0 = time.perf_counter()
             cache_key = self._cache_key(text)
-            audio_bytes: Optional[bytes] = self._get_cached(cache_key)
+            audio_bytes: Any = self._get_cached(cache_key)
 
             if audio_bytes is not None:
                 logger.debug("[TTS] cache hit chunk %d '%.25s'", chunk_id, text)
@@ -414,7 +414,7 @@ class TtsPipeline:
                         "[TTS] synthesis chunk %d done in %.2fs", chunk_id, synth_elapsed
                     )
 
-            if audio_bytes:
+            if isinstance(audio_bytes, bytes):
                 self._put_cached(cache_key, audio_bytes)
 
             # ── Phase 2: Ordered playback gate ────────────────────────────────
