@@ -102,6 +102,7 @@ def _empty_handler() -> Handler:
     h._stt_soft_min_final_confidence = 0.16
     h._stt_soft_min_words = 2
     h._prefetch_rag_context = AsyncMock(return_value=("", {}))  # type: ignore[method-assign]
+    h._llm_turn_serial_lock = asyncio.Lock()
     return h
 
 

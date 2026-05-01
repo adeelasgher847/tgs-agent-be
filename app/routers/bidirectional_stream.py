@@ -342,9 +342,11 @@ class BidirectionalStreamHandler:
         self._rag_prefetch_task: Optional[asyncio.Task] = None
         self._rag_prefetch_user_text: str = ""
 
-        # Serialize final STT → LLM when multiple async final tasks overlap; keeps turn state coherent
-        # without blocking the Deepgram reader loop.
+        # Final transcript bookkeeping (dedupe, DB writes): hold briefly — never across LLM+TTS.
         self._voice_transcript_lock = asyncio.Lock()
+        # One completion at a time (interim/final regen policy, task awaits). Matches product
+        # platforms (Vapi-style): transcript ingestion stays concurrent; generation serializes.
+        self._llm_turn_serial_lock = asyncio.Lock()
         self._voice_metrics = VoiceTurnMetrics()
 
         # Background audio manager (dev-branch style embedded ambience loop).
@@ -532,36 +534,37 @@ class BidirectionalStreamHandler:
         - If interim already ran: regenerate only if final text differs; else let interim run finish, no second LLM.
         - No interim: full generate from final only.
         """
-        if self._turn_response_started:
-            should_regenerate = self._should_regenerate_on_final(transcript)
-            self._turn_response_started = False
+        async with self._llm_turn_serial_lock:
+            if self._turn_response_started:
+                should_regenerate = self._should_regenerate_on_final(transcript)
+                self._turn_response_started = False
+                self._turn_response_seed_text = ""
+                self._last_interim_text = ""
+                if should_regenerate:
+                    await self._cancel_inflight_llm_response()
+                    self._tts_cancel.clear()
+                    await self.generate_and_stream_response(
+                        transcript,
+                        confidence,
+                        is_greeting=False,
+                    )
+                else:
+                    if self._llm_response_task and not self._llm_response_task.done():
+                        try:
+                            await self._llm_response_task
+                        except asyncio.CancelledError:
+                            pass
+                    self._llm_response_task = None
+                return
+
             self._turn_response_seed_text = ""
             self._last_interim_text = ""
-            if should_regenerate:
-                await self._cancel_inflight_llm_response()
-                self._tts_cancel.clear()
-                await self.generate_and_stream_response(
-                    transcript,
-                    confidence,
-                    is_greeting=False,
-                )
-            else:
-                if self._llm_response_task and not self._llm_response_task.done():
-                    try:
-                        await self._llm_response_task
-                    except asyncio.CancelledError:
-                        pass
-                self._llm_response_task = None
-            return
-
-        self._turn_response_seed_text = ""
-        self._last_interim_text = ""
-        self._tts_cancel.clear()
-        await self.generate_and_stream_response(
-            transcript,
-            confidence,
-            is_greeting=False,
-        )
+            self._tts_cancel.clear()
+            await self.generate_and_stream_response(
+                transcript,
+                confidence,
+                is_greeting=False,
+            )
 
     def _should_accept_final_transcript(self, transcript: str, confidence: float) -> bool:
         """
@@ -594,8 +597,8 @@ class BidirectionalStreamHandler:
     
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
-        async with self._voice_transcript_lock:
-            try:
+        try:
+            async with self._voice_transcript_lock:
                 if not self._should_accept_final_transcript(transcript, confidence):
                     return
 
@@ -643,10 +646,12 @@ class BidirectionalStreamHandler:
                     self._last_interim_text = ""
                     return
 
-                await self._complete_llm_turn_after_stt_final(transcript, confidence)
+            # Never hold _voice_transcript_lock across LLM+TTS — queued Deepgram finals would
+            # stall here for one full generation (~10–60s), inflating stt_final→gen_start.
+            await self._complete_llm_turn_after_stt_final(transcript, confidence)
 
-            except Exception as e:
-                logger.error(f"Error processing transcript: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error processing transcript: {e}", exc_info=True)
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
