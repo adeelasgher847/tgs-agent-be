@@ -90,9 +90,9 @@ class Settings(BaseSettings):
     # Deepgram fires many more partials than classic Google STT. Running LLM on every
     # interim → double replies + TTS "breaks." Default: final STT only (one reply per
     # utterance). Set True for lower first-token latency at the cost of stability.
-    VOICE_ENABLE_INTERIM_LLM: bool = False
+    VOICE_ENABLE_INTERIM_LLM: bool = True
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
-    VOICE_MIN_INTERIM_WORDS: int = 3
+    VOICE_MIN_INTERIM_WORDS: int = 2
     VOICE_MIN_INTERIM_CONFIDENCE: float = 0.14
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
@@ -116,9 +116,13 @@ class Settings(BaseSettings):
     VOICE_TTS_FLUSH_MAX_WORDS: int = 12
     # If no sentence boundary yet, flush buffered LLM text to TTS after this many seconds
     # (once min words satisfied) — lower = faster first spoken chunk, slightly more chunking.
-    VOICE_TTS_TIME_FLUSH_SEC: float = 0.28
+    VOICE_TTS_TIME_FLUSH_SEC: float = 0.2
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     VOICE_QUICK_ACK_PROBABILITY: float = 0.38
+    # Fast-path for very short/simple turns to reduce first-token latency:
+    # skip heavy RAG/KB context for obvious non-booking smalltalk.
+    VOICE_ENABLE_LATENCY_FASTPATH: bool = True
+    VOICE_FASTPATH_MAX_WORDS: int = 7
 
     # Vapi-style intelligent contact recovery (additive — never downgrades intake confidence).
     # 1) Deterministic email STT-artifact cleanup: strip commas/spaces inside an email span
@@ -206,7 +210,7 @@ class Settings(BaseSettings):
     # Voice latency guardrails
     # If Pinecone or embedding generation is slow, we must fail fast and
     # return an empty knowledge context to avoid breaking the voice UX.
-    RAG_RETRIEVAL_TIMEOUT_SEC: float = 2.0
+    RAG_RETRIEVAL_TIMEOUT_SEC: float = 0.7
     # Prevent extremely large STT transcripts from being embedded.
     RAG_MAX_QUERY_CHARS: int = 3000
 

@@ -881,6 +881,11 @@ class BidirectionalStreamHandler:
             if user_text:
                 asyncio.create_task(self._send_quick_acknowledgement(user_text))
 
+            booking_intent_turn = self._is_booking_intent_turn(user_text)
+            low_latency_fastpath = self._should_use_latency_fastpath(
+                user_text, booking_intent_turn
+            )
+
             turn_context = build_turn_context(
                 user_text,
                 confidence,
@@ -899,55 +904,60 @@ class BidirectionalStreamHandler:
             rag_trace: dict = {}
             _prefetch = self._rag_prefetch_task
             self._rag_prefetch_task = None  # Consume once per turn
-            try:
-                if _prefetch is not None:
-                    if _prefetch.done():
-                        # Already finished — zero-cost read
-                        rag_context_block, rag_trace = _prefetch.result()
-                        logger.debug("[RAG] used prefetch result (done)")
+            if low_latency_fastpath:
+                rag_trace = {"status": "skipped_fastpath"}
+                if _prefetch and not _prefetch.done():
+                    _prefetch.cancel()
+            else:
+                try:
+                    if _prefetch is not None:
+                        if _prefetch.done():
+                            # Already finished — zero-cost read
+                            rag_context_block, rag_trace = _prefetch.result()
+                            logger.debug("[RAG] used prefetch result (done)")
+                        else:
+                            # Still running — wait with reduced timeout (most work already done)
+                            rag_context_block, rag_trace = await asyncio.wait_for(
+                                asyncio.shield(_prefetch),
+                                timeout=max(0.35, settings.RAG_RETRIEVAL_TIMEOUT_SEC - 0.25),
+                            )
+                            logger.debug("[RAG] awaited in-flight prefetch")
                     else:
-                        # Still running — wait with reduced timeout (most work already done)
+                        # No prefetch fired (e.g., very short utterance, final-only path)
+                        loop = asyncio.get_running_loop()
+
+                        def _build_rag():
+                            return build_rag_context_block_with_trace(
+                                user_text=user_text,
+                                tenant_id=tenant_uuid,
+                                agent_id=rag_agent_scope,
+                            )
+
                         rag_context_block, rag_trace = await asyncio.wait_for(
-                            asyncio.shield(_prefetch),
-                            timeout=max(0.5, settings.RAG_RETRIEVAL_TIMEOUT_SEC - 1.0),
+                            loop.run_in_executor(None, _build_rag),
+                            timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
                         )
-                        logger.debug("[RAG] awaited in-flight prefetch")
-                else:
-                    # No prefetch fired (e.g., very short utterance, final-only path)
-                    loop = asyncio.get_running_loop()
-
-                    def _build_rag():
-                        return build_rag_context_block_with_trace(
-                            user_text=user_text,
-                            tenant_id=tenant_uuid,
-                            agent_id=rag_agent_scope,
-                        )
-
-                    rag_context_block, rag_trace = await asyncio.wait_for(
-                        loop.run_in_executor(None, _build_rag),
-                        timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
+                except asyncio.TimeoutError:
+                    rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                        user_text="",
+                        tenant_id=tenant_uuid,
+                        agent_id=rag_agent_scope,
                     )
-            except asyncio.TimeoutError:
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "timeout"
-                rag_trace["timeout"] = True
-            except Exception as e:
-                logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "failure"
-                rag_trace["error"] = str(e)
+                    rag_trace["status"] = "timeout"
+                    rag_trace["timeout"] = True
+                except Exception as e:
+                    logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
+                    rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                        user_text="",
+                        tenant_id=tenant_uuid,
+                        agent_id=rag_agent_scope,
+                    )
+                    rag_trace["status"] = "failure"
+                    rag_trace["error"] = str(e)
 
             inbound_kb_docs_context_block = ""
             business_knowledge_block = ""
-            if self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
+            if (not low_latency_fastpath) and self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
                 try:
                     inbound_kb_docs_context_block = (
                         agent_service.build_inbound_kb_documents_context_block(
@@ -964,7 +974,7 @@ class BidirectionalStreamHandler:
                         exc_info=True,
                     )
 
-            if tenant_uuid:
+            if (not low_latency_fastpath) and tenant_uuid:
                 try:
                     business_knowledge_block = (
                         agent_service.build_business_knowledge_context_block(
@@ -1023,6 +1033,8 @@ class BidirectionalStreamHandler:
                     # Booking flows benefit from a slightly wider history window so
                     # the model keeps the already-collected service/date/slot in view.
                     max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
+                    if low_latency_fastpath:
+                        max_msgs = min(max_msgs, 6)
                     if self._is_booking_context_active(user_text):
                         max_msgs = max(max_msgs, 39)
                     if len(filtered) > max_msgs:
@@ -1213,8 +1225,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             api_key = None
             temperature = 0.5
             max_tokens = 100
-            booking_intent_turn = self._is_booking_intent_turn(user_text)
-            
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
                 
@@ -1243,6 +1253,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Booking turns need enough completion budget for action token emission.
                 if booking_intent_turn:
                     max_tokens = max(max_tokens, 180)
+                elif low_latency_fastpath:
+                    max_tokens = min(max_tokens, 80)
                 
                 # Select service based on provider
                 if self.agent.provider:
@@ -1268,6 +1280,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 0.12,
                 float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.28) or 0.28),
             )
+            _time_flush_target_words = 6 if low_latency_fastpath else 8
             logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
@@ -1340,7 +1353,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         return None
 
                     # Flush around ~6-8 words to start speaking quickly.
-                    target_words = min(8, len(words))
+                    target_words = min(_time_flush_target_words, len(words))
                     m = re.match(rf"^(?:\\S+\\s+){{{target_words - 1}}}\\S+", buf)
                     if not m:
                         return None
@@ -1613,6 +1626,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             "am", "pm", "a.m", "p.m", "date", "time", "tomorrow", "today",
         )
         return any(k in haystack for k in booking_keywords)
+
+    def _should_use_latency_fastpath(self, user_text: str, booking_intent_turn: bool) -> bool:
+        """
+        Fast-path only for short/simple turns where heavy context is unlikely to help.
+        Keeps booking/business-intent turns on the full context path.
+        """
+        if not bool(getattr(settings, "VOICE_ENABLE_LATENCY_FASTPATH", True)):
+            return False
+        if booking_intent_turn:
+            return False
+        text = (user_text or "").strip().lower()
+        if not text:
+            return False
+        max_words = int(getattr(settings, "VOICE_FASTPATH_MAX_WORDS", 7) or 7)
+        words = text.split()
+        if len(words) > max_words:
+            return False
+        heavy_intent_markers = (
+            "price", "pricing", "cost", "address", "phone", "email", "website",
+            "service", "book", "booking", "appointment", "schedule", "slot", "quote",
+        )
+        return not any(k in text for k in heavy_intent_markers)
 
     def _is_booking_context_active(self, user_text: str = "") -> bool:
         return bool(
