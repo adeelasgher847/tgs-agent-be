@@ -52,10 +52,10 @@ _MAX_CONCURRENT_SYNTHESIS: int = 8
 # cancelled — tasks stuck there will be orphaned after this timeout.
 _CANCEL_GATHER_TIMEOUT_S: float = 0.25
 
-# Maximum time a chunk may wait for its playback gate before we log an error
-# and proceed anyway.  Prevents permanent pipeline stalls if a zombie task
-# from a previous turn never ran its finally block.
-_GATE_WAIT_TIMEOUT_S: float = 8.0
+# Maximum time a chunk may wait for its playback gate before we give up on
+# streaming this chunk (still unblock the next chunk in finally). Long utterances
+# can legitimately play >8s; proceeding mid-wait caused audible glitches.
+_GATE_WAIT_TIMEOUT_S: float = 45.0
 
 # Log a WARNING when synthesis takes longer than this (TTS API latency alert).
 _SLOW_SYNTHESIS_WARN_S: float = 3.0
@@ -349,9 +349,9 @@ class TtsPipeline:
           guaranteeing strict in-order audio without any polling or sleep.
           If synthesis finished before the gate opens (the common case), playback
           starts the instant the event loop processes the gate.set() call.
-          Timeout (_GATE_WAIT_TIMEOUT_S) prevents permanent stall if, due to
-          a zombie-task scenario, the gate is never set; we log the error and
-          proceed (handler's _tts_lock serialises concurrent stream attempts).
+          Timeout (_GATE_WAIT_TIMEOUT_S) avoids infinite hang on zombie gates.
+          On timeout we skip streaming this chunk only (no overlap with audio
+          still playing from the previous chunk); finally still unblocks the next.
 
         Phase 3 — Streaming:
           Calls handler._stream_tts_chunk with pre-synthesised bytes.
@@ -422,10 +422,9 @@ class TtsPipeline:
             # Gate for chunk 0 is set immediately in queue_tts.
             # Gate for chunk N>0 is set by chunk N-1's finally block.
             #
-            # Wrapped in wait_for so a permanently stuck gate (zombie scenario
-            # where finally never ran) becomes a recoverable error instead of an
-            # infinite hang.  On timeout we log and fall through — handler's
-            # _tts_lock prevents audio overlap between concurrent streamers.
+            # Wrapped in wait_for so a permanently stuck gate (zombie scenario)
+            # does not hang the worker forever. On timeout: skip Phase 3 for this
+            # chunk only — do not stream audio that could overlap the prior chunk.
             gate = self._playback_events.get(chunk_id)
             if gate is not None:
                 gate_t0 = time.perf_counter()
@@ -434,13 +433,13 @@ class TtsPipeline:
                 except asyncio.TimeoutError:
                     logger.error(
                         "[TTS] chunk %d gate timed out after %.0fs — "
-                        "proceeding to prevent pipeline stall "
-                        "(turn_id=%d task_turn_id=%d)",
+                        "skipping this chunk's playback (turn_id=%d task_turn_id=%d)",
                         chunk_id,
                         _GATE_WAIT_TIMEOUT_S,
                         self._turn_id,
                         task_turn_id,
                     )
+                    return
                 # CancelledError is intentionally NOT caught here — it propagates
                 # to the outer handler so finally still runs (gate N+1 gets set).
                 gate_elapsed = time.perf_counter() - gate_t0

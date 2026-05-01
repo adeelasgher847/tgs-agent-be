@@ -248,6 +248,10 @@ class BidirectionalStreamHandler:
         self._tts_pipeline: Optional[TtsPipeline] = None
         self._elevenlabs_prev_tts_text = ""
         self._use_ssml = True                # Enable SSML by default
+        # Quick-ack dedup guard: prevent repeated acknowledgements for the same
+        # user turn when interim/final regeneration paths overlap.
+        self._last_quick_ack_user_norm: str = ""
+        self._last_quick_ack_mono: float = 0.0
         
         # Session data
         self.call_session = None
@@ -748,6 +752,16 @@ class BidirectionalStreamHandler:
         import random
         
         text = (user_text or "").strip()
+        if not text:
+            return
+        now_mono = time.monotonic()
+        user_norm = self._normalize_turn_text(text)
+        if (
+            user_norm
+            and user_norm == self._last_quick_ack_user_norm
+            and (now_mono - self._last_quick_ack_mono) < 12.0
+        ):
+            return
         # First check if this text is even eligible for a quick acknowledgement
         if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
             return
@@ -777,6 +791,8 @@ class BidirectionalStreamHandler:
             "is_acknowledgement": True,
             "is_final": False
         })
+        self._last_quick_ack_user_norm = user_norm
+        self._last_quick_ack_mono = now_mono
 
     async def _prefetch_rag_context(self, user_text: str) -> tuple:
         """
@@ -876,10 +892,7 @@ class BidirectionalStreamHandler:
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
-            # Send quick acknowledgement (e.g. "Got it") as a non-blocking background
-            # task so the user hears a near-instant response while LLM+RAG run.
-            if user_text:
-                asyncio.create_task(self._send_quick_acknowledgement(user_text))
+            self._voice_metrics.start_generation()
 
             booking_intent_turn = self._is_booking_intent_turn(user_text)
             low_latency_fastpath = self._should_use_latency_fastpath(
@@ -1292,6 +1305,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 tts_buffer = ""
                 end_call_after = False
                 first_tts_chunk = True
+                quick_ack_sent = False
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
 
@@ -1380,6 +1394,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_llm_first_token()
+                    if (
+                        not quick_ack_sent
+                        and not self._tts_cancel.is_set()
+                        and len(tts_buffer.split()) >= 2
+                    ):
+                        await self._send_quick_acknowledgement(user_text)
+                        quick_ack_sent = True
 
                     # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
                     if "[END_CALL]" in response_accum:
