@@ -142,6 +142,7 @@ from app.voice.conversation_orchestrator import (
 from app.voice.voice_orchestrator import VoiceOrchestrator
 from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
+from app.voice.metrics import VoiceTurnMetrics
 
 # Import utilities and services
 from app.utils.audio_utils import (
@@ -337,6 +338,11 @@ class BidirectionalStreamHandler:
         self._rag_prefetch_task: Optional[asyncio.Task] = None
         self._rag_prefetch_user_text: str = ""
 
+        # Serialize final STT → LLM when multiple async final tasks overlap; keeps turn state coherent
+        # without blocking the Deepgram reader loop.
+        self._voice_transcript_lock = asyncio.Lock()
+        self._voice_metrics = VoiceTurnMetrics()
+
         # Background audio manager (dev-branch style embedded ambience loop).
         self._background_audio = BackgroundAudioManager(
             websocket=self.websocket,
@@ -510,8 +516,9 @@ class BidirectionalStreamHandler:
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
         # Discard stale RAG prefetch so the next turn gets a fresh retrieval.
-        if self._rag_prefetch_task and not self._rag_prefetch_task.done():
-            self._rag_prefetch_task.cancel()
+        prefetch = getattr(self, "_rag_prefetch_task", None)
+        if prefetch and not prefetch.done():
+            prefetch.cancel()
         self._rag_prefetch_task = None
         self._rag_prefetch_user_text = ""
 
@@ -583,61 +590,59 @@ class BidirectionalStreamHandler:
     
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
-        try:
-            if not self._should_accept_final_transcript(transcript, confidence):
-                return
+        async with self._voice_transcript_lock:
+            try:
+                if not self._should_accept_final_transcript(transcript, confidence):
+                    return
 
-            # Skip duplicate finals (e.g. same "Hello?" endpointed multiple times) — Vapi-style single turn
-            tstrip = (transcript or "").strip()
-            _now = time.monotonic()
-            if (
-                tstrip
-                and tstrip == self._stt_last_final_raw
-                and (_now - self._stt_last_final_monotonic) < self._STT_DEDUP_FINAL_WINDOW_SEC
-            ):
-                logger.debug("STT: skipping duplicate final within %ss", self._STT_DEDUP_FINAL_WINDOW_SEC)
-                return
-            self._stt_last_final_raw = tstrip
-            self._stt_last_final_monotonic = _now
-            
-            # 🎯 Check for goodbye words FIRST - end call if detected
-            if await self._check_and_end_call_if_goodbye(transcript):
-                return  # Stop processing - call is ending
-            
-            # 🎯 Check for voicemail detection - end call if detected
-            if await self._check_and_end_call_if_voicemail(transcript):
-                return  # Stop processing - call is ending
-            
-            # 🎯 Send "in-progress" status when confident word is detected (like "hello")
-            # Only send once when we get a confident transcript with meaningful words
-            if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
-                await self._send_in_progress_status(transcript, confidence)
-                self._in_progress_sent = True
-            
-            # Add to transcript (always)
-            await self._add_to_transcript("client", transcript, "speech", confidence)
-            self._update_booking_memory_from_user_turn(transcript)
+                # Skip duplicate finals (e.g. same "Hello?" endpointed multiple times).
+                tstrip = (transcript or "").strip()
+                _now = time.monotonic()
+                if (
+                    tstrip
+                    and tstrip == self._stt_last_final_raw
+                    and (_now - self._stt_last_final_monotonic) < self._STT_DEDUP_FINAL_WINDOW_SEC
+                ):
+                    logger.debug("STT: skipping duplicate final within %ss", self._STT_DEDUP_FINAL_WINDOW_SEC)
+                    return
+                self._stt_last_final_raw = tstrip
+                self._stt_last_final_monotonic = _now
 
-            # Turn coordinator: if the same user turn was just handled (e.g. "Hello?" twice
-            # across the pickup/first-second-endpoint boundary), do not generate a second
-            # agent reply. The client line is still saved so the caller sees they repeated.
-            user_turn_norm = self._normalize_turn_text(transcript)
-            if self._has_recent_duplicate_reply_for(user_turn_norm):
-                logger.info(
-                    "TurnCoordinator: suppressing duplicate generate for user turn=%r (within %ss)",
-                    transcript,
-                    self._DUP_USER_TURN_WINDOW_SEC,
-                )
-                # Reset interim-turn flags so the next real user utterance is free to generate.
-                self._turn_response_started = False
-                self._turn_response_seed_text = ""
-                self._last_interim_text = ""
-                return
+                self._voice_metrics.begin_turn_at_stt_final()
 
-            await self._complete_llm_turn_after_stt_final(transcript, confidence)
-            
-        except Exception as e:
-            logger.error(f"Error processing transcript: {e}", exc_info=True)
+                # 🎯 Check for goodbye words FIRST - end call if detected
+                if await self._check_and_end_call_if_goodbye(transcript):
+                    return  # Stop processing - call is ending
+
+                # 🎯 Check for voicemail detection - end call if detected
+                if await self._check_and_end_call_if_voicemail(transcript):
+                    return  # Stop processing - call is ending
+
+                # 🎯 Send "in-progress" status when confident word is detected (like "hello")
+                if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
+                    await self._send_in_progress_status(transcript, confidence)
+                    self._in_progress_sent = True
+
+                # Add to transcript (always)
+                await self._add_to_transcript("client", transcript, "speech", confidence)
+                self._update_booking_memory_from_user_turn(transcript)
+
+                user_turn_norm = self._normalize_turn_text(transcript)
+                if self._has_recent_duplicate_reply_for(user_turn_norm):
+                    logger.info(
+                        "TurnCoordinator: suppressing duplicate generate for user turn=%r (within %ss)",
+                        transcript,
+                        self._DUP_USER_TURN_WINDOW_SEC,
+                    )
+                    self._turn_response_started = False
+                    self._turn_response_seed_text = ""
+                    self._last_interim_text = ""
+                    return
+
+                await self._complete_llm_turn_after_stt_final(transcript, confidence)
+
+            except Exception as e:
+                logger.error(f"Error processing transcript: {e}", exc_info=True)
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
@@ -674,8 +679,9 @@ class BidirectionalStreamHandler:
             # the result is ready (or nearly so) by the time generate_and_stream_response
             # would otherwise block waiting for Pinecone. Fires once per user turn
             # regardless of VOICE_ENABLE_INTERIM_LLM so even final-only mode benefits.
+            _prefetch = getattr(self, "_rag_prefetch_task", None)
             if (
-                not self._rag_prefetch_task
+                not _prefetch
                 and not self._turn_response_started
                 and word_count >= self._min_interim_words
                 and confidence >= self._min_interim_confidence
@@ -1258,6 +1264,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
+            _tts_time_flush_s = max(
+                0.12,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.28) or 0.28),
+            )
             logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
@@ -1288,6 +1298,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     """
                     if not buf:
                         return None
+
+                    nl = buf.find("\n")
+                    if nl != -1:
+                        prefix = buf[:nl].strip()
+                        if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
+                            return nl
 
                     # Prefer sentence boundaries: ., !, ? followed by whitespace/newline/end
                     last_boundary = None
@@ -1347,6 +1363,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     response_accum += chunk
                     tts_buffer += chunk
 
+                    if chunk:
+                        _vm = getattr(self, "_voice_metrics", None)
+                        if _vm:
+                            _vm.mark_llm_first_token()
+
                     # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
                     if "[END_CALL]" in response_accum:
                         end_call_after = True
@@ -1363,10 +1384,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
-                    # If punctuation-based flush isn't available, do a time-based flush (~150ms)
+                    # If punctuation-based flush isn't available, do a time-based flush (tunable)
                     if flush_idx is None:
                         now_ts = time.perf_counter()
-                        if (now_ts - last_flush_ts) >= 0.15:
+                        if (now_ts - last_flush_ts) >= _tts_time_flush_s:
                             flush_idx = _find_time_flush_index(tts_buffer)
                     if flush_idx is not None and not self._tts_cancel.is_set():
                         flush_text = tts_buffer[:flush_idx].strip()
@@ -1394,6 +1415,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     "use_ssml": self._use_ssml,
                                     "is_final": False,
                                 })
+                                _vm = getattr(self, "_voice_metrics", None)
+                                if _vm:
+                                    _vm.mark_first_tts_queued()
                                 _schedule_deferred_memory_once()
                             first_tts_chunk = False
                             last_flush_ts = time.perf_counter()
@@ -1427,6 +1451,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "is_final": True,
                             "end_call_after": end_call_after,
                         })
+                        _vm = getattr(self, "_voice_metrics", None)
+                        if _vm:
+                            _vm.mark_first_tts_queued()
                         _schedule_deferred_memory_once()
 
                 return response_accum.strip()
@@ -1526,6 +1553,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     asyncio.create_task(self._handle_check_slots_token(final_text))
                 elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_book_appointment_token(final_text))
+
+                try:
+                    self._voice_metrics.log_turn_summary(
+                        logger,
+                        user_preview=(user_text or "")[:56],
+                        session_hint=str(self.call_session_id or ""),
+                    )
+                except Exception:
+                    pass
 
         except asyncio.CancelledError:
             raise
@@ -3371,7 +3407,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 return  # Already handled
             
             self._user_picked_up = True
-            
+            self._voice_metrics.mark_call_pickup()
+
             # ❌ Credit monitoring moved to _send_in_progress_status() 
             # Credit deduction will start when connected status is sent (first media packet + connected status)
             

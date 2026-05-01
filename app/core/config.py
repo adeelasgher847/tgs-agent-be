@@ -62,8 +62,17 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_ENDPOINTING_MS: int = 200
     # After the agent asks for email, bidirectional stream may reopen STT once with this value.
     DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 300
+    # Telecom-oriented silence window for spelling/email (when mode is extended or email-recreate runs).
+    # Ignored unless VOICE_STT_ENDPOINTING_MODE == "extended" or email flow bumps endpointing.
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
     VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT: bool = True
+    # Initial Deepgram endpointing profile for the first STT session:
+    #   normal     → DEEPGRAM_STT_ENDPOINTING_MS
+    #   extended   → max(base, DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED)
+    #   aggressive → faster finals (lower ms, clamped) for snappier turns
+    VOICE_STT_ENDPOINTING_MODE: str = "normal"
+    # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
+    VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
@@ -105,6 +114,9 @@ class Settings(BaseSettings):
     VOICE_HISTORY_MAX_MESSAGES: int = 12
     VOICE_TTS_FLUSH_MIN_WORDS: int = 2
     VOICE_TTS_FLUSH_MAX_WORDS: int = 12
+    # If no sentence boundary yet, flush buffered LLM text to TTS after this many seconds
+    # (once min words satisfied) — lower = faster first spoken chunk, slightly more chunking.
+    VOICE_TTS_TIME_FLUSH_SEC: float = 0.28
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     VOICE_QUICK_ACK_PROBABILITY: float = 0.38
 

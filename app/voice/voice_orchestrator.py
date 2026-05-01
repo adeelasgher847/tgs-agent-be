@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Set
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -34,6 +34,25 @@ from app.voice.tts_pipeline import TtsPipeline
 if TYPE_CHECKING:
     # Avoid circular import — handler is referenced only for type hints and callbacks.
     pass
+
+
+def _resolve_initial_endpointing_ms() -> int:
+    """
+    Map VOICE_STT_ENDPOINTING_MODE to an initial Deepgram endpointing (ms) value
+    before any email-collection upgrade.
+    """
+    mode = (
+        getattr(settings, "VOICE_STT_ENDPOINTING_MODE", "normal") or "normal"
+    ).strip().lower()
+    base = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 200) or 200)
+    ext = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED", 300) or 300)
+    if mode == "extended":
+        return max(base, ext)
+    if mode == "aggressive":
+        # Snappier finals without extreme fragmentation (telephony-safe clamp).
+        aggressive = max(80, int(base * 0.55))
+        return min(aggressive, 400)
+    return base
 
 
 class VoiceOrchestrator:
@@ -104,6 +123,10 @@ class VoiceOrchestrator:
         self._tts_pipeline = TtsPipeline(handler)
         handler._tts_pipeline = self._tts_pipeline
         handler._tts_worker_task = self._tts_pipeline._worker_task
+
+        # Final STT callbacks are scheduled as tasks so the Deepgram reader never blocks
+        # on full LLM+TTS work (parallel with continued STT ingestion).
+        self._pending_final_tasks: Set[asyncio.Task] = set()
 
         logger.info("[VoiceOrchestrator] Initialized — STT lazy, TTS pipeline ready")
 
@@ -195,17 +218,22 @@ class VoiceOrchestrator:
                 language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
                 deferred_ep = self._stt_deferred_endpointing_ms
                 self._stt_deferred_endpointing_ms = None
+                initial_endpointing = (
+                    int(deferred_ep)
+                    if deferred_ep is not None
+                    else _resolve_initial_endpointing_ms()
+                )
                 self._stt_pipeline = SttPipeline(
                     language_code=language_code,
                     on_interim=self._on_interim,
                     on_final=self._on_final,
                     call_session_id=h.call_session_id,
                     agent_id=h.agent_id,
-                    endpointing_ms=deferred_ep,
+                    endpointing_ms=initial_endpointing,
                 )
                 logger.debug(
                     "[VoiceOrchestrator] SttPipeline created (endpointing_ms=%s)",
-                    deferred_ep,
+                    initial_endpointing,
                 )
 
             await self._stt_pipeline.feed_audio_chunk(audio_data)
@@ -283,6 +311,19 @@ class VoiceOrchestrator:
         """
         self._stt_active = False
 
+        # Cancel any async final-transcript tasks still running
+        pending = list(self._pending_final_tasks)
+        for t in pending:
+            if t and not t.done():
+                t.cancel()
+        for t in pending:
+            if t:
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+        self._pending_final_tasks.clear()
+
         # Cancel any in-flight LLM task tracked by the handler
         t = getattr(self._h, "_llm_response_task", None)
         if t and not t.done():
@@ -334,7 +375,25 @@ class VoiceOrchestrator:
         goodbye detection, voicemail detection, and LLM trigger.
         """
         try:
-            await self._h._process_transcript(transcript, confidence)
+            h = self._h
+
+            async def _run_final() -> None:
+                try:
+                    await h._process_transcript(transcript, confidence)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as cb_exc:
+                    logger.error(
+                        "[VoiceOrchestrator] _process_transcript error: %s",
+                        cb_exc,
+                        exc_info=True,
+                    )
+
+            t = asyncio.create_task(_run_final())
+            self._pending_final_tasks.add(t)
+            t.add_done_callback(
+                lambda done_t, s=self: s._pending_final_tasks.discard(done_t)
+            )
         except Exception as exc:
             logger.error(
                 "[VoiceOrchestrator] _on_final callback error: %s", exc, exc_info=True

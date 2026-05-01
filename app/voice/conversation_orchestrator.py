@@ -425,6 +425,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
+            _tts_time_flush_s = max(
+                0.12,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.28) or 0.28),
+            )
             logger.info(
                 f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) "
                 f"for response to: '{user_text[:20]}...'"
@@ -448,6 +452,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 def _find_flush_index(buf: str):
                     if not buf:
                         return None
+
+                    nl = buf.find("\n")
+                    if nl != -1:
+                        prefix = buf[:nl].strip()
+                        if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
+                            return nl
 
                     last_boundary = None
                     for m in re.finditer(r"([.!?])(\s+|$)", buf):
@@ -498,6 +508,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     response_accum += chunk
                     tts_buffer += chunk
 
+                    if chunk:
+                        _vm = getattr(self._h, "_voice_metrics", None)
+                        if _vm:
+                            _vm.mark_llm_first_token()
+
                     if "[END_CALL]" in response_accum:
                         end_call_after = True
                         tts_buffer = _strip_control_tokens(tts_buffer)
@@ -507,7 +522,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     flush_idx = _find_flush_index(tts_buffer)
                     now_ts = time.perf_counter()
-                    if flush_idx is None and (now_ts - last_flush_ts) >= 0.8:
+                    if flush_idx is None and (now_ts - last_flush_ts) >= _tts_time_flush_s:
                         flush_idx = _find_time_flush_index(tts_buffer)
 
                     if flush_idx is not None and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
@@ -524,6 +539,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     "end_call_after": False,
                                 }
                             )
+                            _vm = getattr(self._h, "_voice_metrics", None)
+                            if _vm:
+                                _vm.mark_first_tts_queued()
                             last_flush_ts = now_ts
                             first_tts_chunk = False
 
@@ -540,6 +558,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "end_call_after": end_call_after,
                         }
                     )
+                    _vm = getattr(self._h, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
                 return response_accum
 
             final_text = ""

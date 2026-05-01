@@ -451,6 +451,10 @@ class TtsPipeline:
                         chunk_id, gate_elapsed,
                     )
 
+            # Turn may have advanced during gate wait (barge-in); never stream stale audio.
+            if self._turn_id != task_turn_id:
+                return
+
             if self.cancel_event.is_set():
                 return
 
