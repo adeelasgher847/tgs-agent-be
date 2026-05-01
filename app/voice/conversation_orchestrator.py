@@ -426,8 +426,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
             _tts_time_flush_s = max(
-                0.12,
-                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.28) or 0.28),
+                0.10,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.15) or 0.15),
             )
             logger.info(
                 f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) "

@@ -1290,10 +1290,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
             _tts_time_flush_s = max(
-                0.12,
-                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.28) or 0.28),
+                0.10,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.15) or 0.15),
             )
-            _time_flush_target_words = 6 if low_latency_fastpath else 8
+            _time_flush_target_words = 4 if low_latency_fastpath else 5
             logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
@@ -1305,7 +1305,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 tts_buffer = ""
                 end_call_after = False
                 first_tts_chunk = True
-                quick_ack_sent = False
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
 
@@ -1394,13 +1393,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_llm_first_token()
-                    if (
-                        not quick_ack_sent
-                        and not self._tts_cancel.is_set()
-                        and len(tts_buffer.split()) >= 2
-                    ):
-                        await self._send_quick_acknowledgement(user_text)
-                        quick_ack_sent = True
 
                     # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
                     if "[END_CALL]" in response_accum:

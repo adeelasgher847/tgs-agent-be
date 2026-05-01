@@ -112,13 +112,16 @@ class Settings(BaseSettings):
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
     VOICE_HISTORY_MAX_MESSAGES: int = 12
-    VOICE_TTS_FLUSH_MIN_WORDS: int = 2
-    VOICE_TTS_FLUSH_MAX_WORDS: int = 12
-    # If no sentence boundary yet, flush buffered LLM text to TTS after this many seconds
-    # (once min words satisfied) — lower = faster first spoken chunk, slightly more chunking.
-    VOICE_TTS_TIME_FLUSH_SEC: float = 0.2
+    VOICE_TTS_FLUSH_MIN_WORDS: int = 1
+    # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
+    # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
+    VOICE_TTS_FLUSH_MAX_WORDS: int = 5
+    # If no sentence boundary yet, flush after this many seconds (once min words met).
+    VOICE_TTS_TIME_FLUSH_SEC: float = 0.15
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
-    VOICE_QUICK_ACK_PROBABILITY: float = 0.38
+    # Quick-ack disabled: it queues as chunk-0, which causes the gate chain to back up
+    # while the full LLM response chunks wait — the primary "shutter then silence" cause.
+    VOICE_QUICK_ACK_PROBABILITY: float = 0.0
     # Fast-path for very short/simple turns to reduce first-token latency:
     # skip heavy RAG/KB context for obvious non-booking smalltalk.
     VOICE_ENABLE_LATENCY_FASTPATH: bool = True
