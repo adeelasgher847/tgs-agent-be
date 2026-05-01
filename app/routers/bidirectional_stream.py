@@ -332,6 +332,11 @@ class BidirectionalStreamHandler:
         self._AGENT_LINE_DEDUP_WINDOW_SEC: float = 25.0
         self._RECENT_AGENT_PAIRS_MAX: int = 5
 
+        # RAG prefetch: fired on the first qualifying interim so vector-DB retrieval
+        # overlaps Deepgram endpointing time instead of blocking LLM start.
+        self._rag_prefetch_task: Optional[asyncio.Task] = None
+        self._rag_prefetch_user_text: str = ""
+
         # Background audio manager (dev-branch style embedded ambience loop).
         self._background_audio = BackgroundAudioManager(
             websocket=self.websocket,
@@ -504,6 +509,11 @@ class BidirectionalStreamHandler:
                 pass
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
+        # Discard stale RAG prefetch so the next turn gets a fresh retrieval.
+        if self._rag_prefetch_task and not self._rag_prefetch_task.done():
+            self._rag_prefetch_task.cancel()
+        self._rag_prefetch_task = None
+        self._rag_prefetch_user_text = ""
 
     async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
         """
@@ -659,6 +669,22 @@ class BidirectionalStreamHandler:
                 self._last_interim_text = ""
                 return
 
+            # RAG prefetch: fire vector-DB retrieval as soon as we have a confident
+            # partial so it overlaps Deepgram endpointing time. This saves ~2s because
+            # the result is ready (or nearly so) by the time generate_and_stream_response
+            # would otherwise block waiting for Pinecone. Fires once per user turn
+            # regardless of VOICE_ENABLE_INTERIM_LLM so even final-only mode benefits.
+            if (
+                not self._rag_prefetch_task
+                and not self._turn_response_started
+                and word_count >= self._min_interim_words
+                and confidence >= self._min_interim_confidence
+            ):
+                self._rag_prefetch_user_text = transcript
+                self._rag_prefetch_task = asyncio.create_task(
+                    self._prefetch_rag_context(transcript)
+                )
+
             # Final-only mode: do not start LLM from partials (barge-in already handled).
             if not self._enable_interim_llm:
                 return
@@ -700,15 +726,10 @@ class BidirectionalStreamHandler:
                     await self._llm_response_task
                 except asyncio.CancelledError:
                     pass
+            # Fire LLM task without awaiting here — returning immediately keeps the
+            # STT reader loop unblocked so barge-in interims can still be processed
+            # during the full 8-10s LLM+TTS cycle.
             self._llm_response_task = asyncio.create_task(_run_interim())
-            try:
-                await self._llm_response_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"Error in interim LLM task: {e}", exc_info=True)
-            finally:
-                self._llm_response_task = None
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
     
@@ -750,7 +771,48 @@ class BidirectionalStreamHandler:
             "is_acknowledgement": True,
             "is_final": False
         })
-    
+
+    async def _prefetch_rag_context(self, user_text: str) -> tuple:
+        """
+        Run RAG vector-DB retrieval in the background so the result is available
+        (or nearly so) by the time generate_and_stream_response needs it.
+
+        Called as asyncio.create_task() from _maybe_process_interim on the first
+        qualifying partial — this overlaps Deepgram's endpointing silence window
+        (~200ms) and eliminates what would otherwise be a sequential ~2s RAG block
+        before every LLM start.
+        """
+        try:
+            tenant_uuid = self.call_session.tenant_id if self.call_session else None
+            agent_uuid = self.agent.id if self.agent else None
+            rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+            loop = asyncio.get_running_loop()
+
+            def _build():
+                return build_rag_context_block_with_trace(
+                    user_text=user_text,
+                    tenant_id=tenant_uuid,
+                    agent_id=rag_agent_scope,
+                )
+
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _build),
+                timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("[RAG prefetch] timed out for '%s…'", user_text[:20])
+        except Exception as exc:
+            logger.debug("[RAG prefetch] failed: %s", exc)
+        # Fallback: empty context (LLM still runs, just without RAG)
+        tenant_uuid = self.call_session.tenant_id if self.call_session else None
+        agent_uuid = self.agent.id if self.agent else None
+        rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+        return build_rag_context_block_with_trace(
+            user_text="",
+            tenant_id=tenant_uuid,
+            agent_id=rag_agent_scope,
+        )
+
     async def generate_and_stream_response(
         self,
         user_text: str,
@@ -808,8 +870,10 @@ class BidirectionalStreamHandler:
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
-            # Send quick acknowledgement for longer queries (instant from cache!)
-            #await self._send_quick_acknowledgement(user_text)
+            # Send quick acknowledgement (e.g. "Got it") as a non-blocking background
+            # task so the user hears a near-instant response while LLM+RAG run.
+            if user_text:
+                asyncio.create_task(self._send_quick_acknowledgement(user_text))
 
             turn_context = build_turn_context(
                 user_text,
@@ -823,24 +887,40 @@ class BidirectionalStreamHandler:
             agent_uuid = self.agent.id if self.agent else None
             rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
 
-            # Build KB context for the LLM with an explicit timeout so the voice
-            # pipeline never hangs on embeddings/Pinecone.
+            # RAG retrieval: use prefetched result when available (fired on interim
+            # so it overlaps Deepgram endpointing), otherwise run synchronously.
             rag_context_block = ""
             rag_trace: dict = {}
+            _prefetch = self._rag_prefetch_task
+            self._rag_prefetch_task = None  # Consume once per turn
             try:
-                loop = asyncio.get_running_loop()
+                if _prefetch is not None:
+                    if _prefetch.done():
+                        # Already finished — zero-cost read
+                        rag_context_block, rag_trace = _prefetch.result()
+                        logger.debug("[RAG] used prefetch result (done)")
+                    else:
+                        # Still running — wait with reduced timeout (most work already done)
+                        rag_context_block, rag_trace = await asyncio.wait_for(
+                            asyncio.shield(_prefetch),
+                            timeout=max(0.5, settings.RAG_RETRIEVAL_TIMEOUT_SEC - 1.0),
+                        )
+                        logger.debug("[RAG] awaited in-flight prefetch")
+                else:
+                    # No prefetch fired (e.g., very short utterance, final-only path)
+                    loop = asyncio.get_running_loop()
 
-                def _build_rag():
-                    return build_rag_context_block_with_trace(
-                        user_text=user_text,
-                        tenant_id=tenant_uuid,
-                        agent_id=rag_agent_scope,
+                    def _build_rag():
+                        return build_rag_context_block_with_trace(
+                            user_text=user_text,
+                            tenant_id=tenant_uuid,
+                            agent_id=rag_agent_scope,
+                        )
+
+                    rag_context_block, rag_trace = await asyncio.wait_for(
+                        loop.run_in_executor(None, _build_rag),
+                        timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
                     )
-
-                rag_context_block, rag_trace = await asyncio.wait_for(
-                    loop.run_in_executor(None, _build_rag),
-                    timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
-                )
             except asyncio.TimeoutError:
                 rag_context_block, rag_trace = build_rag_context_block_with_trace(
                     user_text="",
