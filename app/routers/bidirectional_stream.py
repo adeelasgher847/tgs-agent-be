@@ -897,6 +897,13 @@ class BidirectionalStreamHandler:
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
+            self._voice_metrics.start_generation()
+
+            booking_intent_turn = self._is_booking_intent_turn(user_text)
+            low_latency_fastpath = self._should_use_latency_fastpath(
+                user_text, booking_intent_turn
+            )
+
             # Fire quick-ack immediately (fire-and-forget) so the user hears audio
             # while the LLM+RAG+KB pipeline runs.  Only on the slow path (fastpath
             # queries have sub-500ms LLM TTFT so a quick-ack would finish before the
@@ -906,13 +913,6 @@ class BidirectionalStreamHandler:
             # the time quick-ack ends the real audio is typically already ready.
             if user_text and not low_latency_fastpath:
                 asyncio.create_task(self._send_quick_acknowledgement(user_text))
-
-            self._voice_metrics.start_generation()
-
-            booking_intent_turn = self._is_booking_intent_turn(user_text)
-            low_latency_fastpath = self._should_use_latency_fastpath(
-                user_text, booking_intent_turn
-            )
 
             turn_context = build_turn_context(
                 user_text,
