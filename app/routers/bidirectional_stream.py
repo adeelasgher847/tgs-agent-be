@@ -342,6 +342,18 @@ class BidirectionalStreamHandler:
         self._rag_prefetch_task: Optional[asyncio.Task] = None
         self._rag_prefetch_user_text: str = ""
 
+        # KB / business-knowledge blocks: agent-level data that never changes during
+        # a call.  Fetched once in the background at call start so every subsequent
+        # turn pays zero DB latency for these blocks (saves 50-200ms per slow turn).
+        self._cached_inbound_kb_block: str = ""
+        self._cached_business_knowledge_block: str = ""
+        self._kb_cache_ready: bool = False  # True once the background fetch completes
+
+        # In-memory conversation history: avoids re-parsing the growing
+        # call_transcript JSON on every turn (saves 5-30ms, grows with call length).
+        # Entries are (role, content) tuples matching the transcript filter rules.
+        self._conversation_history_cache: list[tuple[str, str]] = []
+
         # Final transcript bookkeeping (dedupe, DB writes): hold briefly — never across LLM+TTS.
         self._voice_transcript_lock = asyncio.Lock()
         # One completion at a time (interim/final regen policy, task awaits). Matches product
@@ -363,8 +375,14 @@ class BidirectionalStreamHandler:
         # self._conversation = ConversationOrchestrator(self)
         # ─────────────────────────────────────────────────────────────────────
 
-        # Pre-cache common phrases in background for instant responses (disabled; uncomment to re-enable)
-        # asyncio.create_task(self._precache_common_phrases())
+        # Pre-cache quick-ack phrases so they hit the LRU audio cache instead of
+        # paying TTS API latency on the first "Got it" / "Sure" of the call.
+        asyncio.create_task(self._precache_common_phrases())
+
+        # Fetch KB/business-knowledge blocks in the background at call start.
+        # These are agent-level and don't change per-turn; caching them here
+        # eliminates the 50-200ms parallel executor cost on every slow-path turn.
+        asyncio.create_task(self._prefetch_kb_blocks_at_call_start())
 
         # ── Voice Orchestration Layer ─────────────────────────────────────────
         # VoiceOrchestrator owns SttPipeline + TtsPipeline lifecycle and
@@ -460,7 +478,60 @@ class BidirectionalStreamHandler:
                     continue
         except Exception as e:
             logger.error(f"Error in precache_common_phrases: {e}")
-    
+
+    async def _prefetch_kb_blocks_at_call_start(self) -> None:
+        """
+        Fetch inbound-KB and business-knowledge context blocks once at call start.
+        These are agent/tenant-level and don't change during a call, so caching here
+        saves the 50-200ms parallel-executor cost that was previously paid on every
+        slow-path turn inside generate_and_stream_response.
+        """
+        try:
+            tenant_uuid = self.call_session.tenant_id if self.call_session else None
+            agent_uuid = self.agent.id if self.agent else None
+            if not (tenant_uuid or agent_uuid):
+                self._kb_cache_ready = True
+                return
+
+            loop = asyncio.get_running_loop()
+
+            async def _fetch_inbound_kb() -> str:
+                if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                    return ""
+                try:
+                    return await loop.run_in_executor(
+                        None,
+                        lambda: agent_service.build_inbound_kb_documents_context_block(
+                            db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("[KB prefetch] inbound KB fetch failed: %s", exc)
+                    return ""
+
+            async def _fetch_business_knowledge() -> str:
+                if not tenant_uuid:
+                    return ""
+                try:
+                    return await loop.run_in_executor(
+                        None,
+                        lambda: agent_service.build_business_knowledge_context_block(
+                            db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("[KB prefetch] business knowledge fetch failed: %s", exc)
+                    return ""
+
+            kb, bk = await asyncio.gather(_fetch_inbound_kb(), _fetch_business_knowledge())
+            self._cached_inbound_kb_block = kb
+            self._cached_business_knowledge_block = bk
+            self._kb_cache_ready = True
+            logger.debug("[KB prefetch] cache ready (inbound_kb=%d chars, bk=%d chars)", len(kb), len(bk))
+        except Exception as exc:
+            logger.warning("[KB prefetch] call-start fetch failed: %s", exc)
+            self._kb_cache_ready = True  # allow the call to proceed without KB context
+
     async def handle_media_message(self, message: dict):
         """
         Handle incoming MULAW audio from Twilio.
@@ -983,58 +1054,52 @@ class BidirectionalStreamHandler:
                     rag_trace["status"] = "failure"
                     rag_trace["error"] = str(e)
 
+            # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
+            # These are agent/tenant-level and don't change during the call, so serving
+            # them from cache costs 0ms versus the previous 50-200ms parallel executor fetch.
+            # Fall back to live fetch only if the cache background task hasn't finished yet
+            # (race on the very first turn of an extremely fast caller — rare in practice).
             inbound_kb_docs_context_block = ""
             business_knowledge_block = ""
             if not low_latency_fastpath:
-                # Both calls are synchronous SQLAlchemy queries.  Running them in
-                # the executor releases the event loop so Deepgram audio frames,
-                # barge-in interims, and TTS streaming all continue normally during
-                # the DB round-trips.  gather() runs them in parallel, saving the
-                # sequential penalty (~200–600ms total → ~200–300ms parallel).
-                _loop = asyncio.get_running_loop()
+                if self._kb_cache_ready:
+                    inbound_kb_docs_context_block = self._cached_inbound_kb_block
+                    business_knowledge_block = self._cached_business_knowledge_block
+                else:
+                    # Cache not ready yet — live fetch as fallback (old parallel executor path)
+                    _loop = asyncio.get_running_loop()
 
-                async def _fetch_inbound_kb() -> str:
-                    if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
-                        return ""
-                    try:
-                        return await _loop.run_in_executor(
-                            None,
-                            lambda: agent_service.build_inbound_kb_documents_context_block(
-                                db=self.db,
-                                inbound_agent_id=agent_uuid,
-                                tenant_id=tenant_uuid,
-                            ),
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to build inbound KB docs block for agent %s: %s",
-                            agent_uuid, e, exc_info=True,
-                        )
-                        return ""
+                    async def _fetch_inbound_kb_live() -> str:
+                        if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                            return ""
+                        try:
+                            return await _loop.run_in_executor(
+                                None,
+                                lambda: agent_service.build_inbound_kb_documents_context_block(
+                                    db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                                ),
+                            )
+                        except Exception as exc:
+                            logger.warning("KB live-fetch (inbound) failed: %s", exc)
+                            return ""
 
-                async def _fetch_business_knowledge() -> str:
-                    if not tenant_uuid:
-                        return ""
-                    try:
-                        return await _loop.run_in_executor(
-                            None,
-                            lambda: agent_service.build_business_knowledge_context_block(
-                                db=self.db,
-                                tenant_id=tenant_uuid,
-                                agent_id=agent_uuid,
-                            ),
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to build business knowledge block for agent %s: %s",
-                            agent_uuid, e, exc_info=True,
-                        )
-                        return ""
+                    async def _fetch_bk_live() -> str:
+                        if not tenant_uuid:
+                            return ""
+                        try:
+                            return await _loop.run_in_executor(
+                                None,
+                                lambda: agent_service.build_business_knowledge_context_block(
+                                    db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
+                                ),
+                            )
+                        except Exception as exc:
+                            logger.warning("KB live-fetch (business) failed: %s", exc)
+                            return ""
 
-                inbound_kb_docs_context_block, business_knowledge_block = await asyncio.gather(
-                    _fetch_inbound_kb(),
-                    _fetch_business_knowledge(),
-                )
+                    inbound_kb_docs_context_block, business_knowledge_block = await asyncio.gather(
+                        _fetch_inbound_kb_live(), _fetch_bk_live(),
+                    )
 
             # One-line RAG summary (safe: no chunk text, no secrets)
             try:
@@ -1050,30 +1115,29 @@ class BidirectionalStreamHandler:
                 # Logging must never break voice calls.
                 pass
             
-            # Build conversation context from transcript
-            conversation_history = []
-            if self.call_session and self.call_session.call_transcript:
+            # Build history text from in-memory cache (avoids re-parsing the growing
+            # call_transcript JSON on every turn — O(n) JSON parse that gets slower
+            # as the call continues).  _conversation_history_cache is appended to
+            # directly by _add_to_transcript so it's always up-to-date.
+            # Fallback: if cache is empty but DB has a transcript, seed from DB once.
+            if not self._conversation_history_cache and self.call_session and self.call_session.call_transcript:
                 try:
-                    conversation_history = json.loads(self.call_session.call_transcript) if isinstance(self.call_session.call_transcript, str) else self.call_session.call_transcript
-                except:
-                    conversation_history = []
-            
-            # Build history text - bounded filtered history for stable long-call memory
-            history_text = ""
-            if conversation_history:
-                try:
-                    history_lines = []
-                    filtered = []
-                    for msg in conversation_history:
+                    raw = self.call_session.call_transcript
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    for msg in (parsed or []):
                         if isinstance(msg, dict):
-                            # Handle both 'content' and 'message' keys
-                            role = msg.get('role', 'unknown')
-                            content = msg.get('content') or msg.get('message', '')
-                            message_type = msg.get('message_type', '')
-                            
-                            # Filter: Only include client and agent messages (skip system/greeting/status messages)
-                            if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
-                                filtered.append((role, content))
+                            role = msg.get("role", "")
+                            content = msg.get("content") or msg.get("message", "")
+                            mtype = msg.get("message_type", "")
+                            if content and role in ("client", "agent") and mtype not in ("greeting", "system", "status"):
+                                self._conversation_history_cache.append((role, content))
+                except Exception:
+                    pass
+
+            history_text = ""
+            if self._conversation_history_cache:
+                try:
+                    filtered = self._conversation_history_cache
 
                     # Booking flows benefit from a slightly wider history window so
                     # the model keeps the already-collected service/date/slot in view.
@@ -1085,11 +1149,9 @@ class BidirectionalStreamHandler:
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
-                    # Build history text from the bounded window
-                    for role, content in filtered:
-                        history_lines.append(f"{role.capitalize()}: {content}")
-
-                    history_text = "\n".join(history_lines)
+                    history_text = "\n".join(
+                        f"{role.capitalize()}: {content}" for role, content in filtered
+                    )
                 except Exception:
                     history_text = ""
             
@@ -1394,16 +1456,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if not buf:
                         return None
                     words = buf.split()
-                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 5):
+                    # Lower floor to 2 words (was hardcoded 5): allows the 150ms time
+                    # gate to flush short confident fragments like "Sure," or "Got it."
+                    # without waiting for a full sentence to accumulate first.
+                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 2):
                         return None
 
-                    # Flush around ~6-8 words to start speaking quickly.
+                    # Flush around ~4-6 words to start speaking quickly.
                     target_words = min(_time_flush_target_words, len(words))
                     m = re.match(rf"^(?:\\S+\\s+){{{target_words - 1}}}\\S+", buf)
                     if not m:
                         return None
                     return m.end()
 
+                _first_token_marked = False
                 async for chunk in service.stream_text(
                     prompt=user_text,
                     system_prompt=system_prompt,
@@ -1421,7 +1487,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     response_accum += chunk
                     tts_buffer += chunk
 
-                    if chunk:
+                    if not _first_token_marked:
+                        _first_token_marked = True
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_llm_first_token()
@@ -3387,6 +3454,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if message_metadata:
                     user_text_meta = message_metadata.get("user_text") or message_metadata.get("query")
                 self._remember_agent_turn(user_text_meta, clean_message)
+
+            # Keep in-memory history cache in sync so generate_and_stream_response
+            # never needs to re-parse the call_transcript JSON.
+            if role in ("client", "agent") and message_type not in ("greeting", "system", "status"):
+                self._conversation_history_cache.append((role, clean_message))
             
             # Update legacy field
             conversation = transcript_service.get_conversation_array(self.db, self.call_session.id)
