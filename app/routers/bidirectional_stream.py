@@ -176,6 +176,30 @@ router = APIRouter()
 # Vapi-style customEndpointingRules analogue: when the agent asks for email, we either
 # defer a longer Deepgram endpointing for the first STT session or reconnect once with
 # DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED so spelling pauses do not split finals prematurely.
+# ── Speculative TTS opener rules ─────────────────────────────────────────────
+# Compiled once at module load.  Ordered most-specific first so the first match
+# wins.  Each entry: (pattern, predicted_first_chunk_text).
+# The prediction only needs to be accurate enough to be useful — even a 30-40%
+# hit rate eliminates TTS synthesis latency for those turns entirely.
+_SPECULATIVE_OPENER_RULES: list[tuple[re.Pattern, str]] = [
+    # Booking / scheduling (specific before generic "what")
+    (re.compile(r"\b(book|schedule|appointment|reserve|reserv|slot|meeting|available|availability|reschedule)\b", re.I), "Sure, let me check that."),
+    # Pricing / cost
+    (re.compile(r"\b(price|cost|how much|fee|rate|charge|pricing|quote)\b", re.I), "Sure,"),
+    # Simple yes / affirmation (full utterance match)
+    (re.compile(r"^(yes|yeah|yep|yup|sure|absolutely|of course|correct|right|exactly|definitely|perfect|great)[\s.,!?]*$", re.I), "Great!"),
+    # Simple no / negative (full utterance match)
+    (re.compile(r"^(no|nope|not really|nah|never mind|nevermind|cancel that)[\s.,!?]*$", re.I), "I understand."),
+    # Help / problem
+    (re.compile(r"\b(help|support|issue|problem|trouble|not working|broken|error|wrong)\b", re.I), "I understand."),
+    # Greeting (full utterance)
+    (re.compile(r"^(hi|hello|hey|good morning|good afternoon|good evening|howdy|what'?s up)[\s!.,?]*$", re.I), "Hey!"),
+    # Acknowledgement / filler (full utterance)
+    (re.compile(r"^(okay|ok|alright|got it|sounds good|fine|cool|makes sense)[\s.,!?]*$", re.I), "Great."),
+    # General information request
+    (re.compile(r"\b(what|how|when|where|why|who|which|tell me|can you|could you|do you|does|is there)\b", re.I), "Sure,"),
+]
+
 _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE = re.compile(
     r"(?i)(?:"
     r"(?:provide|share|send|give)\s+(?:us\s+)?(?:your\s+)?(?:e-?mail\s+address|e-?mail|email)|"
@@ -341,6 +365,13 @@ class BidirectionalStreamHandler:
         # overlaps Deepgram endpointing time instead of blocking LLM start.
         self._rag_prefetch_task: Optional[asyncio.Task] = None
         self._rag_prefetch_user_text: str = ""
+
+        # Speculative TTS prefetch: fired on STT final (and on qualifying interim)
+        # to synthesise the predicted first-chunk text during LLM TTFT.  When the
+        # prediction is correct the first TtsPipeline chunk is a cache hit → zero
+        # synthesis latency for chunk 0.  Wrong predictions cost one wasted TTS API
+        # call and are silently discarded.
+        self._speculative_prefetch_task: Optional[asyncio.Task] = None
 
         # KB / business-knowledge blocks: agent-level data that never changes during
         # a call.  Fetched once in the background at call start so every subsequent
@@ -532,6 +563,66 @@ class BidirectionalStreamHandler:
             logger.warning("[KB prefetch] call-start fetch failed: %s", exc)
             self._kb_cache_ready = True  # allow the call to proceed without KB context
 
+    # ── Speculative TTS prefetch ──────────────────────────────────────────────
+
+    @staticmethod
+    def _predict_opener_phrase(user_text: str) -> Optional[str]:
+        """
+        Fast rule-based prediction of the most likely first TTS chunk text.
+
+        Runs in ~0.1ms (no LLM call, no DB).  Called at Deepgram endpointing time
+        so synthesis can start during LLM TTFT.  Returns None when no confident
+        prediction can be made (no synthesis waste on those turns).
+        """
+        text = (user_text or "").strip()
+        if not text:
+            return None
+        for pattern, phrase in _SPECULATIVE_OPENER_RULES:
+            if pattern.search(text):
+                return phrase
+        return None
+
+    async def _run_speculative_tts_prefetch(self, user_text: str) -> None:
+        """
+        Synthesise the predicted opener phrase and inject it into TtsPipeline's
+        LRU audio cache so the real chunk-0 is a cache hit (zero synthesis latency).
+
+        Fires as a background task at STT-final time (and optionally on interim)
+        so synthesis overlaps LLM TTFT.  If the prediction is wrong the cached
+        audio is simply never read and evicted normally.
+        """
+        try:
+            phrase = self._predict_opener_phrase(user_text)
+            if not phrase:
+                return
+            pipeline = self._tts_pipeline
+            if pipeline is None:
+                return
+            if self._tts_cancel.is_set():
+                return
+
+            from app.voice.tts_pipeline import TtsPipeline as _TtsPipeline
+            cache_key = _TtsPipeline._cache_key(phrase)
+
+            # Skip if already warm (e.g. common phrase pre-cached at call start)
+            if pipeline._get_cached(cache_key) is not None:
+                logger.debug("[SpecTTS] '%s' already cached — skipping synthesis", phrase)
+                return
+
+            task = {"text": phrase, "use_ssml": False, "is_final": False}
+            audio_bytes = await self._prefetch_tts_audio(task)
+            if isinstance(audio_bytes, bytes) and len(audio_bytes) > 0:
+                if self._tts_pipeline and not self._tts_cancel.is_set():
+                    self._tts_pipeline._put_cached(cache_key, audio_bytes)
+                    logger.debug(
+                        "[SpecTTS] pre-synthesized '%s' (%d bytes) — chunk-0 will be cache hit",
+                        phrase, len(audio_bytes),
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("[SpecTTS] prefetch failed: %s", exc)
+
     async def handle_media_message(self, message: dict):
         """
         Handle incoming MULAW audio from Twilio.
@@ -598,6 +689,12 @@ class BidirectionalStreamHandler:
             prefetch.cancel()
         self._rag_prefetch_task = None
         self._rag_prefetch_user_text = ""
+
+        # Cancel any in-flight speculative TTS synthesis (barge-in resets the turn).
+        spec = getattr(self, "_speculative_prefetch_task", None)
+        if spec and not spec.done():
+            spec.cancel()
+        self._speculative_prefetch_task = None
 
     async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
         """
@@ -717,6 +814,15 @@ class BidirectionalStreamHandler:
                     self._last_interim_text = ""
                     return
 
+            # Speculative TTS prefetch: synthesise the predicted opener phrase during
+            # LLM TTFT so chunk-0 is a cache hit when the real first flush arrives.
+            # Fire-and-forget — cancelled on barge-in alongside the LLM task.
+            if self._speculative_prefetch_task and not self._speculative_prefetch_task.done():
+                self._speculative_prefetch_task.cancel()
+            self._speculative_prefetch_task = asyncio.create_task(
+                self._run_speculative_tts_prefetch(transcript)
+            )
+
             # Never hold _voice_transcript_lock across LLM+TTS — queued Deepgram finals would
             # stall here for one full generation (~10–60s), inflating stt_final→gen_start.
             await self._complete_llm_turn_after_stt_final(transcript, confidence)
@@ -769,6 +875,22 @@ class BidirectionalStreamHandler:
                 self._rag_prefetch_user_text = transcript
                 self._rag_prefetch_task = asyncio.create_task(
                     self._prefetch_rag_context(transcript)
+                )
+
+            # Speculative TTS prefetch: also fire on interim so synthesis starts during
+            # the Deepgram endpointing window (200ms), maximising overlap with LLM TTFT.
+            # Only fire once per turn (guard: task not already running).
+            if (
+                not self._turn_response_started
+                and word_count >= self._min_interim_words
+                and confidence >= self._min_interim_confidence
+                and (
+                    self._speculative_prefetch_task is None
+                    or self._speculative_prefetch_task.done()
+                )
+            ):
+                self._speculative_prefetch_task = asyncio.create_task(
+                    self._run_speculative_tts_prefetch(transcript)
                 )
 
             # Final-only mode: do not start LLM from partials (barge-in already handled).
