@@ -704,18 +704,26 @@ class BidirectionalStreamHandler:
 
     async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
         """
-        Run after the user's final message is in the DB (dev-style):
-        - If interim already ran: regenerate only if final text differs; else let interim run finish, no second LLM.
-        - No interim: full generate from final only.
+        Run after the user's final message is in the DB.
+
+        KEY DESIGN: _llm_turn_serial_lock is held only for the fast state-check
+        (~1ms).  generate_and_stream_response runs OUTSIDE the lock so a new STT
+        final from the user can acquire the lock immediately (no 2.6s wait) and
+        cancel this generation if a new utterance arrives.  This is what brings
+        stt_final→gen_start from 2-19s down to ~0ms.
         """
+        tstrip = (transcript or "").strip()
+
+        # ── Phase 1: state check (inside lock, fast) ──────────────────────────
+        _should_generate = False
+        _need_cancel = False
+
         async with self._llm_turn_serial_lock:
-            # ── Duplicate-transcript gate (post-lock) ─────────────────────────
-            # Multiple near-simultaneous STT finals for the same utterance can
-            # each pass the _voice_transcript_lock dedup check (race window), then
-            # queue up here.  By the time task 2 acquires this lock, task 1 has
-            # already answered the transcript — drop task 2/3/… immediately.
-            tstrip = (transcript or "").strip()
             _now_m = time.monotonic()
+
+            # Duplicate-transcript gate: near-simultaneous STT finals for the
+            # same utterance (Deepgram re-endpoints) all queue here.  Once the
+            # first sets _llm_last_answered_transcript, the rest bail instantly.
             if (
                 tstrip
                 and tstrip == self._llm_last_answered_transcript
@@ -726,12 +734,6 @@ class BidirectionalStreamHandler:
                     tstrip[:40], _now_m - self._llm_last_answered_ts,
                 )
                 return
-            # Mark this transcript as "being answered now" before the await so
-            # any task that acquires the lock while generate_and_stream_response
-            # is running will see it and bail out without a second LLM call.
-            self._llm_last_answered_transcript = tstrip
-            self._llm_last_answered_ts = _now_m
-            # ─────────────────────────────────────────────────────────────────
 
             if self._turn_response_started:
                 should_regenerate = self._should_regenerate_on_final(transcript)
@@ -739,34 +741,42 @@ class BidirectionalStreamHandler:
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
                 if should_regenerate:
-                    await self._cancel_inflight_llm_response()
-                    self._tts_cancel.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self.generate_and_stream_response(transcript, confidence, is_greeting=False),
-                            timeout=12.0,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.error("[LLMlock] generate_and_stream_response timed out (regen path) — releasing lock")
+                    _should_generate = True
+                    _need_cancel = True
+                    self._llm_last_answered_transcript = tstrip
+                    self._llm_last_answered_ts = _now_m
                 else:
-                    # Interim result is correct — the background task is already
-                    # running.  Do NOT await it here: holding _llm_turn_serial_lock
-                    # for the remaining LLM+TTS duration (up to 10s) would block
-                    # every subsequent STT final until the full response finishes.
-                    # The task cleans itself up when it completes.
+                    # Interim LLM already running with the correct transcript —
+                    # let it finish without a second generation.
                     pass
                 return
+            else:
+                self._turn_response_seed_text = ""
+                self._last_interim_text = ""
+                _should_generate = True
+                _need_cancel = True  # cancel any stale task from a previous turn
+                self._llm_last_answered_transcript = tstrip
+                self._llm_last_answered_ts = _now_m
+        # ── Lock released ──────────────────────────────────────────────────────
 
-            self._turn_response_seed_text = ""
-            self._last_interim_text = ""
-            self._tts_cancel.clear()
-            try:
-                await asyncio.wait_for(
-                    self.generate_and_stream_response(transcript, confidence, is_greeting=False),
-                    timeout=12.0,
-                )
-            except asyncio.TimeoutError:
-                logger.error("[LLMlock] generate_and_stream_response timed out — releasing lock")
+        if not _should_generate:
+            return
+
+        # ── Phase 2: cancel previous + generate (outside lock) ────────────────
+        # Cancelling here (outside lock) means a new STT final can acquire the
+        # lock while we're waiting for TTS cancel (~250ms) — it will see the
+        # updated _llm_last_answered_* and bail, preventing a race.
+        if _need_cancel:
+            await self._cancel_inflight_llm_response()
+
+        self._tts_cancel.clear()
+        try:
+            await asyncio.wait_for(
+                self.generate_and_stream_response(transcript, confidence, is_greeting=False),
+                timeout=12.0,
+            )
+        except asyncio.TimeoutError:
+            logger.error("[LLM] generate_and_stream_response timed out (12s) — aborting turn")
 
     def _should_accept_final_transcript(self, transcript: str, confidence: float) -> bool:
         """
@@ -1295,13 +1305,14 @@ class BidirectionalStreamHandler:
                 try:
                     filtered = self._conversation_history_cache
 
-                    # Booking flows benefit from a slightly wider history window so
-                    # the model keeps the already-collected service/date/slot in view.
-                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
+                    # Booking flows use a slightly wider window to keep service/date/slot
+                    # in context, but capped at 20 to avoid prompt bloat that inflates LLM TTFT.
+                    # (Previous default of 39 was adding ~1000 tokens to the prompt on long calls.)
+                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 12)
                     if low_latency_fastpath:
                         max_msgs = min(max_msgs, 6)
                     if self._is_booking_context_active(user_text):
-                        max_msgs = max(max_msgs, 39)
+                        max_msgs = min(max(max_msgs, 20), 20)
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
@@ -1798,28 +1809,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             )
 
             if final_text:
-                # Two-step reliability: if booking intent exists but token is missing, run action extraction.
-                if booking_intent_turn and not self._has_calendar_token(final_text):
-                    try:
-                        extracted_token = await asyncio.wait_for(
-                            self._extract_calendar_action_token(
-                                llm_service=llm_service,
-                                model_name=model_name,
-                                api_key=api_key,
-                                user_text=user_text,
-                                assistant_text=final_text,
-                                history_text=history_text,
-                                temperature=temperature,
-                            ),
-                            timeout=4.0,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("[LLM] _extract_calendar_action_token timed out (4s) — skipping")
-                        extracted_token = None
-                    if extracted_token:
-                        logger.info("Action extraction fallback emitted token: %s", extracted_token[:140])
-                        final_text = f"{final_text}\n{extracted_token}"
-
                 # Strip control tokens from transcript (never saved to history)
                 transcript_text = self._strip_control_tokens_for_tts(final_text).replace("[END_CALL]", "").strip()
                 if "[BOOK_APPOINTMENT:" in final_text:
@@ -1836,10 +1825,45 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
                     self._schedule_recreate_stt_for_email_collection(transcript_text)
 
-                # Handle calendar tokens (fire-and-forget after TTS is already queued)
+                # Handle calendar tokens (fire-and-forget — TTS already queued above).
+                # Two-step reliability: if booking intent exists but the LLM omitted the
+                # token, run _extract_calendar_action_token as a background task so it
+                # never blocks the voice pipeline.  The extracted token fires its own
+                # calendar handler asynchronously after the spoken response is done.
                 if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_check_slots_token(final_text))
                 elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
+                    pass  # handled below
+                elif booking_intent_turn:
+                    # No token emitted — run extraction in the background (non-blocking)
+                    async def _deferred_extraction() -> None:
+                        try:
+                            token = await asyncio.wait_for(
+                                self._extract_calendar_action_token(
+                                    llm_service=llm_service,
+                                    model_name=model_name,
+                                    api_key=api_key,
+                                    user_text=user_text,
+                                    assistant_text=final_text,
+                                    history_text=history_text,
+                                    temperature=temperature,
+                                ),
+                                timeout=5.0,
+                            )
+                            if token:
+                                logger.info("[CalAction] deferred extraction: %s", token[:120])
+                                combined = f"{final_text}\n{token}"
+                                if re.search(r"\[\s*CHECK_SLOTS\s*:", token, flags=re.IGNORECASE):
+                                    await self._handle_check_slots_token(combined)
+                                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", token, flags=re.IGNORECASE):
+                                    await self._handle_book_appointment_token(combined)
+                        except asyncio.TimeoutError:
+                            logger.debug("[CalAction] deferred extraction timed out")
+                        except Exception as exc:
+                            logger.debug("[CalAction] deferred extraction error: %s", exc)
+                    asyncio.create_task(_deferred_extraction())
+
+                if re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_book_appointment_token(final_text))
 
                 try:
