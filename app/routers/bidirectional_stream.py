@@ -549,12 +549,12 @@ class BidirectionalStreamHandler:
                         is_greeting=False,
                     )
                 else:
-                    if self._llm_response_task and not self._llm_response_task.done():
-                        try:
-                            await self._llm_response_task
-                        except asyncio.CancelledError:
-                            pass
-                    self._llm_response_task = None
+                    # Interim result is correct — the background task is already
+                    # running.  Do NOT await it here: holding _llm_turn_serial_lock
+                    # for the remaining LLM+TTS duration (up to 10s) would block
+                    # every subsequent STT final until the full response finishes.
+                    # The task cleans itself up when it completes.
+                    pass
                 return
 
             self._turn_response_seed_text = ""
@@ -897,6 +897,16 @@ class BidirectionalStreamHandler:
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
+            # Fire quick-ack immediately (fire-and-forget) so the user hears audio
+            # while the LLM+RAG+KB pipeline runs.  Only on the slow path (fastpath
+            # queries have sub-500ms LLM TTFT so a quick-ack would finish before the
+            # LLM chunk is ready, creating a silence gap rather than masking latency).
+            # In V2 TtsPipeline, synthesis is parallel: the LLM's first chunk starts
+            # synthesising in the background while quick-ack is still playing, so by
+            # the time quick-ack ends the real audio is typically already ready.
+            if user_text and not low_latency_fastpath:
+                asyncio.create_task(self._send_quick_acknowledgement(user_text))
+
             self._voice_metrics.start_generation()
 
             booking_intent_turn = self._is_booking_intent_turn(user_text)
@@ -975,39 +985,56 @@ class BidirectionalStreamHandler:
 
             inbound_kb_docs_context_block = ""
             business_knowledge_block = ""
-            if (not low_latency_fastpath) and self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
-                try:
-                    inbound_kb_docs_context_block = (
-                        agent_service.build_inbound_kb_documents_context_block(
-                            db=self.db,
-                            inbound_agent_id=agent_uuid,
-                            tenant_id=tenant_uuid,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to build inbound KB docs block for agent %s: %s",
-                        agent_uuid,
-                        e,
-                        exc_info=True,
-                    )
+            if not low_latency_fastpath:
+                # Both calls are synchronous SQLAlchemy queries.  Running them in
+                # the executor releases the event loop so Deepgram audio frames,
+                # barge-in interims, and TTS streaming all continue normally during
+                # the DB round-trips.  gather() runs them in parallel, saving the
+                # sequential penalty (~200–600ms total → ~200–300ms parallel).
+                _loop = asyncio.get_running_loop()
 
-            if (not low_latency_fastpath) and tenant_uuid:
-                try:
-                    business_knowledge_block = (
-                        agent_service.build_business_knowledge_context_block(
-                            db=self.db,
-                            tenant_id=tenant_uuid,
-                            agent_id=agent_uuid,
+                async def _fetch_inbound_kb() -> str:
+                    if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                        return ""
+                    try:
+                        return await _loop.run_in_executor(
+                            None,
+                            lambda: agent_service.build_inbound_kb_documents_context_block(
+                                db=self.db,
+                                inbound_agent_id=agent_uuid,
+                                tenant_id=tenant_uuid,
+                            ),
                         )
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to build business knowledge block for agent %s: %s",
-                        agent_uuid,
-                        e,
-                        exc_info=True,
-                    )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to build inbound KB docs block for agent %s: %s",
+                            agent_uuid, e, exc_info=True,
+                        )
+                        return ""
+
+                async def _fetch_business_knowledge() -> str:
+                    if not tenant_uuid:
+                        return ""
+                    try:
+                        return await _loop.run_in_executor(
+                            None,
+                            lambda: agent_service.build_business_knowledge_context_block(
+                                db=self.db,
+                                tenant_id=tenant_uuid,
+                                agent_id=agent_uuid,
+                            ),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to build business knowledge block for agent %s: %s",
+                            agent_uuid, e, exc_info=True,
+                        )
+                        return ""
+
+                inbound_kb_docs_context_block, business_knowledge_block = await asyncio.gather(
+                    _fetch_inbound_kb(),
+                    _fetch_business_knowledge(),
+                )
 
             # One-line RAG summary (safe: no chunk text, no secrets)
             try:

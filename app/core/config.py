@@ -119,9 +119,11 @@ class Settings(BaseSettings):
     # If no sentence boundary yet, flush after this many seconds (once min words met).
     VOICE_TTS_TIME_FLUSH_SEC: float = 0.15
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
-    # Quick-ack disabled: it queues as chunk-0, which causes the gate chain to back up
-    # while the full LLM response chunks wait — the primary "shutter then silence" cause.
-    VOICE_QUICK_ACK_PROBABILITY: float = 0.0
+    # Quick-ack: fires on slow-path queries only (fastpath is excluded at call site).
+    # In V2 TtsPipeline, LLM chunk synthesis runs in parallel with quick-ack playback
+    # so the "shutter then silence" gap only occurs when LLM TTFT > quick-ack duration.
+    # 0.35 = fires roughly every third slow-path turn; set 0.0 to disable entirely.
+    VOICE_QUICK_ACK_PROBABILITY: float = 0.35
     # Fast-path for very short/simple turns to reduce first-token latency:
     # skip heavy RAG/KB context for obvious non-booking smalltalk.
     VOICE_ENABLE_LATENCY_FASTPATH: bool = True
