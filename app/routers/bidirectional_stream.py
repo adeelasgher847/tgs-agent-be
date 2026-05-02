@@ -373,6 +373,12 @@ class BidirectionalStreamHandler:
         # call and are silently discarded.
         self._speculative_prefetch_task: Optional[asyncio.Task] = None
 
+        # Duplicate-transcript guard for _complete_llm_turn_after_stt_final.
+        # Set INSIDE _llm_turn_serial_lock so tasks 2/3 that queued up behind
+        # task 1 drop out immediately once task 1 has answered the transcript.
+        self._llm_last_answered_transcript: str = ""
+        self._llm_last_answered_ts: float = 0.0
+
         # KB / business-knowledge blocks: agent-level data that never changes during
         # a call.  Fetched once in the background at call start so every subsequent
         # turn pays zero DB latency for these blocks (saves 50-200ms per slow turn).
@@ -703,6 +709,30 @@ class BidirectionalStreamHandler:
         - No interim: full generate from final only.
         """
         async with self._llm_turn_serial_lock:
+            # ── Duplicate-transcript gate (post-lock) ─────────────────────────
+            # Multiple near-simultaneous STT finals for the same utterance can
+            # each pass the _voice_transcript_lock dedup check (race window), then
+            # queue up here.  By the time task 2 acquires this lock, task 1 has
+            # already answered the transcript — drop task 2/3/… immediately.
+            tstrip = (transcript or "").strip()
+            _now_m = time.monotonic()
+            if (
+                tstrip
+                and tstrip == self._llm_last_answered_transcript
+                and (_now_m - self._llm_last_answered_ts) < 10.0
+            ):
+                logger.info(
+                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago)",
+                    tstrip[:40], _now_m - self._llm_last_answered_ts,
+                )
+                return
+            # Mark this transcript as "being answered now" before the await so
+            # any task that acquires the lock while generate_and_stream_response
+            # is running will see it and bail out without a second LLM call.
+            self._llm_last_answered_transcript = tstrip
+            self._llm_last_answered_ts = _now_m
+            # ─────────────────────────────────────────────────────────────────
+
             if self._turn_response_started:
                 should_regenerate = self._should_regenerate_on_final(transcript)
                 self._turn_response_started = False
@@ -711,11 +741,13 @@ class BidirectionalStreamHandler:
                 if should_regenerate:
                     await self._cancel_inflight_llm_response()
                     self._tts_cancel.clear()
-                    await self.generate_and_stream_response(
-                        transcript,
-                        confidence,
-                        is_greeting=False,
-                    )
+                    try:
+                        await asyncio.wait_for(
+                            self.generate_and_stream_response(transcript, confidence, is_greeting=False),
+                            timeout=12.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("[LLMlock] generate_and_stream_response timed out (regen path) — releasing lock")
                 else:
                     # Interim result is correct — the background task is already
                     # running.  Do NOT await it here: holding _llm_turn_serial_lock
@@ -728,11 +760,13 @@ class BidirectionalStreamHandler:
             self._turn_response_seed_text = ""
             self._last_interim_text = ""
             self._tts_cancel.clear()
-            await self.generate_and_stream_response(
-                transcript,
-                confidence,
-                is_greeting=False,
-            )
+            try:
+                await asyncio.wait_for(
+                    self.generate_and_stream_response(transcript, confidence, is_greeting=False),
+                    timeout=12.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("[LLMlock] generate_and_stream_response timed out — releasing lock")
 
     def _should_accept_final_transcript(self, transcript: str, confidence: float) -> bool:
         """
@@ -1766,15 +1800,22 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if final_text:
                 # Two-step reliability: if booking intent exists but token is missing, run action extraction.
                 if booking_intent_turn and not self._has_calendar_token(final_text):
-                    extracted_token = await self._extract_calendar_action_token(
-                        llm_service=llm_service,
-                        model_name=model_name,
-                        api_key=api_key,
-                        user_text=user_text,
-                        assistant_text=final_text,
-                        history_text=history_text,
-                        temperature=temperature,
-                    )
+                    try:
+                        extracted_token = await asyncio.wait_for(
+                            self._extract_calendar_action_token(
+                                llm_service=llm_service,
+                                model_name=model_name,
+                                api_key=api_key,
+                                user_text=user_text,
+                                assistant_text=final_text,
+                                history_text=history_text,
+                                temperature=temperature,
+                            ),
+                            timeout=4.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("[LLM] _extract_calendar_action_token timed out (4s) — skipping")
+                        extracted_token = None
                     if extracted_token:
                         logger.info("Action extraction fallback emitted token: %s", extracted_token[:140])
                         final_text = f"{final_text}\n{extracted_token}"
