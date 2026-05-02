@@ -196,6 +196,9 @@ class Settings(BaseSettings):
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
 
     # RAG behavior tuning (voice-first defaults)
+    # Master switch for latency A/B tests and emergency fail-open behavior.
+    # Set RAG_ENABLED=false in .env to skip retrieval entirely.
+    RAG_ENABLED: bool = False
     # These defaults are intentionally conservative to avoid prompt bloat/latency.
     # Primary embedding model (OpenAI by default).
     # Make embedding model configurable because some OpenAI projects do not
