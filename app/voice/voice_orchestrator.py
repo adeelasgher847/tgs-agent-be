@@ -7,7 +7,7 @@ BidirectionalStreamHandler.__init__ and handle_media_message.
 Responsibilities:
   • Owns SttPipeline lifecycle (lazy creation, email-endpointing upgrade, teardown)
   • Owns TtsPipeline lifecycle (creation, barge-in cancellation, teardown)
-  • Handles user-pickup detection (RMS threshold over N consecutive frames)
+  • Handles user-pickup detection (RMS threshold over a short frame window)
   • Manages the STT grace period (skip Twilio system-message/ringing frames)
   • Routes STT callbacks to the handler's interim/final processors
   • Provides a single clean interface to the rest of the handler:
@@ -93,20 +93,33 @@ class VoiceOrchestrator:
         self._email_stt_endpointing_upgraded: bool = False
 
         # ── User-pickup detection ─────────────────────────────────────────────
-        # We require N consecutive non-silent frames (RMS > threshold) before
-        # we start forwarding audio to Deepgram and trigger the greeting.
+        # We use a short RMS window to detect real pickup before forwarding audio.
         # This mirrors the VAPI approach: actual caller audio, not Twilio music/
         # system messages, is what signals "user picked up".
         self._user_picked_up: bool = False
         self._first_media_received: bool = False
         self._audio_level_samples: list[int] = []
         # Absolute time.time() until which we discard audio after pickup
-        # (Twilio still sends system messages in the first ~3 s).
+        # (Twilio can still send system messages in the first moments).
         self._skip_audio_until: Optional[float] = None
 
         # Pull thresholds from the handler so they stay in one config place.
         self._min_audio_level_threshold: int = handler._min_audio_level_threshold
         self._audio_samples_needed: int = handler._audio_samples_needed
+        self._audio_non_silent_needed: int = max(
+            1,
+            min(
+                self._audio_samples_needed,
+                int(
+                    getattr(
+                        handler,
+                        "_audio_non_silent_needed",
+                        self._audio_samples_needed,
+                    )
+                    or self._audio_samples_needed
+                ),
+            ),
+        )
 
         # ── STT confidence / barge-in thresholds (from handler) ──────────────
         self._enable_interim_llm: bool = handler._enable_interim_llm
@@ -154,9 +167,9 @@ class VoiceOrchestrator:
         Main entry point for every MULAW audio frame from Twilio.
 
         Gate order:
-          1. Pickup detection  — require N consecutive non-silent RMS frames.
-          2. Grace period      — skip the first ~3 s of post-pickup audio to
-                                 avoid feeding Twilio system messages to STT.
+          1. Pickup detection  — require enough non-silent RMS frames in a short window.
+          2. Grace period      — skip a brief post-pickup window to avoid
+                                 feeding Twilio system messages to STT.
           3. Active guard      — ignore frames after call teardown.
           4. STT feed          — lazily create SttPipeline and push the chunk.
         """
@@ -184,7 +197,7 @@ class VoiceOrchestrator:
                     non_silent = sum(
                         1 for lvl in recent if lvl > self._min_audio_level_threshold
                     )
-                    if non_silent >= self._audio_samples_needed:
+                    if non_silent >= self._audio_non_silent_needed:
                         # Confirmed: real caller audio detected.
                         # Mark as picked-up on the orchestrator FIRST so we stop
                         # running the detection loop on subsequent frames.
@@ -195,9 +208,14 @@ class VoiceOrchestrator:
                         await h._handle_user_pickup()
                         # Sync flag back to handler for any handler-side checks.
                         h._user_picked_up = True
-                        # Grace period: keep discarding frames for 3 s so the greeting
-                        # doesn't fight with Twilio ring-back / hold-music artifacts.
-                        self._skip_audio_until = time.time() + 3.0
+                        # Keep a short grace period so ringback artifacts are skipped
+                        # while preserving near-real-time pickup responsiveness.
+                        grace_sec = float(
+                            getattr(settings, "VOICE_POST_PICKUP_STT_GRACE_SEC", 0.35)
+                            or 0.35
+                        )
+                        grace_sec = max(0.0, min(1.5, grace_sec))
+                        self._skip_audio_until = time.time() + grace_sec
                     else:
                         # Not enough non-silent samples yet — wait.
                         return

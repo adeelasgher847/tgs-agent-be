@@ -258,6 +258,12 @@ class BidirectionalStreamHandler:
         self._min_interim_confidence: float = float(
             getattr(settings, "VOICE_MIN_INTERIM_CONFIDENCE", 0.52)
         )
+        self._rag_prefetch_min_words: int = max(
+            1, int(getattr(settings, "VOICE_RAG_PREFETCH_MIN_WORDS", 1) or 1)
+        )
+        self._rag_prefetch_min_confidence: float = float(
+            getattr(settings, "VOICE_RAG_PREFETCH_MIN_CONFIDENCE", 0.05) or 0.05
+        )
         self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0
         
         # TTS (Output) state - Parallel Pipeline
@@ -316,7 +322,24 @@ class BidirectionalStreamHandler:
             getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
         )
         self._barge_in_min_conf_1w = max(0.4, min(0.75, self._barge_in_min_conf_1w))
-        self._audio_samples_needed = 10  # Need 10 consecutive non-silent samples (200ms) to confirm user audio
+        self._audio_samples_needed = max(
+            4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
+        )
+        self._audio_non_silent_needed = max(
+            1,
+            min(
+                self._audio_samples_needed,
+                int(
+                    getattr(
+                        settings,
+                        "VOICE_PICKUP_MIN_NON_SILENT_FRAMES",
+                        self._audio_samples_needed,
+                    )
+                    or self._audio_samples_needed
+                ),
+            ),
+        )
+        self._stream_sid_ready = asyncio.Event()
         
         # Goodbye detection state
         self._call_ended = False  # Track if call has been ended due to goodbye detection
@@ -453,6 +476,9 @@ class BidirectionalStreamHandler:
         Runs in background during initialization.
         """
         try:
+            # Let call setup/pickup settle first so warmup does not contend with
+            # first-turn STT/LLM/TTS work.
+            await asyncio.sleep(1.5)
             # Common phrases for instant responses (greetings, confirmations, acknowledgements)
             common_phrases = [
                 # Greetings
@@ -500,19 +526,23 @@ class BidirectionalStreamHandler:
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
             
-            for phrase in common_phrases:
-                try:
-                    # Generate and cache (async, non-blocking)
-                    await generate_mulaw_tts(
-                        text=phrase,
-                        lang=lang,
-                        voice=voice,
-                        use_chirp3_hd=True,
-                        speaking_rate=1.0,
-                        use_ssml=False
-                    )
-                except Exception:
-                    continue
+            sem = asyncio.Semaphore(4)
+
+            async def _warm_phrase(phrase: str) -> None:
+                async with sem:
+                    try:
+                        await generate_mulaw_tts(
+                            text=phrase,
+                            lang=lang,
+                            voice=voice,
+                            use_chirp3_hd=True,
+                            speaking_rate=1.0,
+                            use_ssml=False,
+                        )
+                    except Exception:
+                        return
+
+            await asyncio.gather(*(_warm_phrase(phrase) for phrase in common_phrases))
         except Exception as e:
             logger.error(f"Error in precache_common_phrases: {e}")
 
@@ -843,7 +873,13 @@ class BidirectionalStreamHandler:
                     self._in_progress_sent = True
 
                 # Add to transcript (always)
-                await self._add_to_transcript("client", transcript, "speech", confidence)
+                await self._add_to_transcript(
+                    "client",
+                    transcript,
+                    "speech",
+                    confidence,
+                    defer_post_write=True,
+                )
                 self._update_booking_memory_from_user_turn(transcript)
 
                 user_turn_norm = self._normalize_turn_text(transcript)
@@ -913,8 +949,8 @@ class BidirectionalStreamHandler:
             if (
                 not _prefetch
                 and not self._turn_response_started
-                and word_count >= self._min_interim_words
-                and confidence >= self._min_interim_confidence
+                and word_count >= self._rag_prefetch_min_words
+                and confidence >= self._rag_prefetch_min_confidence
             ):
                 self._rag_prefetch_user_text = transcript
                 self._rag_prefetch_task = asyncio.create_task(
@@ -1135,6 +1171,14 @@ class BidirectionalStreamHandler:
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
             self._voice_metrics.start_generation()
+            slowpath_started_at = time.perf_counter()
+
+            def _remaining_slowpath_budget(default_timeout: float) -> float:
+                budget = float(getattr(settings, "VOICE_SLOWPATH_BUDGET_SEC", 0.55) or 0.55)
+                budget = max(0.12, min(3.0, budget))
+                elapsed = time.perf_counter() - slowpath_started_at
+                remaining = max(0.05, budget - elapsed)
+                return min(max(0.05, default_timeout), remaining)
 
             booking_intent_turn = self._is_booking_intent_turn(user_text)
             low_latency_fastpath = self._should_use_latency_fastpath(
@@ -1182,9 +1226,14 @@ class BidirectionalStreamHandler:
                             logger.debug("[RAG] used prefetch result (done)")
                         else:
                             # Still running — wait with reduced timeout (most work already done)
+                            prefetch_wait_cap = float(
+                                getattr(settings, "VOICE_RAG_PREFETCH_AWAIT_SEC", 0.18) or 0.18
+                            )
                             rag_context_block, rag_trace = await asyncio.wait_for(
                                 asyncio.shield(_prefetch),
-                                timeout=max(0.35, settings.RAG_RETRIEVAL_TIMEOUT_SEC - 0.25),
+                                timeout=_remaining_slowpath_budget(
+                                    min(max(0.05, prefetch_wait_cap), settings.RAG_RETRIEVAL_TIMEOUT_SEC)
+                                ),
                             )
                             logger.debug("[RAG] awaited in-flight prefetch")
                     else:
@@ -1200,7 +1249,7 @@ class BidirectionalStreamHandler:
 
                         rag_context_block, rag_trace = await asyncio.wait_for(
                             loop.run_in_executor(None, _build_rag),
-                            timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
+                            timeout=_remaining_slowpath_budget(settings.RAG_RETRIEVAL_TIMEOUT_SEC),
                         )
                 except asyncio.TimeoutError:
                     rag_context_block, rag_trace = build_rag_context_block_with_trace(
@@ -1232,40 +1281,52 @@ class BidirectionalStreamHandler:
                     inbound_kb_docs_context_block = self._cached_inbound_kb_block
                     business_knowledge_block = self._cached_business_knowledge_block
                 else:
-                    # Cache not ready yet — live fetch as fallback (old parallel executor path)
-                    _loop = asyncio.get_running_loop()
-
-                    async def _fetch_inbound_kb_live() -> str:
-                        if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
-                            return ""
-                        try:
-                            return await _loop.run_in_executor(
-                                None,
-                                lambda: agent_service.build_inbound_kb_documents_context_block(
-                                    db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
-                                ),
-                            )
-                        except Exception as exc:
-                            logger.warning("KB live-fetch (inbound) failed: %s", exc)
-                            return ""
-
-                    async def _fetch_bk_live() -> str:
-                        if not tenant_uuid:
-                            return ""
-                        try:
-                            return await _loop.run_in_executor(
-                                None,
-                                lambda: agent_service.build_business_knowledge_context_block(
-                                    db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
-                                ),
-                            )
-                        except Exception as exc:
-                            logger.warning("KB live-fetch (business) failed: %s", exc)
-                            return ""
-
-                    inbound_kb_docs_context_block, business_knowledge_block = await asyncio.gather(
-                        _fetch_inbound_kb_live(), _fetch_bk_live(),
+                    skip_live_kb = bool(
+                        getattr(settings, "VOICE_SKIP_LIVE_KB_FETCH_ON_COLD_START", True)
                     )
+                    if skip_live_kb:
+                        logger.debug("[KB] cache cold; skipping live fetch for latency budget")
+                    else:
+                        # Cache not ready yet — live fetch as fallback.
+                        _loop = asyncio.get_running_loop()
+
+                        async def _fetch_inbound_kb_live() -> str:
+                            if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                                return ""
+                            try:
+                                return await _loop.run_in_executor(
+                                    None,
+                                    lambda: agent_service.build_inbound_kb_documents_context_block(
+                                        db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.warning("KB live-fetch (inbound) failed: %s", exc)
+                                return ""
+
+                        async def _fetch_bk_live() -> str:
+                            if not tenant_uuid:
+                                return ""
+                            try:
+                                return await _loop.run_in_executor(
+                                    None,
+                                    lambda: agent_service.build_business_knowledge_context_block(
+                                        db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.warning("KB live-fetch (business) failed: %s", exc)
+                                return ""
+
+                        try:
+                            inbound_kb_docs_context_block, business_knowledge_block = await asyncio.wait_for(
+                                asyncio.gather(_fetch_inbound_kb_live(), _fetch_bk_live()),
+                                timeout=_remaining_slowpath_budget(0.25),
+                            )
+                        except asyncio.TimeoutError:
+                            logger.debug("[KB] live fetch timeout; continuing without live KB blocks")
+                        except Exception as exc:
+                            logger.debug("[KB] live fetch failed; continuing without live KB blocks: %s", exc)
 
             # One-line RAG summary (safe: no chunk text, no secrets)
             try:
@@ -1551,10 +1612,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
             _tts_time_flush_s = max(
-                0.10,
-                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.15) or 0.15),
+                0.08,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.10) or 0.10),
             )
-            _time_flush_target_words = 4 if low_latency_fastpath else 5
+            _time_flush_target_words = 3 if low_latency_fastpath else 4
             logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
@@ -1872,6 +1933,31 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         user_preview=(user_text or "")[:56],
                         session_hint=str(self.call_session_id or ""),
                     )
+                    if bool(getattr(settings, "VOICE_SLO_ENABLED", True)):
+                        breaches = self._voice_metrics.get_slo_breaches(
+                            stt_final_to_gen_start_s=float(
+                                getattr(settings, "VOICE_SLO_STT_FINAL_TO_GEN_START_SEC", 0.35) or 0.35
+                            ),
+                            gen_start_to_llm_first_token_s=float(
+                                getattr(settings, "VOICE_SLO_GEN_START_TO_LLM_FIRST_TOKEN_SEC", 0.90)
+                                or 0.90
+                            ),
+                            gen_start_to_first_tts_q_s=float(
+                                getattr(settings, "VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC", 1.40)
+                                or 1.40
+                            ),
+                            gen_start_to_now_warn_s=float(
+                                getattr(settings, "VOICE_SLO_GEN_START_TO_NOW_WARN_SEC", 2.00)
+                                or 2.00
+                            ),
+                        )
+                        if breaches:
+                            logger.warning(
+                                "[VoiceSLO] breach session=%s user=%r %s",
+                                str(self.call_session_id or ""),
+                                (user_text or "")[:56],
+                                " | ".join(breaches),
+                            )
                 except Exception:
                     pass
 
@@ -2642,14 +2728,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if not text or not text.strip():
                 return
 
-            # If stream isn't ready yet (race at call start), wait briefly rather than dropping TTS.
+            # If stream isn't ready yet (race at call start), wait once on an event
+            # instead of polling so we avoid up-to-1s spin latency.
             if not self.stream_sid:
-                for _ in range(100):  # ~1s max
-                    if self._tts_cancel.is_set():
-                        return
-                    if self.stream_sid:
-                        break
-                    await asyncio.sleep(0.01)
+                if self._tts_cancel.is_set():
+                    return
+                try:
+                    await asyncio.wait_for(self._stream_sid_ready.wait(), timeout=0.35)
+                except asyncio.TimeoutError:
+                    return
                 if not self.stream_sid:
                     return
             
@@ -2675,7 +2762,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Prefer true streaming TTS for longer responses (real-time playback).
                     # Keep cache-friendly path for very short phrases (e.g. quick ack).
                     word_count = len(clean.split())
-                    use_streaming_tts = (word_count >= 4 and not _use_prefetched) or _is_prefetched_iter
+                    stream_min_words = max(
+                        1, int(getattr(settings, "VOICE_TTS_STREAM_MIN_WORDS", 2) or 2)
+                    )
+                    use_streaming_tts = (word_count >= stream_min_words and not _use_prefetched) or _is_prefetched_iter
                     if use_streaming_tts and not self._tts_cancel.is_set():
                         try:
                             import base64
@@ -2742,7 +2832,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 # they arrive at proper 20ms intervals and actually fill the buffer).
                                 if not self._twilio_buffer_primed:
                                     silent = bytes([0xFF]) * MULAW_FRAME_BYTES
-                                    for _ in range(2):
+                                    prime_frames = max(
+                                        0, int(getattr(settings, "VOICE_TTS_PRIME_FRAMES", 1) or 1)
+                                    )
+                                    for _ in range(prime_frames):
                                         if self._tts_cancel.is_set():
                                             return
                                         await send_frame(silent, pace=True, state=pace_state)
@@ -2981,8 +3074,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             self._background_audio.set_user_level(self._resolve_background_volume())
                             to_stream = self._background_audio.mix_with_background(to_stream)
                         
-                        # Prime Twilio jitter buffer (3 frames = 60ms) for first speak only — no sudden buffer noise
-                        prime_frames = 0 if self._twilio_buffer_primed else 3
+                        # Prime Twilio jitter buffer once for first speak only.
+                        prime_frames = 0 if self._twilio_buffer_primed else max(
+                            0, int(getattr(settings, "VOICE_TTS_PRIME_FRAMES", 1) or 1)
+                        )
                         
                         await stream_mulaw_bytes_over_twilio(
                             websocket=self.websocket,
@@ -3596,6 +3691,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         message_type: str = "speech",
         confidence: Optional[float] = None,
         message_metadata: Optional[dict] = None,
+        defer_post_write: bool = False,
     ):
         """Add message to transcript (SSML tags are automatically stripped)"""
         try:
@@ -3647,10 +3743,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if role in ("client", "agent") and message_type not in ("greeting", "system", "status"):
                 self._conversation_history_cache.append((role, clean_message))
             
-            # Update legacy field
-            conversation = transcript_service.get_conversation_array(self.db, self.call_session.id)
-            self.call_session.call_transcript = conversation
-            self.db.commit()
+            if not defer_post_write:
+                # Legacy denormalized transcript payload used by older read paths.
+                conversation = transcript_service.get_conversation_array(
+                    self.db, self.call_session.id
+                )
+                self.call_session.call_transcript = conversation
+                self.db.commit()
 
             from app.services.call_session_contact_state import sync_contact_intake_after_message
 
@@ -3672,10 +3771,33 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         """Handle stream start - Just WebSocket connection (NOT user pickup!)"""
         try:
             self.stream_sid = message.get("streamSid")
+            if self.stream_sid:
+                self._stream_sid_ready.set()
             # Notify orchestrator so it can perform any stream-SID-dependent setup.
             self._voice_orchestrator.set_stream_sid(self.stream_sid)
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
+
+            try:
+                configured_edge = str(getattr(settings, "TWILIO_EDGE", "") or "").strip().lower()
+                expected_edge = "umatilla"  # Oregon
+                strict_align = bool(getattr(settings, "VOICE_REGION_ALIGNMENT_STRICT", True))
+                server_region = str(getattr(settings, "SERVER_REGION", "us-west-2") or "us-west-2")
+                if configured_edge:
+                    logger.info(
+                        "[RegionAlign] server_region=%s twilio_edge=%s expected_edge=%s",
+                        server_region,
+                        configured_edge,
+                        expected_edge,
+                    )
+                if strict_align and configured_edge and configured_edge != expected_edge:
+                    logger.warning(
+                        "[RegionAlign] Twilio edge mismatch for Oregon deployment: configured=%s expected=%s",
+                        configured_edge,
+                        expected_edge,
+                    )
+            except Exception:
+                pass
 
             # Inbound calls use Connect/Stream, so start recording explicitly here.
             # This enables recording-status webhook -> call_session.recording_url persistence.
