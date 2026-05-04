@@ -59,9 +59,9 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
     # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
     # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
-    DEEPGRAM_STT_ENDPOINTING_MS: int = 200
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 350
     # After the agent asks for email, bidirectional stream may reopen STT once with this value.
-    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 300
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
     # Telecom-oriented silence window for spelling/email (when mode is extended or email-recreate runs).
     # Ignored unless VOICE_STT_ENDPOINTING_MODE == "extended" or email flow bumps endpointing.
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
@@ -112,10 +112,10 @@ class Settings(BaseSettings):
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
     VOICE_HISTORY_MAX_MESSAGES: int = 12
-    VOICE_TTS_FLUSH_MIN_WORDS: int = 2
+    VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
-    VOICE_TTS_FLUSH_MAX_WORDS: int = 5
+    VOICE_TTS_FLUSH_MAX_WORDS: int = 6
     # If no sentence boundary yet, flush after this many seconds (once min words met).
     VOICE_TTS_TIME_FLUSH_SEC: float = 0.10
     # Keep a short (but non-zero) guard after pickup so ringback artifacts are skipped
