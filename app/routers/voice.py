@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException, Query, Depends, status, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
@@ -46,7 +46,10 @@ from app.services.credit_service import credit_service
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.services.phone_number_service import phone_number_service
-from app.services.voice_twilio_utils import get_twilio_credentials_for_call
+from app.services.voice_twilio_utils import (
+    get_twilio_credentials_for_call,
+    twilio_caller_id_for_transfer_dial,
+)
 from app.services.voice_phrase_service import (
     get_random_didnt_catch_response,
     get_random_follow_up_response,
@@ -1310,6 +1313,256 @@ async def handle_recording_status_webhook(
     except Exception as e:
         logger.warning(f"⚠️ Error handling recording status webhook: {e}")
         return HTMLResponse("", media_type="application/xml")
+
+
+async def _validate_transfer_webhook_signature(
+    request: Request,
+    db: Session,
+    call_session: CallSession,
+    form_params: dict,
+) -> bool:
+    if settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
+        return True
+    try:
+        _, auth_token = get_twilio_credentials_for_call(db, call_session)
+        return validate_twilio_signature_with_token(request, form_params, auth_token)
+    except Exception as cred_err:
+        logger.warning(
+            "Transfer webhook: per-session Twilio token unavailable (%s); falling back to env token",
+            cred_err,
+        )
+        return validate_twilio_signature(request, form_params)
+
+
+def _conference_room_name(session_id: uuid.UUID) -> str:
+    return f"warm-tr-{session_id}"
+
+
+@router.post(
+    "/webhook/transfer/dial-cold",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def transfer_webhook_dial_cold(
+    request: Request,
+    callSessionId: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Twilio fetches this after redirect; cold transfer dials the configured route number."""
+    try:
+        session_uuid = uuid.UUID(callSessionId)
+    except ValueError:
+        vr = VoiceResponse()
+        vr.say("Sorry, this transfer link is invalid.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+    if not call_session:
+        vr = VoiceResponse()
+        vr.say("Sorry, we could not complete the transfer.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    form_data = await request.form()
+    form_params = dict(form_data)
+    if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
+
+    twilio_sid = str(form_params.get("CallSid") or request.query_params.get("CallSid") or "")
+    if call_session.twilio_call_sid and twilio_sid and twilio_sid != call_session.twilio_call_sid:
+        logger.warning(
+            "Transfer dial-cold CallSid mismatch session=%s expected=%s got=%s",
+            call_session.id,
+            call_session.twilio_call_sid,
+            twilio_sid,
+        )
+        vr = VoiceResponse()
+        vr.say("Sorry, we could not verify this call.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    agent = (
+        db.query(Agent)
+        .options(joinedload(Agent.transfer_route))
+        .filter(Agent.id == call_session.agent_id)
+        .first()
+    )
+    route = getattr(agent, "transfer_route", None) if agent else None
+    if (
+        not route
+        or getattr(route, "is_deleted", False)
+        or (route.transfer_type or "").lower() != "cold"
+    ):
+        vr = VoiceResponse()
+        vr.say("Sorry, a human transfer is not available right now.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    caller_id = twilio_caller_id_for_transfer_dial(call_session)
+    if not caller_id:
+        logger.warning(
+            "Transfer dial-cold: no Twilio caller ID for session %s (type=%s)",
+            call_session.id,
+            call_session.call_type,
+        )
+        vr = VoiceResponse()
+        vr.say("Sorry, transfer is not available on this line configuration.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    sid_str = str(call_session.id)
+    action_url = (
+        f"{settings.WEBHOOK_BASE_URL.rstrip('/')}/api/v1/voice/webhook/transfer/dial-complete"
+        f"?callSessionId={sid_str}"
+    )
+    vr = VoiceResponse()
+    vr.say("Connecting you now.")
+    dial = vr.dial(caller_id=caller_id, timeout=45, action=action_url, method="POST")
+    dial.number(route.phone_number)
+    return HTMLResponse(str(vr), media_type="application/xml")
+
+
+@router.post("/webhook/transfer/dial-complete", response_class=HTMLResponse, include_in_schema=False)
+async def transfer_webhook_dial_complete(
+    request: Request,
+    callSessionId: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """After cold Dial ends (busy/no-answer), hang up gracefully. Twilio-signed."""
+
+    def _hangup_twiml(message: Optional[str] = None) -> HTMLResponse:
+        vr = VoiceResponse()
+        if message:
+            vr.say(message)
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    try:
+        session_uuid = uuid.UUID(callSessionId)
+    except ValueError:
+        return _hangup_twiml("Sorry, this request is invalid.")
+
+    call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+    if not call_session:
+        return _hangup_twiml()
+
+    form_data = await request.form()
+    form_params = dict(form_data)
+    if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+        logger.warning("dial-complete: invalid Twilio signature session=%s", callSessionId)
+        return _hangup_twiml()
+
+    parent_sid = str(form_params.get("CallSid") or "")
+    if call_session.twilio_call_sid and parent_sid and parent_sid != call_session.twilio_call_sid:
+        logger.warning(
+            "dial-complete CallSid mismatch session=%s expected=%s got=%s",
+            call_session.id,
+            call_session.twilio_call_sid,
+            parent_sid,
+        )
+        return _hangup_twiml()
+
+    dial_status = str(form_params.get("DialCallStatus") or "")
+    vr = VoiceResponse()
+    if dial_status and dial_status not in ("completed",):
+        vr.say("We could not reach someone right now. Goodbye.")
+    vr.hangup()
+    return HTMLResponse(str(vr), media_type="application/xml")
+
+
+@router.post(
+    "/webhook/transfer/conference-customer",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def transfer_webhook_conference_customer(
+    request: Request,
+    callSessionId: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Put the customer leg into a Twilio conference (warm transfer step 1)."""
+    try:
+        session_uuid = uuid.UUID(callSessionId)
+    except ValueError:
+        vr = VoiceResponse()
+        vr.say("Sorry, this transfer link is invalid.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+    if not call_session:
+        vr = VoiceResponse()
+        vr.say("Sorry, we could not complete the transfer.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    form_data = await request.form()
+    form_params = dict(form_data)
+    if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
+
+    twilio_sid = str(form_params.get("CallSid") or request.query_params.get("CallSid") or "")
+    if call_session.twilio_call_sid and twilio_sid and twilio_sid != call_session.twilio_call_sid:
+        vr = VoiceResponse()
+        vr.say("Sorry, we could not verify this call.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    room = _conference_room_name(call_session.id)
+    vr = VoiceResponse()
+    vr.say("Please hold while we connect you to a team member.")
+    dial = vr.dial()
+    dial.conference(
+        room,
+        beep="false",
+        start_conference_on_enter=True,
+        end_conference_on_exit=False,
+    )
+    return HTMLResponse(str(vr), media_type="application/xml")
+
+
+@router.post(
+    "/webhook/transfer/conference-supervisor",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def transfer_webhook_conference_supervisor(
+    request: Request,
+    callSessionId: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Outbound supervisor leg joins the same conference as the customer."""
+    try:
+        session_uuid = uuid.UUID(callSessionId)
+    except ValueError:
+        vr = VoiceResponse()
+        vr.say("Invalid transfer.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+    if not call_session:
+        vr = VoiceResponse()
+        vr.say("Invalid transfer.")
+        vr.hangup()
+        return HTMLResponse(str(vr), media_type="application/xml")
+
+    form_data = await request.form()
+    form_params = dict(form_data)
+    if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature")
+
+    room = _conference_room_name(call_session.id)
+    vr = VoiceResponse()
+    dial = vr.dial()
+    dial.conference(
+        room,
+        beep="false",
+        start_conference_on_enter=True,
+        end_conference_on_exit=False,
+    )
+    return HTMLResponse(str(vr), media_type="application/xml")
 
 
 @router.post("/call/end", response_model=SuccessResponse[dict])

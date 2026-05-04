@@ -19,7 +19,10 @@ from app.core.config import settings
 
 # Single-pass regex; only substitute when inner normalizes to a known tag
 _TAG_RE = re.compile(r"\[([^\]]*)\]")
-_CONTROL_TOKEN_RE = re.compile(r"\[(?:END_CALL|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)", re.IGNORECASE)
+_CONTROL_TOKEN_RE = re.compile(
+    r"\[(?:END_CALL|TRANSFER_CALL|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)",
+    re.IGNORECASE,
+)
 
 # Normalized: whitespace collapsed, lowercased. Expand as Eleven documents new tags.
 _ELEVEN_V3_TAG_INNERS: frozenset[str] = frozenset(

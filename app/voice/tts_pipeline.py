@@ -96,6 +96,7 @@ class TtsPipeline:
         # call errors out before earlier chunks finish.
         self._turn_has_final: bool = False
         self._turn_end_call_after: bool = False
+        self._turn_transfer_after: bool = False
 
         # Per-turn observability counters (reset in _reset_turn_state).
         self._turn_chunk_count: int = 0
@@ -139,7 +140,7 @@ class TtsPipeline:
 
         task dict fields:
           text (str), use_ssml (bool), is_final (bool),
-          end_call_after (bool, optional)
+          end_call_after (bool, optional), transfer_after (bool, optional)
         """
         text = (task.get("text") or "").strip()
         if not text:
@@ -188,6 +189,9 @@ class TtsPipeline:
         if is_final:
             self._turn_has_final = True
             self._turn_end_call_after = bool(task.get("end_call_after", False))
+            self._turn_transfer_after = self._turn_transfer_after or bool(
+                task.get("transfer_after", False)
+            )
 
         # Snapshot turn_id so the task can detect if it's been orphaned by a
         # subsequent barge-in that reset the pipeline while the task was stuck
@@ -290,6 +294,7 @@ class TtsPipeline:
         self._next_chunk_id = 0
         self._turn_has_final = False
         self._turn_end_call_after = False
+        self._turn_transfer_after = False
         self._turn_chunk_count = 0
         self._turn_cache_hits = 0
         self._turn_start_ts = 0.0
@@ -520,11 +525,22 @@ class TtsPipeline:
                         turn_elapsed,
                     )
                     end_call = self._turn_end_call_after
+                    transfer = self._turn_transfer_after
                     # Reset flags BEFORE the await so any re-entrant queue_tts call
                     # during _end_call_after_agent_request inherits clean state.
                     self._turn_has_final = False
                     self._turn_end_call_after = False
+                    self._turn_transfer_after = False
                     if (
+                        transfer
+                        and not self.cancel_event.is_set()
+                        and hasattr(self._handler, "_transfer_after_agent_request")
+                    ):
+                        try:
+                            await self._handler._transfer_after_agent_request()
+                        except Exception as exc:
+                            logger.warning("[TTS] transfer_after error: %s", exc)
+                    elif (
                         end_call
                         and not self.cancel_event.is_set()
                         and hasattr(self._handler, "_end_call_after_agent_request")

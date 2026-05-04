@@ -3,6 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
+from app.models.transfer_route import TransferRoute
 from app.models.model import Model
 from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.models.business_knowledge import BusinessKnowledge
@@ -142,6 +143,30 @@ class AgentService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="background_volume must be between 0 and 100.",
                 )
+
+    def _validate_transfer_route_for_tenant(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        route_id: Optional[uuid.UUID],
+    ) -> None:
+        """Ensure transfer_route_id belongs to the same tenant (or is null)."""
+        if route_id is None:
+            return
+        exists = (
+            db.query(TransferRoute.id)
+            .filter(
+                TransferRoute.id == route_id,
+                TransferRoute.tenant_id == tenant_id,
+                TransferRoute.is_deleted == False,  # noqa: E712
+            )
+            .first()
+        )
+        if not exists:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="transfer_route_id not found or does not belong to this tenant.",
+            )
 
     def _auto_ingest_agent_system_prompt(self, db: Session, agent: Agent) -> None:
         """
@@ -299,6 +324,7 @@ class AgentService:
         agent_data["tts_provider_id"] = normalized_tts.get("tts_provider_id")
         agent_data["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
+        self._validate_transfer_route_for_tenant(db, tenant_id, agent_data.get("transfer_route_id"))
 
         # Enforce one dedicated inbound agent per tenant.
         if agent_data.get("is_inbound_agent"):
@@ -335,10 +361,15 @@ class AgentService:
         Returns 404 if agent doesn't exist at all.
         """
         # First, check if agent exists (regardless of tenant)
-        agent = db.query(Agent).filter(
-            Agent.id == agent_id,
-            Agent.is_deleted == False
-        ).first()
+        agent = (
+            db.query(Agent)
+            .options(joinedload(Agent.transfer_route))
+            .filter(
+                Agent.id == agent_id,
+                Agent.is_deleted == False,
+            )
+            .first()
+        )
         
         if not agent:
             raise HTTPException(
@@ -451,6 +482,11 @@ class AgentService:
         update_dict["tts_provider_id"] = normalized_tts.get("tts_provider_id")
         update_dict["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(update_dict.get("tts_settings_json"))
+
+        if "transfer_route_id" in update_dict:
+            self._validate_transfer_route_for_tenant(
+                db, tenant_id, update_dict.get("transfer_route_id")
+            )
 
         # If name is being updated, check for duplicates
         if "name" in update_dict and update_dict["name"]:

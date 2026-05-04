@@ -49,11 +49,18 @@ class AgentBase(BaseModel):
     )
     greeting_message: Optional[str] = Field(
         None,
-        description="Custom greeting spoken at call start and when the caller says hi/hello. Leave blank to skip auto-greeting.",
+        description=(
+            "Inbound-only: spoken once at call start (pickup), not on outbound. "
+            "Leave blank to skip auto-greeting."
+        ),
     )
     is_inbound_agent: bool = Field(
         default=False,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
+    )
+    transfer_route_id: Optional[uuid.UUID] = Field(
+        None,
+        description="Optional human transfer route (tenant-scoped); see transfer-routes API",
     )
 
 
@@ -96,11 +103,15 @@ class AgentUpdate(BaseModel):
     )
     greeting_message: Optional[str] = Field(
         None,
-        description="Custom greeting spoken at call start and when the caller says hi/hello.",
+        description="Inbound-only: spoken once at call start. Not used on outbound calls.",
     )
     is_inbound_agent: Optional[bool] = Field(
         default=None,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
+    )
+    transfer_route_id: Optional[uuid.UUID] = Field(
+        None,
+        description="Optional human transfer route; set null to clear",
     )
 
 class AgentOut(AgentBase):

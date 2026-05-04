@@ -58,11 +58,10 @@ SMART CHUNKING WITH OVERLAP:
   Result: Seamless transition with spoken fillers, no tak-tak distortion!
 
 CACHING & LOW-LATENCY STRATEGIES:
-1. Auto-Greeting on Connect:
-   - Agent speaks FIRST when call connects (no waiting for user!)
-   - Uses agent's first_message or default: "hello how are you"
-   - Bypasses LLM entirely for instant greeting (<200ms)
-   - Eliminates awkward silence at call start
+1. Auto-Greeting on Connect (inbound only):
+   - After pickup, optional one-time TTS from greeting_message (or legacy first_message if set)
+   - greeting_message is not used on outbound calls
+   - Bypasses LLM for that opening only; LLM is not instructed to repeat it verbatim on later "hi"
 
 2. Pre-cached Common Phrases (disabled — implementation commented in code):
    - 36+ common phrases were pre-generated at connect to warm the MULAW TTS cache
@@ -122,7 +121,10 @@ from app.services.groq_service import groq_service
 from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
-from app.services.voice_twilio_utils import get_twilio_credentials_for_call
+from app.services.voice_twilio_utils import (
+    get_twilio_credentials_for_call,
+    twilio_caller_id_for_transfer_dial,
+)
 from app.services.google_tts_service import google_tts_service
 from app.services.tts_adapter import get_tts_adapter
 from app.voice.tone_adapter import tone_adapter
@@ -1127,20 +1129,24 @@ class BidirectionalStreamHandler:
         Args:
             user_text: User's input text (empty for greeting)
             confidence: STT confidence score
-            is_greeting: If True, uses agent's first_message instead of calling LLM
+            is_greeting: If True, plays inbound one-time opening (greeting_message / first_message) without LLM
         """
         try:
             from datetime import datetime, timezone
             import json
             
-            # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
+            # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting (inbound pickup only)
             if is_greeting:
-                # Priority: greeting_message → first_message → skip (no hardcoded fallback)
+                # greeting_message is inbound-only; first_message fallback only on inbound calls.
                 greeting_text = None
-                if self.agent:
-                    if getattr(self.agent, 'greeting_message', None):
+                inbound = (
+                    self.call_session is not None
+                    and (self.call_session.call_type or "").lower() == "inbound"
+                )
+                if self.agent and inbound:
+                    if getattr(self.agent, "greeting_message", None):
                         greeting_text = self.agent.greeting_message.strip()
-                    elif getattr(self.agent, 'first_message', None):
+                    elif getattr(self.agent, "first_message", None):
                         greeting_text = self.agent.first_message.strip()
 
                 if not greeting_text:
@@ -1416,10 +1422,21 @@ class BidirectionalStreamHandler:
                 no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
             elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
 
-            _greeting_msg = (getattr(self.agent, 'greeting_message', None) or "").strip() if self.agent else ""
+            # Inbound: opening may play once via TTS at pickup — do not instruct LLM to repeat verbatim on every "hi".
+            _inbound_call = (
+                self.call_session is not None
+                and (self.call_session.call_type or "").lower() == "inbound"
+            )
+            _has_opening_cfg = bool(self.agent) and (
+                (getattr(self.agent, "greeting_message", None) or "").strip()
+                or (getattr(self.agent, "first_message", None) or "").strip()
+            )
             greeting_instruction_block = (
-                f"\n- GREETING: When the caller says hi, hello, or any greeting, respond with exactly: {_greeting_msg}\n"
-                if _greeting_msg else ""
+                "\n- GREETING: A short opening may play once automatically at call start (inbound). "
+                "If the caller says hi, hello, or similar later, acknowledge in one brief phrase only — "
+                "do not repeat the full opening greeting verbatim.\n"
+                if (_inbound_call and _has_opening_cfg)
+                else ""
             )
 
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
@@ -1543,6 +1560,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Use base prompt
                 system_prompt = base_prompt
 
+            transfer_block = self._build_transfer_instruction_block()
+            if transfer_block:
+                system_prompt = transfer_block + "\n\n" + system_prompt
+
             # Prepend current date/time so the agent knows what "today", "tomorrow",
             # and "past slots" mean. Also injected into appointment booking flow.
             _now_local = datetime.now(timezone.utc)
@@ -1626,6 +1647,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 response_accum = ""
                 tts_buffer = ""
                 end_call_after = False
+                transfer_after = False
+                _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
                 first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
@@ -1727,6 +1750,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         # Remove it from TTS buffer immediately so it never gets spoken
                         tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
 
+                    if _transfer_re.search(response_accum):
+                        transfer_after = True
+                        end_call_after = False
+                        tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
+
                     # Remove OUTCOME tokens from any in-flight buffer (never spoken)
                     if "[OUTCOME:" in tts_buffer:
                         tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
@@ -1778,6 +1806,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Flush any remaining text as the FINAL chunk
                 full_response = response_accum.strip()
                 end_call_after = end_call_after or ("[END_CALL]" in full_response)
+                if _transfer_re.search(full_response):
+                    transfer_after = True
+                    end_call_after = False
 
                 # Never speak control tokens
                 tts_buffer = self._prepare_tts_text(tts_buffer)
@@ -1802,12 +1833,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "chunk_id": chunk_counter,
                             "use_ssml": self._use_ssml,
                             "is_final": True,
-                            "end_call_after": end_call_after,
+                            "end_call_after": end_call_after and not transfer_after,
+                            "transfer_after": transfer_after,
                         })
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_first_tts_queued()
                         _schedule_deferred_memory_once()
+                elif transfer_after and not self._tts_cancel.is_set() and self._tts_pipeline:
+                    chunk_counter += 1
+                    await self._tts_pipeline.queue_tts({
+                        "text": "One moment.",
+                        "chunk_id": chunk_counter,
+                        "use_ssml": self._use_ssml,
+                        "is_final": True,
+                        "end_call_after": False,
+                        "transfer_after": True,
+                    })
+                    _vm = getattr(self, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
+                    _schedule_deferred_memory_once()
 
                 return response_accum.strip()
 
@@ -2287,6 +2333,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             cleaned = re.sub(pattern, "", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
+    def _build_transfer_instruction_block(self) -> str:
+        route = getattr(self.agent, "transfer_route", None) if self.agent else None
+        if not route:
+            return ""
+        t = (route.transfer_type or "cold").lower()
+        return (
+            "# HUMAN ESCALATION (TRANSFER)\n"
+            f"- A human contact is configured for this agent ({route.friendly_name}; transfer type: {t}).\n"
+            "- Use this ONLY for genuine emergencies, safety or abuse threats, or when the caller clearly needs a human and you cannot help.\n"
+            "- Acknowledge briefly in plain words, then end your reply with exactly [TRANSFER_CALL] on its own line. Never speak the brackets aloud.\n"
+            "- If you use [TRANSFER_CALL], do not also use [END_CALL] in the same reply; transfer takes priority.\n"
+        )
+
     @staticmethod
     def _strip_control_tokens_for_tts(text: str) -> str:
         """
@@ -2298,6 +2357,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         out = text
         # Bracketed canonical tokens
         out = out.replace("[END_CALL]", "")
+        out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
         out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
         out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
@@ -3583,6 +3643,146 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             asyncio.create_task(self._full_shutdown())
         except Exception as e:
             logger.error(f"Error ending call after [END_CALL]: {e}", exc_info=True)
+
+    async def _transfer_after_agent_request(self):
+        """Redirect live Twilio call to human transfer TwiML after TTS (cold Dial or warm Conference)."""
+        if self._call_ended:
+            return
+        try:
+            try:
+                await asyncio.sleep(0.20)
+            except asyncio.CancelledError:
+                pass
+
+            self._call_ended = True
+            route = getattr(self.agent, "transfer_route", None) if self.agent else None
+            if not self.call_session or not route or getattr(route, "is_deleted", False):
+                logger.warning(
+                    "[TRANSFER_CALL] skipped: missing call_session or transfer_route "
+                    "(session=%s)",
+                    self.call_session.id if self.call_session else None,
+                )
+                asyncio.create_task(self._full_shutdown())
+                return
+
+            if not self.call_sid:
+                logger.warning("[TRANSFER_CALL] skipped: no Twilio call_sid")
+                asyncio.create_task(self._full_shutdown())
+                return
+
+            meta = dict(self.call_session.call_metadata or {})
+            meta["human_transfer"] = {
+                "route_id": str(route.id),
+                "friendly_name": route.friendly_name,
+                "transfer_type": route.transfer_type,
+            }
+            self.call_session.call_metadata = meta
+            self.db.commit()
+            self.db.refresh(self.call_session)
+
+            updated = call_session_service.update_call_session_status(
+                self.db,
+                self.call_session.id,
+                "completed",
+                ended_reason="Human transfer ([TRANSFER_CALL])",
+                transferred=True,
+            )
+            if updated:
+                self.call_session = updated
+
+            base = settings.WEBHOOK_BASE_URL.rstrip("/")
+            sid_str = str(self.call_session.id)
+            ttype = (route.transfer_type or "cold").lower()
+            if ttype == "warm":
+                redirect_url = (
+                    f"{base}/api/v1/voice/webhook/transfer/conference-customer"
+                    f"?callSessionId={sid_str}"
+                )
+            else:
+                redirect_url = (
+                    f"{base}/api/v1/voice/webhook/transfer/dial-cold"
+                    f"?callSessionId={sid_str}"
+                )
+
+            try:
+                account_sid, auth_token = get_twilio_credentials_for_call(
+                    self.db, self.call_session
+                )
+                ok = twilio_service.redirect_call_with_credentials(
+                    self.call_sid,
+                    redirect_url,
+                    account_sid,
+                    auth_token,
+                    method="POST",
+                )
+                if not ok:
+                    logger.error(
+                        "Transfer redirect failed call_sid=%s session=%s",
+                        self.call_sid,
+                        self.call_session.id,
+                    )
+                elif ttype == "warm":
+                    from_num = twilio_caller_id_for_transfer_dial(self.call_session)
+                    if not from_num:
+                        logger.error(
+                            "Warm transfer: no Twilio caller ID on session %s (type=%s)",
+                            self.call_session.id,
+                            self.call_session.call_type,
+                        )
+                    else:
+                        sup_url = (
+                            f"{base}/api/v1/voice/webhook/transfer/conference-supervisor"
+                            f"?callSessionId={sid_str}"
+                        )
+                        status_cb = (
+                            f"{base}/api/v1/voice/webhook/call-events"
+                            f"?callSessionId={sid_str}"
+                            f"&agentId={self.agent.id}&userId={self.call_session.user_id}"
+                        )
+                        try:
+                            twilio_service.make_call_with_credentials(
+                                to_number=route.phone_number,
+                                from_number=from_num,
+                                webhook_url=sup_url,
+                                status_callback_url=status_cb,
+                                account_sid=account_sid,
+                                auth_token=auth_token,
+                                record=False,
+                            )
+                        except Exception as dial_err:
+                            logger.error(
+                                "Warm transfer supervisor dial failed: %s",
+                                dial_err,
+                                exc_info=True,
+                            )
+            except Exception as redir_err:
+                logger.error(
+                    "Transfer redirect exception: %s",
+                    redir_err,
+                    exc_info=True,
+                )
+
+            if self.call_session:
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(self.call_session.id),
+                        status="completed",
+                        metadata={
+                            "call_sid": self.call_sid,
+                            "stream_sid": self.stream_sid,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "call_ended",
+                            "event": "human_transfer",
+                            "reason": "Agent sent [TRANSFER_CALL]",
+                            "transfer_type": route.transfer_type,
+                        },
+                    )
+                except Exception as br_err:
+                    logger.debug("WebSocket broadcast after transfer: %s", br_err)
+
+            asyncio.create_task(self._full_shutdown())
+        except Exception as e:
+            logger.error("Error during human transfer: %s", e, exc_info=True)
     
     async def _check_and_end_call_if_voicemail(self, transcript: str):
         """
@@ -3848,11 +4048,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Start ambient background loop after brief stabilization delay.
             asyncio.create_task(self._start_background_audio_with_delay())
             
-            # 👋 Send one-time immediate greeting after pickup for inbound calls.
+            # 👋 One-time opening TTS after pickup (inbound only, only if configured).
             if (
                 self.call_session
                 and self.call_session.call_type == "inbound"
                 and not self._auto_greeting_sent
+                and self.agent
+                and (
+                    (getattr(self.agent, "greeting_message", None) or "").strip()
+                    or (getattr(self.agent, "first_message", None) or "").strip()
+                )
             ):
                 self._auto_greeting_sent = True
                 asyncio.create_task(
@@ -3874,6 +4079,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
           - Twilio `stop` event  (handle_stop_message)
           - User goodbye phrase  (_check_and_end_call_if_goodbye)
           - Agent [END_CALL]     (_end_call_after_agent_request)
+          - Agent [TRANSFER_CALL] (_transfer_after_agent_request)
           - Voicemail detected   (_check_and_end_call_if_voicemail)
           - WebSocket finally    (route-level cleanup)
 
