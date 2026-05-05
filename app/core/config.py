@@ -247,7 +247,7 @@ class Settings(BaseSettings):
 
     # Optional retrieval reranking (lexical overlap).
     # Keep disabled by default to avoid changing retrieval semantics unexpectedly.
-    _ENABLE_RERANK: bool = False
+    RAG_ENABLE_RERANK: bool = False
     # Weight for Pinecone vector similarity vs lexical overlap.
     # Higher means more trust in vector similarity.
     RAG_RERANK_VECTOR_WEIGHT: float = 0.8
