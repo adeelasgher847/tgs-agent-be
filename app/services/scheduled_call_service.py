@@ -558,6 +558,120 @@ class ScheduledCallService:
         )
 
     @staticmethod
+    def create_single_scheduled_call_sync(
+        db: Session,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+        phone_number: str,
+        agent_id: uuid.UUID,
+        call_time_utc: str,
+        crm_config_id: uuid.UUID,
+        phone_number_id: Optional[str] = None,
+        jd_context: Optional[Dict[str, Any]] = None,
+    ) -> dict:
+        """
+        Synchronous variant for use from non-async code paths (e.g. calendar booking).
+        """
+        from app.services.crm_config_service import CRMConfigService
+        from app.services.crm_service_factory import CRMServiceFactory
+        from app.services.trello_service import TrelloService
+
+        board_record, field_map = ScheduledCallService.get_or_create_board_for_user(
+            db, user_id, tenant_id, crm_config_id
+        )
+
+        crm_config_service = CRMConfigService()
+        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
+        crm_service = CRMServiceFactory.get_service(crm_config)
+
+        agent = db.query(Agent).filter(
+            and_(
+                Agent.id == agent_id,
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+            )
+        ).first()
+
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found or doesn't belong to tenant")
+
+        if not phone_number.startswith("+"):
+            raise HTTPException(status_code=400, detail="Phone number must start with +")
+
+        try:
+            call_time_str = call_time_utc.strip()
+            if "T" in call_time_str or "+" in call_time_str or call_time_str.endswith("Z"):
+                if call_time_str.endswith("Z"):
+                    call_time_str = call_time_str.replace("Z", "+00:00")
+                scheduled_time_utc = datetime.fromisoformat(call_time_str)
+            else:
+                for fmt in [
+                    "%Y-%m-%d %H:%M:%S",
+                    "%Y-%m-%d %H:%M",
+                    "%Y/%m/%d %H:%M:%S",
+                    "%Y/%m/%d %H:%M",
+                ]:
+                    try:
+                        scheduled_time_utc = datetime.strptime(call_time_str, fmt)
+                        scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    raise ValueError(f"Unable to parse date format: {call_time_str}")
+
+            if scheduled_time_utc.tzinfo is None:
+                scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
+            else:
+                scheduled_time_utc = scheduled_time_utc.astimezone(timezone.utc)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid call_time_utc format: {str(e)}")
+
+        batch_id = str(uuid.uuid4())
+
+        try:
+            result = crm_service.create_scheduled_call_item(
+                container_id=board_record.crm_container_id,
+                field_map=field_map,
+                phone_number=phone_number,
+                agent_id=str(agent_id),
+                call_time_utc=scheduled_time_utc.isoformat(),
+                tenant_id=str(tenant_id),
+                user_id=str(user_id),
+                batch_id=batch_id,
+                phone_number_id=phone_number_id,
+            )
+
+            if not result:
+                raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item")
+
+            item_id = result.get("id") or result.get("key") or result.get("shortLink", "")
+
+            if (
+                jd_context
+                and board_record.crm_type == "trello"
+                and isinstance(crm_service, TrelloService)
+                and item_id
+            ):
+                crm_service.update_item_jd_context(item_id=item_id, jd_context=jd_context)
+
+            return {
+                "item_id": item_id,
+                "board_id": board_record.crm_container_id,
+                "board_url": board_record.crm_container_url,
+                "phone_number": phone_number,
+                "agent_id": str(agent_id),
+                "call_time_utc": scheduled_time_utc.isoformat(),
+                "batch_id": batch_id,
+                "crm_type": board_record.crm_type,
+                "message": f"Scheduled call created in {board_record.crm_type} container. Batch ID: {batch_id}",
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item: {str(e)}")
+
+    @staticmethod
     async def create_single_scheduled_call(
         db: Session,
         tenant_id: uuid.UUID,
@@ -572,121 +686,18 @@ class ScheduledCallService:
         """
         Create a single scheduled call item in CRM container (Monday.com, ClickUp, Jira, Trello).
         Generates a unique batch_id for this single call.
-        
-        Args:
-            db: Database session
-            tenant_id: Tenant ID
-            user_id: User ID
-            phone_number: Phone number to call
-            agent_id: Agent UUID
-            call_time_utc: Scheduled time in UTC (ISO format string)
-            crm_config_id: CRM configuration ID to use
-            phone_number_id: Optional phone number ID from DB to use for call
-        
-        Returns:
-            Dictionary with item_id, container_id, container_url, batch_id, etc.
         """
-        from app.services.crm_config_service import CRMConfigService
-        from app.services.crm_service_factory import CRMServiceFactory
-        from app.services.trello_service import TrelloService
-        
-        # Get or create container for user
-        board_record, field_map = ScheduledCallService.get_or_create_board_for_user(
-            db, user_id, tenant_id, crm_config_id
+        return ScheduledCallService.create_single_scheduled_call_sync(
+            db=db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            phone_number=phone_number,
+            agent_id=agent_id,
+            call_time_utc=call_time_utc,
+            crm_config_id=crm_config_id,
+            phone_number_id=phone_number_id,
+            jd_context=jd_context,
         )
-        
-        # Get CRM service
-        crm_config_service = CRMConfigService()
-        crm_config = crm_config_service.get_crm_config_by_id(db, crm_config_id)
-        crm_service = CRMServiceFactory.get_service(crm_config)
-        
-        # Verify agent exists and belongs to tenant
-        agent = db.query(Agent).filter(
-            and_(
-                Agent.id == agent_id,
-                Agent.tenant_id == tenant_id,
-                Agent.is_deleted == False
-            )
-        ).first()
-        
-        if not agent:
-            raise HTTPException(status_code=404, detail="Agent not found or doesn't belong to tenant")
-        
-        # Validate phone number format
-        if not phone_number.startswith('+'):
-            raise HTTPException(status_code=400, detail="Phone number must start with +")
-        
-        # Parse call_time_utc
-        try:
-            call_time_str = call_time_utc.strip()
-            if 'T' in call_time_str or '+' in call_time_str or call_time_str.endswith('Z'):
-                if call_time_str.endswith('Z'):
-                    call_time_str = call_time_str.replace('Z', '+00:00')
-                scheduled_time_utc = datetime.fromisoformat(call_time_str)
-            else:
-                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d %H:%M']:
-                    try:
-                        scheduled_time_utc = datetime.strptime(call_time_str, fmt)
-                        scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    raise ValueError(f"Unable to parse date format: {call_time_str}")
-            
-            if scheduled_time_utc.tzinfo is None:
-                scheduled_time_utc = scheduled_time_utc.replace(tzinfo=timezone.utc)
-            else:
-                scheduled_time_utc = scheduled_time_utc.astimezone(timezone.utc)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid call_time_utc format: {str(e)}")
-        
-        # Generate unique batch_id for this single call
-        batch_id = str(uuid.uuid4())
-        
-        # Create CRM item with batch_id
-        try:
-            result = crm_service.create_scheduled_call_item(
-                container_id=board_record.crm_container_id,
-                field_map=field_map,
-                phone_number=phone_number,
-                agent_id=str(agent_id),
-                call_time_utc=scheduled_time_utc.isoformat(),
-                tenant_id=str(tenant_id),
-                user_id=str(user_id),
-                batch_id=batch_id,
-                phone_number_id=phone_number_id  # ✅ Pass phone_number_id
-            )
-            
-            if not result:
-                raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item")
-            
-            item_id = result.get("id") or result.get("key") or result.get("shortLink", "")
-
-            # Preserve JD context on Trello cards for n8n -> /voice/call/initiate propagation.
-            if (
-                jd_context
-                and board_record.crm_type == "trello"
-                and isinstance(crm_service, TrelloService)
-                and item_id
-            ):
-                crm_service.update_item_jd_context(item_id=item_id, jd_context=jd_context)
-            
-            return {
-                "item_id": item_id,
-                "board_id": board_record.crm_container_id,
-                "board_url": board_record.crm_container_url,
-                "phone_number": phone_number,
-                "agent_id": str(agent_id),
-                "call_time_utc": scheduled_time_utc.isoformat(),
-                "batch_id": batch_id,
-                "crm_type": board_record.crm_type,
-                "message": f"Scheduled call created in {board_record.crm_type} container. Batch ID: {batch_id}"
-            }
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create {board_record.crm_type} item: {str(e)}")
 
     @staticmethod
     async def create_scheduled_call_from_session_if_needed(

@@ -58,6 +58,10 @@ class AgentBase(BaseModel):
         default=False,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
     )
+    is_follow_up_agent: bool = Field(
+        default=False,
+        description="Set true for the tenant's single appointment follow-up / reminder-call agent",
+    )
     transfer_route_id: Optional[uuid.UUID] = Field(
         None,
         description="Optional human transfer route (tenant-scoped); see transfer-routes API",
@@ -108,6 +112,10 @@ class AgentUpdate(BaseModel):
     is_inbound_agent: Optional[bool] = Field(
         default=None,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
+    )
+    is_follow_up_agent: Optional[bool] = Field(
+        default=None,
+        description="Set true for the tenant's single appointment follow-up reminder agent",
     )
     transfer_route_id: Optional[uuid.UUID] = Field(
         None,

@@ -114,6 +114,7 @@ from app.core.logger import logger
 from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
+from app.models.appointment import Appointment
 from app.services.transcript_service import transcript_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
@@ -1187,6 +1188,11 @@ class BidirectionalStreamHandler:
                 return min(max(0.05, default_timeout), remaining)
 
             booking_intent_turn = self._is_booking_intent_turn(user_text)
+            follow_up_active = bool(
+                self.call_session
+                and self.call_session.call_metadata
+                and self.call_session.call_metadata.get("appointment_id")
+            )
             low_latency_fastpath = self._should_use_latency_fastpath(
                 user_text, booking_intent_turn
             )
@@ -1390,6 +1396,7 @@ class BidirectionalStreamHandler:
                     history_text = ""
             
             booking_memory_block = self._build_booking_memory_block()
+            follow_up_appt_block = self._build_follow_up_appointment_block()
 
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
@@ -1455,6 +1462,7 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
@@ -1497,6 +1505,7 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
@@ -1535,6 +1544,7 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
@@ -1606,8 +1616,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 elif self.agent.model.max_tokens:
                     max_tokens = self.agent.model.max_tokens
 
-                # Booking turns need enough completion budget for action token emission.
-                if booking_intent_turn:
+                # Booking / follow-up turns need enough completion budget for action tokens.
+                if booking_intent_turn or follow_up_active:
                     max_tokens = max(max_tokens, 180)
                 elif low_latency_fastpath:
                     max_tokens = min(max_tokens, 80)
@@ -1972,6 +1982,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                 if re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_book_appointment_token(final_text))
+                if re.search(r"\[\s*FOLLOWUP_CONFIRM\s*\]", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_followup_confirm_token(final_text))
+                if re.search(r"\[\s*FOLLOWUP_CANCEL\s*\]", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_followup_cancel_token(final_text))
+                if re.search(r"\[\s*FOLLOWUP_RESCHEDULE\s*:", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_followup_reschedule_token(final_text))
 
                 try:
                     self._voice_metrics.log_turn_summary(
@@ -2282,6 +2298,60 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if resolved_slot is not None:
             self._last_selected_calendar_slot = resolved_slot
 
+    def _build_follow_up_appointment_block(self) -> str:
+        """Extra instructions when this outbound call was scheduled as an appointment reminder."""
+        if not self.call_session or not self.call_session.call_metadata:
+            return ""
+        aid_raw = str(self.call_session.call_metadata.get("appointment_id") or "").strip()
+        if not aid_raw:
+            return ""
+        appt = None
+        try:
+            appt_id = uuid.UUID(aid_raw)
+            appt = (
+                self.db.query(Appointment)
+                .filter(
+                    Appointment.id == appt_id,
+                    Appointment.tenant_id == self.call_session.tenant_id,
+                )
+                .first()
+            )
+        except Exception:
+            appt = None
+
+        details: list[str] = []
+        if appt:
+            if (appt.customer_name or "").strip():
+                details.append(f"- Customer name: {appt.customer_name.strip()}.")
+            if (appt.customer_phone or "").strip():
+                details.append(f"- Customer phone: {appt.customer_phone.strip()}.")
+            if (appt.appointment_reason or "").strip():
+                details.append(f"- Appointment reason: {appt.appointment_reason.strip()}.")
+            if appt.slot_start:
+                try:
+                    details.append(f"- Scheduled appointment time (UTC): {appt.slot_start.isoformat()}.")
+                except Exception:
+                    pass
+        else:
+            details.append(f"- Appointment ID: {aid_raw}.")
+
+        details_block = "\n".join(details)
+        if details_block:
+            details_block = f"{details_block}\n"
+
+        return (
+            "# APPOINTMENT FOLLOW-UP REMINDER (THIS CALL ONLY)\n"
+            f"{details_block}"
+            "- The customer has an appointment on file. Confirm whether they (or someone for the service) will attend at the scheduled time.\n"
+            "- If they clearly confirm attendance: thank them briefly, then put [FOLLOWUP_CONFIRM] alone on its own line at the end of your message, "
+            "then end with [END_CALL] on the next line.\n"
+            "- If they want to cancel the appointment: acknowledge, then put [FOLLOWUP_CANCEL] alone on its own line at the end.\n"
+            "- If they want to reschedule: collect a concrete new date and time they agree to, then put exactly one line at the end: "
+            "[FOLLOWUP_RESCHEDULE:slot=<ISO8601 datetime>]. Use UTC with offset or Z (e.g. 2026-05-10T15:00:00+00:00). "
+            "If they have not given a new time yet, ask for it — do not emit RESCHEDULE until the slot is explicit.\n"
+            "- Do not use [BOOK_APPOINTMENT:...] in this reminder flow.\n"
+        )
+
     def _build_booking_memory_block(self) -> str:
         if not self._is_booking_context_active():
             return ""
@@ -2361,11 +2431,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
         out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
         out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
+        out = re.sub(r"\[\s*FOLLOWUP_CONFIRM\s*\]", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\[\s*FOLLOWUP_CANCEL\s*\]", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\[\s*FOLLOWUP_RESCHEDULE:[^\]]*\]", "", out, flags=re.IGNORECASE)
         # Malformed bracket-open tokens without closing bracket
-        out = re.sub(r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*", "", out)
+        out = re.sub(
+            r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT|FOLLOWUP_RESCHEDULE):[^\]\n\r]*",
+            "",
+            out,
+        )
         # Unbracketed control tails occasionally produced by model
         out = re.sub(
-            r"(?im)\b(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT)\s*:\s*[^\n\r]*",
+            r"(?im)\b(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT|FOLLOWUP_RESCHEDULE)\s*:\s*[^\n\r]*",
             "",
             out,
         )
@@ -2625,6 +2702,120 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if len(out) >= limit:
                     break
         return out
+
+    def _follow_up_appointment_uuid(self) -> Optional[uuid.UUID]:
+        if not self.call_session or not self.call_session.call_metadata:
+            return None
+        raw = (self.call_session.call_metadata.get("appointment_id") or "").strip()
+        if not raw:
+            return None
+        try:
+            return uuid.UUID(raw)
+        except ValueError:
+            return None
+
+    async def _handle_followup_confirm_token(self, llm_response: str) -> None:
+        try:
+            appt_id = self._follow_up_appointment_uuid()
+            if not appt_id or not self.call_session:
+                return
+            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
+
+            send_follow_up_outcome_staff_email(
+                self.db,
+                staff_user_id=self.call_session.user_id,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                outcome="confirmed_attendance",
+                detail="Customer confirmed attendance on the reminder call.",
+            )
+        except Exception as e:
+            logger.error("Error in _handle_followup_confirm_token: %s", e, exc_info=True)
+
+    async def _handle_followup_cancel_token(self, llm_response: str) -> None:
+        try:
+            appt_id = self._follow_up_appointment_uuid()
+            if not appt_id or not self.call_session:
+                return
+            from app.services.calendar_service import calendar_service
+            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
+
+            calendar_service.update_appointment_status(
+                self.db,
+                appt_id,
+                self.call_session.tenant_id,
+                "cancelled",
+                cancellation_reason="Customer requested cancellation on reminder call.",
+                notify_user_id=self.call_session.user_id,
+            )
+            send_follow_up_outcome_staff_email(
+                self.db,
+                staff_user_id=self.call_session.user_id,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                outcome="cancelled",
+                detail="Appointment cancelled from reminder call.",
+            )
+            try:
+                self.db.refresh(self.call_session)
+            except Exception:
+                pass
+        except ValueError as ve:
+            logger.warning("Follow-up cancel: %s", ve)
+        except Exception as e:
+            logger.error("Error in _handle_followup_cancel_token: %s", e, exc_info=True)
+
+    async def _handle_followup_reschedule_token(self, llm_response: str) -> None:
+        try:
+            appt_id = self._follow_up_appointment_uuid()
+            if not appt_id or not self.call_session:
+                return
+            m = re.search(r"\[\s*FOLLOWUP_RESCHEDULE:([^\]]+)\]", llm_response, flags=re.IGNORECASE)
+            if not m:
+                return
+            inner = " ".join((m.group(1) or "").split())
+            sm = re.search(r"slot=(?P<slot>.+)", inner, flags=re.IGNORECASE)
+            slot_raw = (sm.group("slot") or "").strip() if sm else ""
+            if not slot_raw:
+                logger.warning("FOLLOWUP_RESCHEDULE missing slot: %s", inner[:300])
+                return
+            from datetime import datetime as _dt
+
+            from app.services.calendar_service import calendar_service
+            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
+
+            try:
+                slot_start = _dt.fromisoformat(slot_raw.replace("Z", "+00:00"))
+            except ValueError:
+                resolved = self._resolve_cached_calendar_slot(slot_raw)
+                if resolved is None:
+                    logger.warning("FOLLOWUP_RESCHEDULE invalid slot: %s", slot_raw)
+                    return
+                slot_start = resolved
+
+            calendar_service.reschedule_appointment(
+                db=self.db,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                slot_start=slot_start,
+                notify_user_id=self.call_session.user_id,
+            )
+            send_follow_up_outcome_staff_email(
+                self.db,
+                staff_user_id=self.call_session.user_id,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                outcome="rescheduled",
+                detail=f"New slot (UTC instant): {slot_start.isoformat()}",
+            )
+            try:
+                self.db.refresh(self.call_session)
+            except Exception:
+                pass
+        except ValueError as ve:
+            logger.warning("Follow-up reschedule: %s", ve)
+        except Exception as e:
+            logger.error("Error in _handle_followup_reschedule_token: %s", e, exc_info=True)
 
     async def _handle_book_appointment_token(self, llm_response: str):
         """

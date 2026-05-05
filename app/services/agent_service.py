@@ -338,6 +338,19 @@ class AgentService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Only one dedicated inbound agent is allowed per tenant.",
                 )
+
+        # Enforce one follow-up appointment agent per tenant.
+        if agent_data.get("is_follow_up_agent"):
+            existing_fu = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
+            ).first()
+            if existing_fu:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only one follow-up appointment agent is allowed per tenant.",
+                )
         
         db_agent = Agent(**agent_data)
         db.add(db_agent)
@@ -347,7 +360,7 @@ class AgentService:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Only one dedicated inbound agent is allowed per tenant.",
+                detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
         db.refresh(db_agent)
         self._auto_ingest_agent_system_prompt(db, db_agent)
@@ -474,6 +487,20 @@ class AgentService:
                     detail="Only one dedicated inbound agent is allowed per tenant.",
                 )
 
+        # Enforce one follow-up appointment agent per tenant.
+        if update_dict.get("is_follow_up_agent") is True:
+            existing_fu = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
+                Agent.id != agent_id,
+            ).first()
+            if existing_fu:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only one follow-up appointment agent is allowed per tenant.",
+                )
+
         normalized_tts = self._validate_tts_selection(
             db,
             tts_provider_id=update_dict.get("tts_provider_id", agent.tts_provider_id),
@@ -538,7 +565,7 @@ class AgentService:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Only one dedicated inbound agent is allowed per tenant.",
+                detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
         db.refresh(agent)
         self._auto_ingest_agent_system_prompt(db, agent)
@@ -688,6 +715,18 @@ No active tenant knowledge base documents were found.
                 Agent.tenant_id == tenant_id,
                 Agent.is_deleted == False,
                 Agent.is_inbound_agent == True,
+            )
+            .first()
+        )
+
+    def get_follow_up_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Optional[Agent]:
+        """Tenant's single appointment follow-up / reminder agent, if configured."""
+        return (
+            db.query(Agent)
+            .filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
             )
             .first()
         )

@@ -217,7 +217,7 @@ class Settings(BaseSettings):
     # RAG behavior tuning (voice-first defaults)
     # Master switch for latency A/B tests and emergency fail-open behavior.
     # Set RAG_ENABLED=false in .env to skip retrieval entirely.
-    RAG_ENABLED: bool = False
+    RAG_ENABLED: bool = True
     # These defaults are intentionally conservative to avoid prompt bloat/latency.
     # Primary embedding model (OpenAI by default).
     # Make embedding model configurable because some OpenAI projects do not
@@ -247,7 +247,7 @@ class Settings(BaseSettings):
 
     # Optional retrieval reranking (lexical overlap).
     # Keep disabled by default to avoid changing retrieval semantics unexpectedly.
-    RAG_ENABLE_RERANK: bool = False
+    _ENABLE_RERANK: bool = False
     # Weight for Pinecone vector similarity vs lexical overlap.
     # Higher means more trust in vector similarity.
     RAG_RERANK_VECTOR_WEIGHT: float = 0.8

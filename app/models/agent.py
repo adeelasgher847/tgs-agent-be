@@ -35,6 +35,8 @@ class Agent(Base):
     is_deleted = Column(Boolean, default=False, nullable=False, server_default='false')
     # Dedicated inbound entry point agent (max one active per tenant)
     is_inbound_agent = Column(Boolean, default=False, nullable=False, server_default='false')
+    # Appointment reminder / follow-up outbound agent (max one active per tenant)
+    is_follow_up_agent = Column(Boolean, default=False, nullable=False, server_default='false')
 
     # Optional default human transfer route (tenant-scoped; see TransferRoute)
     transfer_route_id = Column(
@@ -63,5 +65,11 @@ class Agent(Base):
             "tenant_id",
             unique=True,
             postgresql_where=text("is_inbound_agent = true AND is_deleted = false"),
+        ),
+        Index(
+            "uq_agent_single_follow_up_per_tenant",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_follow_up_agent = true AND is_deleted = false"),
         ),
     )
