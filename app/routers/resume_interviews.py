@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
+from app.core.logger import logger
 
 from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
 from app.models.job_description import JobDescription
@@ -23,7 +24,7 @@ from app.schemas.resume_interview import (
     ResumeInterviewBulkScheduleRequest,
     ResumeInterviewBulkScheduleResponse,
     ResumeInterviewBulkScheduleResultItem,
-    # ResumeInterviewCallMediaResponse,
+    ResumeInterviewCallMediaResponse,
     ResumeInterviewTranscriptResponse,
     ResumeInterviewRecordingResponse,
     ResumeInterviewItem,
@@ -277,7 +278,7 @@ def _get_latest_call_session_for_resume(
     if interview is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
-            "No resume interview found for this resume",
+            "No interview session found for this resume",
         )
     if not interview.call_session_id:
         raise HTTPException(
@@ -862,6 +863,44 @@ def get_resume_session_link(
         _to_session_link_item(resume=resume, interview=interview, call_session=call_session),
         "Resume session link retrieved successfully",
     )
+
+@router.get(
+    "/by-resume/{resume_id}/call-media",
+    response_model=SuccessResponse[ResumeInterviewCallMediaResponse],
+)
+def get_resume_interview_call_media(
+    resume_id: UUID,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    DEPRECATED: This endpoint returns both transcript and recording URL.
+    It has been split into dedicated /transcript and /recording endpoints.
+    
+    Latest resume interview for this resume → linked call session → transcript and recording URL.
+    Transcript prefers `TranscriptMessage` rows; falls back to `CallSession.call_transcript`.
+    """
+    logger.warning(f"⚠️ DEPRECATED: GET RESUME INTERVIEW CALL MEDIA CALLED")
+    logger.warning(f"Use /by-resume/{{resume_id}}/transcript and /by-resume/{{resume_id}}/recording instead")
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    resume, interview, call_session = _get_latest_call_session_for_resume(
+        db, resume_id, user.current_tenant_id
+    )
+
+    transcript, transcript_source = _transcript_for_call_session(db, call_session)
+    payload = ResumeInterviewCallMediaResponse(
+        resume_id=resume_id,
+        interview_id=interview.id,
+        call_session_id=call_session.id,
+        recording_url=call_session.recording_url,
+        twilio_call_sid=call_session.twilio_call_sid or interview.twilio_call_sid,
+        call_session_status=call_session.status,
+        transcript=transcript,
+        transcript_source=transcript_source,
+    )
+    return create_success_response(payload, "Resume interview call media retrieved successfully")
 
 @router.get(
     "/by-resume/{resume_id}/transcript",
