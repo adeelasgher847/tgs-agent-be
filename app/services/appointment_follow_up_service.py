@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.logger import logger
 from app.models.agent import Agent
 from app.models.appointment import Appointment
+from app.models.call_session import CallSession
 from app.models.phone_number import PhoneNumber
 from app.models.scheduled_call import ScheduledCall
 from app.models.tenant_crm_config import CRMConfig
@@ -152,6 +153,54 @@ def _follow_up_phone_number_id(db: Session, tenant_id: uuid.UUID, follow_agent: 
     return str(pn.id) if pn else None
 
 
+def _resolve_phone_number_id_from_appointment_origin(
+    db: Session,
+    *,
+    appt: Appointment,
+    follow_agent: Agent,
+) -> Optional[str]:
+    """
+    Prefer the tenant phone number used in the original appointment call/session.
+    Fallback to follow-up agent assigned active number.
+    """
+    # 1) Try to resolve from appointment.call_session_id by matching tenant-owned numbers.
+    if appt.call_session_id:
+        cs = (
+            db.query(CallSession)
+            .filter(
+                CallSession.id == appt.call_session_id,
+                CallSession.tenant_id == appt.tenant_id,
+            )
+            .first()
+        )
+        if cs:
+            # For inbound: tenant number is usually `to_number`.
+            # For outbound: tenant number is usually `from_number`.
+            # Keep robust fallback order for legacy/mixed records.
+            candidate_numbers = [
+                (cs.to_number or "").strip(),
+                (cs.from_number or "").strip(),
+                (cs.assistant_phone_number or "").strip(),
+            ]
+            for num in candidate_numbers:
+                if not num:
+                    continue
+                pn = (
+                    db.query(PhoneNumber)
+                    .filter(
+                        PhoneNumber.tenant_id == appt.tenant_id,
+                        PhoneNumber.phone_number == num,
+                        PhoneNumber.status == "active",
+                    )
+                    .first()
+                )
+                if pn:
+                    return str(pn.id)
+
+    # 2) Fallback: follow-up agent assigned active number.
+    return _follow_up_phone_number_id(db, appt.tenant_id, follow_agent)
+
+
 def schedule_follow_up_after_confirm(
     db: Session,
     appt: Appointment,
@@ -211,7 +260,11 @@ def schedule_follow_up_after_confirm(
             return
 
         reminder = _reminder_time_utc(appt.slot_start)
-        phone_number_id = _follow_up_phone_number_id(db, appt.tenant_id, follow)
+        phone_number_id = _resolve_phone_number_id_from_appointment_origin(
+            db,
+            appt=appt,
+            follow_agent=follow,
+        )
         jd_context: Dict[str, Any] = {"appointment_id": str(appt.id)}
 
         result = ScheduledCallService.create_single_scheduled_call_sync(
