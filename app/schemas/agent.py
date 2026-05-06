@@ -57,10 +57,12 @@ class AgentBase(BaseModel):
     is_inbound_agent: bool = Field(
         default=False,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
+        examples=[False],
     )
     is_follow_up_agent: bool = Field(
         default=False,
         description="Set true for the tenant's single appointment follow-up / reminder-call agent",
+        examples=[False],
     )
     transfer_route_id: Optional[uuid.UUID] = Field(
         None,
@@ -110,12 +112,14 @@ class AgentUpdate(BaseModel):
         description="Inbound-only: spoken once at call start. Not used on outbound calls.",
     )
     is_inbound_agent: Optional[bool] = Field(
-        default=None,
+        default=False,
         description="Set true to mark this as the tenant's dedicated inbound entry agent",
+        examples=[False],
     )
     is_follow_up_agent: Optional[bool] = Field(
-        default=None,
+        default=False,
         description="Set true for the tenant's single appointment follow-up reminder agent",
+        examples=[False],
     )
     transfer_route_id: Optional[uuid.UUID] = Field(
         None,
