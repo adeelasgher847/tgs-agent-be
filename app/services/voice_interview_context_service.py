@@ -256,9 +256,19 @@ def _jd_requirements_summary(job: JobDescription) -> str:
     if years_bits:
         years_text = ", ".join(years_bits)
 
+    salary_bits: list[str] = []
+    currency = (job.currency or "").strip()
+    if job.salary_min is not None:
+        salary_bits.append(f"min {job.salary_min} {currency}".strip())
+    if job.salary_max is not None:
+        salary_bits.append(f"max {job.salary_max} {currency}".strip())
+    salary_text = ", ".join(salary_bits) if salary_bits else ""
+
     lines: list[str] = ["Key JD requirements (structured, when available):"]
     if years_text:
         lines.append(f"- Experience: {years_text}")
+    if salary_text:
+        lines.append(f"- Budget range: {salary_text}")
     if required_skills_text:
         lines.append(f"- Required skills: {required_skills_text}")
     if certs_text:
@@ -374,12 +384,16 @@ def build_voice_interview_enrichment(
                 lines.append(highlights)
                 highlights_added = True
         lines.append(
-            "Ask one question at a time. Tailor questions to this job: required skills, "
-            "relevant experience, and scenarios that test fit. Avoid unrelated small talk. "
-            "For each major JD requirement, ask a resume-grounded question that references the candidate resume highlights "
-            "(e.g. 'I see you did X / used Y / worked on Z. Can you walk me through what you owned, the approach, and impact?'). "
-            "Then ask a short follow-up that probes depth (scope, technical choices, trade-offs, results). "
-            "If resume evidence for a requirement is missing in the highlights, ask a clarification question to confirm whether they have that experience."
+            "Screening flow (strict order; ask one question at a time): "
+            "1) Name cross-check: confirm candidate full name from profile/resume. "
+            "If mismatch, re-confirm once politely before moving on. "
+            "2) Job intent and switch reason: ask why this role and why they want to switch now. "
+            "3) Skill verification against JD: validate each major required skill using resume-grounded evidence. "
+            "For each missing or weak required skill, ask short reason and current learning status. "
+            "If critical JD skills clearly do not match, politely close the call and end with [END_CALL]. "
+            "4) Ask exactly one analytical scenario question relevant to this JD and probe depth with one short follow-up. "
+            "5) Salary expectation and budget alignment: ask candidate expected salary, then share JD budget range when available and confirm alignment/misalignment. "
+            "Keep the conversation concise, professional, and evidence-based; avoid unrelated small talk."
         )
     else:
         lines.append(
