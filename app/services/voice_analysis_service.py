@@ -43,6 +43,27 @@ class VoiceAnalysisService:
         # 🎯 FLEXIBLE MODEL SELECTION WITH FALLBACK
         # Priority: 1. Call's model, 2. Gemini 2.0 Flash, 3. Llama, 4. GPT-4o Mini
 
+        # 🚀 CACHING: Return existing analysis if already present
+        if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
+            cached_block = call_session.call_metadata["llm_call_analysis"]
+            
+            # Reconstruct transcript message count for the response
+            transcript_messages = transcript_service.get_messages_by_session(
+                db, call_session.id
+            )
+            
+            logger.info("📦 Transcript analysis fetched from DB for session %s", call_session.id)
+            return {
+                "call_session_id": str(call_session.id),
+                "transcript_message_count": len(transcript_messages),
+                "call_duration": call_session.duration,
+                "call_status": call_session.status,
+                "analysis": cached_block.get("analysis"),
+                "model_used": cached_block.get("model_used"),
+                "timestamp": cached_block.get("timestamp"),
+                "is_cached": True
+            }
+
         preferred_model: Optional[str] = None
         agent = None
         agent_prompt: Optional[str] = None
