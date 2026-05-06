@@ -1456,6 +1456,7 @@ You are {agent_name}, having a real-time phone call with a human.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
@@ -1499,6 +1500,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
@@ -1538,7 +1540,8 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-{output_plain_text_rule}{greeting_instruction_block}
+{output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
@@ -2434,6 +2437,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         out = re.sub(r"\[\s*FOLLOWUP_CONFIRM\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[\s*FOLLOWUP_CANCEL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[\s*FOLLOWUP_RESCHEDULE:[^\]]*\]", "", out, flags=re.IGNORECASE)
+        # Non-control bracket tags that sometimes leak from LLM output.
+        # Keep this conservative so spoken content remains intact.
+        out = re.sub(r"\[\s*(?:pause|silence|laugh|sigh|breath|breathes|inaudible)\s*\]", "", out, flags=re.IGNORECASE)
+        # Citation-like bracket numbers such as [1], [2], ...
+        out = re.sub(r"\[\s*\d{1,3}\s*\]", "", out)
         # Malformed bracket-open tokens without closing bracket
         out = re.sub(
             r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT|FOLLOWUP_RESCHEDULE):[^\]\n\r]*",
