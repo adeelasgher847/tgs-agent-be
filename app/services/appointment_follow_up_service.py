@@ -50,12 +50,43 @@ def send_follow_up_outcome_staff_email(
         user = db.query(User).filter(User.id == uid).first()
         if not user or not (user.email or "").strip():
             return
-        subj = f"Assistly | Appointment follow-up: {outcome.replace('_', ' ')}"
-        body = (
-            f"<p><strong>Outcome:</strong> {html.escape(outcome)}</p>"
-            f"<p><strong>Appointment ID:</strong> {appointment_id}</p>"
-            f"<p><strong>Tenant ID:</strong> {tenant_id}</p>"
+        appt = (
+            db.query(Appointment)
+            .filter(
+                Appointment.id == appointment_id,
+                Appointment.tenant_id == tenant_id,
+            )
+            .first()
         )
+        subj = f"Assistly | Appointment follow-up: {outcome.replace('_', ' ')}"
+        pretty_outcome = {
+            "cancelled": "cancelled from reminder call",
+            "confirmed": "confirmed from reminder call",
+            "rescheduled": "rescheduled from reminder call",
+        }.get(outcome.lower(), outcome.replace("_", " "))
+        body = (
+            f"<p><strong>Outcome:</strong> {html.escape(pretty_outcome)}</p>"
+        )
+        if appt:
+            if (appt.customer_name or "").strip():
+                body += f"<p><strong>Customer:</strong> {html.escape(appt.customer_name.strip())}</p>"
+            if (appt.customer_phone or "").strip():
+                body += f"<p><strong>Phone:</strong> {html.escape(appt.customer_phone.strip())}</p>"
+            if (appt.appointment_reason or "").strip():
+                body += f"<p><strong>Reason:</strong> {html.escape(appt.appointment_reason.strip())}</p>"
+            if appt.slot_start:
+                try:
+                    from app.services.calendar_service import calendar_service as _calendar_service
+
+                    _tz_label, slot_start_local, _slot_end_local = _calendar_service.appointment_local_display(
+                        db,
+                        tenant_id,
+                        appt,
+                    )
+                    local_str = slot_start_local.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
+                    body += f"<p><strong>Appointment time:</strong> {html.escape(local_str)}</p>"
+                except Exception:
+                    pass
         if detail:
             body += f"<p><strong>Detail:</strong> {html.escape(detail[:2000])}</p>"
         email_service.send_generic_email(

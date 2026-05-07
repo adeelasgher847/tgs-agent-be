@@ -2332,7 +2332,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 details.append(f"- Appointment reason: {appt.appointment_reason.strip()}.")
             if appt.slot_start:
                 try:
-                    details.append(f"- Scheduled appointment time (UTC): {appt.slot_start.isoformat()}.")
+                    from app.services.calendar_service import calendar_service as _calendar_service
+
+                    _tz_label, slot_start_local, _slot_end_local = _calendar_service.appointment_local_display(
+                        self.db,
+                        self.call_session.tenant_id,
+                        appt,
+                    )
+                    details.append(
+                        "- Scheduled appointment time (local): "
+                        f"{slot_start_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')}."
+                    )
                 except Exception:
                     pass
         else:
@@ -2346,6 +2356,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             "# APPOINTMENT FOLLOW-UP REMINDER (THIS CALL ONLY)\n"
             f"{details_block}"
             "- The customer has an appointment on file. Confirm whether they (or someone for the service) will attend at the scheduled time.\n"
+            "- When you mention the appointment time, use the local time shown above. Do not mention UTC or any timezone name.\n"
             "- If they clearly confirm attendance: thank them briefly, then put [FOLLOWUP_CONFIRM] alone on its own line at the end of your message, "
             "then end with [END_CALL] on the next line.\n"
             "- If they want to cancel the appointment: acknowledge, then put [FOLLOWUP_CANCEL] alone on its own line at the end.\n"
