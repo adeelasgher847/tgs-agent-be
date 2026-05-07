@@ -108,6 +108,176 @@ def _resume_excerpt(resume: Resume) -> str:
     return t
 
 
+def _trim_to(s: str, max_chars: int) -> str:
+    s = (s or "").strip()
+    if len(s) <= max_chars:
+        return s
+    return f"{s[:max_chars].rstrip()}..."
+
+
+def _candidate_resume_highlights(resume: Resume) -> str:
+    """
+    Create a short, grounded candidate summary for the LLM.
+    We intentionally keep this as structured bullets (not raw JSON) so the model
+    uses it for JD-aligned questions without hallucinating missing fields.
+    """
+    pj = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
+    if not pj:
+        return ""
+
+    profile = pj.get("profile") if isinstance(pj.get("profile"), dict) else {}
+    name = str(profile.get("name") or "").strip() or _candidate_name_from_resume(resume) or ""
+
+    years_total = pj.get("years_experience_total")
+    years_str = ""
+    if years_total is not None:
+        try:
+            years_str = f"{float(years_total):g} years"
+        except (TypeError, ValueError):
+            years_str = str(years_total).strip()
+
+    skills_raw = pj.get("skills") if isinstance(pj.get("skills"), list) else []
+    skills: list[str] = []
+    for s in skills_raw:
+        if isinstance(s, dict):
+            n = str(s.get("name") or "").strip()
+            if n:
+                skills.append(n)
+        elif isinstance(s, str):
+            s2 = s.strip()
+            if s2:
+                skills.append(s2)
+    top_skills = ", ".join(skills[:10]) if skills else ""
+
+    exp_raw = pj.get("experience") if isinstance(pj.get("experience"), list) else []
+    recent_roles: list[str] = []
+    for e in exp_raw[:5]:
+        if not isinstance(e, dict):
+            continue
+        role = str(e.get("role") or "").strip()
+        company = str(e.get("company") or "").strip()
+        duration = str(e.get("duration") or "").strip()
+        dur_bits = [b for b in [duration] if b]
+        dur = dur_bits[0] if dur_bits else ""
+        header = " - ".join([p for p in [role, company] if p]) or "Experience"
+        if dur:
+            header = f"{header} ({dur})"
+        # Keep a couple responsibilities as "grounded evidence"
+        resp = e.get("responsibilities")
+        resp_bits: list[str] = []
+        if isinstance(resp, list):
+            for r in resp:
+                if isinstance(r, str):
+                    t = r.strip()
+                    if t:
+                        resp_bits.append(t)
+        evidence = "; ".join(resp_bits[:2])
+        if evidence:
+            header = f"{header}: {evidence}"
+        recent_roles.append(header)
+    recent_roles_text = "\n".join(f"- {r}" for r in recent_roles[:4]) if recent_roles else ""
+
+    projects_raw = pj.get("projects") if isinstance(pj.get("projects"), list) else []
+    projects: list[str] = []
+    for p in projects_raw[:5]:
+        if not isinstance(p, dict):
+            continue
+        pn = str(p.get("name") or "").strip()
+        desc = str(p.get("description") or "").strip()
+        if pn or desc:
+            projects.append(_trim_to(" - ".join([b for b in [pn, desc] if b]), 140))
+    projects_text = "\n".join(f"- {p}" for p in projects[:3]) if projects else ""
+
+    edu_raw = pj.get("education") if isinstance(pj.get("education"), list) else []
+    edu: list[str] = []
+    for ed in edu_raw[:5]:
+        if not isinstance(ed, dict):
+            continue
+        degree = str(ed.get("degree") or "").strip()
+        inst = str(ed.get("institution") or "").strip()
+        year = ed.get("year")
+        year_str2 = ""
+        if year is not None:
+            try:
+                year_str2 = str(int(year))
+            except (TypeError, ValueError):
+                year_str2 = str(year).strip()
+        bits = [b for b in [degree, inst, year_str2] if b]
+        if bits:
+            edu.append(_trim_to(" - ".join(bits), 120))
+    edu_text = "\n".join(f"- {x}" for x in edu[:3]) if edu else ""
+
+    langs_raw = pj.get("languages") if isinstance(pj.get("languages"), list) else []
+    langs = [str(l).strip() for l in langs_raw if isinstance(l, str) and l.strip()]
+    langs_text = ", ".join(langs[:6]) if langs else ""
+
+    lines: list[str] = ["Candidate resume highlights (parsed):"]
+    if name:
+        lines.append(f"- Name: {name}")
+    if years_str:
+        lines.append(f"- Total experience: {years_str}")
+    if top_skills:
+        lines.append(f"- Top skills: {top_skills}")
+    if recent_roles_text:
+        lines.append("- Recent/most relevant roles & evidence:\n" + recent_roles_text)
+    if projects_text:
+        lines.append("- Projects:\n" + projects_text)
+    if edu_text:
+        lines.append("- Education:\n" + edu_text)
+    if langs_text:
+        lines.append(f"- Languages: {langs_text}")
+
+    # Hard cap to avoid ballooning the prompt for long resumes.
+    return _trim_to("\n".join(lines), 1200)
+
+
+def _jd_requirements_summary(job: JobDescription) -> str:
+    required_skills_raw = job.required_skills if isinstance(job.required_skills, list) else []
+    required_skills: list[str] = [str(s).strip() for s in required_skills_raw if str(s).strip()]
+    required_skills_text = ", ".join(required_skills[:10]) if required_skills else ""
+
+    certs_raw = job.required_certifications if isinstance(job.required_certifications, list) else []
+    certs: list[str] = [str(c).strip() for c in certs_raw if str(c).strip()]
+    certs_text = ", ".join(certs[:6]) if certs else ""
+
+    responsibilities_raw = job.key_responsibilities if isinstance(job.key_responsibilities, list) else []
+    responsibilities: list[str] = []
+    for r in responsibilities_raw[:8]:
+        if isinstance(r, str) and r.strip():
+            responsibilities.append(_trim_to(r.strip(), 120))
+    responsibilities_text = "\n".join(f"- {r}" for r in responsibilities[:4]) if responsibilities else ""
+
+    years_bits: list[str] = []
+    if job.years_experience_min is not None:
+        years_bits.append(f"min {job.years_experience_min} years")
+    if job.years_experience_max is not None:
+        years_bits.append(f"max {job.years_experience_max} years")
+    years_text = ""
+    if years_bits:
+        years_text = ", ".join(years_bits)
+
+    salary_bits: list[str] = []
+    currency = (job.currency or "").strip()
+    if job.salary_min is not None:
+        salary_bits.append(f"min {job.salary_min} {currency}".strip())
+    if job.salary_max is not None:
+        salary_bits.append(f"max {job.salary_max} {currency}".strip())
+    salary_text = ", ".join(salary_bits) if salary_bits else ""
+
+    lines: list[str] = ["Key JD requirements (structured, when available):"]
+    if years_text:
+        lines.append(f"- Experience: {years_text}")
+    if salary_text:
+        lines.append(f"- Budget range: {salary_text}")
+    if required_skills_text:
+        lines.append(f"- Required skills: {required_skills_text}")
+    if certs_text:
+        lines.append(f"- Required certifications: {certs_text}")
+    if responsibilities_text:
+        lines.append("- Responsibilities:\n" + responsibilities_text)
+    return _trim_to("\n".join(lines), 900)
+
+
 def build_voice_interview_enrichment(
     db: Session,
     *,
@@ -189,6 +359,7 @@ def build_voice_interview_enrichment(
     lines: list[str] = [
         "This call is a job interview or candidate screening. Use the information below for the full conversation; do not claim you cannot see it.",
     ]
+    highlights_added = False
     if candidate_name:
         lines.append(
             f"The candidate's name from the application record is: {candidate_name}. "
@@ -201,10 +372,28 @@ def build_voice_interview_enrichment(
 
     if job:
         lines.append("Role you are hiring for and requirements:\n" + _job_text_for_prompt(job))
+        # Provide the model a compact "grounding" view of candidate evidence and JD requirements.
+        # This reduces generic Q&A and increases resume->JD alignment.
+        jd_summary = _jd_requirements_summary(job)
+        if jd_summary:
+            lines.append(jd_summary)
+
+        if resume:
+            highlights = _candidate_resume_highlights(resume)
+            if highlights:
+                lines.append(highlights)
+                highlights_added = True
         lines.append(
-            "Ask one question at a time. Tailor questions to this job: required skills, "
-            "relevant experience, and scenarios that test fit. Avoid unrelated small talk. "
-            "When discussing experience, connect answers back to the role above."
+            "Screening flow (strict order; ask one question at a time): "
+            "1) Name cross-check: confirm candidate full name from profile/resume. "
+            "If mismatch, re-confirm once politely before moving on. "
+            "2) Job intent and switch reason: ask why this role and why they want to switch now. "
+            "3) Skill verification against JD: validate each major required skill using resume-grounded evidence. "
+            "For each missing or weak required skill, ask short reason and current learning status. "
+            "If critical JD skills clearly do not match, politely close the call and end with [END_CALL]. "
+            "4) Ask exactly one analytical scenario question relevant to this JD and probe depth with one short follow-up. "
+            "5) Salary expectation and budget alignment: ask candidate expected salary, then share JD budget range when available and confirm alignment/misalignment. "
+            "Keep the conversation concise, professional, and evidence-based; avoid unrelated small talk."
         )
     else:
         lines.append(
@@ -212,7 +401,7 @@ def build_voice_interview_enrichment(
         )
 
     excerpt = _resume_excerpt(resume) if resume else ""
-    if excerpt:
+    if excerpt and not highlights_added:
         lines.append(
             "Resume text on file (for your reference only; do not read it aloud verbatim; use it to ask smarter questions):\n"
             + excerpt
