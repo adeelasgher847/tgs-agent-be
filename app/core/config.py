@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     # Keep a short (but non-zero) guard after pickup so ringback artifacts are skipped
     # without delaying real user speech by multiple seconds.
     VOICE_POST_PICKUP_STT_GRACE_SEC: float = 0.35
+    # Inbound auto-greeting delay after user pickup (seconds).
+    # Keep small but non-zero so call audio stabilizes before greeting starts.
+    VOICE_INBOUND_GREETING_DELAY_SEC: float = 2.0
     # Pickup detector window and threshold (RMS frames over threshold) before STT starts.
     VOICE_PICKUP_SAMPLE_WINDOW: int = 6
     VOICE_PICKUP_MIN_NON_SILENT_FRAMES: int = 4

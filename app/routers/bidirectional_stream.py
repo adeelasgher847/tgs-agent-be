@@ -3440,11 +3440,36 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if previous_text:
                         provider_settings["previous_text"] = previous_text[-500:]
 
+                # Use true async streaming for ElevenLabs to avoid blocking the event loop.
+                # For other non-Google providers fall back to the sync-wrapped path.
+                if tts_provider_slug == "elevenlabs" and hasattr(adapter, "async_stream_synthesize"):
+                    _cancel_ref = self._tts_cancel
+
+                    async def _async_elevenlabs_iter(
+                        _adapter=adapter,
+                        _text=streaming_text,
+                        _vid=external_voice_id,
+                        _cfg=provider_settings,
+                        _cancel=_cancel_ref,
+                    ):
+                        async for chunk in _adapter.async_stream_synthesize(
+                            text=_text,
+                            voice_external_id=_vid,
+                            settings_json=_cfg,
+                        ):
+                            if _cancel.is_set():
+                                break
+                            if chunk:
+                                yield chunk
+
+                    return _async_elevenlabs_iter()
+
                 sync_iter = adapter.stream_synthesize(
                     text=streaming_text,
                     voice_external_id=external_voice_id,
                     settings_json=provider_settings,
                 )
+
                 async def _async_iter_from_sync(sync_source):
                     iterator = iter(sync_source)
                     sentinel = object()
@@ -4270,16 +4295,45 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
             ):
                 self._auto_greeting_sent = True
-                asyncio.create_task(
-                    self.generate_and_stream_response(
-                        user_text="",
-                        confidence=1.0,
-                        is_greeting=True,
-                    )
-                )
+                asyncio.create_task(self._schedule_inbound_greeting_after_delay())
         
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
+
+    async def _schedule_inbound_greeting_after_delay(self) -> None:
+        """
+        Delay inbound auto-greeting slightly after pickup to let telephony audio settle.
+        Uses a configurable delay and exits safely if call state has already stopped.
+        """
+        try:
+            delay_sec = float(getattr(settings, "VOICE_INBOUND_GREETING_DELAY_SEC", 2.0) or 0.0)
+        except Exception:
+            delay_sec = 2.0
+        delay_sec = max(0.0, min(delay_sec, 10.0))
+
+        if delay_sec > 0:
+            await asyncio.sleep(delay_sec)
+
+        # Skip if call has already ended or session state is no longer valid.
+        if self._stop_event.is_set():
+            return
+        if not self.call_session or self.call_session.call_type != "inbound":
+            return
+        if not self.agent:
+            return
+        if self._tts_cancel.is_set():
+            return
+        if not (
+            (getattr(self.agent, "greeting_message", None) or "").strip()
+            or (getattr(self.agent, "first_message", None) or "").strip()
+        ):
+            return
+
+        await self.generate_and_stream_response(
+            user_text="",
+            confidence=1.0,
+            is_greeting=True,
+        )
     
     async def _full_shutdown(self) -> None:
         """

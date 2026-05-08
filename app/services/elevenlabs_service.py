@@ -5,7 +5,7 @@ Handles text-to-speech operations using ElevenLabs API
 
 import requests
 from app.core.config import settings
-from typing import Dict, Any, Optional, Iterator
+from typing import AsyncIterator, Dict, Any, Optional, Iterator
 
 class ElevenLabsService:
     """Service class for handling ElevenLabs operations"""
@@ -220,6 +220,67 @@ class ElevenLabsService:
                         yield chunk
         except requests.RequestException as exc:
             raise RuntimeError("ElevenLabs streaming TTS request failed.") from exc
+
+    async def async_stream_text_to_speech(
+        self,
+        text: str,
+        voice_id: str,
+        model_id: str = "eleven_flash_v2_5",
+        output_format: str = "ulaw_8000",
+        voice_settings: Optional[Dict[str, Any]] = None,
+        language_code: Optional[str] = None,
+        previous_text: Optional[str] = None,
+        next_text: Optional[str] = None,
+        previous_request_ids: Optional[list] = None,
+        next_request_ids: Optional[list] = None,
+        apply_text_normalization: Optional[str] = None,
+        apply_language_text_normalization: Optional[bool] = None,
+        optimize_streaming_latency: int = 4,
+        request_timeout_seconds: int = 25,
+        chunk_size: int = 320,
+    ) -> AsyncIterator[bytes]:
+        """
+        True async streaming via httpx.AsyncClient.
+        Yields raw audio bytes without blocking the event loop.
+        Used in the hot TTS path to eliminate sync-request stutter.
+        """
+        import httpx
+
+        api_key = self.get_api_key()
+        safe_optimize = max(0, min(4, int(optimize_streaming_latency)))
+        url = f"{self._base_url}/text-to-speech/{voice_id}/stream"
+        headers = {
+            "Accept": self._accept_header_for_output_format(output_format),
+            "Content-Type": "application/json",
+            "xi-api-key": api_key,
+        }
+        data = self._build_tts_request(
+            text=text,
+            model_id=model_id,
+            voice_settings=voice_settings,
+            language_code=language_code,
+            previous_text=previous_text,
+            next_text=next_text,
+            previous_request_ids=previous_request_ids,
+            next_request_ids=next_request_ids,
+            apply_text_normalization=apply_text_normalization,
+            apply_language_text_normalization=apply_language_text_normalization,
+        )
+        params = {
+            "output_format": output_format,
+            "optimize_streaming_latency": safe_optimize,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=float(request_timeout_seconds)) as client:
+                async with client.stream(
+                    "POST", url, headers=headers, params=params, json=data
+                ) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes(chunk_size):
+                        if chunk:
+                            yield chunk
+        except Exception as exc:
+            raise RuntimeError("ElevenLabs async streaming TTS request failed.") from exc
 
     def get_available_voices(self) -> Dict[str, Any]:
         """
