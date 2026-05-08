@@ -301,6 +301,153 @@ class JobDescriptionService:
         db.delete(jd)
         db.commit()
 
+    def process_upload(
+        self,
+        db: Session,
+        job_description_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> JobDescription:
+        jd = self.get_by_id(db, job_description_id, tenant_id)
+        jd.processing_status = "PROCESSING"
+        jd.updated_by = user_id
+        db.commit()
+        db.refresh(jd)
+
+        try:
+            source_text = (jd.raw_text or "").strip()
+            source_text_lower = source_text.lower()
+            # Deterministic extraction FIRST to reduce LLM dependency and latency.
+            deterministic_skills = self._extract_skills(source_text_lower)
+            deterministic_keywords = self._extract_keywords(source_text_lower, deterministic_skills)
+            deterministic_resp = self._extract_responsibilities_from_text(source_text)
+            deterministic_sal_min, deterministic_sal_max, deterministic_currency = self._extract_salary_from_text(
+                source_text
+            )
+            deterministic_exp_min, deterministic_exp_max = self._extract_experience_from_text(source_text)
+
+            if jd.years_experience_min is None and deterministic_exp_min is not None:
+                jd.years_experience_min = deterministic_exp_min
+            if jd.years_experience_max is None and deterministic_exp_max is not None:
+                jd.years_experience_max = deterministic_exp_max
+            if jd.salary_min is None and deterministic_sal_min is not None:
+                jd.salary_min = deterministic_sal_min
+            if jd.salary_max is None and deterministic_sal_max is not None:
+                jd.salary_max = deterministic_sal_max
+            if not jd.currency and deterministic_currency:
+                jd.currency = deterministic_currency
+            if not jd.key_responsibilities and deterministic_resp:
+                jd.key_responsibilities = deterministic_resp
+
+            llm_data: dict[str, Any] = {}
+            needs_llm = (
+                not (jd.job_title or "").strip()
+                or (jd.years_experience_min is None and jd.years_experience_max is None)
+                or not jd.education_requirements
+                or not jd.location
+                or not jd.employment_type
+                or (not jd.required_skills and not deterministic_skills)
+                or not jd.key_responsibilities
+                or (jd.salary_min is None and jd.salary_max is None)
+            )
+            if needs_llm:
+                llm_data = self._extract_with_llm(source_text=source_text, jd=jd)
+            llm_enriched = bool(llm_data)
+
+            # Fill only remaining gaps with LLM.
+            if not (jd.job_title or "").strip() and (llm_data.get("job_title") or "").strip():
+                jd.job_title = (llm_data.get("job_title") or "").strip()[:255]
+            if jd.years_experience_min is None and llm_data.get("years_experience_min") is not None:
+                jd.years_experience_min = llm_data.get("years_experience_min")
+            if jd.years_experience_max is None and llm_data.get("years_experience_max") is not None:
+                jd.years_experience_max = llm_data.get("years_experience_max")
+            if not jd.education_requirements and llm_data.get("education_requirements"):
+                jd.education_requirements = llm_data.get("education_requirements")
+            if not jd.location and llm_data.get("location"):
+                jd.location = llm_data.get("location")
+            if not jd.employment_type and llm_data.get("employment_type"):
+                jd.employment_type = self._normalize_employment_type(llm_data.get("employment_type"))
+            if not jd.required_certifications and llm_data.get("required_certifications"):
+                jd.required_certifications = llm_data.get("required_certifications")
+            if not jd.key_responsibilities and llm_data.get("key_responsibilities"):
+                jd.key_responsibilities = self._dedupe_preserve(llm_data.get("key_responsibilities"))
+            if jd.salary_min is None and llm_data.get("salary_min") is not None:
+                jd.salary_min = self._safe_decimal(llm_data.get("salary_min"))
+            if jd.salary_max is None and llm_data.get("salary_max") is not None:
+                jd.salary_max = self._safe_decimal(llm_data.get("salary_max"))
+            if not jd.currency and llm_data.get("currency"):
+                jd.currency = self._normalize_currency(llm_data.get("currency"))
+
+            llm_skill_objects = llm_data.get("skills") or []
+            llm_skill_names = [
+                (s.get("name") or "").strip().lower()
+                for s in llm_skill_objects
+                if (s.get("name") or "").strip()
+            ]
+            skills = jd.required_skills or deterministic_skills or llm_skill_names
+            skills = self._dedupe_preserve(skills)
+
+            keywords = (
+                llm_data.get("keywords")
+                or deterministic_keywords
+                or self._extract_keywords(source_text_lower, skills)
+            )
+            keywords = self._dedupe_preserve(keywords)
+
+            weight_matrix = self._build_skill_weight_matrix(
+                skills=skills,
+                llm_skill_objects=llm_skill_objects,
+                source_text=source_text_lower,
+            )
+
+            extracted_skills = self._build_extracted_skills(
+                skills=skills,
+                llm_skill_objects=llm_skill_objects,
+                source_text=source_text_lower,
+            )
+
+            scoring_dimensions = self._normalize_scoring_dimensions(
+                llm_data.get("scoring_dimensions")
+            )
+            must_have_criteria = llm_data.get("must_have_criteria") or self._build_must_have_criteria(jd, skills)
+            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)
+            matching_criteria = {
+                "required_skills": skills,
+                "minimum_years_experience": jd.years_experience_min,
+                "maximum_years_experience": jd.years_experience_max,
+                "education_requirements": jd.education_requirements,
+                "location": jd.location,
+                "employment_type": jd.employment_type,
+                "keywords": keywords,
+                "must_have_criteria": must_have_criteria,
+                "scoring_dimensions": scoring_dimensions,
+                "explainability": {
+                    "weights_reasoning": "Skill weights are based on required/preferred signal, term emphasis in JD text, and semantic extraction confidence.",
+                    "match_formula": "candidate_score = sum(dimension_score * weight) for each scoring dimension.",
+                    "llm_enriched": llm_enriched,
+                },
+            }
+
+            jd.required_skills = skills
+            jd.extracted_skills = extracted_skills
+            jd.keywords = keywords
+            jd.skill_weight_matrix = weight_matrix
+            jd.matching_criteria = matching_criteria
+            jd.processing_status = "READY"
+            jd.version = (jd.version or 1) + 1
+            jd.updated_by = user_id
+            db.commit()
+            db.refresh(jd)
+            self.normalize_for_read_response(jd)
+            return jd
+        except Exception as e:
+            jd.processing_status = "FAILED"
+            jd.version = (jd.version or 1) + 1
+            jd.updated_by = user_id
+            db.commit()
+            db.refresh(jd)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
     def process(
         self,
         db: Session,
@@ -823,6 +970,39 @@ JOB DESCRIPTION:
             return value, value, currency
 
         return None, None, currency
+
+    @staticmethod
+    def _extract_experience_from_text(source_text: str) -> tuple[Optional[int], Optional[int]]:
+        text = source_text or ""
+        if not text.strip():
+            return None, None
+
+        range_match = re.search(
+            r"(?i)\b(\d{1,2})\s*(?:\+?\s*)?(?:-|to)\s*(\d{1,2})\s*(?:\+?\s*)?(?:years?|yrs?)\b",
+            text,
+        )
+        if range_match:
+            min_years = int(range_match.group(1))
+            max_years = int(range_match.group(2))
+            if min_years <= max_years:
+                return min_years, max_years
+            return max_years, min_years
+
+        min_only_match = re.search(
+            r"(?i)\b(?:minimum|min\.?)\s*(\d{1,2})\s*(?:\+?\s*)?(?:years?|yrs?)\b",
+            text,
+        )
+        if min_only_match:
+            return int(min_only_match.group(1)), None
+
+        plus_match = re.search(
+            r"(?i)\b(\d{1,2})\s*\+\s*(?:years?|yrs?)\b",
+            text,
+        )
+        if plus_match:
+            return int(plus_match.group(1)), None
+
+        return None, None
 
     @staticmethod
     def _extract_responsibilities_from_text(source_text: str) -> list[str]:

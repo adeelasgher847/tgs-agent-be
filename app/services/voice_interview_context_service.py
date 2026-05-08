@@ -32,47 +32,61 @@ def parse_optional_uuid(value: str | None) -> uuid.UUID | None:
         return None
 
 
+def _trim_to(text: str, max_chars: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}..."
+
+
 def _name_from_raw_text_line(resume: Resume) -> str | None:
     """Best-effort when profile.name is missing: first line of raw_text often is the name."""
-    t = (resume.raw_text or "").strip()
-    if not t:
+    raw_text = (resume.raw_text or "").strip()
+    if not raw_text:
         return None
-    first = t.split("\n", 1)[0].strip()
-    if not first or len(first) > 64:
+    first_line = raw_text.split("\n", 1)[0].strip()
+    if not first_line or len(first_line) > 64:
         return None
-    fl = first.lower()
-    if "@" in first or "http" in fl or "phone" in fl or "e-mail" in fl or "email" in fl:
+    first_line_lower = first_line.lower()
+    if (
+        "@"
+        in first_line
+        or "http" in first_line_lower
+        or "phone" in first_line_lower
+        or "e-mail" in first_line_lower
+        or "email" in first_line_lower
+    ):
         return None
-    if re.match(r"^\d", first):  # starts with number (address etc.)
+    if re.match(r"^\d", first_line):  # starts with number (address etc.)
         return None
     # e.g. "PROFESSIONAL SUMMARY" — reject long ALL-CAPS headers
-    if first.isupper() and len(first) > 20:
+    if first_line.isupper() and len(first_line) > 20:
         return None
-    if not re.match(r"^[A-Za-z][A-Za-z\s.'-]*$", first):
+    if not re.match(r"^[A-Za-z][A-Za-z\s.'-]*$", first_line):
         return None
-    words = first.split()
-    if not words or len(words) > 5:
+    word_list = first_line.split()
+    if not word_list or len(word_list) > 5:
         return None
-    return first.strip()
+    return first_line.strip()
 
 
 def _candidate_name_from_resume(resume: Resume) -> str | None:
-    pj = resume.parsed_json
-    if isinstance(pj, dict):
-        prof = pj.get("profile")
-        if isinstance(prof, dict) and prof.get("name"):
-            n = str(prof.get("name", "")).strip()
-            if n:
-                return n
-        n2 = pj.get("name")
-        if n2 and str(n2).strip():
-            return str(n2).strip()
+    parsed_json = resume.parsed_json
+    if isinstance(parsed_json, dict):
+        profile_dict = parsed_json.get("profile")
+        if isinstance(profile_dict, dict) and profile_dict.get("name"):
+            profile_name = str(profile_dict.get("name", "")).strip()
+            if profile_name:
+                return profile_name
+        top_level_name = parsed_json.get("name")
+        if top_level_name and str(top_level_name).strip():
+            return str(top_level_name).strip()
     return _name_from_raw_text_line(resume)
 
 
 def _job_text_for_prompt(job: JobDescription) -> str:
-    title = (job.job_title or "").strip() or "Role"
-    parts: list[str] = [f"Title: {title}"]
+    job_title = (job.job_title or "").strip() or "Role"
+    parts: list[str] = [f"Title: {job_title}"]
     if job.location:
         parts.append(f"Location: {str(job.location).strip()}")
     if job.employment_type:
@@ -84,16 +98,16 @@ def _job_text_for_prompt(job: JobDescription) -> str:
         elif y0 is not None:
             parts.append(f"Minimum experience: {y0} years")
     if job.raw_text and str(job.raw_text).strip():
-        raw = str(job.raw_text).strip()
-        if len(raw) > _MAX_JD_CHARS:
-            raw = f"{raw[:_MAX_JD_CHARS].rstrip()}..."
-        parts.append("Full job description:\n" + raw)
+        raw_description = str(job.raw_text).strip()
+        if len(raw_description) > _MAX_JD_CHARS:
+            raw_description = f"{raw_description[:_MAX_JD_CHARS].rstrip()}..."
+        parts.append("Full job description:\n" + raw_description)
     elif job.key_responsibilities:
         try:
-            blob = json.dumps(job.key_responsibilities, ensure_ascii=False)
-            if len(blob) > 2000:
-                blob = f"{blob[:2000]}..."
-            parts.append("Responsibilities (structured):\n" + blob)
+            responsibilities_json = json.dumps(job.key_responsibilities, ensure_ascii=False)
+            if len(responsibilities_json) > 2000:
+                responsibilities_json = f"{responsibilities_json[:2000]}..."
+            parts.append("Responsibilities (structured):\n" + responsibilities_json)
         except Exception:
             pass
     return "\n\n".join(parts)
@@ -102,10 +116,189 @@ def _job_text_for_prompt(job: JobDescription) -> str:
 def _resume_excerpt(resume: Resume) -> str:
     if not resume.raw_text or not str(resume.raw_text).strip():
         return ""
-    t = str(resume.raw_text).strip()
-    if len(t) > _MAX_RESUME_CHARS:
-        return f"{t[:_MAX_RESUME_CHARS].rstrip()}..."
-    return t
+    resume_text = str(resume.raw_text).strip()
+    if len(resume_text) > _MAX_RESUME_CHARS:
+        return f"{resume_text[:_MAX_RESUME_CHARS].rstrip()}..."
+    return resume_text
+
+
+def _candidate_resume_highlights(resume: Resume) -> str:
+    """
+    Create a short, grounded candidate summary for the LLM.
+    We intentionally keep this as structured bullets (not raw JSON) so the model
+    uses it for JD-aligned questions without hallucinating missing fields.
+    """
+    parsed_json = resume.parsed_json if isinstance(resume.parsed_json, dict) else {}
+    if not parsed_json:
+        return ""
+
+    profile_data = (
+        parsed_json.get("profile") if isinstance(parsed_json.get("profile"), dict) else {}
+    )
+    name = str(profile_data.get("name") or "").strip() or _candidate_name_from_resume(resume) or ""
+
+    years_total = parsed_json.get("years_experience_total")
+    years_str = ""
+    if years_total is not None:
+        try:
+            years_str = f"{float(years_total):g} years"
+        except (TypeError, ValueError):
+            years_str = str(years_total).strip()
+
+    skills_raw = parsed_json.get("skills") if isinstance(parsed_json.get("skills"), list) else []
+    skills: list[str] = []
+    for skill_entry in skills_raw:
+        if isinstance(skill_entry, dict):
+            skill_name = str(skill_entry.get("name") or "").strip()
+            if skill_name:
+                skills.append(skill_name)
+        elif isinstance(skill_entry, str):
+            skill_text = skill_entry.strip()
+            if skill_text:
+                skills.append(skill_text)
+    top_skills = ", ".join(skills[:10]) if skills else ""
+
+    exp_raw = (
+        parsed_json.get("experience") if isinstance(parsed_json.get("experience"), list) else []
+    )
+    recent_roles: list[str] = []
+    for experience_entry in exp_raw[:5]:
+        if not isinstance(experience_entry, dict):
+            continue
+        role = str(experience_entry.get("role") or "").strip()
+        company = str(experience_entry.get("company") or "").strip()
+        duration = str(experience_entry.get("duration") or "").strip()
+        header = " - ".join([part for part in [role, company] if part]) or "Experience"
+        if duration:
+            header = f"{header} ({duration})"
+        # Keep a couple responsibilities as "grounded evidence"
+        resp = experience_entry.get("responsibilities")
+        resp_bits: list[str] = []
+        if isinstance(resp, list):
+            for responsibility in resp:
+                if isinstance(responsibility, str):
+                    responsibility_text = responsibility.strip()
+                    if responsibility_text:
+                        resp_bits.append(responsibility_text)
+        evidence = "; ".join(resp_bits[:2])
+        if evidence:
+            header = f"{header}: {evidence}"
+        recent_roles.append(header)
+    recent_roles_text = "\n".join(f"- {r}" for r in recent_roles[:4]) if recent_roles else ""
+
+    projects_raw = parsed_json.get("projects") if isinstance(parsed_json.get("projects"), list) else []
+    projects: list[str] = []
+    for project_entry in projects_raw[:5]:
+        if not isinstance(project_entry, dict):
+            continue
+        project_name = str(project_entry.get("name") or "").strip()
+        project_description = str(project_entry.get("description") or "").strip()
+        if project_name or project_description:
+            projects.append(
+                _trim_to(" - ".join([value for value in [project_name, project_description] if value]), 140)
+            )
+    projects_text = "\n".join(f"- {p}" for p in projects[:3]) if projects else ""
+
+    edu_raw = parsed_json.get("education") if isinstance(parsed_json.get("education"), list) else []
+    edu: list[str] = []
+    for education_entry in edu_raw[:5]:
+        if not isinstance(education_entry, dict):
+            continue
+        degree = str(education_entry.get("degree") or "").strip()
+        institution = str(education_entry.get("institution") or "").strip()
+        year = education_entry.get("year")
+        year_text = ""
+        if year is not None:
+            try:
+                year_text = str(int(year))
+            except (TypeError, ValueError):
+                year_text = str(year).strip()
+        bits = [value for value in [degree, institution, year_text] if value]
+        if bits:
+            edu.append(_trim_to(" - ".join(bits), 120))
+    edu_text = "\n".join(f"- {x}" for x in edu[:3]) if edu else ""
+
+    languages_raw = (
+        parsed_json.get("languages") if isinstance(parsed_json.get("languages"), list) else []
+    )
+    languages = [
+        str(language).strip()
+        for language in languages_raw
+        if isinstance(language, str) and language.strip()
+    ]
+    langs_text = ", ".join(languages[:6]) if languages else ""
+
+    lines: list[str] = ["Candidate resume highlights (parsed):"]
+    if name:
+        lines.append(f"- Name: {name}")
+    if years_str:
+        lines.append(f"- Total experience: {years_str}")
+    if top_skills:
+        lines.append(f"- Top skills: {top_skills}")
+    if recent_roles_text:
+        lines.append("- Recent/most relevant roles & evidence:\n" + recent_roles_text)
+    if projects_text:
+        lines.append("- Projects:\n" + projects_text)
+    if edu_text:
+        lines.append("- Education:\n" + edu_text)
+    if langs_text:
+        lines.append(f"- Languages: {langs_text}")
+
+    # Hard cap to avoid ballooning the prompt for long resumes.
+    return _trim_to("\n".join(lines), 1200)
+
+
+def _jd_requirements_summary(job: JobDescription) -> str:
+    required_skills_raw = job.required_skills if isinstance(job.required_skills, list) else []
+    required_skills: list[str] = [str(s).strip() for s in required_skills_raw if str(s).strip()]
+    required_skills_text = ", ".join(required_skills[:10]) if required_skills else ""
+
+    certifications_raw = (
+        job.required_certifications if isinstance(job.required_certifications, list) else []
+    )
+    certifications: list[str] = [
+        str(certification).strip()
+        for certification in certifications_raw
+        if str(certification).strip()
+    ]
+    certs_text = ", ".join(certifications[:6]) if certifications else ""
+
+    responsibilities_raw = job.key_responsibilities if isinstance(job.key_responsibilities, list) else []
+    responsibilities: list[str] = []
+    for r in responsibilities_raw[:8]:
+        if isinstance(r, str) and r.strip():
+            responsibilities.append(_trim_to(r.strip(), 120))
+    responsibilities_text = "\n".join(f"- {r}" for r in responsibilities[:4]) if responsibilities else ""
+
+    years_bits: list[str] = []
+    if job.years_experience_min is not None:
+        years_bits.append(f"min {job.years_experience_min} years")
+    if job.years_experience_max is not None:
+        years_bits.append(f"max {job.years_experience_max} years")
+    years_text = ""
+    if years_bits:
+        years_text = ", ".join(years_bits)
+
+    salary_bits: list[str] = []
+    salary_currency = (job.currency or "").strip()
+    if job.salary_min is not None:
+        salary_bits.append(f"min {job.salary_min} {salary_currency}".strip())
+    if job.salary_max is not None:
+        salary_bits.append(f"max {job.salary_max} {salary_currency}".strip())
+    salary_text = ", ".join(salary_bits) if salary_bits else ""
+
+    lines: list[str] = ["Key JD requirements (structured, when available):"]
+    if years_text:
+        lines.append(f"- Experience: {years_text}")
+    if salary_text:
+        lines.append(f"- Budget range: {salary_text}")
+    if required_skills_text:
+        lines.append(f"- Required skills: {required_skills_text}")
+    if certs_text:
+        lines.append(f"- Required certifications: {certs_text}")
+    if responsibilities_text:
+        lines.append("- Responsibilities:\n" + responsibilities_text)
+    return _trim_to("\n".join(lines), 900)
 
 
 def build_voice_interview_enrichment(
@@ -159,15 +352,15 @@ def build_voice_interview_enrichment(
             )
         else:
             out_merged["jd_id"] = str(jd_id)
-            jt = (job.job_title or "").strip()
-            if jt:
-                out_merged["jd_title"] = jt
-                job_title_hint = jt
+            job_title = (job.job_title or "").strip()
+            if job_title:
+                out_merged["jd_title"] = job_title
+                job_title_hint = job_title
             if job.raw_text and str(job.raw_text).strip():
-                summ = str(job.raw_text).strip()
-                if len(summ) > 500:
-                    summ = f"{summ[:500].rstrip()}..."
-                out_merged["jd_summary"] = summ
+                job_summary = str(job.raw_text).strip()
+                if len(job_summary) > 500:
+                    job_summary = f"{job_summary[:500].rstrip()}..."
+                out_merged["jd_summary"] = job_summary
 
     if resume and job and resume.job_description_id and resume.job_description_id != job.id:
         logger.info(
@@ -189,6 +382,7 @@ def build_voice_interview_enrichment(
     lines: list[str] = [
         "This call is a job interview or candidate screening. Use the information below for the full conversation; do not claim you cannot see it.",
     ]
+    highlights_added = False
     if candidate_name:
         lines.append(
             f"The candidate's name from the application record is: {candidate_name}. "
@@ -201,10 +395,31 @@ def build_voice_interview_enrichment(
 
     if job:
         lines.append("Role you are hiring for and requirements:\n" + _job_text_for_prompt(job))
+        # Provide the model a compact "grounding" view of candidate evidence and JD requirements.
+        # This reduces generic Q&A and increases resume->JD alignment.
+        jd_summary = _jd_requirements_summary(job)
+        if jd_summary:
+            lines.append(jd_summary)
+
+        if resume:
+            highlights = _candidate_resume_highlights(resume)
+            if highlights:
+                lines.append(highlights)
+                highlights_added = True
         lines.append(
-            "Ask one question at a time. Tailor questions to this job: required skills, "
-            "relevant experience, and scenarios that test fit. Avoid unrelated small talk. "
-            "When discussing experience, connect answers back to the role above."
+            "Screening flow (strict order; ask one question at a time): "
+            "1) Name cross-check: confirm candidate full name from profile/resume. "
+            "If mismatch, re-confirm once politely; if still mismatched, politely close the call and end with [END_CALL]. "
+            "2) Job intent and employment context: ask why this role. "
+            "If the candidate is currently employed, ask why they want to switch now. "
+            "3) Skill verification against JD: validate each major required skill using resume-grounded evidence. "
+            "For each missing or weak required skill, ask short reason and current learning status. "
+            "If critical JD skills clearly do not match, politely close the call and end with [END_CALL]. "
+            "4) Ask exactly one simple analytical/logical question (general, not domain-heavy), then one short follow-up to understand thinking. "
+            "Do not end the call only because the candidate gives a weak or wrong answer to this analytical question. "
+            "5) Compensation discussion: ask candidate expected salary. "
+            "If the candidate asks for budget, share JD budget range when available and confirm alignment/misalignment. "
+            "Keep the conversation concise, professional, and evidence-based; avoid unrelated small talk."
         )
     else:
         lines.append(
@@ -212,7 +427,7 @@ def build_voice_interview_enrichment(
         )
 
     excerpt = _resume_excerpt(resume) if resume else ""
-    if excerpt:
+    if excerpt and not highlights_added:
         lines.append(
             "Resume text on file (for your reference only; do not read it aloud verbatim; use it to ask smarter questions):\n"
             + excerpt

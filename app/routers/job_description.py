@@ -30,7 +30,7 @@ def create_job_description_manual(
         tenant_id=admin_user.current_tenant_id,
         user_id=admin_user.id,
     )
-    jd = job_description_service.process(
+    jd = job_description_service.process_upload(
         db=db,
         job_description_id=jd.id,
         tenant_id=admin_user.current_tenant_id,

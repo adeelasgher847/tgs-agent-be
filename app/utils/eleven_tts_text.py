@@ -109,9 +109,14 @@ def prepare_tts_text_for_provider(text: str, provider_slug: Optional[str]) -> st
     No network; negligible CPU; safe when text has no tags (fast path: no '[').
     """
     if (provider_slug or "").lower() == "elevenlabs":
-        # Pass-through only: do not force-insert [breathes] tags because some
-        # model variants can speak bracket tags literally.
-        return text
+        # Some Eleven model variants can speak [pause]/[pauses] literally as
+        # the word "pause". Strip only those tags to prevent audible artifacts
+        # while preserving other optional expressive tags.
+        if not text or "[" not in text:
+            return text
+        out = _PAUSE_TAG_RE.sub("", text)
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        return out.strip()
     return strip_eleven_v3_style_tags_for_non_eleven_tts(text)
 
 
@@ -134,7 +139,7 @@ def get_elevenlabs_voice_prompt_rule_lines() -> tuple[str, str, str]:
     # Short inline reminder; the detailed policy lives in build_elevenlabs_audio_tag_prompt_block.
     short = (
         "Optional: at most ONE ElevenLabs audio tag per reply when it clearly helps: "
-        "[breathes] or [breathe], [pause] or [pauses], [excited], [sad] or [sorrowful] — "
+        "[breathes] or [breathe], [excited], [sad] or [sorrowful] — "
         "not every line; most replies have zero tags. See # ELEVENLABS AUDIO TAGS below."
     )
     return (
@@ -192,7 +197,7 @@ def build_elevenlabs_audio_tag_prompt_block(provider_slug: Optional[str]) -> str
         "- This call uses **ElevenLabs** TTS. You *may* add **one** optional bracketed audio tag per reply, "
         "**only** when the delivery would clearly benefit. Default is **no** tag; do not add tags in every message.\n"
         "- **Allowed (pick at most one, only when needed):** "
-        "[breathes] or [breathe] (light lead-in); [pause] or [pauses] (a short beat / pacing); "
+        "[breathes] or [breathe] (light lead-in); "
         "[excited] (genuine energy); [sad] or [sorrowful] (empathy — use sparingly, professional call tone).\n"
         "- **When to skip tags:** short transactional replies (yes/no, numbers, times, one-line confirmations), "
         "or any reply where plain text is enough.\n"

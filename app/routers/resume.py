@@ -22,6 +22,7 @@ from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
 from app.core.config import settings
 from app.models.job_description import JobDescription
 from app.models.resume import CandidateStatus, ParseStatus, Resume, UploadMode
+from app.models.resume_interview import ResumeInterview
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.resume import (
@@ -683,6 +684,21 @@ def list_resumes_after_screening(
         return create_success_response([], "No screened resumes found for this job description")
 
     threshold = float(job.pass_match_threshold if job and job.pass_match_threshold is not None else 0.5)
+    resume_ids = [r.id for r in rows]
+    interview_rows = (
+        db.query(ResumeInterview)
+        .filter(
+            ResumeInterview.tenant_id == user.current_tenant_id,
+            ResumeInterview.resume_id.in_(resume_ids),
+        )
+        .order_by(ResumeInterview.created_at.desc())
+        .all()
+        if resume_ids
+        else []
+    )
+    interviews_by_resume: dict[UUID, list[UUID]] = {}
+    for interview in interview_rows:
+        interviews_by_resume.setdefault(interview.resume_id, []).append(interview.id)
     items: list[ResumeListItem] = []
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
@@ -725,6 +741,7 @@ def list_resumes_after_screening(
                 created_at=r.created_at,
                 batch_id=r.batch_id,
                 job_description_id=r.job_description_id,
+                resume_interviews=interviews_by_resume.get(r.id, []),
             )
         )
 
