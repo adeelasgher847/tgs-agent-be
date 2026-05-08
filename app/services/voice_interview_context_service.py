@@ -408,6 +408,8 @@ def build_voice_interview_enrichment(
                 highlights_added = True
         lines.append(
             "Screening flow (strict order; ask one question at a time): "
+            "0) Immediate opt-out/identity guard: if the person says they are not interested in this opportunity "
+            "or says they are not the intended candidate/person, politely apologize and end the call immediately with [END_CALL]. "
             "1) Name cross-check: confirm candidate full name from profile/resume. "
             "If mismatch, re-confirm once politely; if still mismatched, politely close the call and end with [END_CALL]. "
             "2) Job intent and employment context: ask why this role. "
