@@ -149,6 +149,7 @@ class ResumeListItem(BaseModel):
     created_at: Any
     batch_id: UUID | None = None
     job_description_id: UUID | None = None
+    resume_interviews: list[UUID] = Field(default_factory=list)
 
 
 class BatchShortlistItem(BaseModel):
