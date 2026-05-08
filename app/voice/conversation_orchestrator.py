@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.logger import logger
 from app.core.config import settings
+from app.services.agent_service import agent_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
@@ -271,6 +272,31 @@ class ConversationOrchestrator:
                 except Exception:
                     history_text = ""
 
+            # Build authoritative business-knowledge block (tenant/agent scoped).
+            # Best-effort + timeout-capped so voice latency remains predictable.
+            tenant_uuid = self._h.call_session.tenant_id if self._h.call_session else None
+            agent_uuid = self._h.agent.id if self._h.agent else None
+            business_knowledge_block = ""
+            if tenant_uuid:
+                try:
+                    loop = asyncio.get_running_loop()
+
+                    def _build_business_knowledge_block() -> str:
+                        return agent_service.build_business_knowledge_context_block(
+                            db=self._h.db,
+                            tenant_id=tenant_uuid,
+                            agent_id=agent_uuid,
+                        )
+
+                    business_knowledge_block = await asyncio.wait_for(
+                        loop.run_in_executor(None, _build_business_knowledge_block),
+                        timeout=float(
+                            getattr(settings, "VOICE_BUSINESS_KB_FETCH_TIMEOUT_SEC", 0.25) or 0.25
+                        ),
+                    )
+                except Exception as exc:
+                    logger.debug("Business knowledge fetch skipped: %s", exc)
+
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
@@ -312,9 +338,13 @@ Previous conversation:
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
+
+# AUTHORITATIVE BUSINESS FACTS
+{business_knowledge_block}
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -340,9 +370,13 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
+
+# AUTHORITATIVE BUSINESS FACTS
+{business_knowledge_block}
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -365,9 +399,13 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
+
+# AUTHORITATIVE BUSINESS FACTS
+{business_knowledge_block}
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
