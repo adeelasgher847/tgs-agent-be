@@ -608,5 +608,23 @@ class TwilioService:
             logger.error(f"❌ Error redirecting call {call_sid}: {str(e)}")
             return False
 
+    def redirect_call_with_credentials(
+        self,
+        call_sid: str,
+        redirect_url: str,
+        account_sid: str,
+        auth_token: str,
+        method: str = "POST",
+    ) -> bool:
+        """Redirect an in-progress call using explicit Twilio credentials (multi-tenant)."""
+        client = self.get_client_with_credentials(account_sid, auth_token)
+        try:
+            client.calls(call_sid).update(url=redirect_url, method=method)
+            logger.info("Call %s redirected (custom creds) to %s", call_sid, redirect_url)
+            return True
+        except TwilioException as e:
+            logger.error("Error redirecting call %s with custom creds: %s", call_sid, e)
+            return False
+
 # Global instance
 twilio_service = TwilioService()

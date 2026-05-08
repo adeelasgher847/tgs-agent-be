@@ -3,6 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
+from app.models.transfer_route import TransferRoute
 from app.models.model import Model
 from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.models.business_knowledge import BusinessKnowledge
@@ -142,6 +143,30 @@ class AgentService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="background_volume must be between 0 and 100.",
                 )
+
+    def _validate_transfer_route_for_tenant(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        route_id: Optional[uuid.UUID],
+    ) -> None:
+        """Ensure transfer_route_id belongs to the same tenant (or is null)."""
+        if route_id is None:
+            return
+        exists = (
+            db.query(TransferRoute.id)
+            .filter(
+                TransferRoute.id == route_id,
+                TransferRoute.tenant_id == tenant_id,
+                TransferRoute.is_deleted == False,  # noqa: E712
+            )
+            .first()
+        )
+        if not exists:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="transfer_route_id not found or does not belong to this tenant.",
+            )
 
     def _auto_ingest_agent_system_prompt(self, db: Session, agent: Agent) -> None:
         """
@@ -299,6 +324,7 @@ class AgentService:
         agent_data["tts_provider_id"] = normalized_tts.get("tts_provider_id")
         agent_data["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
+        self._validate_transfer_route_for_tenant(db, tenant_id, agent_data.get("transfer_route_id"))
 
         # Enforce one dedicated inbound agent per tenant.
         if agent_data.get("is_inbound_agent"):
@@ -312,6 +338,19 @@ class AgentService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Only one dedicated inbound agent is allowed per tenant.",
                 )
+
+        # Enforce one follow-up appointment agent per tenant.
+        if agent_data.get("is_follow_up_agent"):
+            existing_fu = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
+            ).first()
+            if existing_fu:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only one follow-up appointment agent is allowed per tenant.",
+                )
         
         db_agent = Agent(**agent_data)
         db.add(db_agent)
@@ -321,7 +360,7 @@ class AgentService:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Only one dedicated inbound agent is allowed per tenant.",
+                detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
         db.refresh(db_agent)
         self._auto_ingest_agent_system_prompt(db, db_agent)
@@ -335,10 +374,15 @@ class AgentService:
         Returns 404 if agent doesn't exist at all.
         """
         # First, check if agent exists (regardless of tenant)
-        agent = db.query(Agent).filter(
-            Agent.id == agent_id,
-            Agent.is_deleted == False
-        ).first()
+        agent = (
+            db.query(Agent)
+            .options(joinedload(Agent.transfer_route))
+            .filter(
+                Agent.id == agent_id,
+                Agent.is_deleted == False,
+            )
+            .first()
+        )
         
         if not agent:
             raise HTTPException(
@@ -443,6 +487,20 @@ class AgentService:
                     detail="Only one dedicated inbound agent is allowed per tenant.",
                 )
 
+        # Enforce one follow-up appointment agent per tenant.
+        if update_dict.get("is_follow_up_agent") is True:
+            existing_fu = db.query(Agent).filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
+                Agent.id != agent_id,
+            ).first()
+            if existing_fu:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Only one follow-up appointment agent is allowed per tenant.",
+                )
+
         normalized_tts = self._validate_tts_selection(
             db,
             tts_provider_id=update_dict.get("tts_provider_id", agent.tts_provider_id),
@@ -451,6 +509,11 @@ class AgentService:
         update_dict["tts_provider_id"] = normalized_tts.get("tts_provider_id")
         update_dict["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(update_dict.get("tts_settings_json"))
+
+        if "transfer_route_id" in update_dict:
+            self._validate_transfer_route_for_tenant(
+                db, tenant_id, update_dict.get("transfer_route_id")
+            )
 
         # If name is being updated, check for duplicates
         if "name" in update_dict and update_dict["name"]:
@@ -502,7 +565,7 @@ class AgentService:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Only one dedicated inbound agent is allowed per tenant.",
+                detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
         db.refresh(agent)
         self._auto_ingest_agent_system_prompt(db, agent)
@@ -652,6 +715,18 @@ No active tenant knowledge base documents were found.
                 Agent.tenant_id == tenant_id,
                 Agent.is_deleted == False,
                 Agent.is_inbound_agent == True,
+            )
+            .first()
+        )
+
+    def get_follow_up_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Optional[Agent]:
+        """Tenant's single appointment follow-up / reminder agent, if configured."""
+        return (
+            db.query(Agent)
+            .filter(
+                Agent.tenant_id == tenant_id,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
             )
             .first()
         )

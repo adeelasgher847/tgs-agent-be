@@ -38,6 +38,9 @@ class Appointment(Base):
     reviewed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
     customer_notified_on_review_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Trello (or other CRM) card id for scheduled follow-up reminder call (n8n)
+    follow_up_crm_item_id = Column(String(128), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

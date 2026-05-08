@@ -24,3 +24,4 @@ class Tenant(Base):
     business_hours = relationship("BusinessHours", back_populates="tenant")
     blocked_slots = relationship("BlockedSlot", back_populates="tenant")
     appointments = relationship("Appointment", back_populates="tenant")
+    transfer_routes = relationship("TransferRoute", back_populates="tenant")

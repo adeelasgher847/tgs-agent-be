@@ -108,7 +108,7 @@ class CallSessionService:
     
     def _update_call_log_for_session(self, db: Session, call_session: CallSession, 
                                    ended_reason: str = None, success_evaluation: str = None,
-                                   cost: float = None) -> Optional[CallLog]:
+                                   cost: float = None, transferred: bool = None) -> Optional[CallLog]:
         """Update call log entry for a call session"""
         try:
             call_log = db.query(CallLog).filter(CallLog.call_session_id == call_session.id).first()
@@ -120,6 +120,8 @@ class CallSessionService:
                     call_log.success_evaluation = success_evaluation
                 if cost is not None:
                     call_log.cost = cost
+                if transferred is not None:
+                    call_log.transferred = transferred
                 if call_session.end_time:
                     call_log.end_time = call_session.end_time
                 if call_session.duration:
@@ -164,7 +166,7 @@ class CallSessionService:
     
     def update_call_session_status(self, db: Session, session_id: uuid.UUID, status: str, 
                                  ended_reason: str = None, success_evaluation: str = None,
-                                 cost: float = None) -> Optional[CallSession]:
+                                 cost: float = None, transferred: bool = None) -> Optional[CallSession]:
         """
         Update call session status and associated call log
         
@@ -190,6 +192,8 @@ class CallSessionService:
                     call_session.success_evaluation = success_evaluation
                 if cost is not None:
                     call_session.cost = cost
+                if transferred is not None:
+                    call_session.transferred = transferred
                 
                 if status in ["completed", "failed", "busy"]:
                     call_session.end_time = datetime.now(timezone.utc)
@@ -200,7 +204,9 @@ class CallSessionService:
                 db.commit()
                 db.refresh(call_session)
                 
-                self._update_call_log_for_session(db, call_session, ended_reason, success_evaluation, cost)
+                self._update_call_log_for_session(
+                    db, call_session, ended_reason, success_evaluation, cost, transferred
+                )
 
                 if (
                     (call_session.call_type or "").lower() == "inbound"

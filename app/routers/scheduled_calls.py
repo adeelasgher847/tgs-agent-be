@@ -446,6 +446,11 @@ async def create_single_scheduled_call(
     6. When call completes (Called/Failed), n8n will send email for this batch
     
     **Note:** `tenant_id` and `user_id` are automatically taken from logged-in session.
+
+    **n8n → `/voice/call/initiate`:** Trello cards created for **appointment follow-up** reminders include
+    `Appointment ID: <uuid>` in the card description. Pass that value as `appointment_id` in the initiate
+    JSON body (with `agentId`, `userPhoneNumber`, `tenant_id`, `user_id`, and CRM fields) so the outbound
+    call runs the follow-up confirmation flow.
     """
     try:
         # Validate crm_config_id

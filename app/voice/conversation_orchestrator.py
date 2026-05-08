@@ -374,6 +374,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             else:
                 system_prompt = base_prompt
 
+            transfer_block = self._h._build_transfer_instruction_block()
+            if transfer_block:
+                system_prompt = transfer_block + "\n\n" + system_prompt
+
             # Get agent's configured model and provider
             llm_service = None
             model_name = "gemini-1.5-flash"  # Default fallback
@@ -425,6 +429,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
+            _tts_time_flush_s = max(
+                0.10,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.15) or 0.15),
+            )
             logger.info(
                 f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) "
                 f"for response to: '{user_text[:20]}...'"
@@ -436,6 +444,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 response_accum = ""
                 tts_buffer = ""
                 end_call_after = False
+                transfer_after = False
+                _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
                 first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
 
@@ -443,11 +453,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if not text:
                         return ""
                     text_no_end = text.replace("[END_CALL]", "")
+                    text_no_end = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", text_no_end, flags=re.IGNORECASE)
                     return re.sub(r"\[OUTCOME:[^\]]+\]", "", text_no_end)
 
                 def _find_flush_index(buf: str):
                     if not buf:
                         return None
+
+                    nl = buf.find("\n")
+                    if nl != -1:
+                        prefix = buf[:nl].strip()
+                        if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
+                            return nl
 
                     last_boundary = None
                     for m in re.finditer(r"([.!?])(\s+|$)", buf):
@@ -498,8 +515,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     response_accum += chunk
                     tts_buffer += chunk
 
+                    if chunk:
+                        _vm = getattr(self._h, "_voice_metrics", None)
+                        if _vm:
+                            _vm.mark_llm_first_token()
+
                     if "[END_CALL]" in response_accum:
                         end_call_after = True
+                        tts_buffer = _strip_control_tokens(tts_buffer)
+
+                    if _transfer_re.search(response_accum):
+                        transfer_after = True
+                        end_call_after = False
                         tts_buffer = _strip_control_tokens(tts_buffer)
 
                     if "[OUTCOME:" in tts_buffer:
@@ -507,7 +534,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     flush_idx = _find_flush_index(tts_buffer)
                     now_ts = time.perf_counter()
-                    if flush_idx is None and (now_ts - last_flush_ts) >= 0.8:
+                    if flush_idx is None and (now_ts - last_flush_ts) >= _tts_time_flush_s:
                         flush_idx = _find_time_flush_index(tts_buffer)
 
                     if flush_idx is not None and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
@@ -524,10 +551,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     "end_call_after": False,
                                 }
                             )
+                            _vm = getattr(self._h, "_voice_metrics", None)
+                            if _vm:
+                                _vm.mark_first_tts_queued()
                             last_flush_ts = now_ts
                             first_tts_chunk = False
 
                 # Flush any remaining buffer as final
+                full_accum = response_accum.strip()
+                end_call_after = end_call_after or ("[END_CALL]" in full_accum)
+                if _transfer_re.search(full_accum):
+                    transfer_after = True
+                    end_call_after = False
                 final_text = _strip_control_tokens(tts_buffer).strip()
                 if final_text and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                     chunk_counter += 1
@@ -537,9 +572,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "chunk_id": chunk_counter,
                             "use_ssml": self._h._use_ssml,
                             "is_final": True,
-                            "end_call_after": end_call_after,
+                            "end_call_after": end_call_after and not transfer_after,
+                            "transfer_after": transfer_after,
                         }
                     )
+                    _vm = getattr(self._h, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
+                elif transfer_after and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
+                    chunk_counter += 1
+                    await self._h._tts_pipeline.queue_tts(
+                        {
+                            "text": "One moment.",
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._h._use_ssml,
+                            "is_final": True,
+                            "end_call_after": False,
+                            "transfer_after": True,
+                        }
+                    )
+                    _vm = getattr(self._h, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
                 return response_accum
 
             final_text = ""
@@ -549,7 +603,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 logger.error(f"LLM streaming failed: {e}", exc_info=True)
 
             if final_text:
-                transcript_text = final_text.replace("[END_CALL]", "").strip()
+                transcript_text = re.sub(
+                    r"\[\s*TRANSFER_CALL\s*\]", "", final_text, flags=re.IGNORECASE
+                ).replace("[END_CALL]", "").strip()
                 if transcript_text:
                     await self._h._add_to_transcript("agent", transcript_text, "agent_response")
 

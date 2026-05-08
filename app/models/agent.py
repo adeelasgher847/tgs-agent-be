@@ -35,6 +35,16 @@ class Agent(Base):
     is_deleted = Column(Boolean, default=False, nullable=False, server_default='false')
     # Dedicated inbound entry point agent (max one active per tenant)
     is_inbound_agent = Column(Boolean, default=False, nullable=False, server_default='false')
+    # Appointment reminder / follow-up outbound agent (max one active per tenant)
+    is_follow_up_agent = Column(Boolean, default=False, nullable=False, server_default='false')
+
+    # Optional default human transfer route (tenant-scoped; see TransferRoute)
+    transfer_route_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("transferroute.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     
     # Relationships
     tenant = relationship("Tenant", back_populates="agents")
@@ -47,6 +57,7 @@ class Agent(Base):
     provider = relationship("Provider")  # Provider relationship for filtering models
     tts_provider = relationship("TTSProvider", back_populates="agents")
     tts_voice = relationship("TTSVoice", back_populates="agents")
+    transfer_route = relationship("TransferRoute", back_populates="agents")
 
     __table_args__ = (
         Index(
@@ -54,5 +65,11 @@ class Agent(Base):
             "tenant_id",
             unique=True,
             postgresql_where=text("is_inbound_agent = true AND is_deleted = false"),
+        ),
+        Index(
+            "uq_agent_single_follow_up_per_tenant",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_follow_up_agent = true AND is_deleted = false"),
         ),
     )

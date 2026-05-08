@@ -22,6 +22,7 @@ from app.routers.crm_config import router as crm_config_router
 from app.routers.job_description import router as job_description_router
 from app.routers.knowledge_base import router as knowledge_base_router
 from app.routers.phone_numbers import router as phone_numbers_router
+from app.routers.transfer_routes import router as transfer_routes_router
 from app.routers.recruitment_dashboard import router as recruitment_dashboard_router
 from app.routers.resume import router as resume_router
 from app.routers.resume_interviews import router as resume_interviews_router
@@ -56,6 +57,11 @@ api_router.include_router(
     include_in_schema=False,
 )
 api_router.include_router(phone_numbers_router, prefix="/phone-numbers", tags=["Phone Numbers"])
+api_router.include_router(
+    transfer_routes_router,
+    prefix="/transfer-routes",
+    tags=["Transfer routes"],
+)
 api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"])
 api_router.include_router(call_logs_router, prefix="/call-logs", tags=["Call Logs"])
 api_router.include_router(general_websocket_router, prefix="/general", tags=["General WebSocket"])
