@@ -19,7 +19,9 @@ from app.core.config import settings
 
 # Single-pass regex; only substitute when inner normalizes to a known tag
 _TAG_RE = re.compile(r"\[([^\]]*)\]")
-_CONTROL_TOKEN_RE = re.compile(r"\[(?:END_CALL|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)", re.IGNORECASE)
+_CONTROL_TOKEN_RE = re.compile(
+    r"\[(?:END_CALL|SCREENING_QUALIFIED|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)", re.IGNORECASE
+)
 _PAUSE_TAG_RE = re.compile(r"\[\s*pauses?\s*\]", re.IGNORECASE)
 
 # Normalized: whitespace collapsed, lowercased. Expand as Eleven documents new tags.
@@ -200,5 +202,6 @@ def build_elevenlabs_audio_tag_prompt_block(provider_slug: Optional[str]) -> str
         "- **When to skip tags:** short transactional replies (yes/no, numbers, times, one-line confirmations), "
         "or any reply where plain text is enough.\n"
         "- **Placement:** start of the spoken line, or a single short beat before a sentence—never inside a word.\n"
-        "- **Never** put audio tags inside system tokens: [CHECK_SLOTS:...], [BOOK_APPOINTMENT:...], [END_CALL], or [OUTCOME:...].\n"
+        "- **Never** put audio tags inside system tokens: [CHECK_SLOTS:...], [BOOK_APPOINTMENT:...], "
+        "[END_CALL], [SCREENING_QUALIFIED], or [OUTCOME:...].\n"
     )

@@ -113,6 +113,9 @@ from app.core.logger import logger
 # Deepgram STT is used via SttPipeline (app/voice/stt_pipeline.py).
 
 from app.services.call_session_service import call_session_service
+from app.services.voice_screening_qualification_service import (
+    apply_resume_qualified_after_voice_screening,
+)
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.transcript_service import transcript_service
@@ -290,6 +293,8 @@ class BidirectionalStreamHandler:
         
         # Goodbye detection state
         self._call_ended = False  # Track if call has been ended due to goodbye detection
+        # True when the agent's final streamed reply included successful-screening tokens before hangup
+        self._pending_resume_screening_qualify = False
 
         # STT feed gate: set to False on stop/disconnect so media frames are not pushed
         # to Deepgram after the call ends (prevents silence-frame leak post call-end).
@@ -1266,6 +1271,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
+                self._pending_resume_screening_qualify = False
 
                 def _schedule_deferred_memory_once() -> None:
                     nonlocal deferred_memory_scheduled
@@ -1352,6 +1358,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if "[OUTCOME:" in tts_buffer:
                         tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
 
+                    # Backend-only screening outcome token (never spoken)
+                    if "[SCREENING_QUALIFIED]" in response_accum:
+                        tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
+
                     # Avoid spoken "final confirmation" before backend booking succeeds.
                     if "[BOOK_APPOINTMENT:" in response_accum:
                         tts_buffer = self._prepare_tts_text(tts_buffer)
@@ -1396,6 +1406,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Flush any remaining text as the FINAL chunk
                 full_response = response_accum.strip()
                 end_call_after = end_call_after or ("[END_CALL]" in full_response)
+                if end_call_after and "[SCREENING_QUALIFIED]" in full_response:
+                    self._pending_resume_screening_qualify = True
 
                 # Never speak control tokens
                 tts_buffer = self._prepare_tts_text(tts_buffer)
@@ -1837,6 +1849,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         out = text
         # Bracketed canonical tokens
         out = out.replace("[END_CALL]", "")
+        out = out.replace("[SCREENING_QUALIFIED]", "")
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
         out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
         out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
@@ -3005,6 +3018,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             self._call_ended = True
             if self.call_session:
+                if getattr(self, "_pending_resume_screening_qualify", False):
+                    try:
+                        apply_resume_qualified_after_voice_screening(self.db, self.call_session)
+                    except Exception as qual_exc:  # pragma: no cover - non-blocking for hangup
+                        logger.warning(
+                            "Voice screening qualify failed (session=%s): %s",
+                            self.call_session.id,
+                            qual_exc,
+                            exc_info=True,
+                        )
+                    finally:
+                        self._pending_resume_screening_qualify = False
                 updated = call_session_service.update_call_session_status(
                     self.db,
                     self.call_session.id,
@@ -3013,6 +3038,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
                 if updated:
                     self.call_session = updated
+            else:
+                self._pending_resume_screening_qualify = False
+
             if self.call_sid and self.call_session:
                 try:
                     account_sid, auth_token = get_twilio_credentials_for_call(
