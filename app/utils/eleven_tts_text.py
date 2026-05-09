@@ -20,10 +20,7 @@ from app.core.config import settings
 # Single-pass regex; only substitute when inner normalizes to a known tag
 _TAG_RE = re.compile(r"\[([^\]]*)\]")
 _CONTROL_TOKEN_RE = re.compile(
-    r"\[(?:END_CALL|SCREENING_QUALIFIED|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)", re.IGNORECASE
-)
-_PAUSE_TAG_RE = re.compile(r"\[\s*pauses?\s*\]", re.IGNORECASE)
-    r"\[(?:END_CALL|TRANSFER_CALL|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)",
+    r"\[(?:END_CALL|TRANSFER_CALL|SCREENING_QUALIFIED|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)",
     re.IGNORECASE,
 )
 # Strip literal pause tags for ElevenLabs so models don't speak "pause".
