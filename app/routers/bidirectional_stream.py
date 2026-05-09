@@ -115,6 +115,7 @@ from app.services.call_session_service import call_session_service
 from app.services.voice_screening_qualification_service import (
     apply_resume_qualified_after_voice_screening,
     is_jd_recruitment_voice_context,
+    persist_voice_screening_qualified_signal,
 )
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
@@ -183,6 +184,15 @@ router = APIRouter()
 # Voice screening / hangup tokens (case-insensitive; models vary casing/spacing)
 _RE_VOICE_END_CALL = re.compile(r"\[\s*END_CALL\s*\]", re.IGNORECASE)
 _RE_VOICE_SCREENING_QUALIFIED = re.compile(r"\[\s*SCREENING_QUALIFIED\s*\]", re.IGNORECASE)
+
+# User utterance indicates opt-out / wrong call — force hangup (recruitment outbound safety net)
+_SCREENING_USER_DECLINE_RE = re.compile(
+    r"(not\s+interested|no\s+thanks|no\s+thank\s+you|don'?t\s+call|stop\s+calling|wrong\s+(number|person|call)|"
+    r"not\s+available|i\s+am\s+not\s+available|i'?m\s+not\s+available|can'?t\s+talk|"
+    r"take\s+me\s+off|remove\s+me|not\s+looking|already\s+placed|not\s+for\s+me|"
+    r"wrong\s+call|decline\s+this|reject\s+this)",
+    re.IGNORECASE,
+)
 
 # Vapi-style customEndpointingRules analogue: when the agent asks for email, we either
 # defer a longer Deepgram endpointing for the first STT session or reconnect once with
@@ -378,6 +388,7 @@ class BidirectionalStreamHandler:
         self._llm_response_task: Optional[asyncio.Task] = None
         self._auto_greeting_sent = False
         self._recording_started = False
+        self._screening_decline_handled = False
 
         # Deepgram can emit the same is_final twice within a short window — avoid triple LLM/transcript
         self._stt_last_final_raw: str = ""
@@ -751,6 +762,25 @@ class BidirectionalStreamHandler:
             spec.cancel()
         self._speculative_prefetch_task = None
 
+    async def _respond_screening_decline_and_end(self) -> None:
+        """User declined screening — short goodbye TTS then hang up (no LLM)."""
+        try:
+            await self._cancel_inflight_llm_response()
+            self._pending_resume_screening_qualify = False
+            msg = "Thanks for letting me know. Take care."
+            self._tts_cancel.clear()
+            self._prev_tts_tail = b""
+            await self._add_to_transcript("agent", msg, "agent_response")
+            if self._tts_pipeline:
+                await self._tts_pipeline.queue_tts({
+                    "text": msg,
+                    "use_ssml": self._use_ssml,
+                    "is_final": True,
+                    "end_call_after": True,
+                })
+        except Exception as e:
+            logger.error("respond_screening_decline_and_end: %s", e, exc_info=True)
+
     async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
         """
         Run after the user's final message is in the DB.
@@ -762,6 +792,18 @@ class BidirectionalStreamHandler:
         stt_final→gen_start from 2-19s down to ~0ms.
         """
         tstrip = (transcript or "").strip()
+
+        # Recruitment: user opted out / wrong call — end immediately (backend safety net)
+        if (
+            tstrip
+            and not self._screening_decline_handled
+            and self.call_session
+            and self._jd_recruitment_screening_active()
+            and _SCREENING_USER_DECLINE_RE.search(tstrip)
+        ):
+            self._screening_decline_handled = True
+            asyncio.create_task(self._respond_screening_decline_and_end())
+            return
 
         # ── Phase 1: state check (inside lock, fast) ──────────────────────────
         _should_generate = False
@@ -1154,17 +1196,41 @@ class BidirectionalStreamHandler:
             
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting (inbound pickup only)
             if is_greeting:
-                # greeting_message is inbound-only; first_message fallback only on inbound calls.
                 greeting_text = None
                 inbound = (
                     self.call_session is not None
                     and (self.call_session.call_type or "").lower() == "inbound"
+                )
+                outbound_screening = (
+                    self.call_session is not None
+                    and (self.call_session.call_type or "").lower() == "outbound"
+                    and self._jd_recruitment_screening_active()
                 )
                 if self.agent and inbound:
                     if getattr(self.agent, "greeting_message", None):
                         greeting_text = self.agent.greeting_message.strip()
                     elif getattr(self.agent, "first_message", None):
                         greeting_text = self.agent.first_message.strip()
+
+                if greeting_text is None and outbound_screening and self.agent:
+                    vc: dict = {}
+                    if isinstance(self.call_session.call_metadata, dict):
+                        raw_vc = self.call_session.call_metadata.get("voice_dynamic_context")
+                        if isinstance(raw_vc, dict):
+                            vc = raw_vc
+                    job_title = (vc.get("job_title") or "").strip() or "the role we're hiring for"
+                    cand = (vc.get("candidate_name") or "").strip()
+                    aname = (self.agent.name or "our team").strip()
+                    if cand:
+                        greeting_text = (
+                            f"Hi {cand}, I'm {aname}, calling about a quick screening for the {job_title} role. "
+                            f"Is now a good time for a short call?"
+                        )
+                    else:
+                        greeting_text = (
+                            f"Hi, I'm {aname}, calling about a quick screening for the {job_title} role. "
+                            f"Is now a good time for a short call?"
+                        )
 
                 if not greeting_text:
                     # No greeting configured — wait for user to speak first
@@ -1462,6 +1528,16 @@ class BidirectionalStreamHandler:
                 else ""
             )
 
+            _recruitment_screening_block = ""
+            if self._jd_recruitment_screening_active():
+                _recruitment_screening_block = """
+# RECRUITMENT OUTBOUND SCREENING (THIS CALL — OVERRIDES CONFLICTING GENERIC RULES)
+- If the user says not interested, wrong number, wrong person, wrong call, not available, stop calling, or cannot do this now (clear no) — reply with ONE short polite sentence and end with [END_CALL] only. No follow-up questions. No persuasion.
+- Never ask a question that is already answered in "Previous conversation" above; move to the next step in YOUR ROLE block.
+- On successful completion of the full screening per YOUR ROLE block, your last reply must include [SCREENING_QUALIFIED] immediately before [END_CALL] as instructed there.
+- If an intro already played at call start, do not repeat the same full intro; continue the flow.
+"""
+
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
@@ -1482,6 +1558,7 @@ Previous conversation:
 {follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
+{_recruitment_screening_block}
 # CRITICAL RULES
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
@@ -1528,6 +1605,7 @@ Previous conversation:
 {follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
+{_recruitment_screening_block}
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
@@ -1853,9 +1931,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     end_call_after
                     and _RE_VOICE_SCREENING_QUALIFIED.search(full_response)
                     and not _transfer_re.search(full_response)
-                    and self._jd_recruitment_screening_active()
                 ):
+                    # DB apply_resume_qualified_after_voice_screening enforces jd_context + recruitment checks
                     self._pending_resume_screening_qualify = True
+                    try:
+                        persist_voice_screening_qualified_signal(self.db, self.call_session)
+                    except Exception:
+                        pass
+
                 if _transfer_re.search(full_response):
                     transfer_after = True
                     end_call_after = False
@@ -4359,9 +4442,35 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             ):
                 self._auto_greeting_sent = True
                 asyncio.create_task(self._schedule_inbound_greeting_after_delay())
+            elif (
+                self.call_session
+                and (self.call_session.call_type or "").lower() == "outbound"
+                and not self._auto_greeting_sent
+                and self._jd_recruitment_screening_active()
+            ):
+                # Outbound screening: play scripted intro (LLM often skipped intro)
+                self._auto_greeting_sent = True
+                asyncio.create_task(self._schedule_outbound_screening_intro_after_delay())
         
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
+
+    async def _schedule_outbound_screening_intro_after_delay(self) -> None:
+        """Brief delay after pickup, then scripted recruitment intro via same path as inbound greeting."""
+        try:
+            delay_sec = float(getattr(settings, "VOICE_OUTBOUND_SCREENING_INTRO_DELAY_SEC", 0.55) or 0.55)
+        except Exception:
+            delay_sec = 0.55
+        delay_sec = max(0.0, min(delay_sec, 5.0))
+        if delay_sec > 0:
+            await asyncio.sleep(delay_sec)
+        if self._stop_event.is_set():
+            return
+        if not self.call_session or (self.call_session.call_type or "").lower() != "outbound":
+            return
+        if self._tts_cancel.is_set():
+            return
+        await self.generate_and_stream_response("", 1.0, is_greeting=True)
 
     async def _schedule_inbound_greeting_after_delay(self) -> None:
         """
