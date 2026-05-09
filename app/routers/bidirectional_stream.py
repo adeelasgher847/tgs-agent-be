@@ -175,6 +175,7 @@ from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
     prepare_tts_text_for_provider,
+    strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
 
@@ -1538,6 +1539,17 @@ class BidirectionalStreamHandler:
 - If an intro already played at call start, do not repeat the same full intro; continue the flow.
 """
 
+            # When no business facts are loaded, inject an explicit "do not invent" guard
+            # so the LLM never fills the empty section with hallucinated details.
+            _bk_block = business_knowledge_block or (
+                "# AUTHORITATIVE BUSINESS FACTS\n"
+                "No verified business facts are loaded for this call.\n"
+                "CRITICAL: Do NOT invent or assume ANY business details (name, address, phone, "
+                "email, services, prices, hours, or any other specifics).\n"
+                "If the caller asks about the business, say that specific information is not "
+                "available to you right now and offer to help in another way."
+            )
+
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
@@ -1570,7 +1582,7 @@ Previous conversation:
 
 {elevenlabs_audio_tag_block}
 
-{business_knowledge_block}
+{_bk_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
@@ -1584,9 +1596,19 @@ Continue the conversation based on the history above. Be {agent_name}."""
             
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self.agent and self.agent.system_prompt:
-                # Agent has custom system prompt - use it with context (voice-first, plain text)
+                # Agent has custom system prompt - grounding rules placed BEFORE custom
+                # instructions so factual constraints cannot be overridden by agent config.
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
+These rules override any conflicting custom instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using the AUTHORITATIVE BUSINESS FACTS section below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
 
 # CUSTOM INSTRUCTIONS
 {self.agent.system_prompt}
@@ -1595,7 +1617,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
@@ -1609,14 +1631,10 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
-4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
-5. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
-{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
@@ -1628,9 +1646,18 @@ Previous conversation:
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
-                # Model has system prompt - use it (voice-first, plain text)
+                # Model has system prompt - grounding rules placed BEFORE model instructions.
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
+These rules override any conflicting model instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using the AUTHORITATIVE BUSINESS FACTS section below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
 
 # MODEL INSTRUCTIONS
 {self.agent.model.system_prompt}
@@ -1639,7 +1666,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.{greeting_instruction_block}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
@@ -1651,14 +1678,10 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
-4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
-5. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
-{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
@@ -1695,7 +1718,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             llm_service = None
             model_name = "gemini-1.5-flash"  # Default fallback
             api_key = None
-            temperature = 0.5
+            temperature = 0.15
             max_tokens = 100
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
@@ -2579,9 +2602,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         out = re.sub(r"\[\s*FOLLOWUP_CONFIRM\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[\s*FOLLOWUP_CANCEL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[\s*FOLLOWUP_RESCHEDULE:[^\]]*\]", "", out, flags=re.IGNORECASE)
-        # Non-control bracket tags that sometimes leak from LLM output.
-        # Keep this conservative so spoken content remains intact.
-        out = re.sub(r"\[\s*(?:pause|silence|laugh|sigh|breath|breathes|inaudible)\s*\]", "", out, flags=re.IGNORECASE)
+        # Strip all known ElevenLabs-style audio tags and common variants so they
+        # are never spoken as literal words regardless of TTS provider.
+        out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)
         # Citation-like bracket numbers such as [1], [2], ...
         out = re.sub(r"\[\s*\d{1,3}\s*\]", "", out)
         # Malformed bracket-open tokens without closing bracket

@@ -15,6 +15,7 @@ from app.services.groq_service import groq_service
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
+    strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
 
@@ -297,6 +298,16 @@ class ConversationOrchestrator:
                 except Exception as exc:
                     logger.debug("Business knowledge fetch skipped: %s", exc)
 
+            # When no business facts loaded, inject an explicit "do not invent" guard.
+            _bk_block = business_knowledge_block or (
+                "# AUTHORITATIVE BUSINESS FACTS\n"
+                "No verified business facts are loaded for this call.\n"
+                "CRITICAL: Do NOT invent or assume ANY business details (name, address, phone, "
+                "email, services, prices, hours, or any other specifics).\n"
+                "If the caller asks about the business, say that specific information is not "
+                "available to you right now and offer to help in another way."
+            )
+
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
@@ -345,8 +356,7 @@ Previous conversation:
 
 {elevenlabs_audio_tag_block}
 
-# AUTHORITATIVE BUSINESS FACTS
-{business_knowledge_block}
+{_bk_block}
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -356,6 +366,15 @@ Continue the conversation based on the history above. Be {agent_name}."""
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
+These rules override any conflicting custom instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using AUTHORITATIVE BUSINESS FACTS below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
+
 # CUSTOM INSTRUCTIONS
 {self._h.agent.system_prompt}
 
@@ -363,6 +382,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -372,21 +392,24 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available — do NOT invent them.
-4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
-5. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
-
-# AUTHORITATIVE BUSINESS FACTS
-{business_knowledge_block}
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
+These rules override any conflicting model instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using AUTHORITATIVE BUSINESS FACTS below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
 
 # MODEL INSTRUCTIONS
 {self._h.agent.model.system_prompt}
@@ -395,6 +418,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
 {output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
 
 # CONVERSATION STATE
 Previous conversation:
@@ -403,15 +427,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available — do NOT invent them.
-4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
-5. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
-
-# AUTHORITATIVE BUSINESS FACTS
-{business_knowledge_block}
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
@@ -429,7 +447,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             llm_service = None
             model_name = "gemini-1.5-flash"  # Default fallback
             api_key = None
-            temperature = 0.5
+            temperature = 0.15
             max_tokens = 100
 
             if self._h.agent and self._h.agent.model:
@@ -499,10 +517,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 def _strip_control_tokens(text: str) -> str:
                     if not text:
                         return ""
-                    text_no_end = text.replace("[END_CALL]", "").replace("[SCREENING_QUALIFIED]", "")
-                    text_no_end = text.replace("[END_CALL]", "")
-                    text_no_end = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", text_no_end, flags=re.IGNORECASE)
-                    return re.sub(r"\[OUTCOME:[^\]]+\]", "", text_no_end)
+                    out = text.replace("[END_CALL]", "").replace("[SCREENING_QUALIFIED]", "")
+                    out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
+                    out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
+                    out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
+                    out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
+                    # Strip all known audio tags so they are never spoken as literal words.
+                    out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)
+                    return out
 
                 def _find_flush_index(buf: str):
                     if not buf:
