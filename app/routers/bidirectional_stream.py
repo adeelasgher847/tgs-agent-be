@@ -114,6 +114,7 @@ from app.core.logger import logger
 from app.services.call_session_service import call_session_service
 from app.services.voice_screening_qualification_service import (
     apply_resume_qualified_after_voice_screening,
+    is_jd_recruitment_voice_context,
 )
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
@@ -178,6 +179,10 @@ from app.utils.eleven_tts_text import (
 
 
 router = APIRouter()
+
+# Voice screening / hangup tokens (case-insensitive; models vary casing/spacing)
+_RE_VOICE_END_CALL = re.compile(r"\[\s*END_CALL\s*\]", re.IGNORECASE)
+_RE_VOICE_SCREENING_QUALIFIED = re.compile(r"\[\s*SCREENING_QUALIFIED\s*\]", re.IGNORECASE)
 
 # Vapi-style customEndpointingRules analogue: when the agent asks for email, we either
 # defer a longer Deepgram endpointing for the first STT session or reconnect once with
@@ -477,7 +482,13 @@ class BidirectionalStreamHandler:
                 agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
-    
+
+    def _jd_recruitment_screening_active(self) -> bool:
+        """JD-backed recruitment screening only — skips booking/general outbound calls."""
+        if not self.call_session or not isinstance(self.call_session.call_metadata, dict):
+            return False
+        return is_jd_recruitment_voice_context(self.call_session.call_metadata.get("jd_context"))
+
     async def _precache_common_phrases(self):
         """
         Pre-generate and cache common phrases for instant playback.
@@ -1764,7 +1775,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             _vm.mark_llm_first_token()
 
                     # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
-                    if "[END_CALL]" in response_accum:
+                    if _RE_VOICE_END_CALL.search(response_accum):
                         end_call_after = True
                         # Remove it from TTS buffer immediately so it never gets spoken
                         tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
@@ -1779,7 +1790,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
 
                     # Backend-only screening outcome token (never spoken)
-                    if "[SCREENING_QUALIFIED]" in response_accum:
+                    if _RE_VOICE_SCREENING_QUALIFIED.search(response_accum):
                         tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
 
                     # Avoid spoken "final confirmation" before backend booking succeeds.
@@ -1828,12 +1839,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                 # Flush any remaining text as the FINAL chunk
                 full_response = response_accum.strip()
-                end_call_after = end_call_after or ("[END_CALL]" in full_response)
-                if end_call_after and "[SCREENING_QUALIFIED]" in full_response:
+                end_call_after = end_call_after or bool(_RE_VOICE_END_CALL.search(full_response))
+                if (
+                    end_call_after
+                    and _RE_VOICE_SCREENING_QUALIFIED.search(full_response)
+                    and not _transfer_re.search(full_response)
+                    and self._jd_recruitment_screening_active()
+                ):
                     self._pending_resume_screening_qualify = True
                 if _transfer_re.search(full_response):
                     transfer_after = True
                     end_call_after = False
+                    self._pending_resume_screening_qualify = False
 
                 # Never speak control tokens
                 tts_buffer = self._prepare_tts_text(tts_buffer)
@@ -1942,7 +1959,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             if final_text:
                 # Strip control tokens from transcript (never saved to history)
-                transcript_text = self._strip_control_tokens_for_tts(final_text).replace("[END_CALL]", "").strip()
+                transcript_text = _RE_VOICE_END_CALL.sub(
+                    "", self._strip_control_tokens_for_tts(final_text)
+                ).strip()
                 if "[BOOK_APPOINTMENT:" in final_text:
                     transcript_text = self._strip_premature_booking_confirmation(transcript_text)
                 if transcript_text:
@@ -2451,9 +2470,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if not text:
             return ""
         out = text
-        # Bracketed canonical tokens
-        out = out.replace("[END_CALL]", "")
-        out = out.replace("[SCREENING_QUALIFIED]", "")
+        # Bracketed canonical tokens (case-insensitive — LLMs vary)
+        out = _RE_VOICE_END_CALL.sub("", out)
+        out = _RE_VOICE_SCREENING_QUALIFIED.sub("", out)
         out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
         out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)

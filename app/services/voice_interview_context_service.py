@@ -394,6 +394,8 @@ def build_voice_interview_enrichment(
         )
 
     if job:
+        # Persist on outbound jd_context so stream handler / qualification only run recruitment logic for JD calls.
+        out_merged["recruitment_jd_screening"] = True
         lines.append("Role you are hiring for and requirements:\n" + _job_text_for_prompt(job))
         # Provide the model a compact "grounding" view of candidate evidence and JD requirements.
         # This reduces generic Q&A and increases resume->JD alignment.

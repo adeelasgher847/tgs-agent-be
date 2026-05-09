@@ -276,6 +276,7 @@ async def initiate_call(
             call_session.call_metadata = call_session.call_metadata or {}
             md: dict = {**(call_session.call_metadata or {})}
             if enrich.get("merged_jd_context"):
+                # Includes recruitment_jd_screening=True when a Job Description row is resolved (recruitment flow).
                 md["jd_context"] = enrich["merged_jd_context"]
             if enrich.get("voice_dynamic_context"):
                 md["voice_dynamic_context"] = enrich["voice_dynamic_context"]
