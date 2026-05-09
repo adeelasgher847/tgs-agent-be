@@ -55,6 +55,9 @@ def persist_voice_screening_qualified_signal(db: Session, call_session: CallSess
         db.add(call_session)
         db.commit()
         db.refresh(call_session)
+        logger.info(
+            "voice_screening_qualified_signal persisted (session=%s)", call_session.id
+        )
     except Exception as exc:
         logger.warning("persist_voice_screening_qualified_signal failed: %s", exc, exc_info=True)
 

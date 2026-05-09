@@ -409,15 +409,25 @@ def build_voice_interview_enrichment(
                 lines.append(highlights)
                 highlights_added = True
         _job_title_display = (job.job_title or "").strip() or "the open role"
-        _cname_display = candidate_name or "there"
+        _name_step_detail = (
+            f'Ask what name they go by or confirm their full name. You have "{candidate_name}" on file — '
+            "use it naturally and ask them to confirm it is correct."
+            if candidate_name
+            else "Ask what name they go by or ask for their full name for this application."
+        )
         lines.append(
             "RECRUITMENT CALL FLOW — FOLLOW IN ORDER:\n\n"
-            "1) OPENING (your very first substantive reply after they pick up or say hello):\n"
-            f"   Briefly introduce yourself: say you are calling from the hiring/recruiting side about a screening conversation for the {_job_title_display} role. "
-            f"   Keep it to one or two short sentences. Sound human and professional.\n\n"
-            "2) ASK FOR THEIR NAME:\n"
-            f"   Ask what name they go by or ask them to confirm their full name for this application. "
-            f"   You have \"{_cname_display}\" on file — greet with it and ask them to confirm it is correct.\n\n"
+            "PRIORITY ZERO — BEFORE ANY SCREENING QUESTION:\n"
+            "If the user says they are NOT interested, NOT available, wrong number, wrong person, wrong call, "
+            "stop calling, don't call again, or clearly cannot continue — respond with ONE short polite sentence ONLY "
+            "and end that same reply with [END_CALL]. Do not ask anything else.\n\n"
+            "NOTE: On this outbound call a short intro may play automatically when they answer. "
+            "If that already happened, do NOT repeat the full intro — acknowledge briefly if needed, then continue "
+            "(confirm name / screening steps).\n\n"
+            "1) OPENING (only if no automated intro played yet):\n"
+            f"   Briefly introduce yourself as calling from hiring about screening for the {_job_title_display} role — "
+            "one or two sentences.\n\n"
+            f"2) NAME:\n   {_name_step_detail}\n\n"
             "3) INTEREST & AVAILABILITY — END CALL FAST IF CLEAR NO-GO:\n"
             "   If they clearly say they are NOT interested in this opportunity, NOT interested in this role, or do NOT want to continue — "
             "respond with ONE short polite line (thank them / wish them well) and end the same reply with [END_CALL]. Do not persuade. Do not ask screening questions.\n"
