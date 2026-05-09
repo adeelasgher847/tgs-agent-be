@@ -20,8 +20,11 @@ def run_migrations_offline():
         context.run_migrations()
 
 def run_migrations_online():
+    # Use the database URL from settings instead of alembic.ini
+    configuration = config.get_section(config.config_ini_section)
+    configuration['sqlalchemy.url'] = settings.DATABASE_URL
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section),
+        configuration,
         prefix='sqlalchemy.',
         poolclass=pool.NullPool,
     )

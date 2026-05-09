@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+/uploads/
 # C extensions
 *.so
 
@@ -25,6 +26,7 @@ var/
 .installed.cfg
 *.egg
 
+uploads/
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -73,7 +75,9 @@ celerybeat-schedule
 .pyre/
 
 # Alembic
-alembic/versions/
+# Track migration scripts, ignore only cache artifacts
+alembic/versions/__pycache__/
+alembic/versions/*.pyc
 
 # VS Code
 .vscode/
