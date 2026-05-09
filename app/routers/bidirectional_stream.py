@@ -1486,7 +1486,9 @@ Previous conversation:
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
+4. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
+5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
+6. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
@@ -1529,7 +1531,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
+3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
+4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
+5. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -1569,7 +1573,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there.
+3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
+4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
+5. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -1589,9 +1595,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Use base prompt
                 system_prompt = base_prompt
 
-            transfer_block = self._build_transfer_instruction_block()
-            if transfer_block:
-                system_prompt = transfer_block + "\n\n" + system_prompt
+            call_policy_block = agent_service.build_call_policy_block(
+                business_knowledge_block=business_knowledge_block,
+                transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
+            )
+            if call_policy_block:
+                system_prompt = call_policy_block + "\n" + system_prompt
 
             # Prepend current date/time so the agent knows what "today", "tomorrow",
             # and "past slots" mean. Also injected into appointment booking flow.
@@ -2434,32 +2443,39 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
     def _strip_premature_booking_confirmation(text: str) -> str:
         """
         Remove assistant self-confirmations so final confirmation comes only after backend success.
+
+        The voice agent must NOT tell the caller their booking is confirmed
+        during the call — the actual Appointment row is created post-call by
+        post_call_appointment_service after contact + slot validation. If the
+        LLM ignores that rule and says "your appointment is booked",
+        "your plumbing service is booked", "you're all set", etc., we strip
+        those sentences before they reach TTS so the caller never hears a
+        false confirmation.
         """
         if not text:
             return ""
         patterns = [
-            r"(?i)\b(?:great|done|perfect|all set)[^.!?]*\b(?:appointment)[^.!?]*\b(?:scheduled|confirmed|booked)\b[^.!?]*[.!?]?",
-            r"(?i)\byour appointment[^.!?]*\b(?:scheduled|confirmed|booked)\b[^.!?]*[.!?]?",
-            r"(?i)\ba confirmation message will be sent to you shortly[^.!?]*[.!?]?",
-            r"(?i)\bwe look forward to seeing you[^.!?]*[.!?]?",
+            # "Great/Done/Perfect, your appointment is scheduled/confirmed/booked"
+            r"(?i)\b(?:great|done|perfect|all\s+set|excellent|wonderful)[^.!?]*\b(?:appointment|booking|reservation|visit|service)\b[^.!?]*\b(?:scheduled|confirmed|booked|reserved|set|locked\s+in)\b[^.!?]*[.!?]?",
+            # "Your appointment/booking/visit/service is booked/confirmed/scheduled"
+            r"(?i)\byour\s+(?:[a-z]+\s+){0,4}?(?:appointment|booking|reservation|visit|service|slot|time)\b[^.!?]*\b(?:scheduled|confirmed|booked|reserved|set|locked\s+in)\b[^.!?]*[.!?]?",
+            # "You're (all) booked / set / scheduled / confirmed"
+            r"(?i)\byou'?re\s+(?:all\s+)?(?:booked|set|scheduled|confirmed|locked\s+in)\b[^.!?]*[.!?]?",
+            # "I've (gone ahead and) booked you / scheduled you / locked it in"
+            r"(?i)\bi'?(?:ve|have)\s+(?:gone\s+ahead\s+and\s+)?(?:booked|scheduled|reserved|locked\s+in|set\s+up|confirmed)\s+(?:you|your|it|the\s+(?:appointment|booking|visit|slot))\b[^.!?]*[.!?]?",
+            # "We've booked you / We have you booked / We've got you scheduled"
+            r"(?i)\bwe'?(?:ve|have)\s+(?:got\s+you\s+|you\s+)?(?:booked|scheduled|set\s+up|reserved|confirmed)\b[^.!?]*[.!?]?",
+            # "Your X is booked/set/scheduled" (generic – safety net for unusual phrasings)
+            r"(?i)\byour\s+(?:[a-z\-]+\s+){0,3}?(?:is|has\s+been)\s+(?:booked|scheduled|reserved|confirmed|locked\s+in|set\s+up)\b[^.!?]*[.!?]?",
+            # Aftermath / closing pleasantries that imply success
+            r"(?i)\ba\s+confirmation\s+(?:message|email|text)\s+(?:will\s+be\s+|has\s+been\s+)?sent[^.!?]*[.!?]?",
+            r"(?i)\bwe\s+look\s+forward\s+to\s+seeing\s+you[^.!?]*[.!?]?",
+            r"(?i)\bsee\s+you\s+(?:then|tomorrow|on\s+\w+)\b[^.!?]*[.!?]?",
         ]
         cleaned = text
         for pattern in patterns:
             cleaned = re.sub(pattern, "", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
-
-    def _build_transfer_instruction_block(self) -> str:
-        route = getattr(self.agent, "transfer_route", None) if self.agent else None
-        if not route:
-            return ""
-        t = (route.transfer_type or "cold").lower()
-        return (
-            "# HUMAN ESCALATION (TRANSFER)\n"
-            f"- A human contact is configured for this agent ({route.friendly_name}; transfer type: {t}).\n"
-            "- Use this ONLY for genuine emergencies, safety or abuse threats, or when the caller clearly needs a human and you cannot help.\n"
-            "- Acknowledge briefly in plain words, then end your reply with exactly [TRANSFER_CALL] on its own line. Never speak the brackets aloud.\n"
-            "- If you use [TRANSFER_CALL], do not also use [END_CALL] in the same reply; transfer takes priority.\n"
-        )
 
     @staticmethod
     def _strip_control_tokens_for_tts(text: str) -> str:

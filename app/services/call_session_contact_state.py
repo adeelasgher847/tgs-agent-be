@@ -65,6 +65,81 @@ _NAME_BLOCKLIST = {
     "ok", "okay", "yes", "no", "ai", "assistant", "agent", "bot",
 }
 
+# Caller self-introduction patterns: "My name is X", "I'm X", "I am X",
+# "This is X", "Call me X", "Name's X". The captured name may be 1-2 tokens.
+# We accept STT lowercase output (e.g. "my name is nishan") and re-title-case
+# the candidate before storing it.
+_CLIENT_SELF_INTRO_NAME = re.compile(
+    r"\b(?:my\s+name(?:'?s|\s+is)|i\s+am|i'?m|this\s+is|name'?s|call\s+me)\s+"
+    r"(?P<name>[A-Za-z][A-Za-z\-']{1,30}(?:\s+[A-Za-z][A-Za-z\-']{1,30})?)\b",
+    flags=re.IGNORECASE,
+)
+
+# Words that frequently follow "I'm …" / "this is …" but are NOT a name.
+# Conservative list — adding more here only reduces false positives.
+_SELF_INTRO_NON_NAME_FIRST_WORDS = frozenset({
+    # General confirmation / mood
+    "the", "a", "an", "is", "at", "that", "right", "correct", "confirmed",
+    "ok", "okay", "yes", "no", "ai", "assistant", "agent", "bot",
+    # Mood / state words after "I'm"
+    "here", "good", "fine", "great", "alright", "happy", "sad", "tired",
+    "feeling", "doing", "well", "stressed", "frustrated", "angry",
+    # Activities after "I'm"
+    "calling", "looking", "trying", "interested", "ready", "available",
+    "busy", "free", "flexible", "urgent", "needing", "wanting",
+    "thinking", "wondering", "asking", "checking", "having",
+    "sorry", "afraid", "stuck",
+    # Context after "this is"
+    "important", "regarding", "about", "for", "on", "in", "to",
+    "emergency",
+    # Polite trailing tokens that often appear right after a name
+    # ("Call me Nishan please", "I'm Nishan thanks").
+    "please", "thanks", "thank", "ty",
+    # Action verbs that frequently trail a name
+    "from", "with", "speaking", "calling", "here",
+})
+
+
+def _extract_self_intro_name(client_text: str) -> Optional[str]:
+    """
+    Return a Title-Cased name candidate when the caller introduces themselves
+    with phrases like "My name is X", "I'm X", "I am X", "This is X",
+    "Call me X". Returns None when no plausible name follows the trigger.
+    """
+    text = (client_text or "").strip()
+    if not text:
+        return None
+    m = _CLIENT_SELF_INTRO_NAME.search(text)
+    if not m:
+        return None
+    raw = (m.group("name") or "").strip(" ,.;:-")
+    if not raw or not (2 <= len(raw) <= 60):
+        return None
+    tokens = [t for t in raw.split() if t]
+    if not tokens:
+        return None
+    if tokens[0].lower() in _SELF_INTRO_NON_NAME_FIRST_WORDS:
+        return None
+    if len(tokens) == 2 and tokens[1].lower() in _SELF_INTRO_NON_NAME_FIRST_WORDS:
+        # Drop the trailing junk token: "I'm Nishan calling" -> "Nishan"
+        tokens = tokens[:1]
+    return " ".join(t[:1].upper() + t[1:].lower() for t in tokens)
+
+
+def _agent_echoes_name(agent_text: str, candidate: str) -> bool:
+    """
+    True when the agent's spoken text uses the caller's self-introduced name
+    as a standalone word. Used as an implicit-confirmation signal.
+    """
+    text = (agent_text or "").strip()
+    cand = (candidate or "").strip()
+    if not text or not cand:
+        return False
+    first = cand.split()[0]
+    # Names must appear as a whole word (case-insensitive) so we don't
+    # pick up substring overlaps with regular vocabulary.
+    return bool(re.search(rf"\b{re.escape(first)}\b", text, flags=re.IGNORECASE))
+
 
 def _extract_confirmed_name_from_agent_text(agent_text: str) -> Optional[str]:
     """
@@ -104,6 +179,11 @@ def default_contact_intake() -> dict[str, Any]:
         "email_collection": False,
         "name_spell_failures": 0,
         "awaiting_spell_field": None,
+        # Caller self-introduced their name (e.g. "My name is Nishan").
+        # Once True we wait for the agent to echo the name in a later turn
+        # before promoting to name_confident, so STT mishears alone never
+        # trigger a confident booking.
+        "name_self_introduced": False,
     }
 
 
@@ -185,6 +265,18 @@ def apply_transcript_turn(
         elif _SPELL_EMAIL_AGENT.search(text):
             intake["awaiting_spell_field"] = "email"
 
+        # Implicit confirmation: caller previously self-introduced (e.g.
+        # "My name is Nishan") and the agent now uses that name in its
+        # response (e.g. "Okay, Nishan, what time …"). Treat this as the
+        # caller's name being accepted and proceed with confident booking.
+        if (
+            intake.get("name_self_introduced")
+            and not intake.get("name_confident")
+            and intake.get("name")
+            and _agent_echoes_name(text, intake.get("name") or "")
+        ):
+            intake["name_confident"] = True
+
     if role == "client" and text:
         prev = (preceding_agent_text or "").strip()
         awaiting = intake.get("awaiting_spell_field")
@@ -245,6 +337,23 @@ def apply_transcript_turn(
                     intake["name_confident"] = True
                     # Deliberately do NOT set name_spelled_confirmed: this is a
                     # different (softer) provenance than letter-by-letter spelling.
+
+        # Caller self-introduction capture ("My name is Nishan", "I'm Nishan",
+        # "This is Nishan", "Call me Nishan"). Stored as the name candidate
+        # plus a "name_self_introduced" flag. Confidence is upgraded later when
+        # the agent echoes the name in a subsequent turn (handled in the agent
+        # branch above). We never overwrite a stronger signal: if the name is
+        # already confident or already spelled-confirmed, leave it alone.
+        if (
+            getattr(settings, "VOICE_NATURAL_NAME_CONFIRMATION", True)
+            and not intake.get("name_confident")
+            and not intake.get("name_spelled_confirmed")
+            and not awaiting
+        ):
+            intro_candidate = _extract_self_intro_name(text)
+            if intro_candidate:
+                intake["name"] = intro_candidate
+                intake["name_self_introduced"] = True
 
     _save_contact_intake(db, call_session, intake)
 
