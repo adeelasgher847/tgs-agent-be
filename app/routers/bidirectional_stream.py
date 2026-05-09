@@ -919,6 +919,13 @@ class BidirectionalStreamHandler:
                 self._stt_last_final_raw = tstrip
                 self._stt_last_final_monotonic = _now
 
+                # STT self-echo guard: discard transcripts that closely match
+                # recently spoken agent text. Occurs when the STT mic picks up
+                # the agent's TTS output on the phone line (sidetone / open mic).
+                if self._is_agent_self_echo(tstrip):
+                    logger.info("STT: suppressing agent self-echo: %r", tstrip)
+                    return
+
                 self._voice_metrics.begin_turn_at_stt_final()
 
                 # 🎯 Check for goodbye words FIRST - end call if detected
@@ -1464,11 +1471,14 @@ class BidirectionalStreamHandler:
                     # Booking flows use a slightly wider window to keep service/date/slot
                     # in context, but capped at 20 to avoid prompt bloat that inflates LLM TTFT.
                     # (Previous default of 39 was adding ~1000 tokens to the prompt on long calls.)
-                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 12)
+                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 50)
                     if low_latency_fastpath:
-                        max_msgs = min(max_msgs, 6)
+                        # Keep at least 12 on fast path — intake flows span 6+ phases and
+                        # cutting to 6 drops early context (name, issue, location already given),
+                        # causing the agent to re-ask questions the caller already answered.
+                        max_msgs = min(max_msgs, 60)
                     if self._is_booking_context_active(user_text):
-                        max_msgs = min(max(max_msgs, 20), 20)
+                        max_msgs = min(max(max_msgs, 60), 60)
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
@@ -1572,12 +1582,13 @@ Previous conversation:
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. NO REPETITION: If the history shows you asked a question, move to the next point.
-2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
-3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
-5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
-6. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, location, issue, timing) is still valid — do not ask for it again. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript. Move to the next unanswered item only.
+3. HANDLING SILENCE: If the user says something vague, ask a single clarifying question.
+4. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+5. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
+6. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
+7. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
@@ -1629,8 +1640,9 @@ Previous conversation:
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
-2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
+3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -1676,8 +1688,9 @@ Previous conversation:
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions. Move to the next point.
-2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
+3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -1696,8 +1709,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Use base prompt
                 system_prompt = base_prompt
 
+            # Use _bk_block (never empty) so the service area gate is derived from
+            # the actual loaded knowledge — not the raw block which is "" on cold cache.
             call_policy_block = agent_service.build_call_policy_block(
-                business_knowledge_block=business_knowledge_block,
+                business_knowledge_block=_bk_block,
                 transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
             )
             if call_policy_block:
@@ -2232,6 +2247,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             return False
         if booking_intent_turn:
             return False
+        # Never use fast path when a restricted service area is configured: any turn
+        # could carry a location statement ("Houston, Texas" = 2 words) and needs
+        # the full KB + policy block so the service area gate fires correctly.
+        if (
+            self._kb_cache_ready
+            and self._cached_business_knowledge_block
+            and "COVERAGE: RESTRICTED" in self._cached_business_knowledge_block
+        ):
+            return False
         text = (user_text or "").strip().lower()
         if not text:
             return False
@@ -2242,6 +2266,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         heavy_intent_markers = (
             "price", "pricing", "cost", "address", "phone", "email", "website",
             "service", "book", "booking", "appointment", "schedule", "slot", "quote",
+            "area", "location", "city", "state", "zip", "county", "region",
         )
         return not any(k in text for k in heavy_intent_markers)
 
@@ -2299,6 +2324,42 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # And the user turn matches (or was empty) — safe to dedupe.
                     if not u_norm or not prev_u or prev_u == u_norm:
                         return True
+        return False
+
+    def _is_agent_self_echo(self, transcript: str) -> bool:
+        """
+        True when an incoming STT final closely matches text the agent recently spoke.
+
+        Phone-line sidetone and open-mic setups can feed the agent's TTS audio back
+        into the STT stream as a "final" transcript.  The word-overlap check requires
+        ≥80 % of the shorter text's words to be shared, with a minimum of 4 words in
+        the transcript so that short overlapping phrases don't trigger false positives.
+
+        Window: 12 s — covers TTS latency, full playback of long replies, plus STT
+        pipeline lag before the echo arrives as a final result.
+        """
+        if not transcript or not self._recent_agent_pairs:
+            return False
+        t_norm = self._normalize_turn_text(transcript)
+        if not t_norm:
+            return False
+        t_words = t_norm.split()
+        if len(t_words) < 4:
+            return False
+        t_word_set = set(t_words)
+        now = time.monotonic()
+        for _u, a_norm, ts in self._recent_agent_pairs:
+            if (now - ts) > 12.0:
+                continue
+            if not a_norm:
+                continue
+            a_word_set = set(a_norm.split())
+            if len(a_word_set) < 4:
+                continue
+            overlap = len(t_word_set & a_word_set)
+            shorter = min(len(t_word_set), len(a_word_set))
+            if overlap / shorter >= 0.80:
+                return True
         return False
 
     def _remember_agent_turn(self, user_text: Optional[str], agent_text: str) -> None:

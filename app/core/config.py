@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.18
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
-    VOICE_HISTORY_MAX_MESSAGES: int = 12
+    VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
