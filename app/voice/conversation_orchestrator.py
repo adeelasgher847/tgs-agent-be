@@ -418,9 +418,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             else:
                 system_prompt = base_prompt
 
-            transfer_block = self._h._build_transfer_instruction_block()
-            if transfer_block:
-                system_prompt = transfer_block + "\n\n" + system_prompt
+            call_policy_block = agent_service.build_call_policy_block(
+                business_knowledge_block=business_knowledge_block,
+                transfer_route=getattr(self._h.agent, "transfer_route", None) if self._h.agent else None,
+            )
+            if call_policy_block:
+                system_prompt = call_policy_block + "\n" + system_prompt
 
             # Get agent's configured model and provider
             llm_service = None

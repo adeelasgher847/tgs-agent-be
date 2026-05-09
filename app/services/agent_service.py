@@ -1094,5 +1094,89 @@ No active tenant knowledge base documents were found.
 
         return "\n".join(lines)
 
+    def build_call_policy_block(
+        self,
+        *,
+        business_knowledge_block: str = "",
+        transfer_route: Optional[TransferRoute] = None,
+    ) -> str:
+        """
+        Top-of-prompt operational gates that take priority over style, tone,
+        and any custom/model instructions later in the system prompt.
+
+        Three gates, only the relevant ones are emitted:
+        - Service Area Gate: only when business knowledge declares restricted
+          coverage (we look for the COVERAGE: RESTRICTED marker emitted by
+          ``build_business_knowledge_context_block``).
+        - Booking Gate: always emitted because the calendar/booking flow is
+          available on every call. Enforces the name/location/issue triad
+          before any [BOOK_APPOINTMENT] hint.
+        - Transfer Gate: only when an agent has a ``transfer_route``
+          configured. Reinforces that [TRANSFER_CALL] is the only thing that
+          actually triggers a transfer.
+
+        Returning the gates as a single block (instead of scattering them
+        across the prompt) keeps the policy enforceable on long calls where
+        custom instructions and history would otherwise drown the rules out.
+        """
+        has_restricted_area = "COVERAGE: RESTRICTED" in (business_knowledge_block or "")
+        has_transfer_route = transfer_route is not None
+
+        lines: List[str] = [
+            "# CALL POLICY (NON-NEGOTIABLE — APPLY IMMEDIATELY)",
+            "These rules take priority over style/tone instructions and any custom or model "
+            "instructions that appear later in this prompt. Apply them at every turn.",
+            "",
+        ]
+
+        section = 1
+
+        if has_restricted_area:
+            lines.extend([
+                f"## {section}. Service Area Gate",
+                "- Before offering a slot, scheduling, or emitting [BOOK_APPOINTMENT], you MUST "
+                "confirm the caller's location is within the Service Areas listed in "
+                "AUTHORITATIVE BUSINESS FACTS.",
+                "- If the caller's stated city/area is NOT in the listed Service Areas: apologize "
+                "briefly, name the covered areas (use the verbatim text), and end your reply with "
+                "exactly [END_CALL]. Do not propose slots, take further details, or transfer.",
+                "- If the caller has not stated a location yet, ask for it BEFORE discussing "
+                "scheduling. One question per turn.",
+                "",
+            ])
+            section += 1
+
+        lines.extend([
+            f"## {section}. Booking Gate",
+            "- Never emit [BOOK_APPOINTMENT] until you have clearly captured ALL of: (a) the "
+            "caller's name, (b) a service location, and (c) a brief reason or issue for the visit.",
+            "- If any of those are missing, your next reply must ask only the single missing one. "
+            "Do not bundle multiple questions in a single turn.",
+            "- Never tell the caller the appointment is confirmed, booked, or held during the "
+            "call. The server finalizes scheduling after the call when checks pass.",
+            "",
+        ])
+        section += 1
+
+        if has_transfer_route:
+            t_type = (getattr(transfer_route, "transfer_type", None) or "cold").lower()
+            friendly = getattr(transfer_route, "friendly_name", None) or "human contact"
+            lines.extend([
+                f"## {section}. Transfer & Escalation Gate",
+                f"- A human contact is configured for this agent ({friendly}; transfer type: "
+                f"{t_type}).",
+                "- Use [TRANSFER_CALL] ONLY for genuine emergencies, safety threats, or when the "
+                "caller clearly needs a human and you cannot help.",
+                "- Unless there is immediate danger to life, ask up to two short confirmation "
+                "questions about the situation BEFORE you transfer.",
+                "- A transfer is triggered ONLY when you emit [TRANSFER_CALL] at the end of your "
+                "reply. Phrases like 'silent transfer' or 'connecting you' do nothing without "
+                "that exact token.",
+                "- If you use [TRANSFER_CALL], do not also use [END_CALL] in the same reply; "
+                "transfer takes priority.",
+            ])
+
+        return "\n".join(lines).rstrip() + "\n"
+
 
 agent_service = AgentService()

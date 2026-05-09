@@ -1579,9 +1579,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Use base prompt
                 system_prompt = base_prompt
 
-            transfer_block = self._build_transfer_instruction_block()
-            if transfer_block:
-                system_prompt = transfer_block + "\n\n" + system_prompt
+            call_policy_block = agent_service.build_call_policy_block(
+                business_knowledge_block=business_knowledge_block,
+                transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
+            )
+            if call_policy_block:
+                system_prompt = call_policy_block + "\n" + system_prompt
 
             # Prepend current date/time so the agent knows what "today", "tomorrow",
             # and "past slots" mean. Also injected into appointment booking flow.
@@ -2442,19 +2445,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         for pattern in patterns:
             cleaned = re.sub(pattern, "", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
-
-    def _build_transfer_instruction_block(self) -> str:
-        route = getattr(self.agent, "transfer_route", None) if self.agent else None
-        if not route:
-            return ""
-        t = (route.transfer_type or "cold").lower()
-        return (
-            "# HUMAN ESCALATION (TRANSFER)\n"
-            f"- A human contact is configured for this agent ({route.friendly_name}; transfer type: {t}).\n"
-            "- Use this ONLY for genuine emergencies, safety or abuse threats, or when the caller clearly needs a human and you cannot help.\n"
-            "- Acknowledge briefly in plain words, then end your reply with exactly [TRANSFER_CALL] on its own line. Never speak the brackets aloud.\n"
-            "- If you use [TRANSFER_CALL], do not also use [END_CALL] in the same reply; transfer takes priority.\n"
-        )
 
     @staticmethod
     def _strip_control_tokens_for_tts(text: str) -> str:
