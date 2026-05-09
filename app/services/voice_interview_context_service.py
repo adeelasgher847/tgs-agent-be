@@ -421,7 +421,11 @@ def build_voice_interview_enrichment(
             "Do not end the call only because the candidate gives a weak or wrong answer to this analytical question. "
             "5) Compensation discussion: ask candidate expected salary. "
             "If the candidate asks for budget, share JD budget range when available and confirm alignment/misalignment. "
-            "Keep the conversation concise, professional, and evidence-based; avoid unrelated small talk."
+            "Keep the conversation concise, professional, and evidence-based; avoid unrelated small talk. "
+            "Call termination tokens (critical): Use [END_CALL] for every hang-up. "
+            "Only when you have naturally completed the ENTIRE flow above through step 5 without an early rejection/opt-out/skill mismatch — "
+            "i.e. successful screening — append the exact token [SCREENING_QUALIFIED] on its own immediately BEFORE [END_CALL] in your final reply (goodbye first, then tokens). "
+            "Never output [SCREENING_QUALIFIED] for early closes, rejections, wrong candidate, or skill mismatch exits."
         )
     else:
         lines.append(

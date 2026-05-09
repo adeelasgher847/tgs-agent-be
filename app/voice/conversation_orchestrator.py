@@ -490,6 +490,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 def _strip_control_tokens(text: str) -> str:
                     if not text:
                         return ""
+                    text_no_end = text.replace("[END_CALL]", "").replace("[SCREENING_QUALIFIED]", "")
                     text_no_end = text.replace("[END_CALL]", "")
                     text_no_end = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", text_no_end, flags=re.IGNORECASE)
                     return re.sub(r"\[OUTCOME:[^\]]+\]", "", text_no_end)
@@ -568,6 +569,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         tts_buffer = _strip_control_tokens(tts_buffer)
 
                     if "[OUTCOME:" in tts_buffer:
+                        tts_buffer = _strip_control_tokens(tts_buffer)
+
+                    if "[SCREENING_QUALIFIED]" in response_accum:
                         tts_buffer = _strip_control_tokens(tts_buffer)
 
                     flush_idx = _find_flush_index(tts_buffer)
