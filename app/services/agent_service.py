@@ -840,17 +840,83 @@ No active tenant knowledge base documents were found.
     ) -> str:
         """
         Build a prompt block containing active business knowledge for the agent.
-        Returns an empty string when no knowledge is configured so existing prompts
-        are not affected.
+
+        The block carries two things in one place (single source of truth):
+        1. AUTHORITATIVE BUSINESS FACTS — verified spoken-form details the agent
+           must read out when asked.
+        2. BUSINESS SCOPE & SERVICE-AREA POLICY — strict rules that prevent the
+           agent from inventing services we do not provide, and from accepting
+           callers outside our service area (with a global/remote escape hatch).
+
+        Returns an empty string when no knowledge is configured so existing
+        prompts are not affected.
         """
         records = self.get_business_knowledge_for_agent(db, tenant_id, agent_id)
         if not records:
             return ""
 
-        lines = [
+        # ── Aggregate scope info across all active records ────────────────
+        primary_services: List[str] = []
+        secondary_services: List[str] = []
+        specializations_list: List[str] = []
+        service_area_texts: List[str] = []
+
+        for rec in records:
+            if rec.primary_service and rec.primary_service.strip():
+                primary_services.append(rec.primary_service.strip())
+            if rec.secondary_service and rec.secondary_service.strip():
+                secondary_services.append(rec.secondary_service.strip())
+            if rec.specializations and rec.specializations.strip():
+                specializations_list.append(rec.specializations.strip())
+            if rec.service_areas and rec.service_areas.strip():
+                service_area_texts.append(rec.service_areas.strip())
+
+        has_scope_info = bool(
+            primary_services or secondary_services or specializations_list
+        )
+        has_service_area = bool(service_area_texts)
+
+        # Detect "we serve everyone" coverage in the configured service-areas
+        # text so we can give the LLM a deterministic hint instead of relying
+        # only on its own interpretation. Keep this conservative — when in
+        # doubt, fall back to the LLM reading the raw text.
+        global_coverage_keywords = (
+            "anywhere",
+            "any where",
+            "everywhere",
+            "every where",
+            "globally",
+            "global",
+            "worldwide",
+            "world wide",
+            "world-wide",
+            "international",
+            "internationally",
+            "remote",
+            "remotely",
+            "online only",
+            "online-only",
+            "fully online",
+            "virtual only",
+            "virtually",
+            "nationwide",
+            "nation wide",
+            "all over",
+            "all states",
+            "all countries",
+            "any country",
+            "any city",
+            "any state",
+        )
+        service_area_blob = " | ".join(service_area_texts).lower()
+        is_global_coverage = has_service_area and any(
+            kw in service_area_blob for kw in global_coverage_keywords
+        )
+
+        lines: List[str] = [
             "# AUTHORITATIVE BUSINESS FACTS",
-            "The following information is verified and authoritative.",
-            "ALWAYS use these facts when the caller asks about the business name, address, phone, email, website, services, or pricing.",
+            "The following information is verified and authoritative for this business.",
+            "ALWAYS use these facts when the caller asks about the business name, address, phone, email, website, services, areas served, or pricing.",
             "Say the details exactly as written — they are already in natural spoken form.",
             "This section overrides any conflicting or missing information elsewhere in the prompt.",
             "",
@@ -872,18 +938,159 @@ No active tenant knowledge base documents were found.
             if rec.website_url:
                 lines.append(f"Website: {rec.website_url}")
             if rec.primary_service:
-                lines.append(f"Primary Service: {rec.primary_service}")
+                lines.append(f"Primary Service(s): {rec.primary_service}")
             if rec.secondary_service:
-                lines.append(f"Secondary Service: {rec.secondary_service}")
-            if rec.service_areas:
-                lines.append(f"Service Areas: {rec.service_areas}")
+                lines.append(f"Secondary Service(s): {rec.secondary_service}")
             if rec.specializations:
                 lines.append(f"Specializations: {rec.specializations}")
+            if rec.service_areas:
+                lines.append(f"Service Areas: {rec.service_areas}")
             if rec.pricing_information:
                 lines.append(f"Pricing: {rec.pricing_information}")
             if rec.additional_information:
                 lines.append(f"Additional Info: {rec.additional_information}")
             lines.append("")
+
+        # ── BUSINESS SCOPE & POLICY (strict, non-negotiable) ──────────────
+        lines.append("# BUSINESS SCOPE & POLICY — STRICT RULES")
+        lines.append(
+            "These rules are non-negotiable and override general helpfulness. "
+            "Follow them exactly, even if other parts of the prompt are silent."
+        )
+        lines.append("")
+
+        # 1) Service scope — only offer what the business actually provides.
+        lines.append("## 1) SERVICES WE OFFER (allowed scope)")
+        if has_scope_info:
+            if primary_services:
+                lines.append(
+                    f"- Primary services: {' | '.join(primary_services)}"
+                )
+            if secondary_services:
+                lines.append(
+                    f"- Secondary services: {' | '.join(secondary_services)}"
+                )
+            if specializations_list:
+                lines.append(
+                    f"- Specializations: {' | '.join(specializations_list)}"
+                )
+            lines.append("")
+            lines.append("RULES:")
+            lines.append(
+                "- ONLY offer, quote, schedule, or take details for the services listed above. "
+                "Treat anything outside this list as NOT offered by this business."
+            )
+            lines.append(
+                "- If the caller asks for a service that is NOT in the allowed scope:"
+            )
+            lines.append(
+                "  a) Politely say this business does not offer that specific service. "
+                "Do NOT pretend, improvise, or promise it."
+            )
+            lines.append(
+                "  b) In the SAME reply, briefly mention what this business actually does — "
+                "lead with the primary services, then optionally add secondary services or "
+                "specializations if relevant."
+            )
+            lines.append(
+                "  c) Ask if any of those would help. If yes, continue the call normally. "
+                "If they only want the unsupported service, thank them warmly, say a short "
+                "goodbye, and end your response with exactly [END_CALL]."
+            )
+            lines.append(
+                "- Do NOT invent prices, timelines, packages, guarantees, or capabilities for "
+                "services that are not explicitly described in AUTHORITATIVE BUSINESS FACTS above."
+            )
+        else:
+            lines.append(
+                "- Service scope is not explicitly configured for this business. "
+                "Do not make up specific services, prices, or capabilities. If asked what we do, "
+                "say you can take a message and have the team follow up."
+            )
+        lines.append("")
+
+        # 2) Service area — refuse / accept based on configured coverage.
+        lines.append("## 2) SERVICE AREA (where we operate)")
+        if has_service_area:
+            lines.append(f"- Service Areas (verbatim): {' | '.join(service_area_texts)}")
+            if is_global_coverage:
+                lines.append(
+                    "- COVERAGE: GLOBAL / REMOTE. The Service Areas text indicates the business "
+                    "serves callers anywhere (globally, remotely, online, worldwide, or nationwide)."
+                )
+                lines.append("")
+                lines.append("RULES:")
+                lines.append(
+                    "- NEVER refuse, redirect, or end the call based on the caller's location. "
+                    "Treat every caller as in-area."
+                )
+                lines.append(
+                    "- Do not ask the caller for their city/area solely to qualify them — only ask "
+                    "for location if it is required to deliver the service."
+                )
+            else:
+                lines.append(
+                    "- COVERAGE: RESTRICTED. The Service Areas above are the ONLY locations this "
+                    "business currently serves. Read the text carefully — it is authoritative."
+                )
+                lines.append("")
+                lines.append("RULES:")
+                lines.append(
+                    "- When the caller mentions or implies a city, neighborhood, region, state, or "
+                    "country, check whether it falls within the listed Service Areas. If you cannot "
+                    "tell, ask once politely for the caller's location."
+                )
+                lines.append(
+                    "- If the caller's location IS covered, proceed normally."
+                )
+                lines.append(
+                    "- If the caller's location is NOT covered:"
+                )
+                lines.append(
+                    "  a) Apologize warmly and clearly say this business does not currently provide "
+                    "services in that area."
+                )
+                lines.append(
+                    "  b) Briefly name the areas the business does cover (use the Service Areas "
+                    "text above)."
+                )
+                lines.append(
+                    "  c) Thank them for calling, say a short, friendly goodbye, and end your "
+                    "response with exactly [END_CALL]."
+                )
+                lines.append(
+                    "  d) Do NOT collect personal details, do NOT schedule, and do NOT take "
+                    "payment for out-of-area callers."
+                )
+        else:
+            lines.append(
+                "- Service Areas are not configured for this business."
+            )
+            lines.append("")
+            lines.append("RULES:")
+            lines.append(
+                "- Do NOT refuse the caller based on their location. Coverage is unspecified, so "
+                "treat every caller as potentially in-area."
+            )
+            lines.append(
+                "- If the caller asks where the business operates, say the service area is not "
+                "specified on file and offer to take a message for the team to follow up."
+            )
+        lines.append("")
+
+        # 3) Pricing & additional information — never fabricate.
+        lines.append("## 3) PRICING & ADDITIONAL INFORMATION")
+        lines.append(
+            "- For pricing, only quote what is written under 'Pricing:' in AUTHORITATIVE BUSINESS "
+            "FACTS. If pricing is not listed for the requested service, say it varies and offer to "
+            "take their details for a follow-up — do NOT guess or invent a number."
+        )
+        lines.append(
+            "- For policies, hours, requirements, guarantees, or anything else, only state what is "
+            "written under 'Additional Info:' or elsewhere in AUTHORITATIVE BUSINESS FACTS. If "
+            "something is not documented, say you don't have that information on hand and offer a "
+            "follow-up — do NOT fabricate."
+        )
 
         return "\n".join(lines)
 

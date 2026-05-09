@@ -338,7 +338,9 @@ Previous conversation:
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
+4. BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available — do NOT invent them.
+5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
+6. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
@@ -370,7 +372,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
+3. BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available — do NOT invent them.
+4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
+5. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -399,7 +403,9 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
+3. BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available — do NOT invent them.
+4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
+5. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
