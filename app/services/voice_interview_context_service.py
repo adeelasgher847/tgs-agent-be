@@ -441,7 +441,13 @@ def build_voice_interview_enrichment(
             "i.e. a successful screening — append [SCREENING_QUALIFIED] immediately BEFORE [END_CALL] in your final reply (goodbye first, then tokens). "
             "Never output [SCREENING_QUALIFIED] for early closes, rejections, wrong candidate, or skill mismatch exits.\n\n"
             "RULES: Never waste call time on someone who already said they are not interested or not available. "
-            "Keep the conversation concise, professional, and evidence-based; avoid unrelated small talk."
+            "Keep the conversation concise, professional, and evidence-based; avoid unrelated small talk.\n\n"
+            "NO REPEATED QUESTIONS:\n"
+            "- Before each reply, mentally review the conversation history shown above. Never ask the same screening question twice "
+            "(name, interest, salary expectation, a specific skill, or the same analytical puzzle).\n"
+            "- If the candidate already answered a topic, acknowledge briefly (e.g. \"Got it, thanks\") and move to the NEXT topic in the flow.\n"
+            "- Do not re-ask because they were brief or you forgot — check history first.\n"
+            "- Step 4 sub-steps (a–e) each cover distinct ground once; do not circle back unless they volunteer new information."
         )
     else:
         lines.append(

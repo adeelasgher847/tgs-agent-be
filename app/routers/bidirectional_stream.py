@@ -115,6 +115,7 @@ from app.services.call_session_service import call_session_service
 from app.services.voice_screening_qualification_service import (
     apply_resume_qualified_after_voice_screening,
     is_jd_recruitment_voice_context,
+    persist_voice_screening_qualified_signal,
 )
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
@@ -1853,9 +1854,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     end_call_after
                     and _RE_VOICE_SCREENING_QUALIFIED.search(full_response)
                     and not _transfer_re.search(full_response)
-                    and self._jd_recruitment_screening_active()
                 ):
+                    # DB apply_resume_qualified_after_voice_screening enforces jd_context + recruitment checks
                     self._pending_resume_screening_qualify = True
+                    try:
+                        persist_voice_screening_qualified_signal(self.db, self.call_session)
+                    except Exception:
+                        pass
+
                 if _transfer_re.search(full_response):
                     transfer_after = True
                     end_call_after = False
