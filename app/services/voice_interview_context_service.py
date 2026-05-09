@@ -408,10 +408,24 @@ def build_voice_interview_enrichment(
             if highlights:
                 lines.append(highlights)
                 highlights_added = True
+        _job_title_display = (job.job_title or "").strip() or "the open role"
+        _cname_display = candidate_name or "there"
         lines.append(
-            "Screening flow (strict order; ask one question at a time): "
-            "0) Immediate opt-out/identity guard: if the person says they are not interested in this opportunity "
-            "or says they are not the intended candidate/person, politely apologize and end the call immediately with [END_CALL]. "
+            f"Opening (your FIRST substantive turn after pickup/hello): Briefly introduce yourself in 1-2 sentences. "
+            f"Example: \"Hi {_cname_display}, I\'m calling from the hiring team regarding the {_job_title_display} position — "
+            f"I have a short screening call, it should only take a few minutes.\" "
+            f"Adapt naturally; do not read this example verbatim.\n\n"
+            "Cost and time discipline: Voice calls are expensive. "
+            "Do not prolong the call when the outcome is clearly that we will not be proceeding. "
+            "Reach [END_CALL] promptly whenever any exit condition below is triggered.\n\n"
+            "Instant exit rule (highest priority — overrides everything else): "
+            "If the callee expresses ANY clear disinterest or mismatch at any point — including but not limited to: "
+            "not interested, wrong person, wrong number, stop calling, not looking, already placed, "
+            "\"not for me\", happy where I am, or any similar signal — "
+            "respond with ONE brief polite sentence (e.g. \"Understood, I\'ll remove you from our list — have a great day.\") "
+            "and immediately output [END_CALL] in that same reply. "
+            "Do NOT ask why, do NOT try to persuade, do NOT continue with screening questions.\n\n"
+            "Screening flow (strict order after the opening; ask one question at a time): "
             "1) Name cross-check: confirm candidate full name from profile/resume. "
             "If mismatch, re-confirm once politely; if still mismatched, politely close the call and end with [END_CALL]. "
             "2) Job intent and employment context: ask why this role. "
