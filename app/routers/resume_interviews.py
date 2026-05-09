@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
+from app.core.logger import logger
 
 from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
 from app.models.job_description import JobDescription
@@ -24,6 +25,8 @@ from app.schemas.resume_interview import (
     ResumeInterviewBulkScheduleResponse,
     ResumeInterviewBulkScheduleResultItem,
     ResumeInterviewCallMediaResponse,
+    ResumeInterviewTranscriptResponse,
+    ResumeInterviewRecordingResponse,
     ResumeInterviewItem,
     ResumeInterviewSessionLinkItem,
     ResumeInterviewScheduleRequest,
@@ -240,6 +243,61 @@ def _extract_jd_context(
     if resume_id_str:
         out["resume_id"] = resume_id_str
     return out
+
+
+def _get_latest_call_session_for_resume(
+    db: Session,
+    resume_id: UUID,
+    tenant_id: UUID,
+) -> tuple[Resume, ResumeInterview, CallSession]:
+    """
+    Helper to find the latest interview and its linked call session for a resume.
+    Raises 404 if anything is missing.
+    """
+    resume = (
+        db.query(Resume)
+        .filter(
+            Resume.id == resume_id,
+            Resume.tenant_id == tenant_id,
+        )
+        .first()
+    )
+    if resume is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume not found")
+
+    interview = (
+        db.query(ResumeInterview)
+        .filter(
+            ResumeInterview.tenant_id == tenant_id,
+            ResumeInterview.resume_id == resume_id,
+            ResumeInterview.call_session_id.isnot(None),  # Skip empty "In Progress" records
+        )
+        .order_by(ResumeInterview.created_at.desc())
+        .first()
+    )
+    if interview is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No interview session found for this resume",
+        )
+    if not interview.call_session_id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Resume interview has no linked call session yet",
+        )
+
+    call_session = (
+        db.query(CallSession)
+        .filter(
+            CallSession.id == interview.call_session_id,
+            CallSession.tenant_id == tenant_id,
+        )
+        .first()
+    )
+    if call_session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Call session not found")
+
+    return resume, interview, call_session
 
 
 def _resolve_crm_config_id(db: Session, user: User, explicit: UUID | None) -> UUID:
@@ -806,7 +864,6 @@ def get_resume_session_link(
         "Resume session link retrieved successfully",
     )
 
-
 @router.get(
     "/by-resume/{resume_id}/call-media",
     response_model=SuccessResponse[ResumeInterviewCallMediaResponse],
@@ -817,53 +874,20 @@ def get_resume_interview_call_media(
     db: Session = Depends(get_db),
 ):
     """
+    DEPRECATED: This endpoint returns both transcript and recording URL.
+    It has been split into dedicated /transcript and /recording endpoints.
+    
     Latest resume interview for this resume → linked call session → transcript and recording URL.
     Transcript prefers `TranscriptMessage` rows; falls back to `CallSession.call_transcript`.
     """
+    logger.warning(f"⚠️ DEPRECATED: GET RESUME INTERVIEW CALL MEDIA CALLED")
+    logger.warning(f"Use /by-resume/{{resume_id}}/transcript and /by-resume/{{resume_id}}/recording instead")
     if not user.current_tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
 
-    resume = (
-        db.query(Resume)
-        .filter(
-            Resume.id == resume_id,
-            Resume.tenant_id == user.current_tenant_id,
-        )
-        .first()
+    resume, interview, call_session = _get_latest_call_session_for_resume(
+        db, resume_id, user.current_tenant_id
     )
-    if resume is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume not found")
-
-    interview = (
-        db.query(ResumeInterview)
-        .filter(
-            ResumeInterview.tenant_id == user.current_tenant_id,
-            ResumeInterview.resume_id == resume_id,
-        )
-        .order_by(ResumeInterview.created_at.desc())
-        .first()
-    )
-    if interview is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            "No resume interview found for this resume",
-        )
-    if not interview.call_session_id:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            "Resume interview has no linked call session yet",
-        )
-
-    call_session = (
-        db.query(CallSession)
-        .filter(
-            CallSession.id == interview.call_session_id,
-            CallSession.tenant_id == user.current_tenant_id,
-        )
-        .first()
-    )
-    if call_session is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Call session not found")
 
     transcript, transcript_source = _transcript_for_call_session(db, call_session)
     payload = ResumeInterviewCallMediaResponse(
@@ -877,6 +901,65 @@ def get_resume_interview_call_media(
         transcript_source=transcript_source,
     )
     return create_success_response(payload, "Resume interview call media retrieved successfully")
+
+@router.get(
+    "/by-resume/{resume_id}/transcript",
+    response_model=SuccessResponse[ResumeInterviewTranscriptResponse],
+)
+def get_resume_interview_transcript(
+    resume_id: UUID,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the transcript for the latest interview session linked to this resume.
+    """
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    resume, interview, call_session = _get_latest_call_session_for_resume(
+        db, resume_id, user.current_tenant_id
+    )
+
+    transcript, transcript_source = _transcript_for_call_session(db, call_session)
+    payload = ResumeInterviewTranscriptResponse(
+        resume_id=resume.id,
+        interview_id=interview.id,
+        call_session_id=call_session.id,
+        twilio_call_sid=call_session.twilio_call_sid or interview.twilio_call_sid,
+        call_session_status=call_session.status,
+        transcript=transcript,
+        transcript_source=transcript_source,
+    )
+    return create_success_response(payload, "Resume interview transcript retrieved successfully")
+
+
+@router.get(
+    "/by-resume/{resume_id}/recording",
+    response_model=SuccessResponse[ResumeInterviewRecordingResponse],
+)
+def get_resume_interview_recording(
+    resume_id: UUID,
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Get the recording URL for the latest interview session linked to this resume.
+    """
+    if not user.current_tenant_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
+
+    resume, interview, call_session = _get_latest_call_session_for_resume(
+        db, resume_id, user.current_tenant_id
+    )
+
+    payload = ResumeInterviewRecordingResponse(
+        resume_id=resume.id,
+        interview_id=interview.id,
+        call_session_id=call_session.id,
+        recording_url=call_session.recording_url,
+    )
+    return create_success_response(payload, "Resume interview recording URL retrieved successfully")
 
 
 @router.get(

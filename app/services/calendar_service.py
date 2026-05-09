@@ -458,6 +458,7 @@ class CalendarService:
         if not appt:
             raise ValueError("Appointment not found for review acknowledgement.")
 
+        was_confirmed_before_ack = appt.status == "confirmed"
         changed = False
         if appt.status == "cancelled":
             raise ValueError("Cancelled appointment cannot be confirmed from acknowledgement link.")
@@ -479,6 +480,12 @@ class CalendarService:
         if changed:
             db.commit()
             db.refresh(appt)
+
+        if (not was_confirmed_before_ack) and appt.status == "confirmed":
+            from app.services.appointment_follow_up_service import schedule_follow_up_after_confirm
+
+            acting = reviewer_user_id or appt.reviewed_by_user_id
+            schedule_follow_up_after_confirm(db, appt, acting)
 
         return appt
 
@@ -840,6 +847,10 @@ class CalendarService:
             notify_user_id=notify_user_id,
             call_session_id=appt.call_session_id,
         )
+        if appt.status == "confirmed":
+            from app.services.appointment_follow_up_service import refresh_follow_up_crm_after_reschedule
+
+            refresh_follow_up_crm_after_reschedule(db, appt, notify_user_id)
         return appt
 
     # ── Queries ───────────────────────────────────────────────────────────────
@@ -953,11 +964,25 @@ class CalendarService:
             )
         db.commit()
         db.refresh(appt)
+        if (not was_confirmed) and appt.status == "confirmed":
+            from app.services.appointment_follow_up_service import schedule_follow_up_after_confirm
+
+            schedule_follow_up_after_confirm(db, appt, notify_user_id)
+        if appt.status == "cancelled":
+            from app.services.appointment_follow_up_service import cancel_follow_up_crm_card
+
+            cancel_follow_up_crm_card(db, appt, notify_user_id)
         return appt
 
     def delete_appointment(
         self, db: Session, appointment_id: uuid.UUID, tenant_id: uuid.UUID
     ) -> bool:
+        appt = self.get_appointment_by_id(db, appointment_id, tenant_id)
+        if not appt:
+            return False
+        from app.services.appointment_follow_up_service import cancel_follow_up_crm_card
+
+        cancel_follow_up_crm_card(db, appt, None)
         appt = self.get_appointment_by_id(db, appointment_id, tenant_id)
         if not appt:
             return False

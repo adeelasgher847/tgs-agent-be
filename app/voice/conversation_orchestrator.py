@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.logger import logger
 from app.core.config import settings
+from app.services.agent_service import agent_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
@@ -271,6 +272,31 @@ class ConversationOrchestrator:
                 except Exception:
                     history_text = ""
 
+            # Build authoritative business-knowledge block (tenant/agent scoped).
+            # Best-effort + timeout-capped so voice latency remains predictable.
+            tenant_uuid = self._h.call_session.tenant_id if self._h.call_session else None
+            agent_uuid = self._h.agent.id if self._h.agent else None
+            business_knowledge_block = ""
+            if tenant_uuid:
+                try:
+                    loop = asyncio.get_running_loop()
+
+                    def _build_business_knowledge_block() -> str:
+                        return agent_service.build_business_knowledge_context_block(
+                            db=self._h.db,
+                            tenant_id=tenant_uuid,
+                            agent_id=agent_uuid,
+                        )
+
+                    business_knowledge_block = await asyncio.wait_for(
+                        loop.run_in_executor(None, _build_business_knowledge_block),
+                        timeout=float(
+                            getattr(settings, "VOICE_BUSINESS_KB_FETCH_TIMEOUT_SEC", 0.25) or 0.25
+                        ),
+                    )
+                except Exception as exc:
+                    logger.debug("Business knowledge fetch skipped: %s", exc)
+
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
@@ -312,9 +338,13 @@ Previous conversation:
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
+
+# AUTHORITATIVE BUSINESS FACTS
+{business_knowledge_block}
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -340,9 +370,13 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
+
+# AUTHORITATIVE BUSINESS FACTS
+{business_knowledge_block}
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -365,14 +399,22 @@ Previous conversation:
 # CRITICAL RULES
 1. NO REPETITION: Do not repeat questions. Move to the next point.
 2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+- BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available.
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
+
+# AUTHORITATIVE BUSINESS FACTS
+{business_knowledge_block}
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
             else:
                 system_prompt = base_prompt
+
+            transfer_block = self._h._build_transfer_instruction_block()
+            if transfer_block:
+                system_prompt = transfer_block + "\n\n" + system_prompt
 
             # Get agent's configured model and provider
             llm_service = None
@@ -425,6 +467,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
+            _tts_time_flush_s = max(
+                0.10,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.15) or 0.15),
+            )
             logger.info(
                 f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) "
                 f"for response to: '{user_text[:20]}...'"
@@ -436,6 +482,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 response_accum = ""
                 tts_buffer = ""
                 end_call_after = False
+                transfer_after = False
+                _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
                 first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
 
@@ -443,11 +491,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if not text:
                         return ""
                     text_no_end = text.replace("[END_CALL]", "").replace("[SCREENING_QUALIFIED]", "")
+                    text_no_end = text.replace("[END_CALL]", "")
+                    text_no_end = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", text_no_end, flags=re.IGNORECASE)
                     return re.sub(r"\[OUTCOME:[^\]]+\]", "", text_no_end)
 
                 def _find_flush_index(buf: str):
                     if not buf:
                         return None
+
+                    nl = buf.find("\n")
+                    if nl != -1:
+                        prefix = buf[:nl].strip()
+                        if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
+                            return nl
 
                     last_boundary = None
                     for m in re.finditer(r"([.!?])(\s+|$)", buf):
@@ -498,8 +554,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     response_accum += chunk
                     tts_buffer += chunk
 
+                    if chunk:
+                        _vm = getattr(self._h, "_voice_metrics", None)
+                        if _vm:
+                            _vm.mark_llm_first_token()
+
                     if "[END_CALL]" in response_accum:
                         end_call_after = True
+                        tts_buffer = _strip_control_tokens(tts_buffer)
+
+                    if _transfer_re.search(response_accum):
+                        transfer_after = True
+                        end_call_after = False
                         tts_buffer = _strip_control_tokens(tts_buffer)
 
                     if "[OUTCOME:" in tts_buffer:
@@ -510,7 +576,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     flush_idx = _find_flush_index(tts_buffer)
                     now_ts = time.perf_counter()
-                    if flush_idx is None and (now_ts - last_flush_ts) >= 0.8:
+                    if flush_idx is None and (now_ts - last_flush_ts) >= _tts_time_flush_s:
                         flush_idx = _find_time_flush_index(tts_buffer)
 
                     if flush_idx is not None and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
@@ -527,10 +593,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     "end_call_after": False,
                                 }
                             )
+                            _vm = getattr(self._h, "_voice_metrics", None)
+                            if _vm:
+                                _vm.mark_first_tts_queued()
                             last_flush_ts = now_ts
                             first_tts_chunk = False
 
                 # Flush any remaining buffer as final
+                full_accum = response_accum.strip()
+                end_call_after = end_call_after or ("[END_CALL]" in full_accum)
+                if _transfer_re.search(full_accum):
+                    transfer_after = True
+                    end_call_after = False
                 final_text = _strip_control_tokens(tts_buffer).strip()
                 if final_text and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                     chunk_counter += 1
@@ -540,9 +614,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "chunk_id": chunk_counter,
                             "use_ssml": self._h._use_ssml,
                             "is_final": True,
-                            "end_call_after": end_call_after,
+                            "end_call_after": end_call_after and not transfer_after,
+                            "transfer_after": transfer_after,
                         }
                     )
+                    _vm = getattr(self._h, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
+                elif transfer_after and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
+                    chunk_counter += 1
+                    await self._h._tts_pipeline.queue_tts(
+                        {
+                            "text": "One moment.",
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._h._use_ssml,
+                            "is_final": True,
+                            "end_call_after": False,
+                            "transfer_after": True,
+                        }
+                    )
+                    _vm = getattr(self._h, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
                 return response_accum
 
             final_text = ""
@@ -552,7 +645,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 logger.error(f"LLM streaming failed: {e}", exc_info=True)
 
             if final_text:
-                transcript_text = final_text.replace("[END_CALL]", "").strip()
+                transcript_text = re.sub(
+                    r"\[\s*TRANSFER_CALL\s*\]", "", final_text, flags=re.IGNORECASE
+                ).replace("[END_CALL]", "").strip()
                 if transcript_text:
                     await self._h._add_to_transcript("agent", transcript_text, "agent_response")
 

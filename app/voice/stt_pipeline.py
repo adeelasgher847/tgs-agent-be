@@ -1,4 +1,6 @@
 import asyncio
+import re
+import time
 from typing import Awaitable, Callable, Optional
 
 from app.core.config import settings
@@ -38,6 +40,19 @@ class SttPipeline:
 
         self._stt_session = None
         self._reader_task: Optional[asyncio.Task] = None
+
+        # Normalized-final dedup: catches "Hello?" vs "hello ?" re-endpoints within a window.
+        self._last_final_norm_key: str = ""
+        self._last_final_norm_mono: float = 0.0
+        self._final_norm_dedup_sec: float = float(
+            getattr(settings, "VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC", 6.0) or 6.0
+        )
+
+    @staticmethod
+    def _normalize_final_key(transcript: str) -> str:
+        t = (transcript or "").strip().lower()
+        t = re.sub(r"\s+", " ", t)
+        return t
 
     def _effective_endpointing_ms(self) -> int:
         if self._endpointing_ms is not None:
@@ -101,6 +116,22 @@ class SttPipeline:
 
                 try:
                     if is_final:
+                        norm_key = self._normalize_final_key(transcript)
+                        _now_mono = time.monotonic()
+                        if (
+                            norm_key
+                            and norm_key == self._last_final_norm_key
+                            and (_now_mono - self._last_final_norm_mono)
+                            < self._final_norm_dedup_sec
+                        ):
+                            logger.debug(
+                                "[STT] skipping normalized duplicate final within %ss",
+                                self._final_norm_dedup_sec,
+                            )
+                            continue
+                        if norm_key:
+                            self._last_final_norm_key = norm_key
+                            self._last_final_norm_mono = _now_mono
                         await self._on_final(transcript, confidence)
                     else:
                         await self._on_interim(transcript, confidence)

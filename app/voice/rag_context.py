@@ -47,6 +47,16 @@ If the user asks for specific factual, pricing, or policy details you do not see
 respond that this information is not available instead of guessing or inventing details.
 """, trace
 
+    # If RAG is explicitly disabled (env), or not configured, skip retrieval.
+    if not settings.RAG_ENABLED:
+        trace["status"] = "disabled_by_env"
+        return """
+# KNOWLEDGE BASE CONTEXT
+No relevant knowledge base entries were found for this query.
+If the user asks for specific factual, pricing, or policy details you do not see in the conversation history,
+respond that this information is not available instead of guessing or inventing details.
+""", trace
+
     # If RAG is not configured or we don't know the tenant, don't even try.
     if not tenant_id or not settings.PINECONE_API_KEY:
         trace["status"] = "missing_tenant_or_config"

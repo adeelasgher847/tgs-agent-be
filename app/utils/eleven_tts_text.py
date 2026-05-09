@@ -23,6 +23,11 @@ _CONTROL_TOKEN_RE = re.compile(
     r"\[(?:END_CALL|SCREENING_QUALIFIED|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)", re.IGNORECASE
 )
 _PAUSE_TAG_RE = re.compile(r"\[\s*pauses?\s*\]", re.IGNORECASE)
+    r"\[(?:END_CALL|TRANSFER_CALL|OUTCOME:|CHECK_SLOTS:|BOOK_APPOINTMENT:)",
+    re.IGNORECASE,
+)
+# Strip literal pause tags for ElevenLabs so models don't speak "pause".
+_PAUSE_TAG_RE = re.compile(r"\[\s*(?:pause|pauses)\s*\]", re.IGNORECASE)
 
 # Normalized: whitespace collapsed, lowercased. Expand as Eleven documents new tags.
 _ELEVEN_V3_TAG_INNERS: frozenset[str] = frozenset(

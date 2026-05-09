@@ -229,6 +229,15 @@ async def initiate_call(
             to_number=call_request.userPhoneNumber,
             call_type="outbound",
         )
+        appt_raw = (call_request.appointment_id or "").strip()
+        if appt_raw:
+            call_session.call_metadata = call_session.call_metadata or {}
+            md_appt = {**call_session.call_metadata}
+            md_appt["appointment_id"] = appt_raw
+            call_session.call_metadata = md_appt
+            db.commit()
+            db.refresh(call_session)
+
         # Optional: enrich from jd_id + resume_id (or jd_context only) without breaking n8n callers
         _ctx = call_request.jd_context or {}
         _jd = parse_optional_uuid(

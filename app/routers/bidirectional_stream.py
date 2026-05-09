@@ -58,11 +58,10 @@ SMART CHUNKING WITH OVERLAP:
   Result: Seamless transition with spoken fillers, no tak-tak distortion!
 
 CACHING & LOW-LATENCY STRATEGIES:
-1. Auto-Greeting on Connect:
-   - Agent speaks FIRST when call connects (no waiting for user!)
-   - Uses agent's first_message or default: "hello how are you"
-   - Bypasses LLM entirely for instant greeting (<200ms)
-   - Eliminates awkward silence at call start
+1. Auto-Greeting on Connect (inbound only):
+   - After pickup, optional one-time TTS from greeting_message (or legacy first_message if set)
+   - greeting_message is not used on outbound calls
+   - Bypasses LLM for that opening only; LLM is not instructed to repeat it verbatim on later "hi"
 
 2. Pre-cached Common Phrases (disabled — implementation commented in code):
    - 36+ common phrases were pre-generated at connect to warm the MULAW TTS cache
@@ -118,6 +117,7 @@ from app.services.voice_screening_qualification_service import (
 )
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
+from app.models.appointment import Appointment
 from app.services.transcript_service import transcript_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
@@ -125,7 +125,10 @@ from app.services.groq_service import groq_service
 from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
-from app.services.voice_twilio_utils import get_twilio_credentials_for_call
+from app.services.voice_twilio_utils import (
+    get_twilio_credentials_for_call,
+    twilio_caller_id_for_transfer_dial,
+)
 from app.services.google_tts_service import google_tts_service
 from app.services.tts_adapter import get_tts_adapter
 from app.voice.tone_adapter import tone_adapter
@@ -142,8 +145,10 @@ from app.voice.conversation_orchestrator import (
     ConversationOrchestrator,
     should_send_quick_ack,
 )
+from app.voice.voice_orchestrator import VoiceOrchestrator
 from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
+from app.voice.metrics import VoiceTurnMetrics
 
 # Import utilities and services
 from app.utils.audio_utils import (
@@ -177,6 +182,30 @@ router = APIRouter()
 # Vapi-style customEndpointingRules analogue: when the agent asks for email, we either
 # defer a longer Deepgram endpointing for the first STT session or reconnect once with
 # DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED so spelling pauses do not split finals prematurely.
+# ── Speculative TTS opener rules ─────────────────────────────────────────────
+# Compiled once at module load.  Ordered most-specific first so the first match
+# wins.  Each entry: (pattern, predicted_first_chunk_text).
+# The prediction only needs to be accurate enough to be useful — even a 30-40%
+# hit rate eliminates TTS synthesis latency for those turns entirely.
+_SPECULATIVE_OPENER_RULES: list[tuple[re.Pattern, str]] = [
+    # Booking / scheduling (specific before generic "what")
+    (re.compile(r"\b(book|schedule|appointment|reserve|reserv|slot|meeting|available|availability|reschedule)\b", re.I), "Sure, let me check that."),
+    # Pricing / cost
+    (re.compile(r"\b(price|cost|how much|fee|rate|charge|pricing|quote)\b", re.I), "Sure,"),
+    # Simple yes / affirmation (full utterance match)
+    (re.compile(r"^(yes|yeah|yep|yup|sure|absolutely|of course|correct|right|exactly|definitely|perfect|great)[\s.,!?]*$", re.I), "Great!"),
+    # Simple no / negative (full utterance match)
+    (re.compile(r"^(no|nope|not really|nah|never mind|nevermind|cancel that)[\s.,!?]*$", re.I), "I understand."),
+    # Help / problem
+    (re.compile(r"\b(help|support|issue|problem|trouble|not working|broken|error|wrong)\b", re.I), "I understand."),
+    # Greeting (full utterance)
+    (re.compile(r"^(hi|hello|hey|good morning|good afternoon|good evening|howdy|what'?s up)[\s!.,?]*$", re.I), "Hey!"),
+    # Acknowledgement / filler (full utterance)
+    (re.compile(r"^(okay|ok|alright|got it|sounds good|fine|cool|makes sense)[\s.,!?]*$", re.I), "Great."),
+    # General information request
+    (re.compile(r"\b(what|how|when|where|why|who|which|tell me|can you|could you|do you|does|is there)\b", re.I), "Sure,"),
+]
+
 _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE = re.compile(
     r"(?i)(?:"
     r"(?:provide|share|send|give)\s+(?:us\s+)?(?:your\s+)?(?:e-?mail\s+address|e-?mail|email)|"
@@ -235,6 +264,12 @@ class BidirectionalStreamHandler:
         self._min_interim_confidence: float = float(
             getattr(settings, "VOICE_MIN_INTERIM_CONFIDENCE", 0.52)
         )
+        self._rag_prefetch_min_words: int = max(
+            1, int(getattr(settings, "VOICE_RAG_PREFETCH_MIN_WORDS", 1) or 1)
+        )
+        self._rag_prefetch_min_confidence: float = float(
+            getattr(settings, "VOICE_RAG_PREFETCH_MIN_CONFIDENCE", 0.05) or 0.05
+        )
         self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0
         
         # TTS (Output) state - Parallel Pipeline
@@ -249,6 +284,10 @@ class BidirectionalStreamHandler:
         self._tts_pipeline: Optional[TtsPipeline] = None
         self._elevenlabs_prev_tts_text = ""
         self._use_ssml = True                # Enable SSML by default
+        # Quick-ack dedup guard: prevent repeated acknowledgements for the same
+        # user turn when interim/final regeneration paths overlap.
+        self._last_quick_ack_user_norm: str = ""
+        self._last_quick_ack_mono: float = 0.0
         
         # Session data
         self.call_session = None
@@ -289,7 +328,24 @@ class BidirectionalStreamHandler:
             getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
         )
         self._barge_in_min_conf_1w = max(0.4, min(0.75, self._barge_in_min_conf_1w))
-        self._audio_samples_needed = 10  # Need 10 consecutive non-silent samples (200ms) to confirm user audio
+        self._audio_samples_needed = max(
+            4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
+        )
+        self._audio_non_silent_needed = max(
+            1,
+            min(
+                self._audio_samples_needed,
+                int(
+                    getattr(
+                        settings,
+                        "VOICE_PICKUP_MIN_NON_SILENT_FRAMES",
+                        self._audio_samples_needed,
+                    )
+                    or self._audio_samples_needed
+                ),
+            ),
+        )
+        self._stream_sid_ready = asyncio.Event()
         
         # Goodbye detection state
         self._call_ended = False  # Track if call has been ended due to goodbye detection
@@ -336,6 +392,43 @@ class BidirectionalStreamHandler:
         self._AGENT_LINE_DEDUP_WINDOW_SEC: float = 25.0
         self._RECENT_AGENT_PAIRS_MAX: int = 5
 
+        # RAG prefetch: fired on the first qualifying interim so vector-DB retrieval
+        # overlaps Deepgram endpointing time instead of blocking LLM start.
+        self._rag_prefetch_task: Optional[asyncio.Task] = None
+        self._rag_prefetch_user_text: str = ""
+
+        # Speculative TTS prefetch: fired on STT final (and on qualifying interim)
+        # to synthesise the predicted first-chunk text during LLM TTFT.  When the
+        # prediction is correct the first TtsPipeline chunk is a cache hit → zero
+        # synthesis latency for chunk 0.  Wrong predictions cost one wasted TTS API
+        # call and are silently discarded.
+        self._speculative_prefetch_task: Optional[asyncio.Task] = None
+
+        # Duplicate-transcript guard for _complete_llm_turn_after_stt_final.
+        # Set INSIDE _llm_turn_serial_lock so tasks 2/3 that queued up behind
+        # task 1 drop out immediately once task 1 has answered the transcript.
+        self._llm_last_answered_transcript: str = ""
+        self._llm_last_answered_ts: float = 0.0
+
+        # KB / business-knowledge blocks: agent-level data that never changes during
+        # a call.  Fetched once in the background at call start so every subsequent
+        # turn pays zero DB latency for these blocks (saves 50-200ms per slow turn).
+        self._cached_inbound_kb_block: str = ""
+        self._cached_business_knowledge_block: str = ""
+        self._kb_cache_ready: bool = False  # True once the background fetch completes
+
+        # In-memory conversation history: avoids re-parsing the growing
+        # call_transcript JSON on every turn (saves 5-30ms, grows with call length).
+        # Entries are (role, content) tuples matching the transcript filter rules.
+        self._conversation_history_cache: list[tuple[str, str]] = []
+
+        # Final transcript bookkeeping (dedupe, DB writes): hold briefly — never across LLM+TTS.
+        self._voice_transcript_lock = asyncio.Lock()
+        # One completion at a time (interim/final regen policy, task awaits). Matches product
+        # platforms (Vapi-style): transcript ingestion stays concurrent; generation serializes.
+        self._llm_turn_serial_lock = asyncio.Lock()
+        self._voice_metrics = VoiceTurnMetrics()
+
         # Background audio manager (dev-branch style embedded ambience loop).
         self._background_audio = BackgroundAudioManager(
             websocket=self.websocket,
@@ -344,15 +437,27 @@ class BidirectionalStreamHandler:
         )
         asyncio.create_task(self._background_audio.load_from_base64_async())
 
-        # Start parallel TTS pipeline worker via TtsPipeline facade
-        self._tts_pipeline = TtsPipeline(self)
-        self._tts_worker_task = self._tts_pipeline._worker_task
+        # ── OLD direct pipeline wiring (replaced by VoiceOrchestrator below) ──
+        # self._tts_pipeline = TtsPipeline(self)
+        # self._tts_worker_task = self._tts_pipeline._worker_task
+        # self._conversation = ConversationOrchestrator(self)
+        # ─────────────────────────────────────────────────────────────────────
 
-        # Pre-cache common phrases in background for instant responses (disabled; uncomment to re-enable)
-        # asyncio.create_task(self._precache_common_phrases())
+        # Pre-cache quick-ack phrases so they hit the LRU audio cache instead of
+        # paying TTS API latency on the first "Got it" / "Sure" of the call.
+        asyncio.create_task(self._precache_common_phrases())
 
-        # Conversation orchestrator encapsulating LLM + policy rules
-        self._conversation = ConversationOrchestrator(self)
+        # Fetch KB/business-knowledge blocks in the background at call start.
+        # These are agent-level and don't change per-turn; caching them here
+        # eliminates the 50-200ms parallel executor cost on every slow-path turn.
+        asyncio.create_task(self._prefetch_kb_blocks_at_call_start())
+
+        # ── Voice Orchestration Layer ─────────────────────────────────────────
+        # VoiceOrchestrator owns SttPipeline + TtsPipeline lifecycle and
+        # coordinates the full turn flow (pickup → STT → barge-in → LLM → TTS).
+        # It writes _tts_pipeline and _tts_worker_task back onto this handler
+        # so all existing methods that reference self._tts_pipeline keep working.
+        self._voice_orchestrator = VoiceOrchestrator(self)
     
     def _load_session_data(self):
         """Load call session and agent data"""
@@ -379,6 +484,9 @@ class BidirectionalStreamHandler:
         Runs in background during initialization.
         """
         try:
+            # Let call setup/pickup settle first so warmup does not contend with
+            # first-turn STT/LLM/TTS work.
+            await asyncio.sleep(1.5)
             # Common phrases for instant responses (greetings, confirmations, acknowledgements)
             common_phrases = [
                 # Greetings
@@ -426,149 +534,184 @@ class BidirectionalStreamHandler:
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
             
-            for phrase in common_phrases:
-                try:
-                    # Generate and cache (async, non-blocking)
-                    await generate_mulaw_tts(
-                        text=phrase,
-                        lang=lang,
-                        voice=voice,
-                        use_chirp3_hd=True,
-                        speaking_rate=1.0,
-                        use_ssml=False
-                    )
-                except Exception:
-                    continue
+            sem = asyncio.Semaphore(4)
+
+            async def _warm_phrase(phrase: str) -> None:
+                async with sem:
+                    try:
+                        await generate_mulaw_tts(
+                            text=phrase,
+                            lang=lang,
+                            voice=voice,
+                            use_chirp3_hd=True,
+                            speaking_rate=1.0,
+                            use_ssml=False,
+                        )
+                    except Exception:
+                        return
+
+            await asyncio.gather(*(_warm_phrase(phrase) for phrase in common_phrases))
         except Exception as e:
             logger.error(f"Error in precache_common_phrases: {e}")
-    
-    async def handle_media_message(self, message: dict):
-        """Handle incoming audio from Twilio and feed to Deepgram streaming STT"""
+
+    async def _prefetch_kb_blocks_at_call_start(self) -> None:
+        """
+        Fetch inbound-KB and business-knowledge context blocks once at call start.
+        These are agent/tenant-level and don't change during a call, so caching here
+        saves the 50-200ms parallel-executor cost that was previously paid on every
+        slow-path turn inside generate_and_stream_response.
+        """
         try:
-            import time
-            
-            media = message.get("media", {})
-            payload = media.get("payload")
-            
+            tenant_uuid = self.call_session.tenant_id if self.call_session else None
+            agent_uuid = self.agent.id if self.agent else None
+            if not (tenant_uuid or agent_uuid):
+                self._kb_cache_ready = True
+                return
+
+            loop = asyncio.get_running_loop()
+
+            async def _fetch_inbound_kb() -> str:
+                if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                    return ""
+                try:
+                    return await loop.run_in_executor(
+                        None,
+                        lambda: agent_service.build_inbound_kb_documents_context_block(
+                            db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("[KB prefetch] inbound KB fetch failed: %s", exc)
+                    return ""
+
+            async def _fetch_business_knowledge() -> str:
+                if not tenant_uuid:
+                    return ""
+                try:
+                    return await loop.run_in_executor(
+                        None,
+                        lambda: agent_service.build_business_knowledge_context_block(
+                            db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("[KB prefetch] business knowledge fetch failed: %s", exc)
+                    return ""
+
+            kb, bk = await asyncio.gather(_fetch_inbound_kb(), _fetch_business_knowledge())
+            self._cached_inbound_kb_block = kb
+            self._cached_business_knowledge_block = bk
+            self._kb_cache_ready = True
+            logger.debug("[KB prefetch] cache ready (inbound_kb=%d chars, bk=%d chars)", len(kb), len(bk))
+        except Exception as exc:
+            logger.warning("[KB prefetch] call-start fetch failed: %s", exc)
+            self._kb_cache_ready = True  # allow the call to proceed without KB context
+
+    # ── Speculative TTS prefetch ──────────────────────────────────────────────
+
+    @staticmethod
+    def _predict_opener_phrase(user_text: str) -> Optional[str]:
+        """
+        Fast rule-based prediction of the most likely first TTS chunk text.
+
+        Runs in ~0.1ms (no LLM call, no DB).  Called at Deepgram endpointing time
+        so synthesis can start during LLM TTFT.  Returns None when no confident
+        prediction can be made (no synthesis waste on those turns).
+        """
+        text = (user_text or "").strip()
+        if not text:
+            return None
+        for pattern, phrase in _SPECULATIVE_OPENER_RULES:
+            if pattern.search(text):
+                return phrase
+        return None
+
+    async def _run_speculative_tts_prefetch(self, user_text: str) -> None:
+        """
+        Synthesise the predicted opener phrase and inject it into TtsPipeline's
+        LRU audio cache so the real chunk-0 is a cache hit (zero synthesis latency).
+
+        Fires as a background task at STT-final time (and optionally on interim)
+        so synthesis overlaps LLM TTFT.  If the prediction is wrong the cached
+        audio is simply never read and evicted normally.
+        """
+        try:
+            phrase = self._predict_opener_phrase(user_text)
+            if not phrase:
+                return
+            pipeline = self._tts_pipeline
+            if pipeline is None:
+                return
+            if self._tts_cancel.is_set():
+                return
+
+            from app.voice.tts_pipeline import TtsPipeline as _TtsPipeline
+            cache_key = _TtsPipeline._cache_key(phrase)
+
+            # Skip if already warm (e.g. common phrase pre-cached at call start)
+            if pipeline._get_cached(cache_key) is not None:
+                logger.debug("[SpecTTS] '%s' already cached — skipping synthesis", phrase)
+                return
+
+            task = {"text": phrase, "use_ssml": False, "is_final": False}
+            audio_bytes = await self._prefetch_tts_audio(task)
+            if isinstance(audio_bytes, bytes) and len(audio_bytes) > 0:
+                if self._tts_pipeline and not self._tts_cancel.is_set():
+                    self._tts_pipeline._put_cached(cache_key, audio_bytes)
+                    logger.debug(
+                        "[SpecTTS] pre-synthesized '%s' (%d bytes) — chunk-0 will be cache hit",
+                        phrase, len(audio_bytes),
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("[SpecTTS] prefetch failed: %s", exc)
+
+    async def handle_media_message(self, message: dict):
+        """
+        Handle incoming MULAW audio from Twilio.
+
+        The heavy lifting (pickup detection, grace period, STT pipeline lifecycle,
+        barge-in, and STT callbacks) now lives in VoiceOrchestrator.on_audio_chunk().
+        This method is intentionally thin — it just decodes the base64 payload and
+        hands the raw bytes to the orchestrator.
+
+        ── OLD direct pipeline code (now owned by VoiceOrchestrator) ────────────
+        # if not self._user_picked_up:  ... RMS pickup detection ...
+        # if self._skip_audio_until ... grace period ...
+        # if not self._stt_active: return
+        # if self._stt_pipeline is None: ... SttPipeline(...) ...
+        # await self._stt_pipeline.feed_audio_chunk(audio_data)
+        # ────────────────────────────────────────────────────────────────────────
+        """
+        try:
+            payload = message.get("media", {}).get("payload")
             if not payload:
                 return
-            
-            # Decode audio (MULAW from Twilio)
+
             audio_data = base64.b64decode(payload)
-            
-            # ✅ DETECT ACTUAL USER AUDIO (not Twilio system messages/music)
-            if not self._first_media_received:
-                self._first_media_received = True
-            
-            # Calculate audio level (RMS) to detect actual user audio vs silence/system noise
-            if not self._user_picked_up:
-                # Convert MULAW to linear and calculate RMS (Root Mean Square) audio level
-                audio_level = 0
-                if len(audio_data) > 0:
-                    linear_samples = [ulaw_to_linear_sample(b) for b in audio_data]
-                    # Calculate RMS
-                    sum_squares = sum(s * s for s in linear_samples)
-                    audio_level = int((sum_squares / len(linear_samples)) ** 0.5)
-                
-                # Track audio levels
-                self._audio_level_samples.append(audio_level)
-                if len(self._audio_level_samples) > self._audio_samples_needed * 2:
-                    self._audio_level_samples.pop(0)  # Keep last 20 samples
-                
-                # Check if we have enough samples and enough non-silent audio (actual user audio)
-                if len(self._audio_level_samples) >= self._audio_samples_needed:
-                    non_silent_count = sum(1 for level in self._audio_level_samples[-self._audio_samples_needed:] if level > self._min_audio_level_threshold)
-                    
-                    if non_silent_count >= self._audio_samples_needed:
-                        # Actual user audio detected! Set in-progress status
-                        await self._handle_user_pickup()  # User actually picked up with real audio!
-                        
-                        # Skip first few seconds for STT (system messages might still be there)
-                        self._skip_audio_until = time.time() + 3.0
-                else:
-                    return  # Don't process until we have actual user audio
-            
-            # Skip audio if still in grace period (system messages)
-            if self._skip_audio_until and time.time() < self._skip_audio_until:
-                return  # Don't send to STT - this is likely system message/ringing
+            await self._voice_orchestrator.on_audio_chunk(audio_data)
 
-            # Guard: stop feeding after call ends (e.g. Twilio keeps sending silence frames)
-            if not self._stt_active:
-                return
-
-            # (Removed first-media DB marker for outbound gating)
-            # Lazily create STT pipeline and push audio
-            if self._stt_pipeline is None:
-                language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
-                deferred_ep = self._stt_deferred_endpointing_ms
-                self._stt_deferred_endpointing_ms = None
-                self._stt_pipeline = SttPipeline(
-                    language_code=language_code,
-                    on_interim=self._maybe_process_interim,
-                    on_final=self._process_transcript,
-                    call_session_id=self.call_session_id,
-                    agent_id=self.agent_id,
-                    endpointing_ms=deferred_ep,
-                )
-
-            await self._stt_pipeline.feed_audio_chunk(audio_data)
-        
         except Exception as e:
             logger.error(f"Error handling media message: {e}", exc_info=True)
 
     def _schedule_recreate_stt_for_email_collection(self, agent_text: str) -> None:
         """
-        Defer STT session reconnect to the next event-loop tick so we never aclose
-        the Deepgram stream from a stack that may still be tied to the active reader
-        (avoids NoneType in reader_loop and re-entrancy deadlocks).
+        Defer STT session reconnect to the next event-loop tick.
+        Delegates to VoiceOrchestrator which owns the SttPipeline lifecycle.
+
+        ── OLD direct implementation (now in VoiceOrchestrator) ─────────────────
+        # async def _deferred(): await self._maybe_recreate_stt_for_email_collection(text)
+        # asyncio.create_task(_deferred())
+        # ────────────────────────────────────────────────────────────────────────
         """
-        text = (agent_text or "").strip()
-        if not text:
-            return
+        self._voice_orchestrator.schedule_stt_recreate_for_email(agent_text)
 
-        async def _deferred() -> None:
-            try:
-                await asyncio.sleep(0)
-                await self._maybe_recreate_stt_for_email_collection(text)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("email-collection STT hook (deferred): %s", exc)
-
-        asyncio.create_task(_deferred())
-
+    # _maybe_recreate_stt_for_email_collection is now handled inside
+    # VoiceOrchestrator._maybe_upgrade_stt_for_email — kept as a no-op stub
+    # for any call-site that might reference it directly.
     async def _maybe_recreate_stt_for_email_collection(self, agent_text: str) -> None:
-        """
-        After the agent asks for an email address, use longer Deepgram endpointing so
-        the caller does not need to speak unnaturally fast or loud across @ / dot pauses.
-        """
-        if not getattr(settings, "VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT", True):
-            return
-        if self._email_stt_endpointing_upgraded:
-            return
-        t = (agent_text or "").strip()
-        if not t or not _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE.search(t):
-            return
-        ext = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED", 2200) or 2200)
-        base = int(getattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 900) or 900)
-        if ext <= base:
-            self._email_stt_endpointing_upgraded = True
-            return
-        try:
-            if self._stt_pipeline is None:
-                self._stt_deferred_endpointing_ms = ext
-                self._email_stt_endpointing_upgraded = True
-                logger.info(
-                    "[STT] deferred extended endpointing_ms=%s until first audio (email prompt)",
-                    ext,
-                )
-                return
-            await self._stt_pipeline.recreate_with_endpointing(ext)
-            self._email_stt_endpointing_upgraded = True
-            logger.info(
-                "[STT] upgraded to extended endpointing_ms=%s after email-collection prompt",
-                ext,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[STT] extended endpointing upgrade skipped: %s", exc, exc_info=True)
+        await self._voice_orchestrator._maybe_upgrade_stt_for_email(agent_text)
     
     # Removed chunk-based STT processing; relying on Deepgram streaming endpointing
 
@@ -584,43 +727,94 @@ class BidirectionalStreamHandler:
                 pass
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
+        # Discard stale RAG prefetch so the next turn gets a fresh retrieval.
+        prefetch = getattr(self, "_rag_prefetch_task", None)
+        if prefetch and not prefetch.done():
+            prefetch.cancel()
+        self._rag_prefetch_task = None
+        self._rag_prefetch_user_text = ""
+
+        # Cancel any in-flight speculative TTS synthesis (barge-in resets the turn).
+        spec = getattr(self, "_speculative_prefetch_task", None)
+        if spec and not spec.done():
+            spec.cancel()
+        self._speculative_prefetch_task = None
 
     async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
         """
-        Run after the user's final message is in the DB (dev-style):
-        - If interim already ran: regenerate only if final text differs; else let interim run finish, no second LLM.
-        - No interim: full generate from final only.
+        Run after the user's final message is in the DB.
+
+        KEY DESIGN: _llm_turn_serial_lock is held only for the fast state-check
+        (~1ms).  generate_and_stream_response runs OUTSIDE the lock so a new STT
+        final from the user can acquire the lock immediately (no 2.6s wait) and
+        cancel this generation if a new utterance arrives.  This is what brings
+        stt_final→gen_start from 2-19s down to ~0ms.
         """
-        if self._turn_response_started:
-            should_regenerate = self._should_regenerate_on_final(transcript)
-            self._turn_response_started = False
-            self._turn_response_seed_text = ""
-            self._last_interim_text = ""
-            if should_regenerate:
-                await self._cancel_inflight_llm_response()
-                self._tts_cancel.clear()
-                await self.generate_and_stream_response(
-                    transcript,
-                    confidence,
-                    is_greeting=False,
+        tstrip = (transcript or "").strip()
+
+        # ── Phase 1: state check (inside lock, fast) ──────────────────────────
+        _should_generate = False
+        _need_cancel = False
+
+        async with self._llm_turn_serial_lock:
+            _now_m = time.monotonic()
+
+            # Duplicate-transcript gate: near-simultaneous STT finals for the
+            # same utterance (Deepgram re-endpoints) all queue here.  Once the
+            # first sets _llm_last_answered_transcript, the rest bail instantly.
+            if (
+                tstrip
+                and tstrip == self._llm_last_answered_transcript
+                and (_now_m - self._llm_last_answered_ts) < 10.0
+            ):
+                logger.info(
+                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago)",
+                    tstrip[:40], _now_m - self._llm_last_answered_ts,
                 )
+                return
+
+            if self._turn_response_started:
+                should_regenerate = self._should_regenerate_on_final(transcript)
+                self._turn_response_started = False
+                self._turn_response_seed_text = ""
+                self._last_interim_text = ""
+                if should_regenerate:
+                    _should_generate = True
+                    _need_cancel = True
+                    self._llm_last_answered_transcript = tstrip
+                    self._llm_last_answered_ts = _now_m
+                else:
+                    # Interim LLM already running with the correct transcript —
+                    # let it finish without a second generation.
+                    pass
+                return
             else:
-                if self._llm_response_task and not self._llm_response_task.done():
-                    try:
-                        await self._llm_response_task
-                    except asyncio.CancelledError:
-                        pass
-                self._llm_response_task = None
+                self._turn_response_seed_text = ""
+                self._last_interim_text = ""
+                _should_generate = True
+                _need_cancel = True  # cancel any stale task from a previous turn
+                self._llm_last_answered_transcript = tstrip
+                self._llm_last_answered_ts = _now_m
+        # ── Lock released ──────────────────────────────────────────────────────
+
+        if not _should_generate:
             return
 
-        self._turn_response_seed_text = ""
-        self._last_interim_text = ""
+        # ── Phase 2: cancel previous + generate (outside lock) ────────────────
+        # Cancelling here (outside lock) means a new STT final can acquire the
+        # lock while we're waiting for TTS cancel (~250ms) — it will see the
+        # updated _llm_last_answered_* and bail, preventing a race.
+        if _need_cancel:
+            await self._cancel_inflight_llm_response()
+
         self._tts_cancel.clear()
-        await self.generate_and_stream_response(
-            transcript,
-            confidence,
-            is_greeting=False,
-        )
+        try:
+            await asyncio.wait_for(
+                self.generate_and_stream_response(transcript, confidence, is_greeting=False),
+                timeout=12.0,
+            )
+        except asyncio.TimeoutError:
+            logger.error("[LLM] generate_and_stream_response timed out (12s) — aborting turn")
 
     def _should_accept_final_transcript(self, transcript: str, confidence: float) -> bool:
         """
@@ -654,58 +848,73 @@ class BidirectionalStreamHandler:
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
         try:
-            if not self._should_accept_final_transcript(transcript, confidence):
-                return
+            async with self._voice_transcript_lock:
+                if not self._should_accept_final_transcript(transcript, confidence):
+                    return
 
-            # Skip duplicate finals (e.g. same "Hello?" endpointed multiple times) — Vapi-style single turn
-            tstrip = (transcript or "").strip()
-            _now = time.monotonic()
-            if (
-                tstrip
-                and tstrip == self._stt_last_final_raw
-                and (_now - self._stt_last_final_monotonic) < self._STT_DEDUP_FINAL_WINDOW_SEC
-            ):
-                logger.debug("STT: skipping duplicate final within %ss", self._STT_DEDUP_FINAL_WINDOW_SEC)
-                return
-            self._stt_last_final_raw = tstrip
-            self._stt_last_final_monotonic = _now
-            
-            # 🎯 Check for goodbye words FIRST - end call if detected
-            if await self._check_and_end_call_if_goodbye(transcript):
-                return  # Stop processing - call is ending
-            
-            # 🎯 Check for voicemail detection - end call if detected
-            if await self._check_and_end_call_if_voicemail(transcript):
-                return  # Stop processing - call is ending
-            
-            # 🎯 Send "in-progress" status when confident word is detected (like "hello")
-            # Only send once when we get a confident transcript with meaningful words
-            if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
-                await self._send_in_progress_status(transcript, confidence)
-                self._in_progress_sent = True
-            
-            # Add to transcript (always)
-            await self._add_to_transcript("client", transcript, "speech", confidence)
-            self._update_booking_memory_from_user_turn(transcript)
+                # Skip duplicate finals (e.g. same "Hello?" endpointed multiple times).
+                tstrip = (transcript or "").strip()
+                _now = time.monotonic()
+                if (
+                    tstrip
+                    and tstrip == self._stt_last_final_raw
+                    and (_now - self._stt_last_final_monotonic) < self._STT_DEDUP_FINAL_WINDOW_SEC
+                ):
+                    logger.debug("STT: skipping duplicate final within %ss", self._STT_DEDUP_FINAL_WINDOW_SEC)
+                    return
+                self._stt_last_final_raw = tstrip
+                self._stt_last_final_monotonic = _now
 
-            # Turn coordinator: if the same user turn was just handled (e.g. "Hello?" twice
-            # across the pickup/first-second-endpoint boundary), do not generate a second
-            # agent reply. The client line is still saved so the caller sees they repeated.
-            user_turn_norm = self._normalize_turn_text(transcript)
-            if self._has_recent_duplicate_reply_for(user_turn_norm):
-                logger.info(
-                    "TurnCoordinator: suppressing duplicate generate for user turn=%r (within %ss)",
+                self._voice_metrics.begin_turn_at_stt_final()
+
+                # 🎯 Check for goodbye words FIRST - end call if detected
+                if await self._check_and_end_call_if_goodbye(transcript):
+                    return  # Stop processing - call is ending
+
+                # 🎯 Check for voicemail detection - end call if detected
+                if await self._check_and_end_call_if_voicemail(transcript):
+                    return  # Stop processing - call is ending
+
+                # 🎯 Send "in-progress" status when confident word is detected (like "hello")
+                if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
+                    await self._send_in_progress_status(transcript, confidence)
+                    self._in_progress_sent = True
+
+                # Add to transcript (always)
+                await self._add_to_transcript(
+                    "client",
                     transcript,
-                    self._DUP_USER_TURN_WINDOW_SEC,
+                    "speech",
+                    confidence,
+                    defer_post_write=True,
                 )
-                # Reset interim-turn flags so the next real user utterance is free to generate.
-                self._turn_response_started = False
-                self._turn_response_seed_text = ""
-                self._last_interim_text = ""
-                return
+                self._update_booking_memory_from_user_turn(transcript)
 
+                user_turn_norm = self._normalize_turn_text(transcript)
+                if self._has_recent_duplicate_reply_for(user_turn_norm):
+                    logger.info(
+                        "TurnCoordinator: suppressing duplicate generate for user turn=%r (within %ss)",
+                        transcript,
+                        self._DUP_USER_TURN_WINDOW_SEC,
+                    )
+                    self._turn_response_started = False
+                    self._turn_response_seed_text = ""
+                    self._last_interim_text = ""
+                    return
+
+            # Speculative TTS prefetch: synthesise the predicted opener phrase during
+            # LLM TTFT so chunk-0 is a cache hit when the real first flush arrives.
+            # Fire-and-forget — cancelled on barge-in alongside the LLM task.
+            if self._speculative_prefetch_task and not self._speculative_prefetch_task.done():
+                self._speculative_prefetch_task.cancel()
+            self._speculative_prefetch_task = asyncio.create_task(
+                self._run_speculative_tts_prefetch(transcript)
+            )
+
+            # Never hold _voice_transcript_lock across LLM+TTS — queued Deepgram finals would
+            # stall here for one full generation (~10–60s), inflating stt_final→gen_start.
             await self._complete_llm_turn_after_stt_final(transcript, confidence)
-            
+
         except Exception as e:
             logger.error(f"Error processing transcript: {e}", exc_info=True)
 
@@ -738,6 +947,39 @@ class BidirectionalStreamHandler:
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
                 return
+
+            # RAG prefetch: fire vector-DB retrieval as soon as we have a confident
+            # partial so it overlaps Deepgram endpointing time. This saves ~2s because
+            # the result is ready (or nearly so) by the time generate_and_stream_response
+            # would otherwise block waiting for Pinecone. Fires once per user turn
+            # regardless of VOICE_ENABLE_INTERIM_LLM so even final-only mode benefits.
+            _prefetch = getattr(self, "_rag_prefetch_task", None)
+            if (
+                not _prefetch
+                and not self._turn_response_started
+                and word_count >= self._rag_prefetch_min_words
+                and confidence >= self._rag_prefetch_min_confidence
+            ):
+                self._rag_prefetch_user_text = transcript
+                self._rag_prefetch_task = asyncio.create_task(
+                    self._prefetch_rag_context(transcript)
+                )
+
+            # Speculative TTS prefetch: also fire on interim so synthesis starts during
+            # the Deepgram endpointing window (200ms), maximising overlap with LLM TTFT.
+            # Only fire once per turn (guard: task not already running).
+            if (
+                not self._turn_response_started
+                and word_count >= self._min_interim_words
+                and confidence >= self._min_interim_confidence
+                and (
+                    self._speculative_prefetch_task is None
+                    or self._speculative_prefetch_task.done()
+                )
+            ):
+                self._speculative_prefetch_task = asyncio.create_task(
+                    self._run_speculative_tts_prefetch(transcript)
+                )
 
             # Final-only mode: do not start LLM from partials (barge-in already handled).
             if not self._enable_interim_llm:
@@ -780,15 +1022,10 @@ class BidirectionalStreamHandler:
                     await self._llm_response_task
                 except asyncio.CancelledError:
                     pass
+            # Fire LLM task without awaiting here — returning immediately keeps the
+            # STT reader loop unblocked so barge-in interims can still be processed
+            # during the full 8-10s LLM+TTS cycle.
             self._llm_response_task = asyncio.create_task(_run_interim())
-            try:
-                await self._llm_response_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.error(f"Error in interim LLM task: {e}", exc_info=True)
-            finally:
-                self._llm_response_task = None
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
     
@@ -801,6 +1038,16 @@ class BidirectionalStreamHandler:
         import random
         
         text = (user_text or "").strip()
+        if not text:
+            return
+        now_mono = time.monotonic()
+        user_norm = self._normalize_turn_text(text)
+        if (
+            user_norm
+            and user_norm == self._last_quick_ack_user_norm
+            and (now_mono - self._last_quick_ack_mono) < 12.0
+        ):
+            return
         # First check if this text is even eligible for a quick acknowledgement
         if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
             return
@@ -830,7 +1077,50 @@ class BidirectionalStreamHandler:
             "is_acknowledgement": True,
             "is_final": False
         })
-    
+        self._last_quick_ack_user_norm = user_norm
+        self._last_quick_ack_mono = now_mono
+
+    async def _prefetch_rag_context(self, user_text: str) -> tuple:
+        """
+        Run RAG vector-DB retrieval in the background so the result is available
+        (or nearly so) by the time generate_and_stream_response needs it.
+
+        Called as asyncio.create_task() from _maybe_process_interim on the first
+        qualifying partial — this overlaps Deepgram's endpointing silence window
+        (~200ms) and eliminates what would otherwise be a sequential ~2s RAG block
+        before every LLM start.
+        """
+        try:
+            tenant_uuid = self.call_session.tenant_id if self.call_session else None
+            agent_uuid = self.agent.id if self.agent else None
+            rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+            loop = asyncio.get_running_loop()
+
+            def _build():
+                return build_rag_context_block_with_trace(
+                    user_text=user_text,
+                    tenant_id=tenant_uuid,
+                    agent_id=rag_agent_scope,
+                )
+
+            return await asyncio.wait_for(
+                loop.run_in_executor(None, _build),
+                timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("[RAG prefetch] timed out for '%s…'", user_text[:20])
+        except Exception as exc:
+            logger.debug("[RAG prefetch] failed: %s", exc)
+        # Fallback: empty context (LLM still runs, just without RAG)
+        tenant_uuid = self.call_session.tenant_id if self.call_session else None
+        agent_uuid = self.agent.id if self.agent else None
+        rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+        return build_rag_context_block_with_trace(
+            user_text="",
+            tenant_id=tenant_uuid,
+            agent_id=rag_agent_scope,
+        )
+
     async def generate_and_stream_response(
         self,
         user_text: str,
@@ -845,20 +1135,24 @@ class BidirectionalStreamHandler:
         Args:
             user_text: User's input text (empty for greeting)
             confidence: STT confidence score
-            is_greeting: If True, uses agent's first_message instead of calling LLM
+            is_greeting: If True, plays inbound one-time opening (greeting_message / first_message) without LLM
         """
         try:
             from datetime import datetime, timezone
             import json
             
-            # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
+            # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting (inbound pickup only)
             if is_greeting:
-                # Priority: greeting_message → first_message → skip (no hardcoded fallback)
+                # greeting_message is inbound-only; first_message fallback only on inbound calls.
                 greeting_text = None
-                if self.agent:
-                    if getattr(self.agent, 'greeting_message', None):
+                inbound = (
+                    self.call_session is not None
+                    and (self.call_session.call_type or "").lower() == "inbound"
+                )
+                if self.agent and inbound:
+                    if getattr(self.agent, "greeting_message", None):
                         greeting_text = self.agent.greeting_message.strip()
-                    elif getattr(self.agent, 'first_message', None):
+                    elif getattr(self.agent, "first_message", None):
                         greeting_text = self.agent.first_message.strip()
 
                 if not greeting_text:
@@ -888,8 +1182,35 @@ class BidirectionalStreamHandler:
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
-            # Send quick acknowledgement for longer queries (instant from cache!)
-            #await self._send_quick_acknowledgement(user_text)
+            self._voice_metrics.start_generation()
+            slowpath_started_at = time.perf_counter()
+
+            def _remaining_slowpath_budget(default_timeout: float) -> float:
+                budget = float(getattr(settings, "VOICE_SLOWPATH_BUDGET_SEC", 0.55) or 0.55)
+                budget = max(0.12, min(3.0, budget))
+                elapsed = time.perf_counter() - slowpath_started_at
+                remaining = max(0.05, budget - elapsed)
+                return min(max(0.05, default_timeout), remaining)
+
+            booking_intent_turn = self._is_booking_intent_turn(user_text)
+            follow_up_active = bool(
+                self.call_session
+                and self.call_session.call_metadata
+                and self.call_session.call_metadata.get("appointment_id")
+            )
+            low_latency_fastpath = self._should_use_latency_fastpath(
+                user_text, booking_intent_turn
+            )
+
+            # Fire quick-ack immediately (fire-and-forget) so the user hears audio
+            # while the LLM+RAG+KB pipeline runs.  Only on the slow path (fastpath
+            # queries have sub-500ms LLM TTFT so a quick-ack would finish before the
+            # LLM chunk is ready, creating a silence gap rather than masking latency).
+            # In V2 TtsPipeline, synthesis is parallel: the LLM's first chunk starts
+            # synthesising in the background while quick-ack is still playing, so by
+            # the time quick-ack ends the real audio is typically already ready.
+            if user_text and not low_latency_fastpath:
+                asyncio.create_task(self._send_quick_acknowledgement(user_text))
 
             turn_context = build_turn_context(
                 user_text,
@@ -903,77 +1224,126 @@ class BidirectionalStreamHandler:
             agent_uuid = self.agent.id if self.agent else None
             rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
 
-            # Build KB context for the LLM with an explicit timeout so the voice
-            # pipeline never hangs on embeddings/Pinecone.
+            # RAG retrieval: use prefetched result when available (fired on interim
+            # so it overlaps Deepgram endpointing), otherwise run synchronously.
             rag_context_block = ""
             rag_trace: dict = {}
-            try:
-                loop = asyncio.get_running_loop()
+            _prefetch = self._rag_prefetch_task
+            self._rag_prefetch_task = None  # Consume once per turn
+            if low_latency_fastpath:
+                rag_trace = {"status": "skipped_fastpath"}
+                if _prefetch and not _prefetch.done():
+                    _prefetch.cancel()
+            else:
+                try:
+                    if _prefetch is not None:
+                        if _prefetch.done():
+                            # Already finished — zero-cost read
+                            rag_context_block, rag_trace = _prefetch.result()
+                            logger.debug("[RAG] used prefetch result (done)")
+                        else:
+                            # Still running — wait with reduced timeout (most work already done)
+                            prefetch_wait_cap = float(
+                                getattr(settings, "VOICE_RAG_PREFETCH_AWAIT_SEC", 0.18) or 0.18
+                            )
+                            rag_context_block, rag_trace = await asyncio.wait_for(
+                                asyncio.shield(_prefetch),
+                                timeout=_remaining_slowpath_budget(
+                                    min(max(0.05, prefetch_wait_cap), settings.RAG_RETRIEVAL_TIMEOUT_SEC)
+                                ),
+                            )
+                            logger.debug("[RAG] awaited in-flight prefetch")
+                    else:
+                        # No prefetch fired (e.g., very short utterance, final-only path)
+                        loop = asyncio.get_running_loop()
 
-                def _build_rag():
-                    return build_rag_context_block_with_trace(
-                        user_text=user_text,
+                        def _build_rag():
+                            return build_rag_context_block_with_trace(
+                                user_text=user_text,
+                                tenant_id=tenant_uuid,
+                                agent_id=rag_agent_scope,
+                            )
+
+                        rag_context_block, rag_trace = await asyncio.wait_for(
+                            loop.run_in_executor(None, _build_rag),
+                            timeout=_remaining_slowpath_budget(settings.RAG_RETRIEVAL_TIMEOUT_SEC),
+                        )
+                except asyncio.TimeoutError:
+                    rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                        user_text="",
                         tenant_id=tenant_uuid,
                         agent_id=rag_agent_scope,
                     )
+                    rag_trace["status"] = "timeout"
+                    rag_trace["timeout"] = True
+                except Exception as e:
+                    logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
+                    rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                        user_text="",
+                        tenant_id=tenant_uuid,
+                        agent_id=rag_agent_scope,
+                    )
+                    rag_trace["status"] = "failure"
+                    rag_trace["error"] = str(e)
 
-                rag_context_block, rag_trace = await asyncio.wait_for(
-                    loop.run_in_executor(None, _build_rag),
-                    timeout=settings.RAG_RETRIEVAL_TIMEOUT_SEC,
-                )
-            except asyncio.TimeoutError:
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "timeout"
-                rag_trace["timeout"] = True
-            except Exception as e:
-                logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "failure"
-                rag_trace["error"] = str(e)
-
+            # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
+            # These are agent/tenant-level and don't change during the call, so serving
+            # them from cache costs 0ms versus the previous 50-200ms parallel executor fetch.
+            # Fall back to live fetch only if the cache background task hasn't finished yet
+            # (race on the very first turn of an extremely fast caller — rare in practice).
             inbound_kb_docs_context_block = ""
             business_knowledge_block = ""
-            if self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid:
-                try:
-                    inbound_kb_docs_context_block = (
-                        agent_service.build_inbound_kb_documents_context_block(
-                            db=self.db,
-                            inbound_agent_id=agent_uuid,
-                            tenant_id=tenant_uuid,
-                        )
+            if not low_latency_fastpath:
+                if self._kb_cache_ready:
+                    inbound_kb_docs_context_block = self._cached_inbound_kb_block
+                    business_knowledge_block = self._cached_business_knowledge_block
+                else:
+                    skip_live_kb = bool(
+                        getattr(settings, "VOICE_SKIP_LIVE_KB_FETCH_ON_COLD_START", True)
                     )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to build inbound KB docs block for agent %s: %s",
-                        agent_uuid,
-                        e,
-                        exc_info=True,
-                    )
+                    if skip_live_kb:
+                        logger.debug("[KB] cache cold; skipping live fetch for latency budget")
+                    else:
+                        # Cache not ready yet — live fetch as fallback.
+                        _loop = asyncio.get_running_loop()
 
-            if tenant_uuid:
-                try:
-                    business_knowledge_block = (
-                        agent_service.build_business_knowledge_context_block(
-                            db=self.db,
-                            tenant_id=tenant_uuid,
-                            agent_id=agent_uuid,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to build business knowledge block for agent %s: %s",
-                        agent_uuid,
-                        e,
-                        exc_info=True,
-                    )
+                        async def _fetch_inbound_kb_live() -> str:
+                            if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                                return ""
+                            try:
+                                return await _loop.run_in_executor(
+                                    None,
+                                    lambda: agent_service.build_inbound_kb_documents_context_block(
+                                        db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.warning("KB live-fetch (inbound) failed: %s", exc)
+                                return ""
+
+                        async def _fetch_bk_live() -> str:
+                            if not tenant_uuid:
+                                return ""
+                            try:
+                                return await _loop.run_in_executor(
+                                    None,
+                                    lambda: agent_service.build_business_knowledge_context_block(
+                                        db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.warning("KB live-fetch (business) failed: %s", exc)
+                                return ""
+
+                        try:
+                            inbound_kb_docs_context_block, business_knowledge_block = await asyncio.wait_for(
+                                asyncio.gather(_fetch_inbound_kb_live(), _fetch_bk_live()),
+                                timeout=_remaining_slowpath_budget(0.25),
+                            )
+                        except asyncio.TimeoutError:
+                            logger.debug("[KB] live fetch timeout; continuing without live KB blocks")
+                        except Exception as exc:
+                            logger.debug("[KB] live fetch failed; continuing without live KB blocks: %s", exc)
 
             # One-line RAG summary (safe: no chunk text, no secrets)
             try:
@@ -989,48 +1359,49 @@ class BidirectionalStreamHandler:
                 # Logging must never break voice calls.
                 pass
             
-            # Build conversation context from transcript
-            conversation_history = []
-            if self.call_session and self.call_session.call_transcript:
+            # Build history text from in-memory cache (avoids re-parsing the growing
+            # call_transcript JSON on every turn — O(n) JSON parse that gets slower
+            # as the call continues).  _conversation_history_cache is appended to
+            # directly by _add_to_transcript so it's always up-to-date.
+            # Fallback: if cache is empty but DB has a transcript, seed from DB once.
+            if not self._conversation_history_cache and self.call_session and self.call_session.call_transcript:
                 try:
-                    conversation_history = json.loads(self.call_session.call_transcript) if isinstance(self.call_session.call_transcript, str) else self.call_session.call_transcript
-                except:
-                    conversation_history = []
-            
-            # Build history text - bounded filtered history for stable long-call memory
-            history_text = ""
-            if conversation_history:
-                try:
-                    history_lines = []
-                    filtered = []
-                    for msg in conversation_history:
+                    raw = self.call_session.call_transcript
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    for msg in (parsed or []):
                         if isinstance(msg, dict):
-                            # Handle both 'content' and 'message' keys
-                            role = msg.get('role', 'unknown')
-                            content = msg.get('content') or msg.get('message', '')
-                            message_type = msg.get('message_type', '')
-                            
-                            # Filter: Only include client and agent messages (skip system/greeting/status messages)
-                            if content and role in ['client', 'agent'] and message_type not in ['greeting', 'system', 'status']:
-                                filtered.append((role, content))
+                            role = msg.get("role", "")
+                            content = msg.get("content") or msg.get("message", "")
+                            mtype = msg.get("message_type", "")
+                            if content and role in ("client", "agent") and mtype not in ("greeting", "system", "status"):
+                                self._conversation_history_cache.append((role, content))
+                except Exception:
+                    pass
 
-                    # Booking flows benefit from a slightly wider history window so
-                    # the model keeps the already-collected service/date/slot in view.
-                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 40)
+            history_text = ""
+            if self._conversation_history_cache:
+                try:
+                    filtered = self._conversation_history_cache
+
+                    # Booking flows use a slightly wider window to keep service/date/slot
+                    # in context, but capped at 20 to avoid prompt bloat that inflates LLM TTFT.
+                    # (Previous default of 39 was adding ~1000 tokens to the prompt on long calls.)
+                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 12)
+                    if low_latency_fastpath:
+                        max_msgs = min(max_msgs, 6)
                     if self._is_booking_context_active(user_text):
-                        max_msgs = max(max_msgs, 39)
+                        max_msgs = min(max(max_msgs, 20), 20)
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
-                    # Build history text from the bounded window
-                    for role, content in filtered:
-                        history_lines.append(f"{role.capitalize()}: {content}")
-
-                    history_text = "\n".join(history_lines)
+                    history_text = "\n".join(
+                        f"{role.capitalize()}: {content}" for role, content in filtered
+                    )
                 except Exception:
                     history_text = ""
             
             booking_memory_block = self._build_booking_memory_block()
+            follow_up_appt_block = self._build_follow_up_appointment_block()
 
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
@@ -1063,10 +1434,21 @@ class BidirectionalStreamHandler:
                 no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
             elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
 
-            _greeting_msg = (getattr(self.agent, 'greeting_message', None) or "").strip() if self.agent else ""
+            # Inbound: opening may play once via TTS at pickup — do not instruct LLM to repeat verbatim on every "hi".
+            _inbound_call = (
+                self.call_session is not None
+                and (self.call_session.call_type or "").lower() == "inbound"
+            )
+            _has_opening_cfg = bool(self.agent) and (
+                (getattr(self.agent, "greeting_message", None) or "").strip()
+                or (getattr(self.agent, "first_message", None) or "").strip()
+            )
             greeting_instruction_block = (
-                f"\n- GREETING: When the caller says hi, hello, or any greeting, respond with exactly: {_greeting_msg}\n"
-                if _greeting_msg else ""
+                "\n- GREETING: A short opening may play once automatically at call start (inbound). "
+                "If the caller says hi, hello, or similar later, acknowledge in one brief phrase only — "
+                "do not repeat the full opening greeting verbatim.\n"
+                if (_inbound_call and _has_opening_cfg)
+                else ""
             )
 
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
@@ -1079,12 +1461,14 @@ You are {agent_name}, having a real-time phone call with a human.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
@@ -1121,12 +1505,14 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
@@ -1159,12 +1545,14 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-{output_plain_text_rule}{greeting_instruction_block}
+{output_plain_text_rule}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
@@ -1190,6 +1578,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Use base prompt
                 system_prompt = base_prompt
 
+            transfer_block = self._build_transfer_instruction_block()
+            if transfer_block:
+                system_prompt = transfer_block + "\n\n" + system_prompt
+
             # Prepend current date/time so the agent knows what "today", "tomorrow",
             # and "past slots" mean. Also injected into appointment booking flow.
             _now_local = datetime.now(timezone.utc)
@@ -1207,8 +1599,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             api_key = None
             temperature = 0.5
             max_tokens = 100
-            booking_intent_turn = self._is_booking_intent_turn(user_text)
-            
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
                 
@@ -1234,9 +1624,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 elif self.agent.model.max_tokens:
                     max_tokens = self.agent.model.max_tokens
 
-                # Booking turns need enough completion budget for action token emission.
-                if booking_intent_turn:
+                # Booking / follow-up turns need enough completion budget for action tokens.
+                if booking_intent_turn or follow_up_active:
                     max_tokens = max(max_tokens, 180)
+                elif low_latency_fastpath:
+                    max_tokens = min(max_tokens, 80)
                 
                 # Select service based on provider
                 if self.agent.provider:
@@ -1258,6 +1650,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
+            _tts_time_flush_s = max(
+                0.08,
+                float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.10) or 0.10),
+            )
+            _time_flush_target_words = 3 if low_latency_fastpath else 4
             logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
@@ -1268,6 +1665,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 response_accum = ""
                 tts_buffer = ""
                 end_call_after = False
+                transfer_after = False
+                _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
                 first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
@@ -1289,6 +1688,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     """
                     if not buf:
                         return None
+
+                    nl = buf.find("\n")
+                    if nl != -1:
+                        prefix = buf[:nl].strip()
+                        if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
+                            return nl
 
                     # Prefer sentence boundaries: ., !, ? followed by whitespace/newline/end
                     last_boundary = None
@@ -1321,16 +1726,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if not buf:
                         return None
                     words = buf.split()
-                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 5):
+                    # Lower floor to 2 words (was hardcoded 5): allows the 150ms time
+                    # gate to flush short confident fragments like "Sure," or "Got it."
+                    # without waiting for a full sentence to accumulate first.
+                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 2):
                         return None
 
-                    # Flush around ~6-8 words to start speaking quickly.
-                    target_words = min(8, len(words))
+                    # Flush around ~4-6 words to start speaking quickly.
+                    target_words = min(_time_flush_target_words, len(words))
                     m = re.match(rf"^(?:\\S+\\s+){{{target_words - 1}}}\\S+", buf)
                     if not m:
                         return None
                     return m.end()
 
+                _first_token_marked = False
                 async for chunk in service.stream_text(
                     prompt=user_text,
                     system_prompt=system_prompt,
@@ -1348,10 +1757,21 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     response_accum += chunk
                     tts_buffer += chunk
 
+                    if not _first_token_marked:
+                        _first_token_marked = True
+                        _vm = getattr(self, "_voice_metrics", None)
+                        if _vm:
+                            _vm.mark_llm_first_token()
+
                     # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
                     if "[END_CALL]" in response_accum:
                         end_call_after = True
                         # Remove it from TTS buffer immediately so it never gets spoken
+                        tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
+
+                    if _transfer_re.search(response_accum):
+                        transfer_after = True
+                        end_call_after = False
                         tts_buffer = self._strip_control_tokens_for_tts(tts_buffer)
 
                     # Remove OUTCOME tokens from any in-flight buffer (never spoken)
@@ -1368,10 +1788,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     # Flush complete thoughts early for faster perceived latency
                     flush_idx = _find_flush_index(tts_buffer)
-                    # If punctuation-based flush isn't available, do a time-based flush (~200ms for 400–500ms latency)
+                    # If punctuation-based flush isn't available, do a time-based flush (tunable)
                     if flush_idx is None:
                         now_ts = time.perf_counter()
-                        if (now_ts - last_flush_ts) >= 0.20:
+                        if (now_ts - last_flush_ts) >= _tts_time_flush_s:
                             flush_idx = _find_time_flush_index(tts_buffer)
                     if flush_idx is not None and not self._tts_cancel.is_set():
                         flush_text = tts_buffer[:flush_idx].strip()
@@ -1399,6 +1819,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     "use_ssml": self._use_ssml,
                                     "is_final": False,
                                 })
+                                _vm = getattr(self, "_voice_metrics", None)
+                                if _vm:
+                                    _vm.mark_first_tts_queued()
                                 _schedule_deferred_memory_once()
                             first_tts_chunk = False
                             last_flush_ts = time.perf_counter()
@@ -1408,6 +1831,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = end_call_after or ("[END_CALL]" in full_response)
                 if end_call_after and "[SCREENING_QUALIFIED]" in full_response:
                     self._pending_resume_screening_qualify = True
+                if _transfer_re.search(full_response):
+                    transfer_after = True
+                    end_call_after = False
 
                 # Never speak control tokens
                 tts_buffer = self._prepare_tts_text(tts_buffer)
@@ -1432,9 +1858,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "chunk_id": chunk_counter,
                             "use_ssml": self._use_ssml,
                             "is_final": True,
-                            "end_call_after": end_call_after,
+                            "end_call_after": end_call_after and not transfer_after,
+                            "transfer_after": transfer_after,
                         })
+                        _vm = getattr(self, "_voice_metrics", None)
+                        if _vm:
+                            _vm.mark_first_tts_queued()
                         _schedule_deferred_memory_once()
+                elif transfer_after and not self._tts_cancel.is_set() and self._tts_pipeline:
+                    chunk_counter += 1
+                    await self._tts_pipeline.queue_tts({
+                        "text": "One moment.",
+                        "chunk_id": chunk_counter,
+                        "use_ssml": self._use_ssml,
+                        "is_final": True,
+                        "end_call_after": False,
+                        "transfer_after": True,
+                    })
+                    _vm = getattr(self, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
+                    _schedule_deferred_memory_once()
 
                 return response_accum.strip()
 
@@ -1497,21 +1941,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             )
 
             if final_text:
-                # Two-step reliability: if booking intent exists but token is missing, run action extraction.
-                if booking_intent_turn and not self._has_calendar_token(final_text):
-                    extracted_token = await self._extract_calendar_action_token(
-                        llm_service=llm_service,
-                        model_name=model_name,
-                        api_key=api_key,
-                        user_text=user_text,
-                        assistant_text=final_text,
-                        history_text=history_text,
-                        temperature=temperature,
-                    )
-                    if extracted_token:
-                        logger.info("Action extraction fallback emitted token: %s", extracted_token[:140])
-                        final_text = f"{final_text}\n{extracted_token}"
-
                 # Strip control tokens from transcript (never saved to history)
                 transcript_text = self._strip_control_tokens_for_tts(final_text).replace("[END_CALL]", "").strip()
                 if "[BOOK_APPOINTMENT:" in final_text:
@@ -1528,11 +1957,86 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
                     self._schedule_recreate_stt_for_email_collection(transcript_text)
 
-                # Handle calendar tokens (fire-and-forget after TTS is already queued)
+                # Handle calendar tokens (fire-and-forget — TTS already queued above).
+                # Two-step reliability: if booking intent exists but the LLM omitted the
+                # token, run _extract_calendar_action_token as a background task so it
+                # never blocks the voice pipeline.  The extracted token fires its own
+                # calendar handler asynchronously after the spoken response is done.
                 if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_check_slots_token(final_text))
                 elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
+                    pass  # handled below
+                elif booking_intent_turn:
+                    # No token emitted — run extraction in the background (non-blocking)
+                    async def _deferred_extraction() -> None:
+                        try:
+                            token = await asyncio.wait_for(
+                                self._extract_calendar_action_token(
+                                    llm_service=llm_service,
+                                    model_name=model_name,
+                                    api_key=api_key,
+                                    user_text=user_text,
+                                    assistant_text=final_text,
+                                    history_text=history_text,
+                                    temperature=temperature,
+                                ),
+                                timeout=5.0,
+                            )
+                            if token:
+                                logger.info("[CalAction] deferred extraction: %s", token[:120])
+                                combined = f"{final_text}\n{token}"
+                                if re.search(r"\[\s*CHECK_SLOTS\s*:", token, flags=re.IGNORECASE):
+                                    await self._handle_check_slots_token(combined)
+                                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", token, flags=re.IGNORECASE):
+                                    await self._handle_book_appointment_token(combined)
+                        except asyncio.TimeoutError:
+                            logger.debug("[CalAction] deferred extraction timed out")
+                        except Exception as exc:
+                            logger.debug("[CalAction] deferred extraction error: %s", exc)
+                    asyncio.create_task(_deferred_extraction())
+
+                if re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
                     asyncio.create_task(self._handle_book_appointment_token(final_text))
+                if re.search(r"\[\s*FOLLOWUP_CONFIRM\s*\]", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_followup_confirm_token(final_text))
+                if re.search(r"\[\s*FOLLOWUP_CANCEL\s*\]", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_followup_cancel_token(final_text))
+                if re.search(r"\[\s*FOLLOWUP_RESCHEDULE\s*:", final_text, flags=re.IGNORECASE):
+                    asyncio.create_task(self._handle_followup_reschedule_token(final_text))
+
+                try:
+                    self._voice_metrics.log_turn_summary(
+                        logger,
+                        user_preview=(user_text or "")[:56],
+                        session_hint=str(self.call_session_id or ""),
+                    )
+                    if bool(getattr(settings, "VOICE_SLO_ENABLED", True)):
+                        breaches = self._voice_metrics.get_slo_breaches(
+                            stt_final_to_gen_start_s=float(
+                                getattr(settings, "VOICE_SLO_STT_FINAL_TO_GEN_START_SEC", 0.35) or 0.35
+                            ),
+                            gen_start_to_llm_first_token_s=float(
+                                getattr(settings, "VOICE_SLO_GEN_START_TO_LLM_FIRST_TOKEN_SEC", 0.90)
+                                or 0.90
+                            ),
+                            gen_start_to_first_tts_q_s=float(
+                                getattr(settings, "VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC", 1.40)
+                                or 1.40
+                            ),
+                            gen_start_to_now_warn_s=float(
+                                getattr(settings, "VOICE_SLO_GEN_START_TO_NOW_WARN_SEC", 2.00)
+                                or 2.00
+                            ),
+                        )
+                        if breaches:
+                            logger.warning(
+                                "[VoiceSLO] breach session=%s user=%r %s",
+                                str(self.call_session_id or ""),
+                                (user_text or "")[:56],
+                                " | ".join(breaches),
+                            )
+                except Exception:
+                    pass
 
         except asyncio.CancelledError:
             raise
@@ -1584,6 +2088,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             "am", "pm", "a.m", "p.m", "date", "time", "tomorrow", "today",
         )
         return any(k in haystack for k in booking_keywords)
+
+    def _should_use_latency_fastpath(self, user_text: str, booking_intent_turn: bool) -> bool:
+        """
+        Fast-path only for short/simple turns where heavy context is unlikely to help.
+        Keeps booking/business-intent turns on the full context path.
+        """
+        if not bool(getattr(settings, "VOICE_ENABLE_LATENCY_FASTPATH", True)):
+            return False
+        if booking_intent_turn:
+            return False
+        text = (user_text or "").strip().lower()
+        if not text:
+            return False
+        max_words = int(getattr(settings, "VOICE_FASTPATH_MAX_WORDS", 7) or 7)
+        words = text.split()
+        if len(words) > max_words:
+            return False
+        heavy_intent_markers = (
+            "price", "pricing", "cost", "address", "phone", "email", "website",
+            "service", "book", "booking", "appointment", "schedule", "slot", "quote",
+        )
+        return not any(k in text for k in heavy_intent_markers)
 
     def _is_booking_context_active(self, user_text: str = "") -> bool:
         return bool(
@@ -1787,6 +2313,71 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if resolved_slot is not None:
             self._last_selected_calendar_slot = resolved_slot
 
+    def _build_follow_up_appointment_block(self) -> str:
+        """Extra instructions when this outbound call was scheduled as an appointment reminder."""
+        if not self.call_session or not self.call_session.call_metadata:
+            return ""
+        aid_raw = str(self.call_session.call_metadata.get("appointment_id") or "").strip()
+        if not aid_raw:
+            return ""
+        appt = None
+        try:
+            appt_id = uuid.UUID(aid_raw)
+            appt = (
+                self.db.query(Appointment)
+                .filter(
+                    Appointment.id == appt_id,
+                    Appointment.tenant_id == self.call_session.tenant_id,
+                )
+                .first()
+            )
+        except Exception:
+            appt = None
+
+        details: list[str] = []
+        if appt:
+            if (appt.customer_name or "").strip():
+                details.append(f"- Customer name: {appt.customer_name.strip()}.")
+            if (appt.customer_phone or "").strip():
+                details.append(f"- Customer phone: {appt.customer_phone.strip()}.")
+            if (appt.appointment_reason or "").strip():
+                details.append(f"- Appointment reason: {appt.appointment_reason.strip()}.")
+            if appt.slot_start:
+                try:
+                    from app.services.calendar_service import calendar_service as _calendar_service
+
+                    _tz_label, slot_start_local, _slot_end_local = _calendar_service.appointment_local_display(
+                        self.db,
+                        self.call_session.tenant_id,
+                        appt,
+                    )
+                    details.append(
+                        "- Scheduled appointment time (local): "
+                        f"{slot_start_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')}."
+                    )
+                except Exception:
+                    pass
+        else:
+            details.append(f"- Appointment ID: {aid_raw}.")
+
+        details_block = "\n".join(details)
+        if details_block:
+            details_block = f"{details_block}\n"
+
+        return (
+            "# APPOINTMENT FOLLOW-UP REMINDER (THIS CALL ONLY)\n"
+            f"{details_block}"
+            "- The customer has an appointment on file. Confirm whether they (or someone for the service) will attend at the scheduled time.\n"
+            "- When you mention the appointment time, use the local time shown above. Do not mention UTC or any timezone name.\n"
+            "- If they clearly confirm attendance: thank them briefly, then put [FOLLOWUP_CONFIRM] alone on its own line at the end of your message, "
+            "then end with [END_CALL] on the next line.\n"
+            "- If they want to cancel the appointment: acknowledge, then put [FOLLOWUP_CANCEL] alone on its own line at the end.\n"
+            "- If they want to reschedule: collect a concrete new date and time they agree to, then put exactly one line at the end: "
+            "[FOLLOWUP_RESCHEDULE:slot=<ISO8601 datetime>]. Use UTC with offset or Z (e.g. 2026-05-10T15:00:00+00:00). "
+            "If they have not given a new time yet, ask for it — do not emit RESCHEDULE until the slot is explicit.\n"
+            "- Do not use [BOOK_APPOINTMENT:...] in this reminder flow.\n"
+        )
+
     def _build_booking_memory_block(self) -> str:
         if not self._is_booking_context_active():
             return ""
@@ -1838,6 +2429,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             cleaned = re.sub(pattern, "", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
+    def _build_transfer_instruction_block(self) -> str:
+        route = getattr(self.agent, "transfer_route", None) if self.agent else None
+        if not route:
+            return ""
+        t = (route.transfer_type or "cold").lower()
+        return (
+            "# HUMAN ESCALATION (TRANSFER)\n"
+            f"- A human contact is configured for this agent ({route.friendly_name}; transfer type: {t}).\n"
+            "- Use this ONLY for genuine emergencies, safety or abuse threats, or when the caller clearly needs a human and you cannot help.\n"
+            "- Acknowledge briefly in plain words, then end your reply with exactly [TRANSFER_CALL] on its own line. Never speak the brackets aloud.\n"
+            "- If you use [TRANSFER_CALL], do not also use [END_CALL] in the same reply; transfer takes priority.\n"
+        )
+
     @staticmethod
     def _strip_control_tokens_for_tts(text: str) -> str:
         """
@@ -1850,14 +2454,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         # Bracketed canonical tokens
         out = out.replace("[END_CALL]", "")
         out = out.replace("[SCREENING_QUALIFIED]", "")
+        out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
         out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
         out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
+        out = re.sub(r"\[\s*FOLLOWUP_CONFIRM\s*\]", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\[\s*FOLLOWUP_CANCEL\s*\]", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\[\s*FOLLOWUP_RESCHEDULE:[^\]]*\]", "", out, flags=re.IGNORECASE)
+        # Non-control bracket tags that sometimes leak from LLM output.
+        # Keep this conservative so spoken content remains intact.
+        out = re.sub(r"\[\s*(?:pause|silence|laugh|sigh|breath|breathes|inaudible)\s*\]", "", out, flags=re.IGNORECASE)
+        # Citation-like bracket numbers such as [1], [2], ...
+        out = re.sub(r"\[\s*\d{1,3}\s*\]", "", out)
         # Malformed bracket-open tokens without closing bracket
-        out = re.sub(r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT):[^\]\n\r]*", "", out)
+        out = re.sub(
+            r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT|FOLLOWUP_RESCHEDULE):[^\]\n\r]*",
+            "",
+            out,
+        )
         # Unbracketed control tails occasionally produced by model
         out = re.sub(
-            r"(?im)\b(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT)\s*:\s*[^\n\r]*",
+            r"(?im)\b(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT|FOLLOWUP_RESCHEDULE)\s*:\s*[^\n\r]*",
             "",
             out,
         )
@@ -2118,6 +2735,120 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     break
         return out
 
+    def _follow_up_appointment_uuid(self) -> Optional[uuid.UUID]:
+        if not self.call_session or not self.call_session.call_metadata:
+            return None
+        raw = (self.call_session.call_metadata.get("appointment_id") or "").strip()
+        if not raw:
+            return None
+        try:
+            return uuid.UUID(raw)
+        except ValueError:
+            return None
+
+    async def _handle_followup_confirm_token(self, llm_response: str) -> None:
+        try:
+            appt_id = self._follow_up_appointment_uuid()
+            if not appt_id or not self.call_session:
+                return
+            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
+
+            send_follow_up_outcome_staff_email(
+                self.db,
+                staff_user_id=self.call_session.user_id,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                outcome="confirmed_attendance",
+                detail="Customer confirmed attendance on the reminder call.",
+            )
+        except Exception as e:
+            logger.error("Error in _handle_followup_confirm_token: %s", e, exc_info=True)
+
+    async def _handle_followup_cancel_token(self, llm_response: str) -> None:
+        try:
+            appt_id = self._follow_up_appointment_uuid()
+            if not appt_id or not self.call_session:
+                return
+            from app.services.calendar_service import calendar_service
+            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
+
+            calendar_service.update_appointment_status(
+                self.db,
+                appt_id,
+                self.call_session.tenant_id,
+                "cancelled",
+                cancellation_reason="Customer requested cancellation on reminder call.",
+                notify_user_id=self.call_session.user_id,
+            )
+            send_follow_up_outcome_staff_email(
+                self.db,
+                staff_user_id=self.call_session.user_id,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                outcome="cancelled",
+                detail="Appointment cancelled from reminder call.",
+            )
+            try:
+                self.db.refresh(self.call_session)
+            except Exception:
+                pass
+        except ValueError as ve:
+            logger.warning("Follow-up cancel: %s", ve)
+        except Exception as e:
+            logger.error("Error in _handle_followup_cancel_token: %s", e, exc_info=True)
+
+    async def _handle_followup_reschedule_token(self, llm_response: str) -> None:
+        try:
+            appt_id = self._follow_up_appointment_uuid()
+            if not appt_id or not self.call_session:
+                return
+            m = re.search(r"\[\s*FOLLOWUP_RESCHEDULE:([^\]]+)\]", llm_response, flags=re.IGNORECASE)
+            if not m:
+                return
+            inner = " ".join((m.group(1) or "").split())
+            sm = re.search(r"slot=(?P<slot>.+)", inner, flags=re.IGNORECASE)
+            slot_raw = (sm.group("slot") or "").strip() if sm else ""
+            if not slot_raw:
+                logger.warning("FOLLOWUP_RESCHEDULE missing slot: %s", inner[:300])
+                return
+            from datetime import datetime as _dt
+
+            from app.services.calendar_service import calendar_service
+            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
+
+            try:
+                slot_start = _dt.fromisoformat(slot_raw.replace("Z", "+00:00"))
+            except ValueError:
+                resolved = self._resolve_cached_calendar_slot(slot_raw)
+                if resolved is None:
+                    logger.warning("FOLLOWUP_RESCHEDULE invalid slot: %s", slot_raw)
+                    return
+                slot_start = resolved
+
+            calendar_service.reschedule_appointment(
+                db=self.db,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                slot_start=slot_start,
+                notify_user_id=self.call_session.user_id,
+            )
+            send_follow_up_outcome_staff_email(
+                self.db,
+                staff_user_id=self.call_session.user_id,
+                tenant_id=self.call_session.tenant_id,
+                appointment_id=appt_id,
+                outcome="rescheduled",
+                detail=f"New slot (UTC instant): {slot_start.isoformat()}",
+            )
+            try:
+                self.db.refresh(self.call_session)
+            except Exception:
+                pass
+        except ValueError as ve:
+            logger.warning("Follow-up reschedule: %s", ve)
+        except Exception as e:
+            logger.error("Error in _handle_followup_reschedule_token: %s", e, exc_info=True)
+
     async def _handle_book_appointment_token(self, llm_response: str):
         """
         LLM may emit [BOOK_APPOINTMENT:...] as a non-authoritative intent hint.
@@ -2264,7 +2995,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         pct = max(0.0, min(100.0, pct))
         return pct / 100.0
 
-    async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False):
+    async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False, prefetched_bytes: Any = None):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
         Simplified version without the complex prefix/suffix splitting.
@@ -2280,14 +3011,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if not text or not text.strip():
                 return
 
-            # If stream isn't ready yet (race at call start), wait briefly rather than dropping TTS.
+            # If stream isn't ready yet (race at call start), wait once on an event
+            # instead of polling so we avoid up-to-1s spin latency.
             if not self.stream_sid:
-                for _ in range(100):  # ~1s max
-                    if self._tts_cancel.is_set():
-                        return
-                    if self.stream_sid:
-                        break
-                    await asyncio.sleep(0.01)
+                if self._tts_cancel.is_set():
+                    return
+                try:
+                    await asyncio.wait_for(self._stream_sid_ready.wait(), timeout=0.35)
+                except asyncio.TimeoutError:
+                    return
                 if not self.stream_sid:
                     return
             
@@ -2305,10 +3037,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if self.agent and getattr(self.agent, "tts_provider", None):
                         tts_provider_slug = (self.agent.tts_provider.slug or "").lower()
 
+                    # If audio was pre-generated by the parallel prefetch pipeline, skip the
+                    # TTS API call entirely and fall through to the batch playback path.
+                    _use_prefetched = prefetched_bytes is not None and not self._tts_cancel.is_set()
+                    _is_prefetched_iter = _use_prefetched and hasattr(prefetched_bytes, "__aiter__")
+
                     # Prefer true streaming TTS for longer responses (real-time playback).
                     # Keep cache-friendly path for very short phrases (e.g. quick ack).
                     word_count = len(clean.split())
-                    use_streaming_tts = word_count >= 4
+                    stream_min_words = max(
+                        1, int(getattr(settings, "VOICE_TTS_STREAM_MIN_WORDS", 2) or 2)
+                    )
+                    use_streaming_tts = (word_count >= stream_min_words and not _use_prefetched) or _is_prefetched_iter
                     if use_streaming_tts and not self._tts_cancel.is_set():
                         try:
                             import base64
@@ -2368,24 +3108,26 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 """
                                 if self._is_background_audio_enabled():
                                     self._background_audio.set_user_level(self._resolve_background_volume())
-                                # Prime Twilio jitter buffer once per utterance (3 frames = 60ms for 400–500ms latency, no sudden noise)
-                                if not self._twilio_buffer_primed:
-                                    silent = bytes([0xFF]) * MULAW_FRAME_BYTES
-                                    for _ in range(3):
-                                        if self._tts_cancel.is_set():
-                                            return
-                                        await send_frame(silent, pace=False)
 
                                 pace_state = {"send_interval": 0.02, "first": True, "next_send": time.perf_counter()}
+
+                                # Prime Twilio jitter buffer once per utterance (2 frames = 40ms, paced so
+                                # they arrive at proper 20ms intervals and actually fill the buffer).
+                                if not self._twilio_buffer_primed:
+                                    silent = bytes([0xFF]) * MULAW_FRAME_BYTES
+                                    prime_frames = max(
+                                        0, int(getattr(settings, "VOICE_TTS_PRIME_FRAMES", 1) or 1)
+                                    )
+                                    for _ in range(prime_frames):
+                                        if self._tts_cancel.is_set():
+                                            return
+                                        await send_frame(silent, pace=True, state=pace_state)
 
                                 # Frame buffers
                                 byte_buf = bytearray()
                                 pending_frames = []
 
-                                # Boundary crossfade with previous chunk tail (if any)
-                                need_bridge = bool(self._prev_tts_tail)
-                                bridge_sent = False
-
+                                # No longer using crossfade bridge as it causes robotic stutter.
                                 # Whether we've applied fade-in for this utterance
                                 fade_needed = not self._twilio_buffer_primed
 
@@ -2396,37 +3138,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         continue
                                     byte_buf.extend(chunk_bytes)
 
-                                    # Build and send boundary bridge once we have enough head audio
-                                    if need_bridge and not bridge_sent and len(byte_buf) >= overlap_bytes:
-                                        head = bytes(byte_buf[:overlap_bytes])
-                                        bridge = build_crossfade_bridge(self._prev_tts_tail, head, overlap_bytes=overlap_bytes)
-                                        self._prev_tts_tail = b""
-                                        # Drop head overlap from normal stream (bridge already covers it)
-                                        del byte_buf[:overlap_bytes]
-                                        need_bridge = False
-                                        bridge_sent = True
-
-                                        # bridge length == overlap_bytes => exactly one frame; bed is
-                                        # added in send_frame (ducked) like other frames.
-                                        if fade_needed and bridge:
-                                            bridge = apply_micro_fade_in(bridge, duration_ms=25.0)
-                                            fade_needed = False
-                                        if bridge:
-                                            await send_frame(
-                                                bridge[:MULAW_FRAME_BYTES],
-                                                pace=True,
-                                                state=pace_state,
-                                            )
-
                                     # Convert bytes to 20ms frames
                                     while len(byte_buf) >= MULAW_FRAME_BYTES:
                                         frame = bytes(byte_buf[:MULAW_FRAME_BYTES])
                                         del byte_buf[:MULAW_FRAME_BYTES]
                                         pending_frames.append(frame)
-
-                                        # Hold back 1 frame for crossfade tail unless final
-                                        if not is_final and len(pending_frames) <= 1:
-                                            continue
 
                                         # Send oldest frame
                                         out = pending_frames.pop(0)
@@ -2438,11 +3154,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 # End of streaming responses: handle remainder
                                 if self._tts_cancel.is_set():
                                     return
-
-                                # If we never had a chance to build a bridge but still had prev tail,
-                                # clear it to avoid carrying stale audio forward.
-                                if need_bridge and self._prev_tts_tail:
-                                    self._prev_tts_tail = b""
 
                                 if is_final:
                                     # Flush any partial remainder (pad with silence so we
@@ -2486,7 +3197,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                                     self._prev_tts_tail = b""
                                 else:
-                                    # Keep exactly 1 frame as tail (pad remainder into tail if needed)
+                                    # Non-final chunk: send all remaining frames (no tail holdback).
+                                    # Holding back 1 frame for a crossfade bridge sounds good in theory,
+                                    # but between chunks there is always a TTS API generation gap
+                                    # (200–500 ms) during which Twilio's buffer drains to zero.
+                                    # Crossfading a stale 20 ms tail with fresh audio after that gap
+                                    # creates an audible click/stutter that is worse than a clean cut.
                                     if byte_buf:
                                         pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
                                         if pad != MULAW_FRAME_BYTES:
@@ -2495,15 +3211,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                             pending_frames.append(bytes(byte_buf[:MULAW_FRAME_BYTES]))
                                             del byte_buf[:MULAW_FRAME_BYTES]
 
-                                    # Keep last frame as tail; send earlier pending frames
-                                    tail_frame = pending_frames[-1] if pending_frames else bytes([0xFF]) * MULAW_FRAME_BYTES
-                                    frames_to_send = pending_frames[:-1]
-                                    for out in frames_to_send:
+                                    for out in pending_frames:
                                         if fade_needed and out:
                                             out = apply_micro_fade_in(out, duration_ms=25.0)
                                             fade_needed = False
                                         await send_frame(out, pace=True, state=pace_state)
-                                    self._prev_tts_tail = tail_frame
+                                    self._prev_tts_tail = b""
 
                                 self._twilio_buffer_primed = True
 
@@ -2516,7 +3229,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             )
                             if not streaming_text or not streaming_text.strip():
                                 return
-                            if tts_provider_slug and tts_provider_slug != "google":
+                            if _is_prefetched_iter:
+                                audio_iter = prefetched_bytes
+                            elif tts_provider_slug and tts_provider_slug != "google":
                                 tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
                                 external_voice_id = getattr(tts_voice, "external_voice_id", None)
                                 if not external_voice_id:
@@ -2590,16 +3305,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if self._tts_cancel.is_set() or not self.stream_sid:
                         self._prev_tts_tail = b""
                         return
-                    audio_bytes = await generate_mulaw_tts(
-                        text=clean,
-                        lang=lang,
-                        voice=voice,
-                        use_chirp3_hd=True,
-                        speaking_rate=1.0,
-                        use_ssml=use_ssml,
-                        add_office_bg=False,
-                        agent=self.agent,
-                    )
+                    if _use_prefetched:
+                        audio_bytes = prefetched_bytes
+                    else:
+                        audio_bytes = await generate_mulaw_tts(
+                            text=clean,
+                            lang=lang,
+                            voice=voice,
+                            use_chirp3_hd=True,
+                            speaking_rate=1.0,
+                            use_ssml=use_ssml,
+                            add_office_bg=False,
+                            agent=self.agent,
+                        )
                     
                     if self._tts_cancel.is_set():
                         self._prev_tts_tail = b""
@@ -2614,26 +3332,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             build_crossfade_bridge,
                         )
 
-                        overlap_bytes = int(getattr(self, "_tts_overlap_bytes", 400) or 400)
-
-                        # If we have a previous tail, create a crossfade bridge and drop the overlapped head
-                        bridge = b""
-                        head_drop = 0
-                        if self._prev_tts_tail:
-                            bridge = build_crossfade_bridge(self._prev_tts_tail, audio_bytes, overlap_bytes=overlap_bytes)
-                            head_drop = min(overlap_bytes, len(audio_bytes))
-
-                        body = audio_bytes[head_drop:]
+                        # Crossfade bridge disabled to prevent robotic stutter/distortion
+                        overlap_bytes = 0
 
                         # Hold back a tail for the NEXT chunk (only when not final)
                         next_tail = b""
-                        if (not is_final) and overlap_bytes > 0 and len(body) > overlap_bytes:
-                            to_play = body[:-overlap_bytes]
-                            next_tail = body[-overlap_bytes:]
-                        else:
-                            to_play = body
+                        to_play = audio_bytes
 
-                        to_stream = (bridge + to_play) if bridge else to_play
+                        to_stream = to_play
 
                         if not self._twilio_buffer_primed and to_stream:
                             to_stream = apply_micro_fade_in(to_stream, duration_ms=25.0)
@@ -2651,8 +3357,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             self._background_audio.set_user_level(self._resolve_background_volume())
                             to_stream = self._background_audio.mix_with_background(to_stream)
                         
-                        # Prime Twilio jitter buffer (3 frames = 60ms) for first speak only — no sudden buffer noise
-                        prime_frames = 0 if self._twilio_buffer_primed else 3
+                        # Prime Twilio jitter buffer once for first speak only.
+                        prime_frames = 0 if self._twilio_buffer_primed else max(
+                            0, int(getattr(settings, "VOICE_TTS_PRIME_FRAMES", 1) or 1)
+                        )
                         
                         await stream_mulaw_bytes_over_twilio(
                             websocket=self.websocket,
@@ -2698,7 +3406,127 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         
         except Exception as e:
             logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
-    
+
+    async def _prefetch_tts_audio(self, task: Dict[str, Any]) -> Optional[bytes]:
+        """
+        Generate TTS audio bytes in the background WITHOUT acquiring _tts_lock
+        and WITHOUT streaming to Twilio.
+
+        Called by TtsPipeline._prefetch_worker while the previous chunk is
+        still playing, so the audio is ready (or nearly ready) by the time
+        _playback_worker needs it — eliminating the inter-chunk TTS TTFB gap.
+
+        Returns raw μ-law bytes on success, None on cancellation or error.
+        """
+        try:
+            text = task.get("text", "")
+            use_ssml = task.get("use_ssml", False)
+
+            if not text or not text.strip():
+                return None
+            if self._tts_cancel.is_set():
+                return None
+
+            clean = text.strip()
+            lang = self.agent.language if self.agent and self.agent.language else "en"
+            voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+            tts_provider_slug = None
+            if self.agent and getattr(self.agent, "tts_provider", None):
+                tts_provider_slug = (self.agent.tts_provider.slug or "").lower()
+
+            streaming_text = strip_ssml_tags(clean) if use_ssml or clean.lstrip().startswith("<speak>") else clean
+            streaming_text = prepare_tts_text_for_provider(streaming_text, tts_provider_slug)
+
+            if not streaming_text or not streaming_text.strip():
+                return None
+
+            if tts_provider_slug and tts_provider_slug != "google":
+                tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
+                external_voice_id = getattr(tts_voice, "external_voice_id", None)
+                if not external_voice_id:
+                    return None
+                adapter = get_tts_adapter(tts_provider_slug)
+                provider_settings = dict(getattr(self.agent, "tts_settings_json", None) or {})
+                provider_settings.setdefault("output_format", "ulaw_8000")
+                if tts_provider_slug == "elevenlabs":
+                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
+                    if previous_text:
+                        provider_settings["previous_text"] = previous_text[-500:]
+
+                # Use true async streaming for ElevenLabs to avoid blocking the event loop.
+                # For other non-Google providers fall back to the sync-wrapped path.
+                if tts_provider_slug == "elevenlabs" and hasattr(adapter, "async_stream_synthesize"):
+                    _cancel_ref = self._tts_cancel
+
+                    async def _async_elevenlabs_iter(
+                        _adapter=adapter,
+                        _text=streaming_text,
+                        _vid=external_voice_id,
+                        _cfg=provider_settings,
+                        _cancel=_cancel_ref,
+                    ):
+                        async for chunk in _adapter.async_stream_synthesize(
+                            text=_text,
+                            voice_external_id=_vid,
+                            settings_json=_cfg,
+                        ):
+                            if _cancel.is_set():
+                                break
+                            if chunk:
+                                yield chunk
+
+                    return _async_elevenlabs_iter()
+
+                sync_iter = adapter.stream_synthesize(
+                    text=streaming_text,
+                    voice_external_id=external_voice_id,
+                    settings_json=provider_settings,
+                )
+
+                async def _async_iter_from_sync(sync_source):
+                    iterator = iter(sync_source)
+                    sentinel = object()
+                    while True:
+                        if self._tts_cancel.is_set():
+                            break
+                        chunk = await asyncio.to_thread(next, iterator, sentinel)
+                        if chunk is sentinel:
+                            break
+                        if chunk:
+                            yield chunk
+
+                return _async_iter_from_sync(sync_iter)
+
+            else:
+                # Google: stream and collect
+                emo = detect_emotion(streaming_text)
+                speaking_rate = {"happy": 1.03, "sad": 0.97, "uncertain": 0.98, "confident": 1.01}.get(emo, 1.0)
+                tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
+                google_voice_name = getattr(tts_voice, "external_voice_id", None)
+                audio_iter = google_tts_service.stream_text_to_speech(
+                    text=streaming_text,
+                    language=lang,
+                    voice_type=voice,
+                    speaking_rate=speaking_rate,
+                    output_format="mulaw",
+                    use_chirp3_hd=True,
+                    sample_rate_hz=8000,
+                    voice_name_override=google_voice_name,
+                )
+                
+                async def _checked_async_iter(source_iter):
+                    async for chunk in source_iter:
+                        if self._tts_cancel.is_set():
+                            break
+                        if chunk:
+                            yield chunk
+                            
+                return _checked_async_iter(audio_iter)
+
+        except Exception as exc:
+            logger.warning("[TTS] _prefetch_tts_audio failed for '%s…': %s", text[:30], exc)
+            return None
+
     async def stream_tts_response(self, text: str):
         """Fast-first TTS with barge-in: cancellable streaming with prefix-first strategy.
         
@@ -3078,6 +3906,146 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             asyncio.create_task(self._full_shutdown())
         except Exception as e:
             logger.error(f"Error ending call after [END_CALL]: {e}", exc_info=True)
+
+    async def _transfer_after_agent_request(self):
+        """Redirect live Twilio call to human transfer TwiML after TTS (cold Dial or warm Conference)."""
+        if self._call_ended:
+            return
+        try:
+            try:
+                await asyncio.sleep(0.20)
+            except asyncio.CancelledError:
+                pass
+
+            self._call_ended = True
+            route = getattr(self.agent, "transfer_route", None) if self.agent else None
+            if not self.call_session or not route or getattr(route, "is_deleted", False):
+                logger.warning(
+                    "[TRANSFER_CALL] skipped: missing call_session or transfer_route "
+                    "(session=%s)",
+                    self.call_session.id if self.call_session else None,
+                )
+                asyncio.create_task(self._full_shutdown())
+                return
+
+            if not self.call_sid:
+                logger.warning("[TRANSFER_CALL] skipped: no Twilio call_sid")
+                asyncio.create_task(self._full_shutdown())
+                return
+
+            meta = dict(self.call_session.call_metadata or {})
+            meta["human_transfer"] = {
+                "route_id": str(route.id),
+                "friendly_name": route.friendly_name,
+                "transfer_type": route.transfer_type,
+            }
+            self.call_session.call_metadata = meta
+            self.db.commit()
+            self.db.refresh(self.call_session)
+
+            updated = call_session_service.update_call_session_status(
+                self.db,
+                self.call_session.id,
+                "completed",
+                ended_reason="Human transfer ([TRANSFER_CALL])",
+                transferred=True,
+            )
+            if updated:
+                self.call_session = updated
+
+            base = settings.WEBHOOK_BASE_URL.rstrip("/")
+            sid_str = str(self.call_session.id)
+            ttype = (route.transfer_type or "cold").lower()
+            if ttype == "warm":
+                redirect_url = (
+                    f"{base}/api/v1/voice/webhook/transfer/conference-customer"
+                    f"?callSessionId={sid_str}"
+                )
+            else:
+                redirect_url = (
+                    f"{base}/api/v1/voice/webhook/transfer/dial-cold"
+                    f"?callSessionId={sid_str}"
+                )
+
+            try:
+                account_sid, auth_token = get_twilio_credentials_for_call(
+                    self.db, self.call_session
+                )
+                ok = twilio_service.redirect_call_with_credentials(
+                    self.call_sid,
+                    redirect_url,
+                    account_sid,
+                    auth_token,
+                    method="POST",
+                )
+                if not ok:
+                    logger.error(
+                        "Transfer redirect failed call_sid=%s session=%s",
+                        self.call_sid,
+                        self.call_session.id,
+                    )
+                elif ttype == "warm":
+                    from_num = twilio_caller_id_for_transfer_dial(self.call_session)
+                    if not from_num:
+                        logger.error(
+                            "Warm transfer: no Twilio caller ID on session %s (type=%s)",
+                            self.call_session.id,
+                            self.call_session.call_type,
+                        )
+                    else:
+                        sup_url = (
+                            f"{base}/api/v1/voice/webhook/transfer/conference-supervisor"
+                            f"?callSessionId={sid_str}"
+                        )
+                        status_cb = (
+                            f"{base}/api/v1/voice/webhook/call-events"
+                            f"?callSessionId={sid_str}"
+                            f"&agentId={self.agent.id}&userId={self.call_session.user_id}"
+                        )
+                        try:
+                            twilio_service.make_call_with_credentials(
+                                to_number=route.phone_number,
+                                from_number=from_num,
+                                webhook_url=sup_url,
+                                status_callback_url=status_cb,
+                                account_sid=account_sid,
+                                auth_token=auth_token,
+                                record=False,
+                            )
+                        except Exception as dial_err:
+                            logger.error(
+                                "Warm transfer supervisor dial failed: %s",
+                                dial_err,
+                                exc_info=True,
+                            )
+            except Exception as redir_err:
+                logger.error(
+                    "Transfer redirect exception: %s",
+                    redir_err,
+                    exc_info=True,
+                )
+
+            if self.call_session:
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(self.call_session.id),
+                        status="completed",
+                        metadata={
+                            "call_sid": self.call_sid,
+                            "stream_sid": self.stream_sid,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "call_ended",
+                            "event": "human_transfer",
+                            "reason": "Agent sent [TRANSFER_CALL]",
+                            "transfer_type": route.transfer_type,
+                        },
+                    )
+                except Exception as br_err:
+                    logger.debug("WebSocket broadcast after transfer: %s", br_err)
+
+            asyncio.create_task(self._full_shutdown())
+        except Exception as e:
+            logger.error("Error during human transfer: %s", e, exc_info=True)
     
     async def _check_and_end_call_if_voicemail(self, transcript: str):
         """
@@ -3186,6 +4154,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         message_type: str = "speech",
         confidence: Optional[float] = None,
         message_metadata: Optional[dict] = None,
+        defer_post_write: bool = False,
     ):
         """Add message to transcript (SSML tags are automatically stripped)"""
         try:
@@ -3231,11 +4200,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if message_metadata:
                     user_text_meta = message_metadata.get("user_text") or message_metadata.get("query")
                 self._remember_agent_turn(user_text_meta, clean_message)
+
+            # Keep in-memory history cache in sync so generate_and_stream_response
+            # never needs to re-parse the call_transcript JSON.
+            if role in ("client", "agent") and message_type not in ("greeting", "system", "status"):
+                self._conversation_history_cache.append((role, clean_message))
             
-            # Update legacy field
-            conversation = transcript_service.get_conversation_array(self.db, self.call_session.id)
-            self.call_session.call_transcript = conversation
-            self.db.commit()
+            if not defer_post_write:
+                # Legacy denormalized transcript payload used by older read paths.
+                conversation = transcript_service.get_conversation_array(
+                    self.db, self.call_session.id
+                )
+                self.call_session.call_transcript = conversation
+                self.db.commit()
 
             from app.services.call_session_contact_state import sync_contact_intake_after_message
 
@@ -3257,8 +4234,33 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         """Handle stream start - Just WebSocket connection (NOT user pickup!)"""
         try:
             self.stream_sid = message.get("streamSid")
+            if self.stream_sid:
+                self._stream_sid_ready.set()
+            # Notify orchestrator so it can perform any stream-SID-dependent setup.
+            self._voice_orchestrator.set_stream_sid(self.stream_sid)
             start = message.get("start", {})
             self.call_sid = start.get("callSid")
+
+            try:
+                configured_edge = str(getattr(settings, "TWILIO_EDGE", "") or "").strip().lower()
+                expected_edge = "umatilla"  # Oregon
+                strict_align = bool(getattr(settings, "VOICE_REGION_ALIGNMENT_STRICT", True))
+                server_region = str(getattr(settings, "SERVER_REGION", "us-west-2") or "us-west-2")
+                if configured_edge:
+                    logger.info(
+                        "[RegionAlign] server_region=%s twilio_edge=%s expected_edge=%s",
+                        server_region,
+                        configured_edge,
+                        expected_edge,
+                    )
+                if strict_align and configured_edge and configured_edge != expected_edge:
+                    logger.warning(
+                        "[RegionAlign] Twilio edge mismatch for Oregon deployment: configured=%s expected=%s",
+                        configured_edge,
+                        expected_edge,
+                    )
+            except Exception:
+                pass
 
             # Inbound calls use Connect/Stream, so start recording explicitly here.
             # This enables recording-status webhook -> call_session.recording_url persistence.
@@ -3298,7 +4300,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 return  # Already handled
             
             self._user_picked_up = True
-            
+            self._voice_metrics.mark_call_pickup()
+
             # ❌ Credit monitoring moved to _send_in_progress_status() 
             # Credit deduction will start when connected status is sent (first media packet + connected status)
             
@@ -3308,23 +4311,57 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Start ambient background loop after brief stabilization delay.
             asyncio.create_task(self._start_background_audio_with_delay())
             
-            # 👋 Send one-time immediate greeting after pickup for inbound calls.
+            # 👋 One-time opening TTS after pickup (inbound only, only if configured).
             if (
                 self.call_session
                 and self.call_session.call_type == "inbound"
                 and not self._auto_greeting_sent
+                and self.agent
+                and (
+                    (getattr(self.agent, "greeting_message", None) or "").strip()
+                    or (getattr(self.agent, "first_message", None) or "").strip()
+                )
             ):
                 self._auto_greeting_sent = True
-                asyncio.create_task(
-                    self.generate_and_stream_response(
-                        user_text="",
-                        confidence=1.0,
-                        is_greeting=True,
-                    )
-                )
+                asyncio.create_task(self._schedule_inbound_greeting_after_delay())
         
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
+
+    async def _schedule_inbound_greeting_after_delay(self) -> None:
+        """
+        Delay inbound auto-greeting slightly after pickup to let telephony audio settle.
+        Uses a configurable delay and exits safely if call state has already stopped.
+        """
+        try:
+            delay_sec = float(getattr(settings, "VOICE_INBOUND_GREETING_DELAY_SEC", 2.0) or 0.0)
+        except Exception:
+            delay_sec = 2.0
+        delay_sec = max(0.0, min(delay_sec, 10.0))
+
+        if delay_sec > 0:
+            await asyncio.sleep(delay_sec)
+
+        # Skip if call has already ended or session state is no longer valid.
+        if self._stop_event.is_set():
+            return
+        if not self.call_session or self.call_session.call_type != "inbound":
+            return
+        if not self.agent:
+            return
+        if self._tts_cancel.is_set():
+            return
+        if not (
+            (getattr(self.agent, "greeting_message", None) or "").strip()
+            or (getattr(self.agent, "first_message", None) or "").strip()
+        ):
+            return
+
+        await self.generate_and_stream_response(
+            user_text="",
+            confidence=1.0,
+            is_greeting=True,
+        )
     
     async def _full_shutdown(self) -> None:
         """
@@ -3334,6 +4371,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
           - Twilio `stop` event  (handle_stop_message)
           - User goodbye phrase  (_check_and_end_call_if_goodbye)
           - Agent [END_CALL]     (_end_call_after_agent_request)
+          - Agent [TRANSFER_CALL] (_transfer_after_agent_request)
           - Voicemail detected   (_check_and_end_call_if_voicemail)
           - WebSocket finally    (route-level cleanup)
 
@@ -3353,27 +4391,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception:
             pass
 
-        t = self._llm_response_task
-        if t and not t.done():
-            t.cancel()
-        self._llm_response_task = None
-
-        # Cancel any in-progress LLM streaming (orchestrator checks this flag)
-        if not self._tts_cancel.is_set():
-            self._tts_cancel.set()
-
-        # Shutdown TTS pipeline worker (drains queue, cancels worker task)
+        # ── VoiceOrchestrator handles LLM cancel + TTS shutdown + STT close ────
+        # OLD direct code (now delegated to orchestrator):
+        # t = self._llm_response_task; t.cancel(); self._llm_response_task = None
+        # self._tts_cancel.set()
+        # await self._tts_pipeline.shutdown()
+        # await self._stt_pipeline.aclose()
+        # ────────────────────────────────────────────────────────────────────────
         try:
-            if self._tts_pipeline:
-                await self._tts_pipeline.shutdown()
-        except Exception:
-            pass
-
-        # Close STT / Deepgram WebSocket (sends CloseStream, closes socket,
-        # waits up to 5 s for reader task to exit cleanly)
-        try:
-            if self._stt_pipeline:
-                await self._stt_pipeline.aclose()
+            await self._voice_orchestrator.shutdown()
         except Exception:
             pass
 

@@ -162,7 +162,7 @@ def build_tts_only_twiml(call_session_id: str, agent_id: str, record_callback_ur
     Returns:
         TwiML string
     """
-    from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+    from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Parameter
     
     # Build TTS-only WebSocket URL
     ws_url = f"{settings.WEBHOOK_BASE_URL.replace('http', 'ws')}/api/v1/voice/ws/tts-only/{call_session_id}/{agent_id}"
@@ -174,6 +174,9 @@ def build_tts_only_twiml(call_session_id: str, agent_id: str, record_callback_ur
     # Connect to TTS-only WebSocket for streaming playback
     connect = Connect()
     stream = Stream(url=ws_url, name=f"tts-only-{agent_id}")
+    edge = getattr(settings, "TWILIO_EDGE", None)
+    if edge:
+        stream.parameter(Parameter(name="edge", value=edge))
     connect.append(stream)
     vr.append(connect)
     

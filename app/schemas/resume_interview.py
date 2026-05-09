@@ -92,8 +92,6 @@ class ResumeInterviewCalendarItem(BaseModel):
         default_factory=list,
         description="Call transcript for linked call session, if available.",
     )
-
-
 class ResumeInterviewSessionLinkItem(BaseModel):
     resume_id: UUID
     resume_filename: str
@@ -105,8 +103,6 @@ class ResumeInterviewSessionLinkItem(BaseModel):
     twilio_call_sid: str | None = None
     crm_item_id: str | None = None
     crm_batch_id: str | None = None
-
-
 class ResumeInterviewCallMediaResponse(BaseModel):
     """Call transcript and recording for the latest resume interview linked to a resume."""
 
@@ -126,6 +122,34 @@ class ResumeInterviewCallMediaResponse(BaseModel):
     transcript_source: str = Field(
         ...,
         description='One of: "transcript_messages", "call_session", "empty".',
+    )
+class ResumeInterviewTranscriptResponse(BaseModel):
+    """Transcript for the latest resume interview linked to a resume."""
+
+    resume_id: UUID
+    interview_id: UUID
+    call_session_id: UUID
+    twilio_call_sid: str | None = None
+    call_session_status: str | None = None
+    transcript: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description='Conversation turns with at least "role" and "content".',
+    )
+    transcript_source: str = Field(
+        ...,
+        description='One of: "transcript_messages", "call_session", "empty".',
+    )
+
+
+class ResumeInterviewRecordingResponse(BaseModel):
+    """Recording URL for the latest resume interview linked to a resume."""
+
+    resume_id: UUID
+    interview_id: UUID
+    call_session_id: UUID
+    recording_url: str | None = Field(
+        default=None,
+        description="Voice recording URL on the linked CallSession.",
     )
 
 

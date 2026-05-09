@@ -68,6 +68,7 @@ class CallInitiateRequest(BaseModel):
     # Optional: resolve resume + job from DB and enrich the agent prompt (same as jd_context.jd_id / resume_id)
     jd_id: Optional[str] = None
     resume_id: Optional[str] = None
+    appointment_id: Optional[str] = None  # Follow-up reminder: n8n / Trello → initiate
     tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
     user_id: Optional[str] = None  # Optional, for n8n webhook calls
     

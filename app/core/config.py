@@ -59,11 +59,20 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
     # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
     # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
-    DEEPGRAM_STT_ENDPOINTING_MS: int = 200
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 350
     # After the agent asks for email, bidirectional stream may reopen STT once with this value.
-    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 300
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
+    # Telecom-oriented silence window for spelling/email (when mode is extended or email-recreate runs).
+    # Ignored unless VOICE_STT_ENDPOINTING_MODE == "extended" or email flow bumps endpointing.
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
     VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT: bool = True
+    # Initial Deepgram endpointing profile for the first STT session:
+    #   normal     → DEEPGRAM_STT_ENDPOINTING_MS
+    #   extended   → max(base, DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED)
+    #   aggressive → faster finals (lower ms, clamped) for snappier turns
+    VOICE_STT_ENDPOINTING_MODE: str = "aggressive"
+    # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
+    VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
@@ -81,9 +90,9 @@ class Settings(BaseSettings):
     # Deepgram fires many more partials than classic Google STT. Running LLM on every
     # interim → double replies + TTS "breaks." Default: final STT only (one reply per
     # utterance). Set True for lower first-token latency at the cost of stability.
-    VOICE_ENABLE_INTERIM_LLM: bool = False
+    VOICE_ENABLE_INTERIM_LLM: bool = True
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
-    VOICE_MIN_INTERIM_WORDS: int = 3
+    VOICE_MIN_INTERIM_WORDS: int = 2
     VOICE_MIN_INTERIM_CONFIDENCE: float = 0.14
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
@@ -103,10 +112,38 @@ class Settings(BaseSettings):
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
     VOICE_HISTORY_MAX_MESSAGES: int = 12
-    VOICE_TTS_FLUSH_MIN_WORDS: int = 2
-    VOICE_TTS_FLUSH_MAX_WORDS: int = 12
+    VOICE_TTS_FLUSH_MIN_WORDS: int = 4
+    # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
+    # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
+    VOICE_TTS_FLUSH_MAX_WORDS: int = 6
+    # If no sentence boundary yet, flush after this many seconds (once min words met).
+    VOICE_TTS_TIME_FLUSH_SEC: float = 0.10
+    # Keep a short (but non-zero) guard after pickup so ringback artifacts are skipped
+    # without delaying real user speech by multiple seconds.
+    VOICE_POST_PICKUP_STT_GRACE_SEC: float = 0.35
+    # Inbound auto-greeting delay after user pickup (seconds).
+    # Keep small but non-zero so call audio stabilizes before greeting starts.
+    VOICE_INBOUND_GREETING_DELAY_SEC: float = 0.5
+    # Pickup detector window and threshold (RMS frames over threshold) before STT starts.
+    VOICE_PICKUP_SAMPLE_WINDOW: int = 6
+    VOICE_PICKUP_MIN_NON_SILENT_FRAMES: int = 4
+    # Allow RAG prefetch to start earlier than interim-LLM gates.
+    VOICE_RAG_PREFETCH_MIN_WORDS: int = 1
+    VOICE_RAG_PREFETCH_MIN_CONFIDENCE: float = 0.05
+    # Start TTS streaming sooner for short first chunks.
+    VOICE_TTS_STREAM_MIN_WORDS: int = 2
+    # Twilio jitter buffer priming frames (20ms each) for low-latency voice output.
+    VOICE_TTS_PRIME_FRAMES: int = 1
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
-    VOICE_QUICK_ACK_PROBABILITY: float = 0.38
+    # Quick-ack: fires on slow-path queries only (fastpath is excluded at call site).
+    # In V2 TtsPipeline, LLM chunk synthesis runs in parallel with quick-ack playback
+    # so the "shutter then silence" gap only occurs when LLM TTFT > quick-ack duration.
+    # 0.35 = fires roughly every third slow-path turn; set 0.0 to disable entirely.
+    VOICE_QUICK_ACK_PROBABILITY: float = 0.35
+    # Fast-path for very short/simple turns to reduce first-token latency:
+    # skip heavy RAG/KB context for obvious non-booking smalltalk.
+    VOICE_ENABLE_LATENCY_FASTPATH: bool = True
+    VOICE_FASTPATH_MAX_WORDS: int = 7
 
     # Vapi-style intelligent contact recovery (additive — never downgrades intake confidence).
     # 1) Deterministic email STT-artifact cleanup: strip commas/spaces inside an email span
@@ -175,8 +212,15 @@ class Settings(BaseSettings):
     
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
+    # App deployment region hint for latency diagnostics.
+    SERVER_REGION: str = "us-west-2"  # Oregon
+    # If enabled, log warnings when Twilio edge does not match expected regional edge.
+    VOICE_REGION_ALIGNMENT_STRICT: bool = True
 
     # RAG behavior tuning (voice-first defaults)
+    # Master switch for latency A/B tests and emergency fail-open behavior.
+    # Set RAG_ENABLED=false in .env to skip retrieval entirely.
+    RAG_ENABLED: bool = True
     # These defaults are intentionally conservative to avoid prompt bloat/latency.
     # Primary embedding model (OpenAI by default).
     # Make embedding model configurable because some OpenAI projects do not
@@ -194,7 +238,13 @@ class Settings(BaseSettings):
     # Voice latency guardrails
     # If Pinecone or embedding generation is slow, we must fail fast and
     # return an empty knowledge context to avoid breaking the voice UX.
-    RAG_RETRIEVAL_TIMEOUT_SEC: float = 2.0
+    RAG_RETRIEVAL_TIMEOUT_SEC: float = 0.45
+    # Slow-path budget: cap cumulative waits for RAG/KB on a turn.
+    VOICE_SLOWPATH_BUDGET_SEC: float = 0.55
+    # How long we wait for an in-flight RAG prefetch before failing open.
+    VOICE_RAG_PREFETCH_AWAIT_SEC: float = 0.18
+    # When KB cache isn't ready on early turns, skip live DB fetch to protect latency.
+    VOICE_SKIP_LIVE_KB_FETCH_ON_COLD_START: bool = True
     # Prevent extremely large STT transcripts from being embedded.
     RAG_MAX_QUERY_CHARS: int = 3000
 
@@ -204,6 +254,13 @@ class Settings(BaseSettings):
     # Weight for Pinecone vector similarity vs lexical overlap.
     # Higher means more trust in vector similarity.
     RAG_RERANK_VECTOR_WEIGHT: float = 0.8
+
+    # Voice latency SLO thresholds (seconds) for observability.
+    VOICE_SLO_ENABLED: bool = True
+    VOICE_SLO_STT_FINAL_TO_GEN_START_SEC: float = 0.35
+    VOICE_SLO_GEN_START_TO_LLM_FIRST_TOKEN_SEC: float = 0.90
+    VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC: float = 1.40
+    VOICE_SLO_GEN_START_TO_NOW_WARN_SEC: float = 2.00
     
     # Trello — platform-managed inbound call boards (optional)
     TRELLO_PLATFORM_API_KEY: str = ""

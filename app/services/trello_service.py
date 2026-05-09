@@ -4,7 +4,7 @@ Trello API Service for Scheduled Calls Integration
 
 import json
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
@@ -414,10 +414,10 @@ class TrelloService(BaseCRMService):
         self,
         *,
         item_id: str,
-        jd_context: Dict[str, str],
+        jd_context: Dict[str, Any],
     ) -> Optional[dict]:
         """
-        Persist JD context to card description as a resilient fallback.
+        Persist JD / resume / appointment context to card description (n8n reads for /voice/call/initiate).
         """
         try:
             get_url = f"{self.API_URL}/cards/{item_id}"
@@ -433,6 +433,8 @@ class TrelloService(BaseCRMService):
                 lines.append(f"JD ID: {jd_context['jd_id']}")
             if jd_context.get("resume_id"):
                 lines.append(f"Resume ID: {jd_context['resume_id']}")
+            if jd_context.get("appointment_id"):
+                lines.append(f"Appointment ID: {jd_context['appointment_id']}")
             if not lines:
                 return {"id": item_id}
 
@@ -499,6 +501,26 @@ class TrelloService(BaseCRMService):
             response.raise_for_status()
             return response.json()
         except Exception as exc:
+            return None
+
+    def update_item_call_time_utc(
+        self,
+        item_id: str,
+        call_time_utc: str,
+        field_map: Dict[str, str],
+    ) -> Optional[dict]:
+        """Update scheduled call_time_utc custom field on a card."""
+        field_id = field_map.get("call_time_utc")
+        if not field_id:
+            return None
+        url = f"{self.API_URL}/cards/{item_id}/customField/{field_id}/item"
+        params = self._auth_params()
+        params.update({"value": {"text": call_time_utc}})
+        try:
+            response = requests.put(url, params=params, timeout=20)
+            response.raise_for_status()
+            return response.json()
+        except Exception:
             return None
 
     def get_item_call_session_id(
