@@ -1597,14 +1597,15 @@ Previous conversation:
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
+- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
-            
+
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self.agent and self.agent.system_prompt:
                 # Agent has custom system prompt - grounding rules placed BEFORE custom
@@ -1650,10 +1651,11 @@ Previous conversation:
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
+- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -1698,10 +1700,11 @@ Previous conversation:
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
+- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
@@ -2361,6 +2364,98 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if overlap / shorter >= 0.80:
                 return True
         return False
+
+    def _extract_caller_location_from_transcript(self) -> str:
+        """
+        Scan the in-memory conversation history for a client message that looks like a
+        location response.  Returns the first matching client utterance (truncated to 80
+        chars) or an empty string when nothing is found.
+
+        Heuristic: a client message is treated as a location if it contains a US state
+        name/abbreviation, or if it was immediately preceded by an agent turn that asked
+        about city/state/location.  Scanning is limited to the most recent 30 pairs so
+        the check stays O(1) on long calls.
+        """
+        import re as _re
+
+        # Common US state names and two-letter abbreviations (covers the vast majority of
+        # service-area lookups; non-US businesses will typically use global coverage).
+        _STATE_RE = _re.compile(
+            r"\b(?:alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|"
+            r"florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|"
+            r"maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|"
+            r"nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|"
+            r"north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|"
+            r"south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|"
+            r"wisconsin|wyoming|"
+            r"\bAL\b|\bAK\b|\bAZ\b|\bAR\b|\bCA\b|\bCO\b|\bCT\b|\bDE\b|\bFL\b|\bGA\b|"
+            r"\bHI\b|\bID\b|\bIL\b|\bIN\b|\bIA\b|\bKS\b|\bKY\b|\bLA\b|\bME\b|\bMD\b|"
+            r"\bMA\b|\bMI\b|\bMN\b|\bMS\b|\bMO\b|\bMT\b|\bNE\b|\bNV\b|\bNH\b|\bNJ\b|"
+            r"\bNM\b|\bNY\b|\bNC\b|\bND\b|\bOH\b|\bOK\b|\bOR\b|\bPA\b|\bRI\b|\bSC\b|"
+            r"\bSD\b|\bTN\b|\bTX\b|\bUT\b|\bVT\b|\bVA\b|\bWA\b|\bWV\b|\bWI\b|\bWY\b)",
+            _re.IGNORECASE,
+        )
+        _LOCATION_QUESTION_RE = _re.compile(
+            r"\b(?:city|state|zip|area|location|address|where|neighbourhood|neighborhood|borough|county|region)\b",
+            _re.IGNORECASE,
+        )
+
+        history = self._conversation_history_cache[-60:]  # last 30 pairs max
+        prev_agent_asked_location = False
+        for role, text in history:
+            if role == "agent":
+                prev_agent_asked_location = bool(_LOCATION_QUESTION_RE.search(text or ""))
+            elif role in ("client", "user"):
+                txt = (text or "").strip()
+                if not txt:
+                    prev_agent_asked_location = False
+                    continue
+                if _STATE_RE.search(txt) or prev_agent_asked_location:
+                    return txt[:80]
+                prev_agent_asked_location = False
+        return ""
+
+    def _is_location_in_service_area(self, location: str) -> bool:
+        """
+        Return True when *location* appears to be within the business's service areas.
+
+        Reads the verbatim service areas text from _cached_business_knowledge_block.
+        Uses word-level intersection: if any significant word from the caller's location
+        (3+ chars, not a stop-word) appears in the service areas blob, we treat it as
+        a match.  This is intentionally permissive — a false-negative (blocking a valid
+        caller) is far worse than a false-positive here; the LLM gate handles nuance.
+        """
+        if not location or not self._cached_business_knowledge_block:
+            return True  # no block to check against — allow by default
+
+        service_area_text = self._get_service_area_text_from_bk_block()
+        if not service_area_text:
+            return True  # service areas not parseable — allow
+
+        loc_lower = location.lower()
+        sa_lower = service_area_text.lower()
+
+        # Direct substring match first (fast path for well-formed data).
+        if loc_lower in sa_lower:
+            return True
+
+        _stop = {"in", "the", "of", "and", "or", "at", "to", "for", "a", "is", "are", "we", "our"}
+        loc_words = [w for w in loc_lower.split() if len(w) >= 3 and w not in _stop]
+        if not loc_words:
+            return True  # location too vague to deny — allow
+
+        return any(word in sa_lower for word in loc_words)
+
+    def _get_service_area_text_from_bk_block(self) -> str:
+        """
+        Extract the verbatim 'Service Areas (verbatim): ...' line from the cached BK block.
+        Returns the area text, or an empty string when the line is not present.
+        """
+        import re as _re
+
+        block = self._cached_business_knowledge_block or ""
+        m = _re.search(r"Service Areas \(verbatim\):\s*(.+)", block)
+        return m.group(1).strip() if m else ""
 
     def _remember_agent_turn(self, user_text: Optional[str], agent_text: str) -> None:
         """Append (user_norm, agent_norm, ts) and bound the buffer to the last few entries."""
@@ -3057,6 +3152,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         Backend stores only slot / reason in call_metadata.booking_intent.
         Name and email from the token are ignored. No in-call reservation or appointment commit.
         Final booking runs in post_call_appointment_service after validation.
+
+        Service area gate: if COVERAGE: RESTRICTED, the caller's location must be present
+        (from the token's location= field or from the transcript) and confirmed within the
+        listed service areas before the booking intent is stored.
         """
         try:
             import re as _re
@@ -3080,24 +3179,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             raw_single_line = " ".join((raw or "").split())
 
-            # Robust parse: name, optional phone/email, slot, optional reason (commas in reason).
+            # Backward-compatible key extractor (used for location and fallback slot/reason).
+            def _get(key: str) -> str:
+                km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
+                return km.group(1).strip() if km else ""
+
+            # Robust parse: name, optional location, optional phone/email, slot, optional reason.
             strict = _re.search(
-                r"name=(?P<name>.*?),\s*(?:phone=(?P<phone>.*?),\s*)?"
-                r"(?:email=(?P<email>.*?),\s*)?slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
+                r"name=(?P<name>.*?),\s*(?:location=(?P<location>.*?),\s*)?"
+                r"(?:phone=(?P<phone>.*?),\s*)?(?:email=(?P<email>.*?),\s*)?"
+                r"slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
                 raw_single_line,
             )
             if strict:
                 slot_raw = (strict.group("slot") or "").strip()
                 reason_val = (strict.group("reason") or "").strip()
                 reason = reason_val or None
+                location_from_token = (strict.group("location") or "").strip()
             else:
-                # Backward-compatible fallback for legacy/messy token shapes.
-                def _get(key: str) -> str:
-                    km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
-                    return km.group(1).strip() if km else ""
-
                 slot_raw = _get("slot")
                 reason = _get("reason") or None
+                location_from_token = _get("location")
 
             if not slot_raw:
                 logger.warning("BOOK_APPOINTMENT token missing slot: %s", raw_single_line[:500])
@@ -3105,6 +3207,58 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             if not self.call_session:
                 return
+
+            # --- Service Area Gate ---
+            # If the business has restricted coverage, validate caller location before
+            # storing any booking intent. This is the last line of defence — the LLM
+            # prompt already instructs the model not to emit BOOK_APPOINTMENT without a
+            # confirmed in-area location, but LLMs can bypass prompt rules.
+            if (
+                self._cached_business_knowledge_block
+                and "COVERAGE: RESTRICTED" in self._cached_business_knowledge_block
+            ):
+                caller_location = location_from_token or self._extract_caller_location_from_transcript()
+
+                if not caller_location:
+                    logger.warning(
+                        "BOOK_APPOINTMENT blocked: COVERAGE: RESTRICTED but no caller location found. token=%s",
+                        raw_single_line[:300],
+                    )
+                    msg = (
+                        "Before I can schedule, I need to confirm your location. "
+                        "What city and state is the property in?"
+                    )
+                    await self._add_to_transcript("agent", msg, "service_area_location_request")
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
+                            "text": msg,
+                            "chunk_id": "service_area_location_request",
+                            "use_ssml": False,
+                            "is_final": True,
+                        })
+                    return
+
+                if not self._is_location_in_service_area(caller_location):
+                    service_area_text = self._get_service_area_text_from_bk_block()
+                    area_phrase = f" We serve {service_area_text}." if service_area_text else ""
+                    logger.warning(
+                        "BOOK_APPOINTMENT blocked: location=%r not in service area. token=%s",
+                        caller_location,
+                        raw_single_line[:300],
+                    )
+                    msg = (
+                        f"I'm sorry, but we don't currently provide services in {caller_location}.{area_phrase} "
+                        "Thank you for calling, and I hope you find the help you need."
+                    )
+                    await self._add_to_transcript("agent", msg, "service_area_rejection")
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
+                            "text": msg,
+                            "chunk_id": "service_area_rejection",
+                            "use_ssml": False,
+                            "is_final": True,
+                        })
+                    return
 
             slot_start = self._resolve_cached_calendar_slot(slot_raw)
             if slot_start is None:

@@ -1149,9 +1149,16 @@ No active tenant knowledge base documents were found.
         lines.extend([
             f"## {section}. Booking Gate",
             "- Never emit [BOOK_APPOINTMENT] until you have clearly captured ALL of: (a) the "
-            "caller's name, (b) a service location, and (c) a brief reason or issue for the visit.",
-            "- If any of those are missing, your next reply must ask only the single missing one. "
-            "Do not bundle multiple questions in a single turn.",
+            "caller's name, (b) a service location (city and state), and (c) a brief reason or "
+            "issue for the visit.",
+            "- The caller's city and state MUST have been explicitly stated in the conversation "
+            "before you emit [BOOK_APPOINTMENT]. Do not assume or infer a location — ask for it "
+            "if it has not been given.",
+            "- If service areas are restricted, confirm the stated location is covered BEFORE "
+            "offering slots or emitting [BOOK_APPOINTMENT]. If not covered, end the call per the "
+            "Service Area Gate rules above.",
+            "- If any required field is missing, your next reply must ask only the single missing "
+            "one. Do not bundle multiple questions in a single turn.",
             "- Never tell the caller the appointment is confirmed, booked, or held during the "
             "call. The server finalizes scheduling after the call when checks pass.",
             "",
