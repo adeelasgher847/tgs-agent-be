@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.logger import logger
 from app.models.call_session import CallSession
 from app.services.agent_service import agent_service
+from app.services.voice_screening_qualification_service import maybe_qualify_resume_on_call_completed
 from app.services.call_session_service import call_session_service
 from app.services.credit_service import credit_service
 from app.utils.twilio_validation import (
@@ -239,6 +240,15 @@ async def handle_call_events_webhook(
             call_session_service.update_call_session_status(
                 db, call_session.id, "completed", ended_reason="hung up"
             )
+
+            try:
+                maybe_qualify_resume_on_call_completed(db, call_session.id)
+            except Exception as mq_exc:  # pragma: no cover
+                logger.warning(
+                    "Resume screening qualify on call completed (fallback): %s",
+                    mq_exc,
+                    exc_info=True,
+                )
 
             logger.info(
                 "✅ Updated call session %s status to: %s with ended_reason: hung up",

@@ -117,6 +117,31 @@ def _parse_iso_to_utc(s: Optional[str]) -> Optional[datetime]:
 
 
 class PostCallAppointmentService:
+    @staticmethod
+    def _name_appears_in_client_lines(
+        client_lines: List[str],
+        candidate: str,
+    ) -> bool:
+        """
+        True when the candidate name (first token, case-insensitive, whole word)
+        appears in any client transcript line. Used as a grounding check before
+        accepting a low-confidence LLM-recovered name.
+        """
+        cand = (candidate or "").strip()
+        if not cand or not client_lines:
+            return False
+        first = cand.split()[0]
+        if not first:
+            return False
+        try:
+            pattern = re.compile(rf"\b{re.escape(first)}\b", re.IGNORECASE)
+        except re.error:
+            return False
+        for line in client_lines:
+            if line and pattern.search(str(line)):
+                return True
+        return False
+
     def _extract_non_pii_from_llm(
         self,
         transcript: str,
@@ -347,16 +372,48 @@ class PostCallAppointmentService:
 
         if run_contact_llm:
             recovered = self._recover_contact_via_llm(transcript)
-            if (recovered.get("name") and recovered.get("name_confident")) or (
-                recovered.get("email") and recovered.get("email_confident")
+
+            # Safety net: when the LLM returned a plausible name but flagged
+            # name_confident=False, accept it ANYWAY if the rest of the call
+            # clearly intended a booking (slot in booking_intent OR active
+            # in-call reservation) AND the candidate name actually appears in
+            # the client lines. This prevents a confirmed booking from being
+            # silently dropped just because the LLM hedged on confidence.
+            recovered_name = (recovered.get("name") or "").strip()
+            recovered_email = (recovered.get("email") or "").strip()
+            llm_name_confident = bool(recovered.get("name_confident"))
+            llm_email_confident = bool(recovered.get("email_confident"))
+
+            booking_signals = bool(
+                intent.get("slot_start_iso")
+                or (res is not None)
+                or res_meta.get("appointment_reason")
+            )
+            if (
+                recovered_name
+                and not llm_name_confident
+                and booking_signals
+                and self._name_appears_in_client_lines(client_lines, recovered_name)
+            ):
+                logger.info(
+                    "Post-call contact recovery: upgrading low-confidence LLM name "
+                    "%r to confident because booking_intent + transcript anchor are present "
+                    "(call_session=%s)",
+                    recovered_name,
+                    call_session_id,
+                )
+                llm_name_confident = True
+
+            if (recovered_name and llm_name_confident) or (
+                recovered_email and llm_email_confident
             ):
                 apply_post_call_recovery(
                     db,
                     cs,
-                    name=recovered.get("name"),
-                    email=recovered.get("email"),
-                    name_confident=bool(recovered.get("name_confident")),
-                    email_confident=bool(recovered.get("email_confident")),
+                    name=recovered_name or None,
+                    email=recovered_email or None,
+                    name_confident=llm_name_confident,
+                    email_confident=llm_email_confident,
                 )
                 try:
                     db.refresh(cs)
