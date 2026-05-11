@@ -9,7 +9,7 @@ import re
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.core.logger import logger
 from app.models.job_description import JobDescription
@@ -320,11 +320,21 @@ def build_voice_interview_enrichment(
 
     resume: Resume | None = None
     job: JobDescription | None = None
+    resume_candidate_name: str | None = None
     job_title_hint = str(out_merged.get("jd_title") or "").strip() or None
 
     if resume_id:
         resume = (
             db.query(Resume)
+            .options(
+                load_only(
+                    Resume.id,
+                    Resume.tenant_id,
+                    Resume.job_description_id,
+                    Resume.raw_text,
+                    Resume.parsed_json,
+                )
+            )
             .filter(Resume.id == resume_id, Resume.tenant_id == tenant_id)
             .first()
         )
@@ -334,15 +344,33 @@ def build_voice_interview_enrichment(
             )
         else:
             out_merged["resume_id"] = str(resume_id)
-            cname = _candidate_name_from_resume(resume)
-            if cname:
-                out_merged["candidate_name"] = cname
+            resume_candidate_name = _candidate_name_from_resume(resume)
+            if resume_candidate_name:
+                out_merged["candidate_name"] = resume_candidate_name
             if not jd_id and resume.job_description_id:
                 jd_id = resume.job_description_id
 
     if jd_id:
         job = (
             db.query(JobDescription)
+            .options(
+                load_only(
+                    JobDescription.id,
+                    JobDescription.tenant_id,
+                    JobDescription.job_title,
+                    JobDescription.location,
+                    JobDescription.employment_type,
+                    JobDescription.years_experience_min,
+                    JobDescription.years_experience_max,
+                    JobDescription.raw_text,
+                    JobDescription.key_responsibilities,
+                    JobDescription.required_skills,
+                    JobDescription.required_certifications,
+                    JobDescription.salary_min,
+                    JobDescription.salary_max,
+                    JobDescription.currency,
+                )
+            )
             .filter(JobDescription.id == jd_id, JobDescription.tenant_id == tenant_id)
             .first()
         )
@@ -373,8 +401,10 @@ def build_voice_interview_enrichment(
     if not resume and not job:
         return {"merged_jd_context": out_merged, "voice_dynamic_context": None}
 
-    candidate_name = (out_merged.get("candidate_name") or None) or (
-        _candidate_name_from_resume(resume) if resume else None
+    candidate_name = (
+        (out_merged.get("candidate_name") or None)
+        or resume_candidate_name
+        or (_candidate_name_from_resume(resume) if resume else None)
     )
     if isinstance(candidate_name, str):
         candidate_name = candidate_name.strip() or None
@@ -417,44 +447,30 @@ def build_voice_interview_enrichment(
         )
         lines.append(
             "RECRUITMENT CALL FLOW — FOLLOW IN ORDER:\n\n"
-            "CRITICAL LISTENING MODE:\n"
-            "- Let the candidate finish speaking completely before replying.\n"
-            "- Do not interrupt, do not cut off, and do not jump to next question mid-answer.\n"
-            "- Avoid filler acknowledgements like \"ok ok\", \"hmm\", or repeated \"got it\"; use one clear acknowledgement only when needed.\n"
-            "- If the answer is unclear, ask one short clarification for the SAME question, then close that topic.\n\n"
-            "PRIORITY ZERO — IMMEDIATE HARD-STOP CONDITIONS:\n"
-            "- If candidate says not interested, wrong number/person, stop calling, do not call again, or clearly cannot continue, end in the same turn.\n"
-            "- Reply with one short polite close only, then append [END_CALL].\n"
-            "- Do not persuade, do not ask follow-up, do not continue screening.\n\n"
-            "NOTE ON INTRO:\n"
-            "- If auto intro already played at pickup, do not repeat full intro.\n"
-            "- If no auto intro played, give a short human intro first before any screening question.\n\n"
+            "FAST MODE RULES:\n"
+            "- Keep replies short (1-2 sentences unless candidate asks detail).\n"
+            "- Ask one question at a time and move forward once answer is usable.\n"
+            "- Do not repeat answered questions.\n"
+            "- If candidate says not interested / wrong person / stop calling, end immediately with a short polite close + [END_CALL].\n\n"
+            "INTRO:\n"
+            "- If auto intro already played, do not repeat it.\n"
+            "- If no auto intro played, give a one-line intro and ask if now is a good time.\n\n"
             "1) OPENING (if no auto intro played):\n"
-            f"   Introduce yourself from hiring for the {_job_title_display} role in 1-2 short sentences, then ask: "
-            "\"Is this still a good time for a 3-5 minute screening call?\"\n\n"
+            f"   \"Hi, this is hiring calling about the {_job_title_display} role. Is now a good time for a 3-5 minute screening call?\"\n\n"
             f"2) NAME:\n   {_name_step_detail}\n\n"
             "3) INTEREST & AVAILABILITY:\n"
             "- If clear no-go, close politely and append [END_CALL].\n"
             "- If willing to continue, proceed to full screening.\n\n"
-            "4) FULL SCREENING (MANDATORY ORDER, DO NOT SKIP):\n"
-            "- Ask exactly ONE question at a time.\n"
-            "- Wait for complete answer.\n"
-            "- Acknowledge once.\n"
-            "- Move to next step only after current step has a usable answer.\n"
-            "- Do not ask double questions.\n"
+            "4) FULL SCREENING (ORDER: a -> e):\n"
             "   a) Name cross-check vs profile/resume. If mismatch persists after one re-check, close with [END_CALL].\n"
             "   b) Job intent and employment context.\n"
             "   c) JD skill verification using resume-grounded evidence. If critical skills clearly mismatch, close with [END_CALL].\n"
             "   d) One simple analytical/logical question + one short follow-up to understand thinking.\n"
             "   e) Compensation expectation (share budget range if asked and available).\n\n"
-            "5) NO QUESTION REPEATS:\n"
-            "- Once answered, mark topic CLOSED and never re-ask (even with different wording).\n"
-            "- Before every new question, check history and ensure this topic was not already answered.\n"
-            "- If candidate gave a brief but usable answer, accept it and move on.\n\n"
-            "6) SCREENING COMPLETENESS CHECK BEFORE END:\n"
+            "5) COMPLETENESS CHECK BEFORE END:\n"
             "- Confirm 4a, 4b, 4c, 4d, 4e are all covered.\n"
             "- If any step is missing, ask only that missing question before ending.\n\n"
-            "7) ENDING TOKENS (system-only, never spoken):\n"
+            "6) ENDING TOKENS (system-only, never spoken):\n"
             "- Use [END_CALL] whenever call is ending.\n"
             "- Use [SCREENING_QUALIFIED] immediately BEFORE [END_CALL] only when full flow 4a-4e completed without early rejection/opt-out/critical mismatch.\n"
             "- Never output [SCREENING_QUALIFIED] for early exits."
