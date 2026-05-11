@@ -23,7 +23,7 @@ from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.call_session import CallSession
 from app.models.phone_number import PhoneNumber
 from app.services.call_session_service import call_session_service
-from app.services.voice_screening_qualification_service import maybe_qualify_resume_on_call_completed
+from app.services.voice_screening_qualification_service import maybe_update_resume_status_on_call_completed
 from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import (
     validate_twilio_signature,
@@ -433,7 +433,7 @@ async def handle_call_events_webhook(
                 ended_reason="hung up"
             )
             try:
-                maybe_qualify_resume_on_call_completed(db, call_session.id)
+                maybe_update_resume_status_on_call_completed(db, call_session.id)
             except Exception as mq_exc:
                 logger.warning("Resume screening qualify on completed webhook: %s", mq_exc, exc_info=True)
             
@@ -1644,7 +1644,7 @@ async def end_call(
             ended_reason="completed"
         )
         try:
-            maybe_qualify_resume_on_call_completed(db, call_session.id)
+            maybe_update_resume_status_on_call_completed(db, call_session.id)
         except Exception as mq_exc:
             logger.warning("Resume screening qualify on end_call: %s", mq_exc, exc_info=True)
         

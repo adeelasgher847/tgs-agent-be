@@ -1,14 +1,18 @@
 """
-When a voice screening call ends with [SCREENING_QUALIFIED], mark the linked resume qualified.
+Apply candidate status on JD voice screening completion.
 
-Uses call_session.call_metadata[\"jd_context\"][\"resume_id\"] set during outbound initiate.
+Primary signal sources (stored on call metadata):
+- [SCREENING_QUALIFIED] token -> qualified
+- [OUTCOME: ...] token -> mapped to qualified / partially qualified / rejected
 
-JD recruitment calls are flagged with jd_context[\"recruitment_jd_screening\"] == True when a job
+Uses call_session.call_metadata["jd_context"]["resume_id"] set during outbound initiate.
+JD recruitment calls are flagged with jd_context["recruitment_jd_screening"] == True when a job
 description is resolved (voice_interview_context_service). Generic agent flows omit this flag.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 
 import uuid
 
@@ -42,6 +46,74 @@ def is_jd_recruitment_voice_context(jd_ctx: dict | None) -> bool:
 
 
 _SIGNAL_META_KEY = "voice_screening_qualified_signal"
+_CANDIDATE_STATUS_META_KEY = "voice_screening_candidate_status"
+_OUTCOME_RE = re.compile(r"\[\s*OUTCOME\s*:\s*([^\]]+)\]", re.IGNORECASE)
+
+
+def _normalize_outcome_to_candidate_status(outcome: str | None) -> CandidateStatus | None:
+    if not outcome:
+        return None
+    token = str(outcome).strip().lower()
+    if not token:
+        return None
+
+    compact = token.replace("_", " ").replace("-", " ")
+    if "success" in compact or "qualified" in compact or compact in {"pass", "yes"}:
+        return CandidateStatus.QUALIFIED
+    if (
+        "reject" in compact
+        or "fail" in compact
+        or "not qualified" in compact
+        or compact in {"no", "decline"}
+    ):
+        return CandidateStatus.REJECTED
+    if "partial" in compact or "unclear" in compact or "maybe" in compact:
+        return CandidateStatus.PARTIALLY_QUALIFIED
+    return None
+
+
+def _extract_status_signal_from_text(text: str | None) -> CandidateStatus | None:
+    if not text:
+        return None
+    if "[SCREENING_QUALIFIED]" in text.upper():
+        return CandidateStatus.QUALIFIED
+    match = _OUTCOME_RE.search(text)
+    if not match:
+        return None
+    return _normalize_outcome_to_candidate_status(match.group(1))
+
+
+def persist_voice_screening_status_signal(
+    db: Session,
+    call_session: CallSession | None,
+    full_response_text: str | None,
+) -> CandidateStatus | None:
+    """
+    Persist candidate-status intent when control tokens are emitted in streamed LLM output.
+    """
+    if not call_session:
+        return None
+    status_signal = _extract_status_signal_from_text(full_response_text)
+    if status_signal is None:
+        return None
+    try:
+        md = dict(call_session.call_metadata or {})
+        md[_CANDIDATE_STATUS_META_KEY] = status_signal.value
+        if status_signal == CandidateStatus.QUALIFIED:
+            md[_SIGNAL_META_KEY] = True
+        call_session.call_metadata = md
+        db.add(call_session)
+        db.commit()
+        db.refresh(call_session)
+        logger.info(
+            "voice_screening_candidate_status persisted=%s (session=%s)",
+            status_signal.value,
+            call_session.id,
+        )
+        return status_signal
+    except Exception as exc:
+        logger.warning("persist_voice_screening_status_signal failed: %s", exc, exc_info=True)
+        return None
 
 
 def persist_voice_screening_qualified_signal(db: Session, call_session: CallSession | None) -> None:
@@ -62,7 +134,7 @@ def persist_voice_screening_qualified_signal(db: Session, call_session: CallSess
         logger.warning("persist_voice_screening_qualified_signal failed: %s", exc, exc_info=True)
 
 
-def maybe_qualify_resume_on_call_completed(db: Session, call_session_id: uuid.UUID) -> bool:
+def maybe_update_resume_status_on_call_completed(db: Session, call_session_id: uuid.UUID) -> bool:
     """
     Twilio 'completed' webhook fallback: stream may crash before DB qualify runs; we also persist
     voice_screening_qualified_signal on metadata when the LLM emits success tokens (transcript strips those tokens).
@@ -75,12 +147,22 @@ def maybe_qualify_resume_on_call_completed(db: Session, call_session_id: uuid.UU
     except Exception:
         pass
     md = cs.call_metadata if isinstance(cs.call_metadata, dict) else {}
-    if not md.get(_SIGNAL_META_KEY):
+    if not md.get(_SIGNAL_META_KEY) and not md.get(_CANDIDATE_STATUS_META_KEY):
         return False
-    return apply_resume_qualified_after_voice_screening(db, cs)
+    return apply_resume_candidate_status_after_voice_screening(db, cs)
 
 
-def apply_resume_qualified_after_voice_screening(db: Session, call_session: CallSession | None) -> bool:
+def maybe_qualify_resume_on_call_completed(db: Session, call_session_id: uuid.UUID) -> bool:
+    """
+    Backward-compatible alias.
+    """
+    return maybe_update_resume_status_on_call_completed(db, call_session_id)
+
+
+def apply_resume_candidate_status_after_voice_screening(
+    db: Session,
+    call_session: CallSession | None,
+) -> bool:
     if not call_session:
         return False
     try:
@@ -134,30 +216,54 @@ def apply_resume_qualified_after_voice_screening(db: Session, call_session: Call
         )
         return False
 
-    if resume.candidate_status == CandidateStatus.QUALIFIED:
+    signal_status_raw = md.get(_CANDIDATE_STATUS_META_KEY)
+    signal_status: CandidateStatus | None = None
+    try:
+        if signal_status_raw:
+            signal_status = CandidateStatus(str(signal_status_raw).strip())
+    except ValueError:
+        signal_status = None
+    target_status = signal_status or (
+        CandidateStatus.QUALIFIED if md.get(_SIGNAL_META_KEY) else None
+    )
+    if target_status is None:
+        return False
+
+    if resume.candidate_status == target_status:
         md_session = dict(call_session.call_metadata or {})
         md_session.pop(_SIGNAL_META_KEY, None)
+        md_session.pop(_CANDIDATE_STATUS_META_KEY, None)
         call_session.call_metadata = md_session
         db.add(call_session)
         db.commit()
         logger.debug(
-            "Voice screening qualify: resume %s already qualified (session=%s)",
+            "Voice screening: resume %s already %s (session=%s)",
             resume_uuid,
+            target_status.value,
             call_session.id,
         )
         return True
 
-    resume.candidate_status = CandidateStatus.QUALIFIED
+    resume.candidate_status = target_status
     resume.updated_at = datetime.now(timezone.utc)
     db.add(resume)
     md_session = dict(call_session.call_metadata or {})
     md_session.pop(_SIGNAL_META_KEY, None)
+    md_session.pop(_CANDIDATE_STATUS_META_KEY, None)
     call_session.call_metadata = md_session
     db.add(call_session)
     db.commit()
     logger.info(
-        "Voice screening: marked resume %s qualified (call_session=%s)",
+        "Voice screening: marked resume %s as %s (call_session=%s)",
         resume_uuid,
+        target_status.value,
         call_session.id,
     )
     return True
+
+
+def apply_resume_qualified_after_voice_screening(db: Session, call_session: CallSession | None) -> bool:
+    """
+    Backward-compatible alias.
+    """
+    return apply_resume_candidate_status_after_voice_screening(db, call_session)

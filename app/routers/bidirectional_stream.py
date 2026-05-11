@@ -113,9 +113,9 @@ from app.core.logger import logger
 
 from app.services.call_session_service import call_session_service
 from app.services.voice_screening_qualification_service import (
-    apply_resume_qualified_after_voice_screening,
+    apply_resume_candidate_status_after_voice_screening,
     is_jd_recruitment_voice_context,
-    persist_voice_screening_qualified_signal,
+    persist_voice_screening_status_signal,
 )
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
@@ -1929,13 +1929,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = end_call_after or bool(_RE_VOICE_END_CALL.search(full_response))
                 if (
                     end_call_after
-                    and _RE_VOICE_SCREENING_QUALIFIED.search(full_response)
                     and not _transfer_re.search(full_response)
                 ):
-                    # DB apply_resume_qualified_after_voice_screening enforces jd_context + recruitment checks
-                    self._pending_resume_screening_qualify = True
+                    # DB apply_resume_candidate_status_after_voice_screening enforces jd_context + recruitment checks
+                    self._pending_resume_screening_qualify = False
                     try:
-                        persist_voice_screening_qualified_signal(self.db, self.call_session)
+                        persisted_status = persist_voice_screening_status_signal(
+                            self.db,
+                            self.call_session,
+                            full_response,
+                        )
+                        self._pending_resume_screening_qualify = persisted_status is not None
                     except Exception:
                         pass
 
@@ -3966,7 +3970,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if self.call_session:
                 if getattr(self, "_pending_resume_screening_qualify", False):
                     try:
-                        apply_resume_qualified_after_voice_screening(self.db, self.call_session)
+                        apply_resume_candidate_status_after_voice_screening(self.db, self.call_session)
                     except Exception as qual_exc:  # pragma: no cover - non-blocking for hangup
                         logger.warning(
                             "Voice screening qualify failed (session=%s): %s",
