@@ -168,6 +168,15 @@ def _to_calendar_item(
     transcript: list[dict[str, Any]] = []
     if call_session:
         transcript, _ = _transcript_for_call_session(db, call_session)
+
+    candidate_status_value: str | None = None
+    if resume is not None and resume.candidate_status is not None:
+        candidate_status_value = (
+            resume.candidate_status.value
+            if hasattr(resume.candidate_status, "value")
+            else str(resume.candidate_status)
+        )
+
     return ResumeInterviewCalendarItem(
         interview_id=interview.id,
         resume_id=interview.resume_id,
@@ -180,6 +189,7 @@ def _to_calendar_item(
         candidate_email=candidate_email,
         job_description_id=interview.job_description_id,
         call_session_id=interview.call_session_id,
+        candidate_status=candidate_status_value,
         transcript=transcript,
     )
 
@@ -1068,6 +1078,24 @@ def get_resume_interview_call_media_from_trello(
         )
 
     transcript, transcript_source = _transcript_for_call_session(db, call_session)
+
+    candidate_status_value: str | None = None
+    if interview.resume_id:
+        resume_row = (
+            db.query(Resume)
+            .filter(
+                Resume.id == interview.resume_id,
+                Resume.tenant_id == user.current_tenant_id,
+            )
+            .first()
+        )
+        if resume_row and resume_row.candidate_status is not None:
+            candidate_status_value = (
+                resume_row.candidate_status.value
+                if hasattr(resume_row.candidate_status, "value")
+                else str(resume_row.candidate_status)
+            )
+
     payload = ResumeInterviewTrelloCallMediaResponse(
         resume_interview_id=interview.id,
         resume_id=interview.resume_id,
@@ -1076,6 +1104,7 @@ def get_resume_interview_call_media_from_trello(
         recording_url=call_session.recording_url,
         twilio_call_sid=call_session.twilio_call_sid or interview.twilio_call_sid,
         call_session_status=call_session.status,
+        candidate_status=candidate_status_value,
         transcript=transcript,
         transcript_source=transcript_source,
     )

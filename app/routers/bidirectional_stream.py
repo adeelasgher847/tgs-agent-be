@@ -1618,6 +1618,7 @@ class BidirectionalStreamHandler:
 - Never ask a question that is already answered in "Previous conversation" above; move to the next step in YOUR ROLE block.
 - Know the candidate's on-file name from THIS CALL — CANDIDATE & ROLE above when present; address them by name naturally. Your first reply after they speak must still include who you are (use your agent name from # ROLE) and that you are calling from hiring for this role (one short sentence if an auto-intro already covered part of it).
 - On successful completion of the full screening per YOUR ROLE block, your last reply must include [SCREENING_QUALIFIED] immediately before [END_CALL] as instructed there.
+- SUCCESS CLOSING THEME: thank them, then say the technical team will review their screening and may follow up for the next interview step. Never say the profile will be moved to next-step review; do not promise an offer.
 - CLOSING: When you are done, use exactly ONE assistant message for goodbye (max 2 short sentences), append [SCREENING_QUALIFIED] then [END_CALL] once each, then stop. Do not recap the call, do not repeat thanks/goodbye, and do not send another message after tokens.
 - If an intro already played at call start, do not repeat the same full intro; continue the flow.
 """

@@ -88,6 +88,10 @@ class ResumeInterviewCalendarItem(BaseModel):
     )
     job_description_id: UUID | None = None
     call_session_id: UUID | None = None
+    candidate_status: str | None = Field(
+        default=None,
+        description="Candidate status from the resume table (e.g. qualified, partially qualified, rejected).",
+    )
     transcript: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Call transcript for linked call session, if available.",
@@ -163,6 +167,10 @@ class ResumeInterviewTrelloCallMediaResponse(BaseModel):
     recording_url: str | None = None
     twilio_call_sid: str | None = None
     call_session_status: str | None = None
+    candidate_status: str | None = Field(
+        default=None,
+        description="Candidate status from the resume table (e.g. qualified, partially qualified, rejected).",
+    )
     transcript: list[dict[str, Any]] = Field(
         default_factory=list,
         description='Conversation turns with at least "role" and "content".',
