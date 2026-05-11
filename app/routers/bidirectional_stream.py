@@ -187,10 +187,14 @@ _RE_VOICE_SCREENING_QUALIFIED = re.compile(r"\[\s*SCREENING_QUALIFIED\s*\]", re.
 
 # User utterance indicates opt-out / wrong call — force hangup (recruitment outbound safety net)
 _SCREENING_USER_DECLINE_RE = re.compile(
-    r"(not\s+interested|no\s+thanks|no\s+thank\s+you|don'?t\s+call|stop\s+calling|wrong\s+(number|person|call)|"
+    r"(not\s+interested|no\s+interest|not\s+interested\s+anymore|no\s+thanks|no\s+thank\s+you|"
+    r"don'?t\s+call|stop\s+calling|wrong\s+(number|person|call)|"
+    r"not\s+the\s+person+|i\s*'?m\s+not\s+the\s+person|i\s+am\s+not\s+the\s+person|"
+    r"that\s+isn'?t\s+me|that'?s\s+not\s+me|not\s+me\b|"
+    r"you\s*('?ve|have)\s+the\s+wrong|wrong\s+guy|wrong\s+lady|"
     r"not\s+available|i\s+am\s+not\s+available|i'?m\s+not\s+available|can'?t\s+talk|"
     r"take\s+me\s+off|remove\s+me|not\s+looking|already\s+placed|not\s+for\s+me|"
-    r"wrong\s+call|decline\s+this|reject\s+this)",
+    r"wrong\s+call|decline\s+this|reject\s+this|i\s+decline|don'?t\s+want\s+(this\s+)?job)",
     re.IGNORECASE,
 )
 
@@ -762,22 +766,89 @@ class BidirectionalStreamHandler:
             spec.cancel()
         self._speculative_prefetch_task = None
 
-    async def _respond_screening_decline_and_end(self) -> None:
-        """User declined screening — short goodbye TTS then hang up (no LLM)."""
+    async def _immediate_recruitment_decline_hangup(self) -> None:
+        """
+        User declined / wrong person — end Twilio leg immediately (no TTS / no wait).
+
+        Same practical outcome as POST /api/v1/voice/call/end for the live call: Twilio
+        hangup + session completed + stream shutdown.
+        """
+        if self._call_ended:
+            return
         try:
             await self._cancel_inflight_llm_response()
-            self._pending_resume_screening_qualify = False
-            msg = "Thanks for letting me know. Take care."
-            self._tts_cancel.clear()
-            self._prev_tts_tail = b""
-            await self._add_to_transcript("agent", msg, "agent_response")
-            if self._tts_pipeline:
-                await self._tts_pipeline.queue_tts({
-                    "text": msg,
-                    "use_ssml": self._use_ssml,
-                    "is_final": True,
-                    "end_call_after": True,
-                })
+        except Exception:
+            pass
+        self._pending_resume_screening_qualify = False
+        self._call_ended = True
+
+        if self.call_session:
+            try:
+                updated = call_session_service.update_call_session_status(
+                    self.db,
+                    self.call_session.id,
+                    "completed",
+                    ended_reason="User declined screening",
+                )
+                if updated:
+                    self.call_session = updated
+            except Exception as exc:
+                logger.warning(
+                    "Decline hangup: session status update failed (session=%s): %s",
+                    getattr(self.call_session, "id", None),
+                    exc,
+                    exc_info=True,
+                )
+
+        if self.call_sid and self.call_session:
+            try:
+                account_sid, auth_token = get_twilio_credentials_for_call(
+                    self.db, self.call_session
+                )
+                twilio_service.end_call_with_credentials(
+                    self.call_sid, account_sid, auth_token
+                )
+            except Exception as end_err:
+                logger.warning(
+                    "Decline hangup: Twilio end_call_with_credentials failed (sid=%s): %s",
+                    self.call_sid,
+                    end_err,
+                )
+                try:
+                    twilio_service.end_call(self.call_sid)
+                except Exception as fallback_err:
+                    logger.warning(
+                        "Decline hangup: Twilio end_call fallback failed: %s", fallback_err
+                    )
+
+        if self.call_session:
+            try:
+                await broadcast_call_status_update(
+                    call_session_id=str(self.call_session.id),
+                    status="completed",
+                    metadata={
+                        "call_sid": self.call_sid,
+                        "stream_sid": self.stream_sid,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "message": "call_ended",
+                        "event": "user_declined_screening",
+                        "reason": "User declined screening",
+                    },
+                )
+            except Exception as bc_err:
+                logger.debug("Decline hangup: broadcast failed: %s", bc_err)
+
+        asyncio.create_task(self._full_shutdown())
+        logger.info(
+            "Recruitment decline: immediate hangup (session=%s, call_sid=%s)",
+            self.call_session.id if self.call_session else None,
+            self.call_sid,
+        )
+
+    async def _respond_screening_decline_and_end(self) -> None:
+        """User declined screening — hang up immediately (no LLM, no TTS wait)."""
+        try:
+            await self._immediate_recruitment_decline_hangup()
         except Exception as e:
             logger.error("respond_screening_decline_and_end: %s", e, exc_info=True)
 
