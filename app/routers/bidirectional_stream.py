@@ -1218,8 +1218,19 @@ class BidirectionalStreamHandler:
                         raw_vc = self.call_session.call_metadata.get("voice_dynamic_context")
                         if isinstance(raw_vc, dict):
                             vc = raw_vc
-                    job_title = (vc.get("job_title") or "").strip() or "the role we're hiring for"
+                    jd_ctx = (
+                        self.call_session.call_metadata.get("jd_context")
+                        if isinstance(self.call_session.call_metadata, dict)
+                        else None
+                    )
+                    job_title = (vc.get("job_title") or "").strip()
+                    if not job_title and isinstance(jd_ctx, dict):
+                        job_title = str(jd_ctx.get("jd_title") or "").strip()
+                    if not job_title:
+                        job_title = "the role we're hiring for"
                     cand = (vc.get("candidate_name") or "").strip()
+                    if not cand and isinstance(jd_ctx, dict):
+                        cand = str(jd_ctx.get("candidate_name") or "").strip()
                     aname = (self.agent.name or "our team").strip()
                     if cand:
                         greeting_text = (
@@ -1534,6 +1545,7 @@ class BidirectionalStreamHandler:
 # RECRUITMENT OUTBOUND SCREENING (THIS CALL — OVERRIDES CONFLICTING GENERIC RULES)
 - If the user says not interested, wrong number, wrong person, wrong call, not available, stop calling, or cannot do this now (clear no) — reply with ONE short polite sentence and end with [END_CALL] only. No follow-up questions. No persuasion.
 - Never ask a question that is already answered in "Previous conversation" above; move to the next step in YOUR ROLE block.
+- Know the candidate's on-file name from THIS CALL — CANDIDATE & ROLE above when present; address them by name naturally. Your first reply after they speak must still include who you are (use your agent name from # ROLE) and that you are calling from hiring for this role (one short sentence if an auto-intro already covered part of it).
 - On successful completion of the full screening per YOUR ROLE block, your last reply must include [SCREENING_QUALIFIED] immediately before [END_CALL] as instructed there.
 - CLOSING: When you are done, use exactly ONE assistant message for goodbye (max 2 short sentences), append [SCREENING_QUALIFIED] then [END_CALL] once each, then stop. Do not recap the call, do not repeat thanks/goodbye, and do not send another message after tokens.
 - If an intro already played at call start, do not repeat the same full intro; continue the flow.

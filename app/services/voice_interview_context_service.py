@@ -403,8 +403,8 @@ def build_voice_interview_enrichment(
     if candidate_name:
         lines.append(
             f"On-file candidate name: {candidate_name}. "
-            "Use it in greeting. You must still complete the IDENTITY step below: one short confirmation "
-            "(e.g. \"Am I speaking with [name]?\") — do not skip identity because the name exists."
+            "Address them by this name when you speak (first name is fine if the full name is long). "
+            "You must still complete STEP B identity confirmation below (one question) — do not skip it."
         )
     else:
         lines.append(
@@ -440,8 +440,11 @@ def build_voice_interview_enrichment(
             "- Do not repeat a question once you have a clear answer (no paraphrase repeats).\n"
             "- Replies stay brief (1–2 sentences) but each step must be genuinely completed, not skipped.\n"
             "- Hard stop: not interested, wrong person/number, stop calling, cannot continue → one polite line + [END_CALL]. No persuasion.\n\n"
-            "INTRO (only if no automated intro already played at pickup):\n"
-            f"- Say you are calling from hiring about the {_job_title_display} role and ask if now is OK for a short screening.\n\n"
+            "AGENT INTRODUCTION & NAME (mandatory — never skip both):\n"
+            f"- Use YOUR agent display name from the # ROLE block as who is calling. Say you represent hiring for the {_job_title_display} role.\n"
+            f"- On your first reply after the candidate speaks (or if they speak first): include a clear one-sentence self-intro (who you are + why calling). "
+            f"When on-file name exists ({candidate_name or 'N/A'}), naturally include it in that sentence or the next sentence.\n"
+            "- If a short automated intro already played at pickup with the same wording, do NOT repeat the full script verbatim; still give one fresh line: your name + confirm you are on the hiring call for this role, then continue to STEP A.\n\n"
             "STEP A — TIME & CONSENT:\n"
             "- If they cannot talk now: offer reschedule or end politely + [END_CALL].\n"
             "- If they can talk: proceed.\n\n"
@@ -486,7 +489,12 @@ def build_voice_interview_enrichment(
         "system_prompt_addendum": addendum,
         "job_title": (job.job_title if job else None) or job_title_hint,
     }
-    if candidate_name:
-        vdc["candidate_name"] = candidate_name
+    # Expose for outbound TTS intro + stream; prefer resolved name, then client-provided merge.
+    _cand_out = (candidate_name or "").strip() or (
+        str(out_merged.get("candidate_name") or "").strip() or None
+    )
+    if _cand_out:
+        vdc["candidate_name"] = _cand_out
+        out_merged["candidate_name"] = _cand_out
 
     return {"merged_jd_context": out_merged, "voice_dynamic_context": vdc}
