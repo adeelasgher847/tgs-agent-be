@@ -9,7 +9,7 @@ import re
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm import Session
 
 from app.core.logger import logger
 from app.models.job_description import JobDescription
@@ -315,6 +315,20 @@ def build_voice_interview_enrichment(
       - voice_dynamic_context: { system_prompt_addendum, candidate_name?, job_title? } or None
     """
     out_merged: dict[str, Any] = {**(existing_jd_context or {})}
+    # IDs may live only inside existing_jd_context (scheduler / n8n payloads).
+    if jd_id is None:
+        jd_id = parse_optional_uuid(
+            str(out_merged.get("jd_id")).strip()
+            if out_merged.get("jd_id") is not None and str(out_merged.get("jd_id")).strip()
+            else None
+        )
+    if resume_id is None:
+        resume_id = parse_optional_uuid(
+            str(out_merged.get("resume_id")).strip()
+            if out_merged.get("resume_id") is not None
+            and str(out_merged.get("resume_id")).strip()
+            else None
+        )
     if not jd_id and not resume_id:
         return {"merged_jd_context": out_merged, "voice_dynamic_context": None}
 
@@ -326,15 +340,6 @@ def build_voice_interview_enrichment(
     if resume_id:
         resume = (
             db.query(Resume)
-            .options(
-                load_only(
-                    Resume.id,
-                    Resume.tenant_id,
-                    Resume.job_description_id,
-                    Resume.raw_text,
-                    Resume.parsed_json,
-                )
-            )
             .filter(Resume.id == resume_id, Resume.tenant_id == tenant_id)
             .first()
         )
@@ -353,24 +358,6 @@ def build_voice_interview_enrichment(
     if jd_id:
         job = (
             db.query(JobDescription)
-            .options(
-                load_only(
-                    JobDescription.id,
-                    JobDescription.tenant_id,
-                    JobDescription.job_title,
-                    JobDescription.location,
-                    JobDescription.employment_type,
-                    JobDescription.years_experience_min,
-                    JobDescription.years_experience_max,
-                    JobDescription.raw_text,
-                    JobDescription.key_responsibilities,
-                    JobDescription.required_skills,
-                    JobDescription.required_certifications,
-                    JobDescription.salary_min,
-                    JobDescription.salary_max,
-                    JobDescription.currency,
-                )
-            )
             .filter(JobDescription.id == jd_id, JobDescription.tenant_id == tenant_id)
             .first()
         )
@@ -415,12 +402,13 @@ def build_voice_interview_enrichment(
     highlights_added = False
     if candidate_name:
         lines.append(
-            f"The candidate's name from the application record is: {candidate_name}. "
-            "Greet them by name and use it naturally. Do not ask for their name unless it sounds wrong or they correct you."
+            f"On-file candidate name: {candidate_name}. "
+            "Use it in greeting. You must still complete the IDENTITY step below: one short confirmation "
+            "(e.g. \"Am I speaking with [name]?\") — do not skip identity because the name exists."
         )
     else:
         lines.append(
-            "The candidate's name is not in the system. Politely ask what name they go by, then continue."
+            "No candidate name on file. In the IDENTITY step, ask once what name they go by for this application."
         )
 
     if job:
@@ -440,40 +428,46 @@ def build_voice_interview_enrichment(
                 highlights_added = True
         _job_title_display = (job.job_title or "").strip() or "the open role"
         _name_step_detail = (
-            f'Ask what name they go by or confirm their full name. You have "{candidate_name}" on file — '
-            "use it naturally and ask them to confirm it is correct."
+            f'One question only: confirm you reached the right person, e.g. \"Am I speaking with {candidate_name}?\" '
+            "If they say wrong person or wrong number, apologize and end with [END_CALL]."
             if candidate_name
-            else "Ask what name they go by or ask for their full name for this application."
+            else 'One question only: \"What name should I use for you on this application?\"'
         )
         lines.append(
-            "RECRUITMENT CALL FLOW — FOLLOW IN ORDER:\n\n"
-            "FAST MODE RULES:\n"
-            "- Keep replies short (1-2 sentences unless candidate asks detail).\n"
-            "- Ask one question at a time and move forward once answer is usable.\n"
-            "- Do not repeat answered questions.\n"
-            "- If candidate says not interested / wrong person / stop calling, end immediately with a short polite close + [END_CALL].\n\n"
-            "INTRO:\n"
-            "- If auto intro already played, do not repeat it.\n"
-            "- If no auto intro played, give a one-line intro and ask if now is a good time.\n\n"
-            "1) OPENING (if no auto intro played):\n"
-            f"   \"Hi, this is hiring calling about the {_job_title_display} role. Is now a good time for a 3-5 minute screening call?\"\n\n"
-            f"2) NAME:\n   {_name_step_detail}\n\n"
-            "3) INTEREST & AVAILABILITY:\n"
-            "- If clear no-go, close politely and append [END_CALL].\n"
-            "- If willing to continue, proceed to full screening.\n\n"
-            "4) FULL SCREENING (ORDER: a -> e):\n"
-            "   a) Name cross-check vs profile/resume. If mismatch persists after one re-check, close with [END_CALL].\n"
-            "   b) Job intent and employment context.\n"
-            "   c) JD skill verification using resume-grounded evidence. If critical skills clearly mismatch, close with [END_CALL].\n"
-            "   d) One simple analytical/logical question + one short follow-up to understand thinking.\n"
-            "   e) Compensation expectation (share budget range if asked and available).\n\n"
-            "5) COMPLETENESS CHECK BEFORE END:\n"
-            "- Confirm 4a, 4b, 4c, 4d, 4e are all covered.\n"
-            "- If any step is missing, ask only that missing question before ending.\n\n"
-            "6) ENDING TOKENS (system-only, never spoken):\n"
-            "- Use [END_CALL] whenever call is ending.\n"
-            "- Use [SCREENING_QUALIFIED] immediately BEFORE [END_CALL] only when full flow 4a-4e completed without early rejection/opt-out/critical mismatch.\n"
-            "- Never output [SCREENING_QUALIFIED] for early exits."
+            "RECRUITMENT INITIAL SCREENING — EXECUTE IN ORDER (do not reorder):\n\n"
+            "GLOBAL RULES:\n"
+            "- One spoken question per turn; wait for their answer before the next question.\n"
+            "- Do not repeat a question once you have a clear answer (no paraphrase repeats).\n"
+            "- Replies stay brief (1–2 sentences) but each step must be genuinely completed, not skipped.\n"
+            "- Hard stop: not interested, wrong person/number, stop calling, cannot continue → one polite line + [END_CALL]. No persuasion.\n\n"
+            "INTRO (only if no automated intro already played at pickup):\n"
+            f"- Say you are calling from hiring about the {_job_title_display} role and ask if now is OK for a short screening.\n\n"
+            "STEP A — TIME & CONSENT:\n"
+            "- If they cannot talk now: offer reschedule or end politely + [END_CALL].\n"
+            "- If they can talk: proceed.\n\n"
+            f"STEP B — IDENTITY (single turn):\n- {_name_step_detail}\n\n"
+            "STEP C — INTEREST IN THIS ROLE (must happen before skill questions):\n"
+            "- Ask explicitly if they are interested in continuing for this role/opportunity.\n"
+            "- If not interested: thank + [END_CALL].\n"
+            "- If interested: proceed.\n\n"
+            "STEP D — SUBSTANTIVE SCREENING (one question at a time, in this order):\n"
+            "   D1) Motivation: why this role / what drew them (one question).\n"
+            "   D2) Current context: employed or not; if employed, one question on reason to move now.\n"
+            "   D3) Skills vs JD: pick top required skills from the JD block above; for each, one focused question tied to their resume highlights "
+            "(do not read resume verbatim). If a must-have skill is clearly missing after fair check, thank + [END_CALL].\n"
+            "   D4) One short analytical/logical question + at most one follow-up for clarity (weak answer alone is not a fail).\n"
+            "   D5) Compensation: expected range; if they ask budget, give JD range when available.\n\n"
+            "STEP E — BEFORE HANGUP:\n"
+            "- Mentally verify B, C, and D1–D5 were each addressed; if something was skipped, ask only that missing item.\n\n"
+            "CLOSING — NO REPEATS, NO LOOPS (critical):\n"
+            "- When screening is complete and you are done: speak ONE closing turn only (max 2 short sentences: thanks + goodbye).\n"
+            "- Do not recap the interview, do not re-thank, do not repeat the same closing lines, and do not ask another question after goodbye.\n"
+            "- After that single closing turn, append the ending tokens below and STOP generating (no follow-up assistant message).\n\n"
+            "ENDING TOKENS (never speak aloud; append once at the very end of that single closing message):\n"
+            "- Any hangup: include [END_CALL] exactly once.\n"
+            "- Successful completion of B + C + D1–D5 with no hard-stop: include [SCREENING_QUALIFIED] immediately before [END_CALL], both once, same message.\n"
+            "- Never use [SCREENING_QUALIFIED] for early exits or failed match.\n"
+            "- Never output closing sentences twice in a row; if you already thanked them, only output the tokens and end."
         )
     else:
         lines.append(

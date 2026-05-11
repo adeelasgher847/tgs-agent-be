@@ -1535,6 +1535,7 @@ class BidirectionalStreamHandler:
 - If the user says not interested, wrong number, wrong person, wrong call, not available, stop calling, or cannot do this now (clear no) — reply with ONE short polite sentence and end with [END_CALL] only. No follow-up questions. No persuasion.
 - Never ask a question that is already answered in "Previous conversation" above; move to the next step in YOUR ROLE block.
 - On successful completion of the full screening per YOUR ROLE block, your last reply must include [SCREENING_QUALIFIED] immediately before [END_CALL] as instructed there.
+- CLOSING: When you are done, use exactly ONE assistant message for goodbye (max 2 short sentences), append [SCREENING_QUALIFIED] then [END_CALL] once each, then stop. Do not recap the call, do not repeat thanks/goodbye, and do not send another message after tokens.
 - If an intro already played at call start, do not repeat the same full intro; continue the flow.
 """
 

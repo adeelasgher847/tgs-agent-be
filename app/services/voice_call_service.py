@@ -238,27 +238,34 @@ async def initiate_call(
             db.commit()
             db.refresh(call_session)
 
-        # Optional: enrich from explicit jd_id + resume_id.
-        # Fast path: if caller already sends jd_context and no explicit IDs, skip DB enrichment
-        # to reduce per-call query latency.
+        # Optional: enrich from jd_id + resume_id (top-level or nested in jd_context).
         _ctx = call_request.jd_context or {}
-        _jd = parse_optional_uuid(call_request.jd_id)
-        _resume = parse_optional_uuid(call_request.resume_id)
+        _jd = parse_optional_uuid(
+            call_request.jd_id
+            or (
+                str(_ctx.get("jd_id"))
+                if _ctx.get("jd_id") is not None and str(_ctx.get("jd_id")).strip()
+                else None
+            )
+        )
+        _resume = parse_optional_uuid(
+            call_request.resume_id
+            or (
+                str(_ctx.get("resume_id"))
+                if _ctx.get("resume_id") is not None
+                and str(_ctx.get("resume_id")).strip()
+                else None
+            )
+        )
         if call_request.jd_context or _jd or _resume:
             try:
-                if _jd or _resume:
-                    enrich = build_voice_interview_enrichment(
-                        db,
-                        tenant_id=tenant_id_filter,
-                        jd_id=_jd,
-                        resume_id=_resume,
-                        existing_jd_context=call_request.jd_context,
-                    )
-                else:
-                    enrich = {
-                        "merged_jd_context": {**_ctx},
-                        "voice_dynamic_context": None,
-                    }
+                enrich = build_voice_interview_enrichment(
+                    db,
+                    tenant_id=tenant_id_filter,
+                    jd_id=_jd,
+                    resume_id=_resume,
+                    existing_jd_context=call_request.jd_context,
+                )
             except Exception as exc:  # pragma: no cover - defensive; never block calls
                 logger.warning("Voice interview enrichment skipped: %s", exc, exc_info=True)
                 enrich = {
