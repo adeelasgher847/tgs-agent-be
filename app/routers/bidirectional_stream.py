@@ -175,6 +175,7 @@ from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
     prepare_tts_text_for_provider,
+    strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
 
@@ -918,6 +919,13 @@ class BidirectionalStreamHandler:
                 self._stt_last_final_raw = tstrip
                 self._stt_last_final_monotonic = _now
 
+                # STT self-echo guard: discard transcripts that closely match
+                # recently spoken agent text. Occurs when the STT mic picks up
+                # the agent's TTS output on the phone line (sidetone / open mic).
+                if self._is_agent_self_echo(tstrip):
+                    logger.info("STT: suppressing agent self-echo: %r", tstrip)
+                    return
+
                 self._voice_metrics.begin_turn_at_stt_final()
 
                 # 🎯 Check for goodbye words FIRST - end call if detected
@@ -1463,11 +1471,14 @@ class BidirectionalStreamHandler:
                     # Booking flows use a slightly wider window to keep service/date/slot
                     # in context, but capped at 20 to avoid prompt bloat that inflates LLM TTFT.
                     # (Previous default of 39 was adding ~1000 tokens to the prompt on long calls.)
-                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 12)
+                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 50)
                     if low_latency_fastpath:
-                        max_msgs = min(max_msgs, 6)
+                        # Keep at least 12 on fast path — intake flows span 6+ phases and
+                        # cutting to 6 drops early context (name, issue, location already given),
+                        # causing the agent to re-ask questions the caller already answered.
+                        max_msgs = min(max_msgs, 60)
                     if self._is_booking_context_active(user_text):
-                        max_msgs = min(max(max_msgs, 20), 20)
+                        max_msgs = min(max(max_msgs, 60), 60)
                     if len(filtered) > max_msgs:
                         filtered = filtered[-max_msgs:]
 
@@ -1538,6 +1549,17 @@ class BidirectionalStreamHandler:
 - If an intro already played at call start, do not repeat the same full intro; continue the flow.
 """
 
+            # When no business facts are loaded, inject an explicit "do not invent" guard
+            # so the LLM never fills the empty section with hallucinated details.
+            _bk_block = business_knowledge_block or (
+                "# AUTHORITATIVE BUSINESS FACTS\n"
+                "No verified business facts are loaded for this call.\n"
+                "CRITICAL: Do NOT invent or assume ANY business details (name, address, phone, "
+                "email, services, prices, hours, or any other specifics).\n"
+                "If the caller asks about the business, say that specific information is not "
+                "available to you right now and offer to help in another way."
+            )
+
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
@@ -1560,33 +1582,45 @@ Previous conversation:
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. NO REPETITION: If the history shows you asked a question, move to the next point.
-2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
-3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
-5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
-6. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, location, issue, timing) is still valid — do not ask for it again. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript. Move to the next unanswered item only.
+3. HANDLING SILENCE: If the user says something vague, ask a single clarifying question.
+4. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+5. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
+6. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
+7. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule_base}
 
 {elevenlabs_audio_tag_block}
 
-{business_knowledge_block}
+{_bk_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
+- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
-            
+
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self.agent and self.agent.system_prompt:
-                # Agent has custom system prompt - use it with context (voice-first, plain text)
+                # Agent has custom system prompt - grounding rules placed BEFORE custom
+                # instructions so factual constraints cannot be overridden by agent config.
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
+These rules override any conflicting custom instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using the AUTHORITATIVE BUSINESS FACTS section below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
 
 # CUSTOM INSTRUCTIONS
 {self.agent.system_prompt}
@@ -1595,7 +1629,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
@@ -1607,30 +1641,37 @@ Previous conversation:
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
-2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
-4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
-5. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
+3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
-{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
+- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
-                # Model has system prompt - use it (voice-first, plain text)
+                # Model has system prompt - grounding rules placed BEFORE model instructions.
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
+These rules override any conflicting model instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using the AUTHORITATIVE BUSINESS FACTS section below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
 
 # MODEL INSTRUCTIONS
 {self.agent.model.system_prompt}
@@ -1639,7 +1680,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.{greeting_instruction_block}
+- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}
@@ -1649,23 +1690,21 @@ Previous conversation:
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions. Move to the next point.
-2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-3. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
-4. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
-5. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
+3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
-{business_knowledge_block}
 # CALENDAR ASSIST
 - Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
 - To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, optional phone/email, slot, reason.
+- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
+- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
 - If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
 - Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
+- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
@@ -1673,8 +1712,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Use base prompt
                 system_prompt = base_prompt
 
+            # Use _bk_block (never empty) so the service area gate is derived from
+            # the actual loaded knowledge — not the raw block which is "" on cold cache.
             call_policy_block = agent_service.build_call_policy_block(
-                business_knowledge_block=business_knowledge_block,
+                business_knowledge_block=_bk_block,
                 transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
             )
             if call_policy_block:
@@ -1695,7 +1736,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             llm_service = None
             model_name = "gemini-1.5-flash"  # Default fallback
             api_key = None
-            temperature = 0.5
+            temperature = 0.15
             max_tokens = 100
             if self.agent and self.agent.model:
                 model_name = self.agent.model.model_name
@@ -2213,6 +2254,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             return False
         if booking_intent_turn:
             return False
+        # Never use fast path when a restricted service area is configured: any turn
+        # could carry a location statement ("Houston, Texas" = 2 words) and needs
+        # the full KB + policy block so the service area gate fires correctly.
+        if (
+            self._kb_cache_ready
+            and self._cached_business_knowledge_block
+            and "COVERAGE: RESTRICTED" in self._cached_business_knowledge_block
+        ):
+            return False
         text = (user_text or "").strip().lower()
         if not text:
             return False
@@ -2223,6 +2273,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         heavy_intent_markers = (
             "price", "pricing", "cost", "address", "phone", "email", "website",
             "service", "book", "booking", "appointment", "schedule", "slot", "quote",
+            "area", "location", "city", "state", "zip", "county", "region",
         )
         return not any(k in text for k in heavy_intent_markers)
 
@@ -2281,6 +2332,134 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if not u_norm or not prev_u or prev_u == u_norm:
                         return True
         return False
+
+    def _is_agent_self_echo(self, transcript: str) -> bool:
+        """
+        True when an incoming STT final closely matches text the agent recently spoke.
+
+        Phone-line sidetone and open-mic setups can feed the agent's TTS audio back
+        into the STT stream as a "final" transcript.  The word-overlap check requires
+        ≥80 % of the shorter text's words to be shared, with a minimum of 4 words in
+        the transcript so that short overlapping phrases don't trigger false positives.
+
+        Window: 12 s — covers TTS latency, full playback of long replies, plus STT
+        pipeline lag before the echo arrives as a final result.
+        """
+        if not transcript or not self._recent_agent_pairs:
+            return False
+        t_norm = self._normalize_turn_text(transcript)
+        if not t_norm:
+            return False
+        t_words = t_norm.split()
+        if len(t_words) < 4:
+            return False
+        t_word_set = set(t_words)
+        now = time.monotonic()
+        for _u, a_norm, ts in self._recent_agent_pairs:
+            if (now - ts) > 12.0:
+                continue
+            if not a_norm:
+                continue
+            a_word_set = set(a_norm.split())
+            if len(a_word_set) < 4:
+                continue
+            overlap = len(t_word_set & a_word_set)
+            shorter = min(len(t_word_set), len(a_word_set))
+            if overlap / shorter >= 0.80:
+                return True
+        return False
+
+    def _extract_caller_location_from_transcript(self) -> str:
+        """
+        Scan the in-memory conversation history for a client message that looks like a
+        location response.  Returns the first matching client utterance (truncated to 80
+        chars) or an empty string when nothing is found.
+
+        Heuristic: a client message is treated as a location if it contains a US state
+        name/abbreviation, or if it was immediately preceded by an agent turn that asked
+        about city/state/location.  Scanning is limited to the most recent 30 pairs so
+        the check stays O(1) on long calls.
+        """
+        import re as _re
+
+        # Common US state names and two-letter abbreviations (covers the vast majority of
+        # service-area lookups; non-US businesses will typically use global coverage).
+        _STATE_RE = _re.compile(
+            r"\b(?:alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|"
+            r"florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|"
+            r"maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|"
+            r"nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|"
+            r"north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|"
+            r"south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|"
+            r"wisconsin|wyoming|"
+            r"\bAL\b|\bAK\b|\bAZ\b|\bAR\b|\bCA\b|\bCO\b|\bCT\b|\bDE\b|\bFL\b|\bGA\b|"
+            r"\bHI\b|\bID\b|\bIL\b|\bIN\b|\bIA\b|\bKS\b|\bKY\b|\bLA\b|\bME\b|\bMD\b|"
+            r"\bMA\b|\bMI\b|\bMN\b|\bMS\b|\bMO\b|\bMT\b|\bNE\b|\bNV\b|\bNH\b|\bNJ\b|"
+            r"\bNM\b|\bNY\b|\bNC\b|\bND\b|\bOH\b|\bOK\b|\bOR\b|\bPA\b|\bRI\b|\bSC\b|"
+            r"\bSD\b|\bTN\b|\bTX\b|\bUT\b|\bVT\b|\bVA\b|\bWA\b|\bWV\b|\bWI\b|\bWY\b)",
+            _re.IGNORECASE,
+        )
+        _LOCATION_QUESTION_RE = _re.compile(
+            r"\b(?:city|state|zip|area|location|address|where|neighbourhood|neighborhood|borough|county|region)\b",
+            _re.IGNORECASE,
+        )
+
+        history = self._conversation_history_cache[-60:]  # last 30 pairs max
+        prev_agent_asked_location = False
+        for role, text in history:
+            if role == "agent":
+                prev_agent_asked_location = bool(_LOCATION_QUESTION_RE.search(text or ""))
+            elif role in ("client", "user"):
+                txt = (text or "").strip()
+                if not txt:
+                    prev_agent_asked_location = False
+                    continue
+                if _STATE_RE.search(txt) or prev_agent_asked_location:
+                    return txt[:80]
+                prev_agent_asked_location = False
+        return ""
+
+    def _is_location_in_service_area(self, location: str) -> bool:
+        """
+        Return True when *location* appears to be within the business's service areas.
+
+        Reads the verbatim service areas text from _cached_business_knowledge_block.
+        Uses word-level intersection: if any significant word from the caller's location
+        (3+ chars, not a stop-word) appears in the service areas blob, we treat it as
+        a match.  This is intentionally permissive — a false-negative (blocking a valid
+        caller) is far worse than a false-positive here; the LLM gate handles nuance.
+        """
+        if not location or not self._cached_business_knowledge_block:
+            return True  # no block to check against — allow by default
+
+        service_area_text = self._get_service_area_text_from_bk_block()
+        if not service_area_text:
+            return True  # service areas not parseable — allow
+
+        loc_lower = location.lower()
+        sa_lower = service_area_text.lower()
+
+        # Direct substring match first (fast path for well-formed data).
+        if loc_lower in sa_lower:
+            return True
+
+        _stop = {"in", "the", "of", "and", "or", "at", "to", "for", "a", "is", "are", "we", "our"}
+        loc_words = [w for w in loc_lower.split() if len(w) >= 3 and w not in _stop]
+        if not loc_words:
+            return True  # location too vague to deny — allow
+
+        return any(word in sa_lower for word in loc_words)
+
+    def _get_service_area_text_from_bk_block(self) -> str:
+        """
+        Extract the verbatim 'Service Areas (verbatim): ...' line from the cached BK block.
+        Returns the area text, or an empty string when the line is not present.
+        """
+        import re as _re
+
+        block = self._cached_business_knowledge_block or ""
+        m = _re.search(r"Service Areas \(verbatim\):\s*(.+)", block)
+        return m.group(1).strip() if m else ""
 
     def _remember_agent_turn(self, user_text: Optional[str], agent_text: str) -> None:
         """Append (user_norm, agent_norm, ts) and bound the buffer to the last few entries."""
@@ -2583,9 +2762,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         out = re.sub(r"\[\s*FOLLOWUP_CONFIRM\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[\s*FOLLOWUP_CANCEL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[\s*FOLLOWUP_RESCHEDULE:[^\]]*\]", "", out, flags=re.IGNORECASE)
-        # Non-control bracket tags that sometimes leak from LLM output.
-        # Keep this conservative so spoken content remains intact.
-        out = re.sub(r"\[\s*(?:pause|silence|laugh|sigh|breath|breathes|inaudible)\s*\]", "", out, flags=re.IGNORECASE)
+        # Strip all known ElevenLabs-style audio tags and common variants so they
+        # are never spoken as literal words regardless of TTS provider.
+        out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)
         # Citation-like bracket numbers such as [1], [2], ...
         out = re.sub(r"\[\s*\d{1,3}\s*\]", "", out)
         # Malformed bracket-open tokens without closing bracket
@@ -2977,6 +3156,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         Backend stores only slot / reason in call_metadata.booking_intent.
         Name and email from the token are ignored. No in-call reservation or appointment commit.
         Final booking runs in post_call_appointment_service after validation.
+
+        Service area gate: if COVERAGE: RESTRICTED, the caller's location must be present
+        (from the token's location= field or from the transcript) and confirmed within the
+        listed service areas before the booking intent is stored.
         """
         try:
             import re as _re
@@ -3000,24 +3183,27 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             raw_single_line = " ".join((raw or "").split())
 
-            # Robust parse: name, optional phone/email, slot, optional reason (commas in reason).
+            # Backward-compatible key extractor (used for location and fallback slot/reason).
+            def _get(key: str) -> str:
+                km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
+                return km.group(1).strip() if km else ""
+
+            # Robust parse: name, optional location, optional phone/email, slot, optional reason.
             strict = _re.search(
-                r"name=(?P<name>.*?),\s*(?:phone=(?P<phone>.*?),\s*)?"
-                r"(?:email=(?P<email>.*?),\s*)?slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
+                r"name=(?P<name>.*?),\s*(?:location=(?P<location>.*?),\s*)?"
+                r"(?:phone=(?P<phone>.*?),\s*)?(?:email=(?P<email>.*?),\s*)?"
+                r"slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
                 raw_single_line,
             )
             if strict:
                 slot_raw = (strict.group("slot") or "").strip()
                 reason_val = (strict.group("reason") or "").strip()
                 reason = reason_val or None
+                location_from_token = (strict.group("location") or "").strip()
             else:
-                # Backward-compatible fallback for legacy/messy token shapes.
-                def _get(key: str) -> str:
-                    km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
-                    return km.group(1).strip() if km else ""
-
                 slot_raw = _get("slot")
                 reason = _get("reason") or None
+                location_from_token = _get("location")
 
             if not slot_raw:
                 logger.warning("BOOK_APPOINTMENT token missing slot: %s", raw_single_line[:500])
@@ -3025,6 +3211,58 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             if not self.call_session:
                 return
+
+            # --- Service Area Gate ---
+            # If the business has restricted coverage, validate caller location before
+            # storing any booking intent. This is the last line of defence — the LLM
+            # prompt already instructs the model not to emit BOOK_APPOINTMENT without a
+            # confirmed in-area location, but LLMs can bypass prompt rules.
+            if (
+                self._cached_business_knowledge_block
+                and "COVERAGE: RESTRICTED" in self._cached_business_knowledge_block
+            ):
+                caller_location = location_from_token or self._extract_caller_location_from_transcript()
+
+                if not caller_location:
+                    logger.warning(
+                        "BOOK_APPOINTMENT blocked: COVERAGE: RESTRICTED but no caller location found. token=%s",
+                        raw_single_line[:300],
+                    )
+                    msg = (
+                        "Before I can schedule, I need to confirm your location. "
+                        "What city and state is the property in?"
+                    )
+                    await self._add_to_transcript("agent", msg, "service_area_location_request")
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
+                            "text": msg,
+                            "chunk_id": "service_area_location_request",
+                            "use_ssml": False,
+                            "is_final": True,
+                        })
+                    return
+
+                if not self._is_location_in_service_area(caller_location):
+                    service_area_text = self._get_service_area_text_from_bk_block()
+                    area_phrase = f" We serve {service_area_text}." if service_area_text else ""
+                    logger.warning(
+                        "BOOK_APPOINTMENT blocked: location=%r not in service area. token=%s",
+                        caller_location,
+                        raw_single_line[:300],
+                    )
+                    msg = (
+                        f"I'm sorry, but we don't currently provide services in {caller_location}.{area_phrase} "
+                        "Thank you for calling, and I hope you find the help you need."
+                    )
+                    await self._add_to_transcript("agent", msg, "service_area_rejection")
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
+                            "text": msg,
+                            "chunk_id": "service_area_rejection",
+                            "use_ssml": False,
+                            "is_final": True,
+                        })
+                    return
 
             slot_start = self._resolve_cached_calendar_slot(slot_raw)
             if slot_start is None:

@@ -31,6 +31,7 @@ _ELEVEN_V3_TAG_INNERS: frozenset[str] = frozenset(
     {
         "breathes",
         "breathe",
+        "breath",
         "breathes heavily",
         "heavy breathing",
         "breathe in",
@@ -106,17 +107,26 @@ def strip_eleven_v3_style_tags_for_non_eleven_tts(text: str) -> str:
 
 def prepare_tts_text_for_provider(text: str, provider_slug: Optional[str]) -> str:
     """
-    ElevenLabs: pass through unchanged (keeps v3 audio tags in the string).
-    All other TTS providers: strip known Eleven-style bracket tags.
+    ElevenLabs: pass through known v3 audio tags; strip unknown/unsupported ones.
+    All other TTS providers: strip all known Eleven-style bracket tags.
     No network; negligible CPU; safe when text has no tags (fast path: no '[').
     """
     if (provider_slug or "").lower() == "elevenlabs":
-        # Some Eleven model variants can speak [pause]/[pauses] literally as
-        # the word "pause". Strip only those tags to prevent audible artifacts
-        # while preserving other optional expressive tags.
         if not text or "[" not in text:
             return text
+        # Strip [pause]/[pauses] — some Eleven model variants speak them literally.
         out = _PAUSE_TAG_RE.sub("", text)
+        # Also strip any [tag] whose inner text is NOT in the known ElevenLabs set.
+        # This prevents unknown/malformed variants (e.g. [breath], [breathing]) from
+        # being spoken as literal words by the model.
+        def _repl_unknown(m: re.Match) -> str:
+            raw = m.group(1)
+            if not raw.strip():
+                return ""
+            key = _normalize_tag_inner(raw)
+            return m.group(0) if key in _ELEVEN_V3_TAG_INNERS else ""
+
+        out = _TAG_RE.sub(_repl_unknown, out)
         out = re.sub(r"[ \t]{2,}", " ", out)
         return out.strip()
     return strip_eleven_v3_style_tags_for_non_eleven_tts(text)
