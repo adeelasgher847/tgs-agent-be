@@ -9,7 +9,7 @@ from app.services.google_tts_service import google_tts_service
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.core.config import settings
 from app.core.logger import logger
-from app.services.tts_adapter import get_tts_adapter
+from app.utils.tts_adapter import get_tts_adapter
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 from app.utils.audio_utils import add_ambient_noise_to_mulaw
 

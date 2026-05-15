@@ -13,7 +13,7 @@ from app.api.api_v1.endpoints import (
     tenant,
     user,
 )
-from app.routers.agent import router as agent_router
+from app.routers.agents import router as agent_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
 from app.routers.call_logs import router as call_logs_router
 from app.routers.call_sessions import router as call_sessions_router
@@ -24,7 +24,7 @@ from app.routers.knowledge_base import router as knowledge_base_router
 from app.routers.phone_numbers import router as phone_numbers_router
 from app.routers.transfer_routes import router as transfer_routes_router
 from app.routers.recruitment_dashboard import router as recruitment_dashboard_router
-from app.routers.resume import router as resume_router
+from app.routers.resumes import router as resume_router
 from app.routers.resume_interviews import router as resume_interviews_router
 from app.routers.scheduled_calls import router as scheduled_calls_router
 from app.routers.tts_audio import router as tts_audio_router

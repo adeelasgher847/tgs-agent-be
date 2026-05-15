@@ -4,7 +4,6 @@ Jira API Service for Scheduled Calls Integration
 
 import json
 import re
-import traceback
 import hashlib
 from typing import Dict, List, Optional, Any
 import requests

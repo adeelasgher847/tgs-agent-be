@@ -25,7 +25,7 @@ from app.routers.general_websocket import (
 from app.core.config import settings
 from app.services.voice_conversation_service import add_to_transcript
 from app.services.voice_language_service import get_agent_voice
-from app.services.voice_twilio_utils import get_twilio_credentials_for_call
+from app.utils.voice_twilio_utils import get_twilio_credentials_for_call
 from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.response import create_success_response
 from app.utils.twilio_validation import get_request_body
