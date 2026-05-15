@@ -13,10 +13,14 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from app.core.config import settings
 from app.core.logger import logger
+from app.services.bidirectional_stream_service import generate_mulaw_tts
 from app.services.credit_service import credit_service
 from app.services.google_tts_service import google_tts_service
+from app.utils.audio_utils import stream_mulaw_bytes_over_twilio, crossfade_mulaw_segments
 from app.utils.tts_adapter import get_tts_adapter
 from app.utils.tts_preprocessing import detect_emotion
+from app.utils.ssml_utils import strip_ssml_tags, smart_chunk_text
+from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 from app.routers.general_websocket import broadcast_call_status_update
 
 if TYPE_CHECKING:
