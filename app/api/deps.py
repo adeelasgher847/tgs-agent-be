@@ -1,12 +1,20 @@
 from app.db.session import SessionLocal
-from typing import Generator, Optional
-from fastapi import Depends, HTTPException, status
+from typing import Generator, Optional, Union
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import InterfaceError
 from app.models.user import User, user_tenant_association
 from app.models.tenant import Tenant
 from app.core.security import verify_token,create_user_token, create_refresh_token_value, refresh_token_expires_at
+from app.core.request_auth import (
+    AUTH_METHOD_API_KEY,
+    AUTH_METHOD_JWT,
+    ApiKeyPrincipal,
+    get_auth_method,
+    get_workspace_from_request,
+)
+from app.core.workspace import Workspace
 from app.models.refresh_token import RefreshToken
 from app.schemas.auth import TokenResponse, RoleInfo
 from app.services.role_service import is_admin_in_tenant
@@ -14,6 +22,43 @@ from app.services.role_service import get_user_product_in_tenant
 import uuid
 
 security = HTTPBearer()
+security_optional = HTTPBearer(auto_error=False)
+
+
+def get_workspace(request: Request) -> Workspace:
+    """
+    Return the workspace (tenant) attached by auth middleware.
+
+    Use in route handlers: ``workspace: Workspace = Depends(get_workspace)``
+    """
+    workspace = get_workspace_from_request(request)
+    if workspace is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Workspace context not available",
+        )
+    return workspace
+
+
+def _user_from_middleware_jwt(request: Request, db: Session) -> User:
+    workspace = get_workspace(request)
+    user = db.query(User).filter(User.id == request.state.user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user.current_tenant_id = workspace.id
+    return user
+
+
+def _principal_from_middleware_api_key(request: Request) -> ApiKeyPrincipal:
+    workspace = get_workspace(request)
+    return ApiKeyPrincipal(
+        current_tenant_id=workspace.id,
+        api_key_id=request.state.api_key_id,
+    )
 
 
 def get_db() -> Generator:
@@ -29,10 +74,28 @@ def get_db() -> Generator:
 
 
 def get_current_user_jwt(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    db: Session = Depends(get_db),
 ) -> User:
-    """JWT-based user authentication."""
+    """JWT-based user authentication (middleware-validated or Bearer header)."""
+    method = get_auth_method(request)
+    if method == AUTH_METHOD_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer token required for this operation",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if method == AUTH_METHOD_JWT:
+        return _user_from_middleware_jwt(request, db)
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     payload = verify_token(credentials.credentials)
     if not payload:
         raise HTTPException(
@@ -79,10 +142,24 @@ def mark_session_credited(session_id: str) -> None:
 
 
 def require_tenant(
-    user: User = Depends(get_current_user_jwt), 
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-) -> User:
-    """Ensure user has a current tenant set."""
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    db: Session = Depends(get_db),
+) -> Union[User, ApiKeyPrincipal]:
+    """Ensure the request is scoped to a workspace (JWT user or API key)."""
+    method = get_auth_method(request)
+    if method == AUTH_METHOD_API_KEY:
+        return _principal_from_middleware_api_key(request)
+    if method == AUTH_METHOD_JWT:
+        return _user_from_middleware_jwt(request, db)
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     payload = verify_token(credentials.credentials)
     if not payload:
         raise HTTPException(
@@ -90,23 +167,52 @@ def require_tenant(
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
+    user_id_str = payload.get("user_id")
     tenant_id = payload.get("tenant_id")
+    if not user_id_str:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if not tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
+            detail="No tenant selected. Please set a current tenant.",
         )
-    
+
     try:
-        user.current_tenant_id = uuid.UUID(tenant_id)
+        user_id = uuid.UUID(user_id_str)
+        tenant_uuid = uuid.UUID(tenant_id)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid tenant in token"
+            detail="Invalid tenant in token",
         )
-    
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user.current_tenant_id = tenant_uuid
     return user
+
+
+def require_user_tenant(
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+) -> User:
+    """Workspace access that must be a logged-in user (not API key)."""
+    if isinstance(principal, ApiKeyPrincipal):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This operation requires a user session",
+        )
+    return principal
 
 
 def get_optional_tenant_user(
@@ -146,7 +252,7 @@ def get_optional_tenant_user(
 
 
 def require_admin(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is an admin in their current tenant."""
@@ -172,7 +278,7 @@ def require_admin(
 
 
 def require_member(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is a member (admin or regular member) in their current tenant."""
@@ -201,7 +307,7 @@ def require_member(
 
 
 def require_member_or_admin(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is either a member or admin in their current tenant."""
@@ -229,41 +335,56 @@ def require_member_or_admin(
     return user
 
 
+def require_active_workspace(
+    workspace: Workspace = Depends(get_workspace),
+) -> Workspace:
+    """Ensure the resolved workspace is active (middleware-attached snapshot)."""
+    if workspace.status == "pending_payment":
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Insufficient credits. Please complete your payment to access this feature.",
+        )
+    if workspace.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Tenant is {workspace.status}. Please contact support.",
+        )
+    return workspace
+
+
 def require_active_tenant(
-    user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
+    user: User = Depends(require_user_tenant),
+    workspace: Workspace = Depends(get_workspace),
 ) -> User:
     """Ensure user's current tenant is active (not pending_payment)."""
     if not user.current_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
+            detail="No tenant selected. Please set a current tenant.",
         )
-    
-    # Check tenant status
-    tenant = db.query(Tenant).filter(Tenant.id == user.current_tenant_id).first()
-    if not tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tenant not found"
-        )
-    
-    if tenant.status == "pending_payment":
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Insufficient credits. Please complete your payment to access this feature."
-        )
-    elif tenant.status != "active":
+
+    if user.current_tenant_id != workspace.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Tenant is {tenant.status}. Please contact support."
+            detail="Workspace context does not match user tenant.",
         )
-    
+
+    if workspace.status == "pending_payment":
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Insufficient credits. Please complete your payment to access this feature.",
+        )
+    if workspace.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Tenant is {workspace.status}. Please contact support.",
+        )
+
     return user
 
 
 def require_owner(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is owner (only) in their current tenant."""
@@ -294,7 +415,7 @@ def require_owner(
 
 
 def require_admin_or_owner(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is admin or owner in their current tenant."""
@@ -369,7 +490,7 @@ def issue_tokens_for_user(
 
 
 def require_active_subscription(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user has at least one active paid CRM subscription with valid period."""

@@ -37,8 +37,16 @@ def _app() -> FastAPI:
     def data_endpoint():
         return {"data": "secret"}
 
-    @mini.get("/api/v1/auth/refresh")
-    def public_refresh():
+    @mini.post("/api/v1/users/login")
+    def public_login():
+        return {"ok": True}
+
+    @mini.post("/api/v1/users/register")
+    def public_register():
+        return {"ok": True}
+
+    @mini.post("/api/v1/accept-invite")
+    def public_accept_invite():
         return {"ok": True}
 
     @mini.get("/health")
@@ -46,6 +54,18 @@ def _app() -> FastAPI:
         return {"ok": True}
 
     return mini
+
+
+def _assert_unauthorized(resp) -> None:
+    """All middleware 401s share the canonical error envelope."""
+    assert resp.status_code == 401
+    assert resp.json() == {
+        "error": {
+            "code": "unauthorized",
+            "message": "Invalid or missing API key",
+        }
+    }
+    assert "x-request-id" in resp.headers
 
 
 @pytest.fixture
@@ -65,11 +85,20 @@ def raw_api_key() -> str:
 
 @pytest.fixture
 def valid_payload(tenant_id, key_id):
+    tid = str(tenant_id)
     return {
         "api_key_id": str(key_id),
-        "tenant_id": str(tenant_id),
-        "tenant_status": "active",
+        "tenant_id": tid,
         "key_is_active": True,
+        "workspace": {
+            "id": tid,
+            "name": "Integration WS",
+            "schema_name": "integration_schema",
+            "status": "active",
+            "credits": 5.0,
+            "stripe_customer_id": None,
+            "stripe_subscription_id": None,
+        },
     }
 
 
@@ -84,7 +113,7 @@ def client():
 
 class TestFullRequestFlow:
     def test_valid_key_reaches_endpoint(self, client, tenant_id, raw_api_key, valid_payload):
-        async def _resolve(kh, wid):
+        async def _resolve(kh, workspace_id):
             if kh == _sha256(raw_api_key):
                 return valid_payload
             return None
@@ -98,7 +127,7 @@ class TestFullRequestFlow:
         assert resp.json() == {"data": "secret"}
 
     def test_response_always_has_x_request_id(self, client, tenant_id, raw_api_key, valid_payload):
-        async def _resolve(kh, wid):
+        async def _resolve(kh, workspace_id):
             return valid_payload
 
         with patch("app.middleware.api_key_middleware._resolve_api_key", side_effect=_resolve):
@@ -108,9 +137,17 @@ class TestFullRequestFlow:
             )
         assert "x-request-id" in resp.headers
 
-    def test_public_path_bypasses_middleware(self, client):
-        # No auth headers — should still reach the endpoint
-        resp = client.get("/api/v1/auth/refresh")
+    def test_user_login_bypasses_middleware(self, client):
+        # No auth headers — login is a public onboarding route.
+        resp = client.post("/api/v1/users/login")
+        assert resp.status_code == 200
+
+    def test_user_register_bypasses_middleware(self, client):
+        resp = client.post("/api/v1/users/register")
+        assert resp.status_code == 200
+
+    def test_accept_invite_bypasses_middleware(self, client):
+        resp = client.post("/api/v1/accept-invite")
         assert resp.status_code == 200
 
     def test_health_bypasses_middleware(self, client):
@@ -125,10 +162,10 @@ class TestFullRequestFlow:
 class TestFullRequestFlowFailures:
     def test_no_headers_blocked(self, client):
         resp = client.get("/api/v1/data")
-        assert resp.status_code == 401
+        _assert_unauthorized(resp)
 
     def test_bad_key_blocked(self, client, tenant_id):
-        async def _resolve(kh, wid):
+        async def _resolve(kh, workspace_id):
             return None
 
         with patch("app.middleware.api_key_middleware._resolve_api_key", side_effect=_resolve):
@@ -136,15 +173,24 @@ class TestFullRequestFlowFailures:
                 "/api/v1/data",
                 headers={"x-api-key": "wrong", "x-workspace-id": str(tenant_id)},
             )
-        assert resp.status_code == 401
+        _assert_unauthorized(resp)
 
     def test_revoked_key_blocked(self, client, tenant_id, key_id):
-        async def _resolve(kh, wid):
+        async def _resolve(kh, workspace_id):
+            tid = str(tenant_id)
             return {
                 "api_key_id": str(key_id),
-                "tenant_id": str(tenant_id),
-                "tenant_status": "active",
+                "tenant_id": tid,
                 "key_is_active": False,
+                "workspace": {
+                    "id": tid,
+                    "name": "WS",
+                    "schema_name": "s",
+                    "status": "active",
+                    "credits": 0,
+                    "stripe_customer_id": None,
+                    "stripe_subscription_id": None,
+                },
             }
 
         with patch("app.middleware.api_key_middleware._resolve_api_key", side_effect=_resolve):
@@ -152,15 +198,24 @@ class TestFullRequestFlowFailures:
                 "/api/v1/data",
                 headers={"x-api-key": "revoked", "x-workspace-id": str(tenant_id)},
             )
-        assert resp.status_code == 401
+        _assert_unauthorized(resp)
 
     def test_workspace_mismatch_blocked(self, client, tenant_id, key_id):
-        async def _resolve(kh, wid):
+        async def _resolve(kh, workspace_id):
+            other = uuid.uuid4()
             return {
                 "api_key_id": str(key_id),
-                "tenant_id": str(uuid.uuid4()),  # different tenant
-                "tenant_status": "active",
+                "tenant_id": str(other),
                 "key_is_active": True,
+                "workspace": {
+                    "id": str(other),
+                    "name": "Other",
+                    "schema_name": "o",
+                    "status": "active",
+                    "credits": 0,
+                    "stripe_customer_id": None,
+                    "stripe_subscription_id": None,
+                },
             }
 
         with patch("app.middleware.api_key_middleware._resolve_api_key", side_effect=_resolve):
@@ -168,15 +223,24 @@ class TestFullRequestFlowFailures:
                 "/api/v1/data",
                 headers={"x-api-key": "key", "x-workspace-id": str(tenant_id)},
             )
-        assert resp.status_code == 401
+        _assert_unauthorized(resp)
 
     def test_inactive_workspace_blocked(self, client, tenant_id, key_id):
-        async def _resolve(kh, wid):
+        async def _resolve(kh, workspace_id):
+            tid = str(tenant_id)
             return {
                 "api_key_id": str(key_id),
-                "tenant_id": str(tenant_id),
-                "tenant_status": "inactive",
+                "tenant_id": tid,
                 "key_is_active": True,
+                "workspace": {
+                    "id": tid,
+                    "name": "WS",
+                    "schema_name": "s",
+                    "status": "inactive",
+                    "credits": 0,
+                    "stripe_customer_id": None,
+                    "stripe_subscription_id": None,
+                },
             }
 
         with patch("app.middleware.api_key_middleware._resolve_api_key", side_effect=_resolve):
@@ -184,7 +248,7 @@ class TestFullRequestFlowFailures:
                 "/api/v1/data",
                 headers={"x-api-key": "key", "x-workspace-id": str(tenant_id)},
             )
-        assert resp.status_code == 401
+        _assert_unauthorized(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +260,7 @@ class TestCaching:
         """If cache returns a payload the DB resolver is never called."""
         db_called = {"n": 0}
 
-        async def _resolve(kh, wid):
+        async def _resolve(kh, workspace_id):
             db_called["n"] += 1
             return valid_payload
 
@@ -224,5 +288,33 @@ class TestCaching:
             "/api/v1/data",
             headers={"x-workspace-id": str(tenant_id)},  # missing x-api-key
         )
-        assert resp.status_code == 401
-        assert "x-request-id" in resp.headers
+        _assert_unauthorized(resp)
+
+    def test_error_envelope_shape_is_stable(self, client, tenant_id):
+        """All failure branches must return the same envelope (no enumeration)."""
+        # Missing both headers
+        r1 = client.get("/api/v1/data")
+        # Invalid workspace UUID
+        r2 = client.get(
+            "/api/v1/data",
+            headers={"x-api-key": "k", "x-workspace-id": "not-a-uuid"},
+        )
+        # Unknown key
+        async def _resolve_none(kh, workspace_id):
+            return None
+
+        with patch(
+            "app.middleware.api_key_middleware._resolve_api_key",
+            side_effect=_resolve_none,
+        ):
+            r3 = client.get(
+                "/api/v1/data",
+                headers={"x-api-key": "k", "x-workspace-id": str(tenant_id)},
+            )
+
+        assert r1.json() == r2.json() == r3.json() == {
+            "error": {
+                "code": "unauthorized",
+                "message": "Invalid or missing API key",
+            }
+        }

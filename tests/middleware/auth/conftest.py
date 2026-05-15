@@ -37,7 +37,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.base_class import Base
 from app.models.tenant import Tenant
 from app.models.api_key import Apikey
-from app.middleware.api_key_middleware import ApiKeyMiddleware, _cache_get, _cache_set, _cache_delete
+from app.middleware.api_key_middleware import ApiKeyMiddleware
 
 # ── SQLite in-memory setup ────────────────────────────────────────────────────
 from sqlalchemy.dialects.postgresql import JSONB
@@ -200,8 +200,16 @@ def mock_db_lookup(tenant, api_key_record):
     payload = {
         "api_key_id": str(api_key_record.id),
         "tenant_id": str(tenant.id),
-        "tenant_status": tenant.status,
         "key_is_active": api_key_record.is_active,
+        "workspace": {
+            "id": str(tenant.id),
+            "name": tenant.name,
+            "schema_name": tenant.schema_name,
+            "status": tenant.status,
+            "credits": float(tenant.credits or 0),
+            "stripe_customer_id": tenant.stripe_customer_id,
+            "stripe_subscription_id": tenant.stripe_subscription_id,
+        },
     }
 
     async def _resolve(key_hash, workspace_id):

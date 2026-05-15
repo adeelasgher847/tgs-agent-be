@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.api_v1.endpoints import (
     accept_invite,
+    api_keys,
     billing,
     gemini,
     invite,
@@ -40,6 +41,7 @@ from app.routers.business_knowledge import router as business_knowledge_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
+api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])

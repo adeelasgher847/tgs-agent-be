@@ -13,6 +13,7 @@ class Apikey(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
+    key_prefix = Column(String(32), nullable=False)  # masked display, e.g. sk_ab••••xy12
     key_hash = Column(String(64), nullable=False, unique=True)  # SHA-256 hex digest
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -21,6 +22,6 @@ class Apikey(Base):
     tenant = relationship("Tenant", back_populates="api_keys")
 
     __table_args__ = (
-        Index("ix_apikey_key_hash", "key_hash"),
+        Index("ix_apikey_key_hash_tenant_id", "key_hash", "tenant_id"),
         Index("ix_apikey_tenant_id", "tenant_id"),
     )
