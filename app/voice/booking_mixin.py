@@ -21,6 +21,9 @@ from app.utils.eleven_tts_text import strip_eleven_v3_style_tags_for_non_eleven_
 if TYPE_CHECKING:
     pass
 
+_RE_VOICE_END_CALL = re.compile(r"\[\s*END_CALL\s*\]", re.IGNORECASE)
+_RE_VOICE_SCREENING_QUALIFIED = re.compile(r"\[\s*SCREENING_QUALIFIED\s*\]", re.IGNORECASE)
+
 
 class BookingMixin:
     """Calendar and appointment booking methods for BidirectionalStreamHandler."""
