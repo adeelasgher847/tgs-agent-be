@@ -1,6 +1,7 @@
 """
 Calendar Service
-Handles business hours, blocked slots, and appointment booking logic.
+Handles appointment booking, slot availability, and calendar orchestration.
+Business hours / blocked slots CRUD lives in BusinessHoursService (business_hours_service.py).
 All operations are scoped to tenant_id for multi-tenant isolation.
 """
 import html
@@ -28,18 +29,11 @@ from app.schemas.calendar import (
     AvailableSlotsResponse,
 )
 from app.services.email_service import email_service
+from app.services.business_hours_service import BusinessHoursService, BusinessHoursConflictError
 from app.utils.spoken_email import normalize_stored_email
 
 SLOT_BOOKING_BUFFER_MINUTES = 15
 APPOINTMENT_REVIEW_TOKEN_TTL_HOURS = 24 * 7
-
-
-class BusinessHoursConflictError(Exception):
-    """Raised when creating business hours for weekdays that already exist for the tenant."""
-
-    def __init__(self, days: List[int]):
-        self.days = days
-        super().__init__()
 
 
 ALLOWED_STATUS_TRANSITIONS = {
@@ -79,7 +73,7 @@ def _ensure_utc(dt_val: datetime) -> datetime:
     return dt_val.astimezone(timezone.utc)
 
 
-class CalendarService:
+class CalendarService(BusinessHoursService):
 
     # ── Internal validation ───────────────────────────────────────────────────
 
@@ -990,191 +984,6 @@ class CalendarService:
         db.commit()
         return True
 
-    # ── Business Hours ────────────────────────────────────────────────────────
-
-    def get_business_hours(self, db: Session, tenant_id: uuid.UUID) -> List[BusinessHours]:
-        return (
-            db.query(BusinessHours)
-            .filter(
-                BusinessHours.tenant_id == tenant_id,
-                BusinessHours.is_deleted.is_(False),
-            )
-            .order_by(BusinessHours.day_of_week.asc())
-            .all()
-        )
-
-    def get_tenant_timezone(self, db: Session, tenant_id: uuid.UUID) -> str:
-        """Return the timezone string from the first configured business-hours row."""
-        bh = (
-            db.query(BusinessHours.timezone)
-            .filter(
-                BusinessHours.tenant_id == tenant_id,
-                BusinessHours.is_deleted.is_(False),
-            )
-            .first()
-        )
-        return bh[0] if bh else "UTC"
-
-    def create_business_hours(
-        self, db: Session, tenant_id: uuid.UUID, hours_list: List[BusinessHoursUpsert]
-    ) -> List[BusinessHours]:
-        """Insert business hours only; fails if any requested weekday already exists."""
-        if not hours_list:
-            return []
-        days = [item.day_of_week for item in hours_list]
-        if len(days) != len(set(days)):
-            raise ValueError("Duplicate day_of_week values in request body.")
-        existing = (
-            db.query(BusinessHours)
-            .filter(
-                BusinessHours.tenant_id == tenant_id,
-                BusinessHours.day_of_week.in_(days),
-            )
-            .all()
-        )
-        active_existing_days = sorted({row.day_of_week for row in existing if not row.is_deleted})
-        if active_existing_days:
-            raise BusinessHoursConflictError(active_existing_days)
-
-        deleted_by_day = {row.day_of_week: row for row in existing if row.is_deleted}
-
-        results: List[BusinessHours] = []
-        for item in hours_list:
-            open_t = _parse_time_str(item.open_time) if item.open_time else None
-            close_t = _parse_time_str(item.close_time) if item.close_time else None
-            bh = deleted_by_day.get(item.day_of_week)
-            if bh:
-                bh.open_time = open_t
-                bh.close_time = close_t
-                bh.is_closed = item.is_closed
-                bh.timezone = item.timezone
-                bh.slot_duration_minutes = item.slot_duration_minutes
-                bh.is_deleted = False
-                bh.deleted_at = None
-            else:
-                bh = BusinessHours(
-                    tenant_id=tenant_id,
-                    day_of_week=item.day_of_week,
-                    open_time=open_t,
-                    close_time=close_t,
-                    is_closed=item.is_closed,
-                    timezone=item.timezone,
-                    slot_duration_minutes=item.slot_duration_minutes,
-                    is_deleted=False,
-                    deleted_at=None,
-                )
-                db.add(bh)
-            results.append(bh)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            raise BusinessHoursConflictError(days)
-        for r in results:
-            db.refresh(r)
-        return results
-
-    def upsert_business_hours(
-        self, db: Session, tenant_id: uuid.UUID, hours_list: List[BusinessHoursUpsert]
-    ) -> List[BusinessHours]:
-        results = []
-        for item in hours_list:
-            existing = (
-                db.query(BusinessHours)
-                .filter(
-                    BusinessHours.tenant_id == tenant_id,
-                    BusinessHours.day_of_week == item.day_of_week,
-                )
-                .first()
-            )
-            open_t = _parse_time_str(item.open_time) if item.open_time else None
-            close_t = _parse_time_str(item.close_time) if item.close_time else None
-            if existing:
-                existing.open_time = open_t
-                existing.close_time = close_t
-                existing.is_closed = item.is_closed
-                existing.timezone = item.timezone
-                existing.slot_duration_minutes = item.slot_duration_minutes
-                existing.is_deleted = False
-                existing.deleted_at = None
-                results.append(existing)
-            else:
-                bh = BusinessHours(
-                    tenant_id=tenant_id,
-                    day_of_week=item.day_of_week,
-                    open_time=open_t,
-                    close_time=close_t,
-                    is_closed=item.is_closed,
-                    timezone=item.timezone,
-                    slot_duration_minutes=item.slot_duration_minutes,
-                    is_deleted=False,
-                    deleted_at=None,
-                )
-                db.add(bh)
-                results.append(bh)
-        db.commit()
-        for r in results:
-            db.refresh(r)
-        return results
-
-    def delete_business_hours(
-        self, db: Session, business_hours_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> bool:
-        row = (
-            db.query(BusinessHours)
-            .filter(
-                BusinessHours.id == business_hours_id,
-                BusinessHours.tenant_id == tenant_id,
-            )
-            .first()
-        )
-        if not row:
-            return False
-        row.is_deleted = True
-        row.deleted_at = datetime.now(timezone.utc)
-        db.commit()
-        return True
-
-    # ── Blocked Slots ─────────────────────────────────────────────────────────
-
-    def get_blocked_slots(self, db: Session, tenant_id: uuid.UUID) -> List[BlockedSlot]:
-        return (
-            db.query(BlockedSlot)
-            .filter(BlockedSlot.tenant_id == tenant_id)
-            .order_by(BlockedSlot.blocked_from.asc())
-            .all()
-        )
-
-    def create_blocked_slot(
-        self, db: Session, tenant_id: uuid.UUID, data: BlockedSlotCreate
-    ) -> BlockedSlot:
-        blocked_from = _ensure_utc(self._localize_input_datetime(db, tenant_id, data.blocked_from))
-        blocked_until = _ensure_utc(self._localize_input_datetime(db, tenant_id, data.blocked_until))
-
-        bs = BlockedSlot(
-            tenant_id=tenant_id,
-            title=data.title,
-            blocked_from=blocked_from,
-            blocked_until=blocked_until,
-        )
-        db.add(bs)
-        db.commit()
-        db.refresh(bs)
-        return bs
-
-    def delete_blocked_slot(
-        self, db: Session, blocked_slot_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> bool:
-        bs = (
-            db.query(BlockedSlot)
-            .filter(BlockedSlot.id == blocked_slot_id, BlockedSlot.tenant_id == tenant_id)
-            .first()
-        )
-        if not bs:
-            return False
-        db.delete(bs)
-        db.commit()
-        return True
-
+    # Business hours and blocked slots methods are inherited from BusinessHoursService.
 
 calendar_service = CalendarService()

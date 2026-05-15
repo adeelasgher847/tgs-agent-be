@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
-from app.services.tts_adapter import get_tts_adapter_for_provider
+from app.utils.tts_adapter import get_tts_adapter_for_provider
 
 
 class TTSCatalogService:

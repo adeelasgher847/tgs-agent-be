@@ -47,7 +47,7 @@ from app.services.credit_service import credit_service
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.services.phone_number_service import phone_number_service
-from app.services.voice_twilio_utils import (
+from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
     twilio_caller_id_for_transfer_dial,
 )
