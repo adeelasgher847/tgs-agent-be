@@ -25,3 +25,4 @@ class Tenant(Base):
     blocked_slots = relationship("BlockedSlot", back_populates="tenant")
     appointments = relationship("Appointment", back_populates="tenant")
     transfer_routes = relationship("TransferRoute", back_populates="tenant")
+    api_keys = relationship("Apikey", back_populates="tenant", cascade="all, delete-orphan")

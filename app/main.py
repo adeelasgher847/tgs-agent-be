@@ -14,6 +14,7 @@ from app.utils.response import create_success_response
 from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
 
 from app.core.logger import setup_logging, logger
+from app.middleware.api_key_middleware import ApiKeyMiddleware
 
 # Initialize centralized logging
 setup_logging()
@@ -76,6 +77,9 @@ async def shutdown_event():
         logger.info("Rate limiter closed successfully")
     except Exception as e:
         logger.error(f"Rate limiter cleanup failed: {e}")
+
+# API key auth middleware — must be added before CORS so it runs after CORS in the stack
+app.add_middleware(ApiKeyMiddleware)
 
 # Add CORS middleware
 app.add_middleware(

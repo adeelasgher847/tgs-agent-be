@@ -41,3 +41,4 @@ from app.models.business_knowledge import BusinessKnowledge
 # Recruiting / resumes
 from app.models.resume import Resume
 from app.models.resume_interview import ResumeInterview
+from app.models.api_key import Apikey
