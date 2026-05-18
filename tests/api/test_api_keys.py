@@ -20,7 +20,8 @@ from app.services.api_key_service import sha256_hex
 
 @pytest.fixture
 def workspace(db):
-    t = Tenant(name="WS", schema_name="ws_schema", status="active")
+    suffix = uuid.uuid4().hex[:8]
+    t = Tenant(name=f"WS-{suffix}", schema_name=f"ws_{suffix}", status="active")
     db.add(t)
     db.commit()
     db.refresh(t)

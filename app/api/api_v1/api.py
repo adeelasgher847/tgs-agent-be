@@ -13,6 +13,7 @@ from app.api.api_v1.endpoints import (
     role,
     tenant,
     user,
+    workspace,
 )
 from app.routers.agents import router as agent_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
@@ -43,6 +44,7 @@ api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
+api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Calls"])

@@ -23,7 +23,8 @@ from app.services.api_key_service import (
 
 @pytest.fixture
 def tenant(db):
-    t = Tenant(name="API Key Corp", schema_name="apikey_corp", status="active")
+    suffix = uuid.uuid4().hex[:8]
+    t = Tenant(name=f"API Key Corp {suffix}", schema_name=f"apikey_{suffix}", status="active")
     db.add(t)
     db.commit()
     db.refresh(t)
@@ -59,7 +60,8 @@ class TestApiKeyCrud:
         assert record.is_active is True
 
     def test_list_scoped_to_tenant(self, db, tenant):
-        other = Tenant(name="Other", schema_name="other_schema", status="active")
+        s2 = uuid.uuid4().hex[:8]
+        other = Tenant(name=f"Other-{s2}", schema_name=f"other_{s2}", status="active")
         db.add(other)
         db.commit()
 

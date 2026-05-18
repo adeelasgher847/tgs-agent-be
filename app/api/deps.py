@@ -40,6 +40,17 @@ def get_workspace(request: Request) -> Workspace:
     return workspace
 
 
+def get_workspace_api_key(request: Request) -> Workspace:
+    """Workspace context for machine-to-machine routes (API key only, no JWT)."""
+    workspace = get_workspace(request)
+    if get_auth_method(request) != AUTH_METHOD_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires API key authentication",
+        )
+    return workspace
+
+
 def _user_from_middleware_jwt(request: Request, db: Session) -> User:
     workspace = get_workspace(request)
     user = db.query(User).filter(User.id == request.state.user_id).first()
@@ -130,15 +141,6 @@ def get_current_user_jwt(
         )
 
     return user
-
-# In-memory store to track credited Stripe Checkout sessions
-_credited_session_ids: set[str] = set()
-
-def is_session_already_credited(session_id: str) -> bool:
-    return session_id in _credited_session_ids
-
-def mark_session_credited(session_id: str) -> None:
-    _credited_session_ids.add(session_id)
 
 
 def require_tenant(

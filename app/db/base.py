@@ -42,3 +42,4 @@ from app.models.business_knowledge import BusinessKnowledge
 from app.models.resume import Resume
 from app.models.resume_interview import ResumeInterview
 from app.models.api_key import Apikey
+from app.models.stripe_checkout_fulfillment import StripeCheckoutFulfillment

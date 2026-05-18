@@ -88,12 +88,14 @@ def _get_redis() -> Optional[aioredis.Redis]:
 def _get_async_session() -> AsyncSession:
     global _async_engine, _AsyncSessionLocal
     if _async_engine is None:
-        async_url = settings.DATABASE_URL.replace(
-            "postgresql+psycopg2://", "postgresql+asyncpg://"
-        ).replace("postgresql://", "postgresql+asyncpg://")
         from sqlalchemy.ext.asyncio import create_async_engine as _cae
 
-        _async_engine = _cae(async_url, pool_pre_ping=True)
+        from app.db.async_url import database_url_to_async
+
+        _async_engine = _cae(
+            database_url_to_async(settings.DATABASE_URL),
+            pool_pre_ping=True,
+        )
         _AsyncSessionLocal = sessionmaker(
             _async_engine, class_=AsyncSession, expire_on_commit=False
         )
