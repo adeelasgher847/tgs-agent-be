@@ -7,12 +7,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.error_responses import build_call_initiate_error_payload
 from app.core.logger import logger
 from app.models.user import User
 from app.schemas.twilio import (
     CallInitiateRequest,
     CallInitiateResponse,
-    CallInitiateErrorResponse,
 )
 from app.schemas.base import SuccessResponse
 from app.services.agent_service import agent_service
@@ -392,53 +392,17 @@ async def initiate_call(
         )
 
     except HTTPException as e:
-        crm_container_id = call_request.crm_container_id or call_request.board_id
-        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
-        status_field_id = call_request.status_field_id or call_request.status_column_id
-        call_session_id_field_id = (
-            call_request.call_session_id_field_id
-            or call_request.call_session_id_column_id
-        )
-
-        error_response = CallInitiateErrorResponse(
-            detail=e.detail,
-            board_id=call_request.board_id,
-            monday_item_id=call_request.monday_item_id,
-            status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id,
-            crm_container_id=crm_container_id,
-            crm_item_id=crm_item_id,
-            status_field_id=status_field_id,
-            call_session_id_field_id=call_session_id_field_id,
-            crm_type=call_request.crm_type,
-        )
+        logger.warning("Call initiate HTTP error: %s", e.detail)
         return JSONResponse(
             status_code=e.status_code,
-            content=error_response.dict(exclude_none=True),
+            content=build_call_initiate_error_payload(
+                e.status_code, e.detail, call_request
+            ),
         )
     except Exception as e:  # pragma: no cover - defensive
-        crm_container_id = call_request.crm_container_id or call_request.board_id
-        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
-        status_field_id = call_request.status_field_id or call_request.status_column_id
-        call_session_id_field_id = (
-            call_request.call_session_id_field_id
-            or call_request.call_session_id_column_id
-        )
-
-        error_response = CallInitiateErrorResponse(
-            detail=str(e),
-            board_id=call_request.board_id,
-            monday_item_id=call_request.monday_item_id,
-            status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id,
-            crm_container_id=crm_container_id,
-            crm_item_id=crm_item_id,
-            status_field_id=status_field_id,
-            call_session_id_field_id=call_session_id_field_id,
-            crm_type=call_request.crm_type,
-        )
+        logger.error("Call initiate failed: %s", e, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content=error_response.dict(exclude_none=True),
+            content=build_call_initiate_error_payload(500, None, call_request),
         )
 

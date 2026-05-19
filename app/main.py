@@ -1,7 +1,6 @@
-from fastapi import FastAPI, Request, HTTPException, Query, Depends
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Query, Depends
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
 from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 from sqlalchemy.orm import Session
@@ -15,8 +14,9 @@ from app.utils.response import create_success_response
 from app.utils.rate_limiter import init_rate_limiter, close_rate_limiter
 
 from app.core.logger import setup_logging, logger
-from app.core.pii_redactor import redact_pii
+from app.core.exception_handlers import register_exception_handlers
 from app.middleware.api_key_middleware import ApiKeyMiddleware
+from app.middleware.pii_logging_middleware import PiiLoggingMiddleware
 
 # Initialize centralized logging
 setup_logging()
@@ -62,35 +62,7 @@ def custom_openapi():
 app.openapi = custom_openapi
 
 
-# ---------------------------------------------------------------------------
-# Global exception handlers — sanitise all error detail before it leaves the
-# process so raw exception messages (which may contain PII) are never returned.
-# ---------------------------------------------------------------------------
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    safe_detail = redact_pii(exc.detail) if isinstance(exc.detail, (str, dict, list)) else exc.detail
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": safe_detail},
-        headers=getattr(exc, "headers", None),
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    safe_errors = redact_pii(exc.errors())
-    return JSONResponse(status_code=422, content={"detail": safe_errors})
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "An internal error occurred. Please try again later."},
-    )
-
+register_exception_handlers(app)
 
 # Initialize rate limiter on startup (temporarily disabled due to Redis connection issues)
 @app.on_event("startup")
@@ -110,6 +82,9 @@ async def shutdown_event():
         logger.info("Rate limiter closed successfully")
     except Exception as e:
         logger.error(f"Rate limiter cleanup failed: {e}")
+
+# PII-safe request logging (outermost — runs first on incoming requests)
+app.add_middleware(PiiLoggingMiddleware)
 
 # API key auth middleware — must be added before CORS so it runs after CORS in the stack
 app.add_middleware(ApiKeyMiddleware)

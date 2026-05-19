@@ -31,6 +31,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.auth_tokens import extract_bearer_token, resolve_jwt_auth
 from app.core.config import settings
+from app.core.error_responses import build_api_error_payload
 from app.core.logger import logger
 from app.core.request_auth import AUTH_METHOD_API_KEY, AUTH_METHOD_JWT
 from app.core.workspace import Workspace
@@ -66,14 +67,6 @@ _SKIP_PREFIXES = (
     "/docs/",
     "/redoc/",
 )
-
-_UNAUTHORIZED_BODY = {
-    "error": {
-        "code": "unauthorized",
-        "message": "Invalid or missing API key",
-    }
-}
-
 
 def _get_redis() -> Optional[aioredis.Redis]:
     global _redis
@@ -115,7 +108,11 @@ def _sha256(raw: str) -> str:
 def _unauthorized(request_id: str) -> JSONResponse:
     return JSONResponse(
         status_code=401,
-        content=_UNAUTHORIZED_BODY,
+        content=build_api_error_payload(
+            401,
+            "Invalid or missing API key",
+            error_code="UNAUTHORIZED",
+        ),
         headers={"X-Request-ID": request_id},
     )
 

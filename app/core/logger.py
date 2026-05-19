@@ -3,6 +3,32 @@ import sys
 from app.core.config import settings
 
 
+class _PiiRedactingFormatter(logging.Formatter):
+    """Formatter that redacts PII inside exception tracebacks."""
+
+    def formatException(self, ei) -> str:
+        from app.core.pii_redactor import redact_pii
+
+        return redact_pii(super().formatException(ei))
+
+
+def _redact_log_value(value: object) -> object:
+    """Redact a single log-format arg (exceptions must become redacted strings)."""
+    from app.core.pii_redactor import redact_pii
+
+    if isinstance(value, BaseException):
+        return redact_pii(str(value))
+    return redact_pii(value)
+
+
+def _redact_log_args(args: object) -> object:
+    if isinstance(args, dict):
+        return {key: _redact_log_value(val) for key, val in args.items()}
+    if isinstance(args, tuple):
+        return tuple(_redact_log_value(item) for item in args)
+    return _redact_log_value(args)
+
+
 class _PiiRedactionFilter(logging.Filter):
     """Scrubs PII from every log record before it reaches any handler."""
 
@@ -14,11 +40,19 @@ class _PiiRedactionFilter(logging.Filter):
 
         if record.args:
             try:
-                record.args = redact_pii(record.args)
+                record.args = _redact_log_args(record.args)
             except Exception:
                 pass
 
         return True
+
+
+def _attach_pii_filter(target: logging.Logger, pii_filter: _PiiRedactionFilter) -> None:
+    if not any(isinstance(f, _PiiRedactionFilter) for f in target.filters):
+        target.addFilter(pii_filter)
+    for handler in target.handlers:
+        if not any(isinstance(f, _PiiRedactionFilter) for f in handler.filters):
+            handler.addFilter(pii_filter)
 
 
 def setup_logging() -> logging.Logger:
@@ -33,15 +67,14 @@ def setup_logging() -> logging.Logger:
     if not root_logger.handlers:
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(log_level)
-        console_handler.setFormatter(logging.Formatter(log_format))
+        console_handler.setFormatter(_PiiRedactingFormatter(log_format))
         root_logger.addHandler(console_handler)
 
-    # Attach the PII filter to every existing and future handler on the root logger.
-    # We also add it to the root logger itself so it runs regardless of handler type.
-    root_logger.addFilter(pii_filter)
-    for handler in root_logger.handlers:
-        if not any(isinstance(f, _PiiRedactionFilter) for f in handler.filters):
-            handler.addFilter(pii_filter)
+    _attach_pii_filter(root_logger, pii_filter)
+
+    # Application + server loggers used in production (GCP stdout).
+    for logger_name in ("tgs_agent", "uvicorn", "uvicorn.error", "uvicorn.access"):
+        _attach_pii_filter(logging.getLogger(logger_name), pii_filter)
 
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.INFO)

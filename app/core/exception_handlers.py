@@ -1,0 +1,61 @@
+"""Global FastAPI exception handlers with PII-safe API responses."""
+
+from __future__ import annotations
+
+from fastapi import HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+from app.core.error_responses import build_api_error_payload
+from app.core.logger import logger
+from app.core.pii_redactor import redact_pii
+
+
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=build_api_error_payload(exc.status_code, exc.detail),
+        headers=getattr(exc, "headers", None),
+    )
+
+
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    logger.warning(
+        "Validation error on %s %s: %s",
+        request.method,
+        request.url.path,
+        redact_pii(exc.errors()),
+    )
+    return JSONResponse(
+        status_code=422,
+        content=build_api_error_payload(
+            422,
+            "Request validation failed",
+            error_code="VALIDATION_ERROR",
+        ),
+    )
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.error(
+        "Unhandled exception on %s %s",
+        request.method,
+        request.url.path,
+        exc_info=exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content=build_api_error_payload(
+            500,
+            "An internal error occurred. Please try again later.",
+            error_code="INTERNAL_ERROR",
+        ),
+    )
+
+
+def register_exception_handlers(app) -> None:
+    app.add_exception_handler(HTTPException, http_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)

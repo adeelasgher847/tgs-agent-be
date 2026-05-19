@@ -9,11 +9,32 @@ Patterns covered:
   - Bank / account numbers (8-17 consecutive digits not already matched above)
   - Full names following common honorifics (Mr / Mrs / Ms / Dr / Prof)
 
-All public surface area is intentionally limited to ``redact_pii(value)``.
+Phase 3 (HIPAA): extend ``_HIPAA_PATTERNS`` with clinical terms and diagnosis
+codes; they are merged into the pattern list when non-empty.
 """
 
+from __future__ import annotations
+
 import re
-from typing import Any
+from typing import Any, Mapping
+
+REDACTED = "[REDACTED]"
+
+# Header names whose values must never appear in logs (secrets / session tokens).
+_SENSITIVE_HEADER_KEYS: frozenset[str] = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "x-twilio-signature",
+        "proxy-authorization",
+        "x-csrf-token",
+    }
+)
+
+# Phase 3 (HIPAA): populate with clinical-term and diagnosis-code patterns.
+_HIPAA_PATTERNS: list[tuple[str, re.Pattern[str]]] = []
 
 # ---------------------------------------------------------------------------
 # Compiled patterns – ordered so more-specific patterns run first
@@ -22,38 +43,65 @@ from typing import Any
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # E-mail
     (
-        "[REDACTED_EMAIL]",
+        REDACTED,
         re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", re.IGNORECASE),
     ),
     # Credit / debit card  (13-19 digits, optional separators every 4)
     (
-        "[REDACTED_CARD]",
-        re.compile(
-            r"\b(?:\d[ \-]?){13,18}\d\b"
-        ),
+        REDACTED,
+        re.compile(r"\b(?:\d[ \-]?){13,18}\d\b"),
     ),
     # SSN  ###-##-####  or  9 consecutive digits
     (
-        "[REDACTED_SSN]",
+        REDACTED,
         re.compile(r"\b\d{3}[- ]\d{2}[- ]\d{4}\b|\b\d{9}\b"),
     ),
-    # Phone numbers – E.164, +x (xxx) xxx-xxxx, xxx-xxx-xxxx, (xxx) xxx-xxxx, etc.
+    # UK National Insurance (NINO)
     (
-        "[REDACTED_PHONE]",
+        REDACTED,
+        re.compile(r"\b[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]?\b", re.IGNORECASE),
+    ),
+    # Pakistan CNIC #####-#######-#
+    (
+        REDACTED,
+        re.compile(r"\b\d{5}-\d{7}-\d\b"),
+    ),
+    # India Aadhaar / generic 12-digit national ID (spaced or dashed)
+    (
+        REDACTED,
+        re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"),
+    ),
+    # E.164 and compact international digit runs (ticket spec: +?[0-9]{10,15})
+    (
+        REDACTED,
+        re.compile(r"\+?[0-9]{10,15}\b"),
+    ),
+    # Phone numbers – formatted US/intl styles
+    (
+        REDACTED,
         re.compile(
-            r"(?:\+?\d{1,3}[\s.\-]?)?"          # optional country code
-            r"(?:\(?\d{3}\)?[\s.\-]?)"           # area code
-            r"\d{3}[\s.\-]?\d{4}"               # 7-digit local
+            r"(?:\+?\d{1,3}[\s.\-]?)?"
+            r"(?:\(?\d{3}\)?[\s.\-]?)"
+            r"\d{3}[\s.\-]?\d{4}"
         ),
     ),
     # Bank / account numbers: 8-17 digit sequences not caught above
     (
-        "[REDACTED_ACCOUNT]",
+        REDACTED,
         re.compile(r"\b\d{8,17}\b"),
+    ),
+    # Labeled full names: "customer: Jane Smith", "contact John Doe"
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(?:name|customer|patient|contact|user|caller|client|applicant|candidate)"
+            r"\s*:?\s*"
+            r"[A-Z][a-z]+(?:\s+[A-Z][a-z'\-]+){0,2}",
+        ),
     ),
     # Names after honorifics
     (
-        "[REDACTED_NAME]",
+        REDACTED,
         re.compile(
             r"\b(?:Mr\.?|Mrs\.?|Ms\.?|Miss|Dr\.?|Prof\.?)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*",
             re.IGNORECASE,
@@ -61,9 +109,15 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
+_GENERIC_500_MESSAGE = "An internal error occurred. Please try again later."
+
+
+def _all_patterns() -> list[tuple[str, re.Pattern[str]]]:
+    return _PATTERNS + _HIPAA_PATTERNS
+
 
 def _redact_string(value: str) -> str:
-    for replacement, pattern in _PATTERNS:
+    for replacement, pattern in _all_patterns():
         value = pattern.sub(replacement, value)
     return value
 
@@ -95,3 +149,81 @@ def redact_pii(value: Any, _depth: int = 0) -> Any:
         return type(value)(redacted)
 
     return value
+
+
+# Ticket-facing alias (camelCase).
+redactPII = redact_pii
+
+
+def redact_sensitive_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Return a copy of *headers* safe for logging (secrets fully redacted)."""
+    result: dict[str, str] = {}
+    for key, value in headers.items():
+        if key.lower() in _SENSITIVE_HEADER_KEYS:
+            result[key] = REDACTED
+        else:
+            result[key] = redact_pii(value) if isinstance(value, str) else str(value)
+    return result
+
+
+def prepare_request_log_context(
+    method: str,
+    path: str,
+    headers: Mapping[str, str],
+    *,
+    query_params: Mapping[str, str] | None = None,
+    body_length: int | None = None,
+) -> dict[str, Any]:
+    """
+    Build a request summary dict that is safe to log.
+
+    Never includes raw body content — only optional ``body_length``.
+    """
+    ctx: dict[str, Any] = {
+        "method": method,
+        "path": path,
+        "headers": redact_sensitive_headers(headers),
+    }
+    if query_params is not None:
+        ctx["query_params"] = redact_pii(dict(query_params))
+    if body_length is not None:
+        ctx["body_length"] = body_length
+    return ctx
+
+
+def safe_error_message(detail: Any, *, status_code: int = 400) -> str:
+    """
+    Convert exception detail to a single safe user-facing string.
+
+    Complex structures are collapsed to a generic message to avoid leaking
+    field-level PII from validation payloads. Server errors (5xx) always
+    return a generic message — never exception text, even if redacted.
+    """
+    if status_code >= 500:
+        return _GENERIC_500_MESSAGE
+    if detail is None:
+        return "Request failed"
+    if isinstance(detail, str):
+        return redact_pii(detail)
+    if isinstance(detail, (dict, list, tuple)):
+        return "Request failed"
+    return redact_pii(str(detail))
+
+
+_STATUS_TO_ERROR_CODE: dict[int, str] = {
+    400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    409: "CONFLICT",
+    422: "VALIDATION_ERROR",
+    429: "TOO_MANY_REQUESTS",
+    500: "INTERNAL_ERROR",
+    502: "BAD_GATEWAY",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+
+def status_to_error_code(status_code: int) -> str:
+    return _STATUS_TO_ERROR_CODE.get(status_code, "HTTP_ERROR")
