@@ -72,8 +72,15 @@ def setup_logging() -> logging.Logger:
 
     _attach_pii_filter(root_logger, pii_filter)
 
-    # Application + server loggers used in production (GCP stdout).
-    for logger_name in ("tgs_agent", "uvicorn", "uvicorn.error", "uvicorn.access"):
+    # Application + HTTP client loggers (urllib3 logs full URLs at DEBUG).
+    for logger_name in (
+        "tgs_agent",
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "urllib3",
+        "urllib3.connectionpool",
+    ):
         _attach_pii_filter(logging.getLogger(logger_name), pii_filter)
 
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)

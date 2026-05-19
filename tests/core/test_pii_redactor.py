@@ -160,6 +160,28 @@ class TestSensitiveHeaders:
         result = redact_sensitive_headers(headers)
         assert result["x-api-key"] == REDACTED
 
+    def test_stripe_signature_fully_redacted(self):
+        headers = {"stripe-signature": "t=123,v1=abc123hash"}
+        result = redact_sensitive_headers(headers)
+        assert result["stripe-signature"] == REDACTED
+
+    def test_request_start_not_redacted(self):
+        headers = {"x-request-start": "1737123456789"}
+        result = redact_sensitive_headers(headers)
+        assert result["x-request-start"] == "1737123456789"
+
+
+class TestUrlSecretParams:
+    def test_trello_token_in_url(self):
+        url = (
+            "https://api.trello.com/1/cards?key=abc123&"
+            "token=ATTAdf5cfd491e99a43e1c560e7870b4ab60109166a6a29c3324f4a96fa33394cb2"
+        )
+        result = redact_pii(url)
+        assert "ATTAdf5cfd" not in result
+        assert "token=[REDACTED]" in result or f"token={REDACTED}" in result
+        assert f"key={REDACTED}" in result
+
 
 class TestRequestLogContext:
     def test_no_raw_body(self):

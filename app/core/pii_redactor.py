@@ -28,9 +28,20 @@ _SENSITIVE_HEADER_KEYS: frozenset[str] = frozenset(
         "set-cookie",
         "x-api-key",
         "x-twilio-signature",
+        "stripe-signature",
         "proxy-authorization",
         "x-csrf-token",
     }
+)
+
+# Header values passed through unchanged (timestamps / correlation ids — not PII).
+_PASS_THROUGH_HEADER_KEYS: frozenset[str] = frozenset(
+    {"x-request-start", "x-request-id"},
+)
+
+# Query-string secrets in URLs logged by httpx/urllib3 (Trello, OAuth, etc.).
+_URL_SECRET_PARAM_RE = re.compile(
+    r"(?i)([?&])(token|key|api_key|apikey|client_secret|access_token|auth_token|password|secret)=([^&\s\"']+)",
 )
 
 # Phase 3 (HIPAA): populate with clinical-term and diagnosis-code patterns.
@@ -119,6 +130,7 @@ def _all_patterns() -> list[tuple[str, re.Pattern[str]]]:
 def _redact_string(value: str) -> str:
     for replacement, pattern in _all_patterns():
         value = pattern.sub(replacement, value)
+    value = _URL_SECRET_PARAM_RE.sub(rf"\1\2={REDACTED}", value)
     return value
 
 
@@ -159,8 +171,11 @@ def redact_sensitive_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Return a copy of *headers* safe for logging (secrets fully redacted)."""
     result: dict[str, str] = {}
     for key, value in headers.items():
-        if key.lower() in _SENSITIVE_HEADER_KEYS:
+        lower = key.lower()
+        if lower in _SENSITIVE_HEADER_KEYS:
             result[key] = REDACTED
+        elif lower in _PASS_THROUGH_HEADER_KEYS:
+            result[key] = value if isinstance(value, str) else str(value)
         else:
             result[key] = redact_pii(value) if isinstance(value, str) else str(value)
     return result
