@@ -6,7 +6,7 @@ from app.schemas.base import SuccessResponse
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
-from app.api.deps import get_db, get_current_user_jwt, require_admin, require_member_or_admin, require_admin_or_owner, is_session_already_credited, mark_session_credited
+from app.api.deps import get_db, get_current_user_jwt, require_admin, require_member_or_admin, require_admin_or_owner
 from app.core.security import create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.utils.response import create_success_response
 import re

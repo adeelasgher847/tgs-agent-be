@@ -329,5 +329,3 @@ class StripeService:
         db.refresh(tenant)
 
         logger.info(f"Added {plan.credits} credits to tenant {tenant.id}")
-
-    # Note: Idempotency is now handled at the endpoint level using in-memory store in deps
