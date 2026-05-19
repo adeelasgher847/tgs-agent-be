@@ -57,6 +57,16 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         REDACTED,
         re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", re.IGNORECASE),
     ),
+    # Stripe Checkout hosted URLs (contain session secrets in path/query)
+    (
+        REDACTED,
+        re.compile(r"https://checkout\.stripe\.com/[^\s\"'\\]+", re.IGNORECASE),
+    ),
+    # Stripe Checkout session ids (cs_test_… / cs_live_…)
+    (
+        REDACTED,
+        re.compile(r"\bcs_(?:test|live)_[A-Za-z0-9]+\b", re.IGNORECASE),
+    ),
     # Credit / debit card  (13-19 digits, optional separators every 4)
     (
         REDACTED,

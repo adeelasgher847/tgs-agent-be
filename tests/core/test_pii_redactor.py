@@ -172,6 +172,18 @@ class TestSensitiveHeaders:
 
 
 class TestUrlSecretParams:
+    def test_stripe_checkout_url(self):
+        url = "https://checkout.stripe.com/c/pay/cs_test_a1Iuv1jSR1k18o02TejSCvXs97HNOJcypVXoLEfjh4OHhrFcYhaaLHvWz7#fidsecret"
+        result = redact_pii(url)
+        assert "checkout.stripe.com/c/pay" not in result
+        assert REDACTED in result
+
+    def test_stripe_session_id_in_api_path(self):
+        msg = "GET /v1/checkout/sessions/cs_test_a1Iuv1jSR1k18o02TejSCvXs97HNOJcypVXoLEfjh4OHhrFcYhaaLHvWz7"
+        result = redact_pii(msg)
+        assert "cs_test_a1Iuv1" not in result
+        assert REDACTED in result
+
     def test_trello_token_in_url(self):
         url = (
             "https://api.trello.com/1/cards?key=abc123&"

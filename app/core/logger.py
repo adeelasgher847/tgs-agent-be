@@ -80,6 +80,7 @@ def setup_logging() -> logging.Logger:
         "uvicorn.access",
         "urllib3",
         "urllib3.connectionpool",
+        "stripe",
     ):
         _attach_pii_filter(logging.getLogger(logger_name), pii_filter)
 
