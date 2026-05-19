@@ -2,6 +2,7 @@ fastapi
 uvicorn
 SQLAlchemy
 psycopg2-binary
+asyncpg
 alembic
 python-jose[cryptography]
 passlib[bcrypt]
@@ -19,6 +20,7 @@ python-dotenv
 email-validator
 stripe
 fastapi-limiter==0.1.6
+redis
 websockets
 aiohttp
 google-genai

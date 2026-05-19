@@ -64,8 +64,10 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             if not session_id:
                 return {"status": "ignored", "reason": "no_session_id"}
 
+            stripe_event_id = _get_event_value(event, "id")
+
             from app.services.billing_service import BillingService
-            result = BillingService.sync_payment_status(db, session_id)
+            result = BillingService.sync_payment_status(db, session_id, stripe_event_id)
             
             if result:
                 return {**result, "message": "Webhook processed successfully"}

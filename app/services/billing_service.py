@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
+from sqlalchemy.exc import IntegrityError
 from app.models.tenant import Tenant
+from app.models.stripe_checkout_fulfillment import StripeCheckoutFulfillment
 from app.models.subscription import Subscription
 from app.models.plan import Plan
 from app.models.usage_record import UsageRecord
@@ -56,18 +58,35 @@ class BillingService:
         pass
 
     @staticmethod
-    def sync_payment_status(db: Session, session_id: str) -> Optional[Dict[str, Any]]:
+    def _claim_checkout_session(
+        db: Session, session_id: str, stripe_event_id: Optional[str] = None
+    ) -> bool:
+        """Reserve fulfillment for this session. False if already processed."""
+        db.add(
+            StripeCheckoutFulfillment(
+                checkout_session_id=session_id,
+                stripe_event_id=stripe_event_id,
+            )
+        )
+        try:
+            db.flush()
+            return True
+        except IntegrityError:
+            db.rollback()
+            return False
+
+    @staticmethod
+    def sync_payment_status(
+        db: Session,
+        session_id: str,
+        stripe_event_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Verify Stripe session and update subscription. No credits added for plan_purchase.
         Returns result dict or None if session not paid/valid.
         """
-        from app.api.deps import is_session_already_credited, mark_session_credited
         from app.core.config import settings
         from app.core.logger import logger
-
-        if is_session_already_credited(session_id):
-            logger.info(f"Session {session_id} already processed.")
-            return {"status": "already_processed"}
 
         import stripe
         stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -91,6 +110,10 @@ class BillingService:
             tenant_id = uuid.UUID(tenant_id_str)
             user_id = uuid.UUID(user_id_str) if user_id_str else None
             plan_id = uuid.UUID(plan_id_str) if plan_id_str else None
+
+            if not BillingService._claim_checkout_session(db, session_id, stripe_event_id):
+                logger.info(f"Session {session_id} already processed.")
+                return {"status": "already_processed"}
 
             # Plan purchase: update subscription only, NO credits
             if purchase_type == 'plan_purchase' and user_id and plan_id:
@@ -123,7 +146,6 @@ class BillingService:
                     current_period_end=period_end
                 )
                 logger.info(f"Subscription updated for user {user_id} (crm_type={crm_type}) via sync - no credits added")
-                mark_session_credited(session_id)
                 return {
                     "status": "success",
                     "credits_added": 0,
@@ -144,10 +166,9 @@ class BillingService:
                 if tenant:
                     tenant.credits = (tenant.credits or 0) + credits_to_add
                     tenant.status = 'active'
-                    db.commit()
                     logger.info(f"Added {credits_to_add} credits to tenant {tenant_id} (credit_purchase)")
 
-            mark_session_credited(session_id)
+            db.commit()
             return {
                 "status": "success",
                 "credits_added": credits_to_add,
@@ -156,6 +177,7 @@ class BillingService:
         except Exception as e:
             from app.core.logger import logger
             logger.error(f"Error syncing payment status for session {session_id}: {str(e)}")
+            db.rollback()
             return None
 
     @staticmethod
