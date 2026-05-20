@@ -59,12 +59,10 @@ def _app() -> FastAPI:
 def _assert_unauthorized(resp) -> None:
     """All middleware 401s share the canonical error envelope."""
     assert resp.status_code == 401
-    assert resp.json() == {
-        "error": {
-            "code": "unauthorized",
-            "message": "Invalid or missing API key",
-        }
-    }
+    err = resp.json()["error"]
+    assert err["code"] == "unauthorized"
+    assert err["message"] == "Invalid or missing API key"
+    assert "requestId" in err
     assert "x-request-id" in resp.headers
 
 
@@ -312,9 +310,8 @@ class TestCaching:
                 headers={"x-api-key": "k", "x-workspace-id": str(tenant_id)},
             )
 
-        assert r1.json() == r2.json() == r3.json() == {
-            "error": {
-                "code": "unauthorized",
-                "message": "Invalid or missing API key",
-            }
-        }
+        for r in (r1, r2, r3):
+            err = r.json()["error"]
+            assert err["code"] == "unauthorized"
+            assert err["message"] == "Invalid or missing API key"
+            assert "requestId" in err

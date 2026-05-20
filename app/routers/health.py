@@ -1,9 +1,16 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter
-from app.schemas.base import SuccessResponse
-from app.utils.response import create_success_response
+
+from app.core.config import settings
 
 router = APIRouter()
 
-@router.get("/health", response_model=SuccessResponse[dict])
-def health_check():
-    return create_success_response({"status": "ok"}, "Health check successful")
+
+@router.get("/health")
+def health_check() -> dict:
+    return {
+        "status": "ok",
+        "version": settings.APP_VERSION,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }

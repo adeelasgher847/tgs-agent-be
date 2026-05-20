@@ -37,3 +37,4 @@ geopy
 timezonefinder
 tzdata
 python-docx
+nanoid

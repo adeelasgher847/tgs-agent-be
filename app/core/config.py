@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = True
+    APP_VERSION: str = "1.0.0"
+
+    # CORS — comma-separated list of allowed origins.
+    # Example: "https://app.example.com,https://admin.example.com"
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
     
     # Webhook Configuration
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"

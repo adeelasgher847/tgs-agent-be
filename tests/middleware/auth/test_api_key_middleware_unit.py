@@ -93,7 +93,12 @@ def _app() -> FastAPI:
 def _assert_unauthorized(resp) -> None:
     """All 401s from the middleware must share the canonical error envelope."""
     assert resp.status_code == 401
-    assert resp.json() == _UNAUTHORIZED
+    data = resp.json()
+    # Verify envelope shape without requiring requestId to be a specific value
+    # (RequestIdMiddleware is not wired in these unit-test apps).
+    assert data["error"]["code"] == _UNAUTHORIZED["error"]["code"]
+    assert data["error"]["message"] == _UNAUTHORIZED["error"]["message"]
+    assert "requestId" in data["error"]
     assert "x-request-id" in resp.headers
 
 
