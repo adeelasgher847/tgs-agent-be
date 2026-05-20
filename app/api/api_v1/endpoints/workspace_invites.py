@@ -13,13 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
-from app.core.logger import logger
 from app.models.invite import Invite
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.workspace_invite import InviteCreate, InviteOut
-from app.services.email_service import build_invite_email_content
+from app.services.email_service import email_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
@@ -66,13 +65,18 @@ def invite_team_member(
     db.refresh(invite)
 
     inviter_name = f"{admin.first_name} {admin.last_name}".strip() or admin.email
-    subject, html_body = build_invite_email_content(token, inviter_name, tenant.name)
-    logger.info(
-        "INVITE EMAIL (not sent)\nTo: %s\nSubject: %s\nBody:\n%s",
-        body.email,
-        subject,
-        html_body,
-    )
+    if not email_service.send_invite_email(
+        email=body.email,
+        invite_token=token,
+        inviter_name=inviter_name,
+        tenant_name=tenant.name,
+    ):
+        db.delete(invite)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send invitation email",
+        )
 
     return create_success_response(
         InviteOut.model_validate(invite),

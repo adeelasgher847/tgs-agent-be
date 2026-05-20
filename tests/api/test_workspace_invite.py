@@ -86,7 +86,10 @@ def authed_client(client: TestClient, admin_user: User, workspace_tenant: Tenant
         return workspace
 
     app.dependency_overrides[require_admin] = lambda: admin_user
-    with patch("app.middleware.api_key_middleware._load_workspace", side_effect=_fake_load):
+    with patch("app.middleware.api_key_middleware._load_workspace", side_effect=_fake_load), patch(
+        "app.api.api_v1.endpoints.workspace_invites.email_service.send_invite_email",
+        return_value=True,
+    ):
         client.headers.update({"Authorization": f"Bearer {token}"})
         yield client
     app.dependency_overrides.pop(require_admin, None)
@@ -101,10 +104,14 @@ class TestInviteSuccess:
     def test_invite_creates_pending_record(self, authed_client, db, admin_user):
         email = f"invited-{uuid.uuid4().hex[:6]}@example.com"
 
-        with patch("app.api.api_v1.endpoints.workspace_invites.logger") as mock_log:
+        with patch(
+            "app.api.api_v1.endpoints.workspace_invites.email_service.send_invite_email",
+            return_value=True,
+        ) as mock_send:
             resp = authed_client.post("/api/v1/workspace/invite", json={"email": email})
 
         assert resp.status_code == 201, resp.text
+        mock_send.assert_called_once()
         data = resp.json()["data"]
         assert data["email"] == email
         assert data["status"] == "pending"
@@ -124,11 +131,9 @@ class TestInviteSuccess:
         delta = exp - datetime.utcnow()
         assert timedelta(days=6, hours=23) < delta < timedelta(days=7, hours=1)
 
-        mock_log.info.assert_called_once()
-        args = mock_log.info.call_args[0]
-        assert args[1] == email
-        assert invite.token in args[3]
-        assert "accept-invite" in args[3]
+        call_kwargs = mock_send.call_args.kwargs
+        assert call_kwargs["email"] == email
+        uuid.UUID(call_kwargs["invite_token"])
 
     def test_invite_response_omits_token(self, authed_client):
         email = f"notoken-{uuid.uuid4().hex[:6]}@example.com"
