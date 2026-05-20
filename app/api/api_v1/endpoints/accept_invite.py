@@ -37,7 +37,7 @@ def accept_invite(
     # Find the invitation by token
     invite = db.query(Invite).filter(
         Invite.token == token,
-        Invite.status == "PENDING"
+        Invite.status.in_(["pending", "PENDING"]),
     ).first()
     
     if not invite:
@@ -46,10 +46,13 @@ def accept_invite(
             detail="Invalid or expired invitation token"
         )
     
-    # Check if invitation is expired
-    if invite.expires_at < datetime.now(timezone.utc):
+    # Check if invitation is expired (make timezone-aware for reliable comparison)
+    exp = invite.expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp < datetime.now(timezone.utc):
         # Mark invitation as expired
-        invite.status = "EXPIRED"
+        invite.status = "expired"
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -122,7 +125,7 @@ def accept_invite(
     user.current_tenant_id = invite.tenant_id
     
     # Update invitation status
-    invite.status = "ACCEPTED"
+    invite.status = "accepted"
     invite.accepted_at = datetime.now(timezone.utc)
     
     db.commit()

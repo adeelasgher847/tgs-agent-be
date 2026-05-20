@@ -193,8 +193,8 @@ class Settings(BaseSettings):
     WEBHOOK_RATE_LIMIT: int = 100
     WEBHOOK_RATE_WINDOW: int = 60  # seconds
     
-    # General API rate limiting (requests per minute)
-    API_RATE_LIMIT: int = 1000
+    # General API rate limiting — global sliding-window middleware
+    API_RATE_LIMIT: int = 60   # requests per window per identity
     API_RATE_WINDOW: int = 60  # seconds
 
     # Google OAuth

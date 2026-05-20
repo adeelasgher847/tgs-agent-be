@@ -17,7 +17,6 @@ from app.core.security import create_refresh_token_value, refresh_token_expires_
 from app.core.security import is_token_expired, verify_token
 from app.services.email_service import email_service
 from app.utils.response import create_success_response
-from app.utils.rate_limiter import login_rate_limit
 from datetime import datetime, timezone
 from app.services.role_service import get_user_role_in_tenant
 import secrets
@@ -108,7 +107,6 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=SuccessResponse[TokenResponse])
-@login_rate_limit()
 def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     User login endpoint that returns JWT token with role information as object.

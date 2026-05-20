@@ -5,7 +5,6 @@ from app.api.api_v1.endpoints import (
     api_keys,
     billing,
     gemini,
-    invite,
     model,
     openai,
     plan,
@@ -14,6 +13,7 @@ from app.api.api_v1.endpoints import (
     tenant,
     user,
     workspace,
+    workspace_invites,
 )
 from app.routers.agents import router as agent_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
@@ -44,6 +44,9 @@ api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
+# Invite sub-routes must be registered BEFORE workspace.router so that
+# /workspace/invite and /workspace/invitations take priority over /workspace/{workspace_id}.
+api_router.include_router(workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"])
 api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
@@ -69,7 +72,6 @@ api_router.include_router(
 api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"])
 api_router.include_router(call_logs_router, prefix="/call-logs", tags=["Call Logs"])
 api_router.include_router(general_websocket_router, prefix="/general", tags=["General WebSocket"])
-api_router.include_router(invite.router, prefix="/invites", tags=["invites"])
 api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 api_router.include_router(plan.router, prefix="/plans", tags=["plans"])
