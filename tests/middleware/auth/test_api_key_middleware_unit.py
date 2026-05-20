@@ -24,6 +24,7 @@ from app.middleware.api_key_middleware import (
     invalidate_api_key_cache,
     invalidate_api_key_cache_by_hash,
 )
+from app.middleware.request_id_middleware import RequestIdMiddleware
 
 _UNAUTHORIZED = {
     "error": {
@@ -40,6 +41,7 @@ _UNAUTHORIZED = {
 def _app() -> FastAPI:
     mini = FastAPI()
     mini.add_middleware(ApiKeyMiddleware)
+    mini.add_middleware(RequestIdMiddleware)
 
     @mini.get("/api/v1/protected")
     def protected(request: Request):
@@ -49,6 +51,7 @@ def _app() -> FastAPI:
             "workspace_id": str(ws.id),
             "workspace_name": ws.name,
             "auth_method": request.state.auth_method,
+            "request_id": getattr(request.state, "request_id", None),
         }
 
     @mini.get("/api/v1/auth/clickup/callback")
@@ -152,6 +155,11 @@ def _valid_payload(tenant_id: str | uuid.UUID, key_id: str | uuid.UUID) -> dict:
 # ---------------------------------------------------------------------------
 
 class TestSkipPaths:
+    def test_options_preflight_not_blocked_by_auth(self, client):
+        """Browser CORS preflight must not receive 401 from ApiKey middleware."""
+        resp = client.options("/api/v1/protected")
+        assert resp.status_code != 401
+
     def test_health_no_auth(self, client):
         resp = client.get("/health")
         assert resp.status_code == 200
@@ -255,11 +263,12 @@ class TestValidKey:
                 "/api/v1/protected",
                 headers={"x-api-key": "key", "x-workspace-id": str(tenant_id)},
             )
-        assert "x-request-id" in resp.headers
+        assert resp.status_code == 200
+        assert resp.json()["request_id"]
 
     def test_custom_request_id_echoed(self, client):
         tenant_id = uuid.uuid4()
-        custom_id = str(uuid.uuid4())
+        custom_id = "custom-nanoid-req-id01"
 
         async def _resolve(kh, workspace_id):
             return _valid_payload(tenant_id, uuid.uuid4())
@@ -273,7 +282,8 @@ class TestValidKey:
                     "x-request-id": custom_id,
                 },
             )
-        assert resp.headers["x-request-id"] == custom_id
+        assert resp.status_code == 200
+        assert resp.json()["request_id"] == custom_id
 
 
 # ---------------------------------------------------------------------------

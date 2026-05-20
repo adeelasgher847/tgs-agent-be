@@ -397,6 +397,11 @@ class ApiKeyMiddleware:
         request = Request(scope, receive)
         request_id = get_request_id(request)
 
+        # Browser CORS preflight — no auth headers; must reach CORSMiddleware.
+        if request.method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
         if not request.url.path.startswith("/api/v1/") or _should_skip(request.url.path):
             await self.app(scope, receive, send)
             return

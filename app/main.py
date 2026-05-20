@@ -97,17 +97,30 @@ app.openapi = custom_openapi
 register_exception_handlers(app)
 
 # ---------------------------------------------------------------------------
-# Middleware stack (add_middleware is applied in LIFO order at runtime, so
-# the LAST add_middleware call becomes the OUTERMOST middleware).
+# Middleware stack (add_middleware is LIFO — LAST added = OUTERMOST on request).
 #
-# Execution order on incoming request (outermost → innermost):
-#   RequestId → BodyLimit → PiiLogging → ApiKey → CORS → route handler
+# Incoming (outer → inner):
+#   CORS → RequestId → BodyLimit → PiiLogging → ApiKey → route handler
 #
-# add_middleware calls must therefore be in reverse order:
+# CORS must be outermost so browser OPTIONS preflight gets Allow-Origin headers
+# before ApiKey can return 401. M2M clients (no browser) skip preflight entirely.
 # ---------------------------------------------------------------------------
 
-# 5. CORS — innermost; must process before auth checks on preflight.
 _allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
+
+# 1. Innermost — API key / JWT (actual requests only; OPTIONS passes through).
+app.add_middleware(ApiKeyMiddleware)
+
+# 2. PII-safe request logging
+app.add_middleware(PiiLoggingMiddleware)
+
+# 3. Body size limit (10 MB)
+app.add_middleware(BodyLimitMiddleware)
+
+# 4. Request ID — nanoid on request.state before auth errors are built.
+app.add_middleware(RequestIdMiddleware)
+
+# 5. Outermost — CORS handles preflight and adds headers to all responses (incl. 401).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
@@ -115,18 +128,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 4. API key / JWT auth
-app.add_middleware(ApiKeyMiddleware)
-
-# 3. PII-safe request logging
-app.add_middleware(PiiLoggingMiddleware)
-
-# 2. Body size limit (10 MB)
-app.add_middleware(BodyLimitMiddleware)
-
-# 1. Request ID — outermost so every downstream layer has request_id available.
-app.add_middleware(RequestIdMiddleware)
 
 # ---------------------------------------------------------------------------
 # Routes
