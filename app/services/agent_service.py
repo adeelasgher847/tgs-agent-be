@@ -1,19 +1,30 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import func
+from sqlalchemy import func, select
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
+from app.models.phone_number import PhoneNumber
 from app.models.transfer_route import TransferRoute
 from app.models.model import Model
 from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.models.business_knowledge import BusinessKnowledge
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
-from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
+from app.schemas.agent import (
+    AgentCreate,
+    AgentUpdate,
+    AgentListResponse,
+    AgentStatusEnum,
+    TtsProviderEnum,
+    agent_to_out,
+)
 from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
 from app.services.rag_service import rag_service
 from app.core.config import settings
+from app.core.llm_models import is_allowed_llm_model
+from app.core.security import encrypt_api_key
+from app.repositories.agent_repository import AgentRepository
 from fastapi import HTTPException, status
 import uuid
 import re
@@ -23,6 +34,81 @@ class AgentService:
     """
     Agent service with business logic for agent operations
     """
+
+    def _repo(self, db: Session) -> AgentRepository:
+        return AgentRepository(db)
+
+    def _assert_llm_model(self, llm_model: str) -> None:
+        if not is_allowed_llm_model(llm_model):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"'{llm_model}' is not a supported LLM model.",
+            )
+
+    def _encrypt_byo_key(self, raw_key: str) -> str:
+        try:
+            return encrypt_api_key(raw_key)
+        except ValueError as exc:
+            logger.error("ElevenLabs BYO key encryption failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not securely store the provided ElevenLabs key",
+            )
+
+    def _ticket_payload_from_create(self, agent_in: AgentCreate) -> Dict[str, Any]:
+        self._assert_llm_model(agent_in.llm_model)
+        encrypted_key: Optional[str] = None
+        if agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo:
+            encrypted_key = self._encrypt_byo_key(agent_in.eleven_labs_api_key or "")
+        return {
+            "llm_model": agent_in.llm_model,
+            "tts_provider_slug": agent_in.tts_model.provider.value,
+            "tts_voice_external_id": agent_in.tts_model.voice_id,
+            "tts_language": agent_in.tts_model.language,
+            "status": agent_in.status.value,
+            "encrypted_elevenlabs_api_key": encrypted_key,
+        }
+
+    def _apply_ticket_update(
+        self, agent_in: AgentUpdate, agent: Agent, update_dict: Dict[str, Any]
+    ) -> None:
+        if agent_in.llm_model is not None:
+            self._assert_llm_model(agent_in.llm_model)
+            update_dict["llm_model"] = agent_in.llm_model
+        if agent_in.status is not None:
+            update_dict["status"] = agent_in.status.value
+        if agent_in.tts_model is not None:
+            update_dict["tts_provider_slug"] = agent_in.tts_model.provider.value
+            update_dict["tts_voice_external_id"] = agent_in.tts_model.voice_id
+            update_dict["tts_language"] = agent_in.tts_model.language
+            if agent_in.tts_model.provider != TtsProviderEnum.elevenlabs_byo:
+                update_dict["encrypted_elevenlabs_api_key"] = None
+        if agent_in.eleven_labs_api_key is not None:
+            update_dict["encrypted_elevenlabs_api_key"] = self._encrypt_byo_key(
+                agent_in.eleven_labs_api_key
+            )
+        if agent_in.tts_model is not None:
+            new_is_byo = agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo
+            if (
+                new_is_byo
+                and not agent_in.eleven_labs_api_key
+                and not agent.encrypted_elevenlabs_api_key
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="elevenLabsApiKey is required when ttsModel.provider is '11labs_byo'",
+                )
+
+    def has_active_phone_binding(self, db: Session, agent_id: uuid.UUID) -> bool:
+        stmt = (
+            select(PhoneNumber.id)
+            .where(
+                PhoneNumber.assistant_id == agent_id,
+                PhoneNumber.status == "active",
+            )
+            .limit(1)
+        )
+        return db.execute(stmt).first() is not None
 
     def _validate_tts_selection(
         self,
@@ -248,9 +334,16 @@ class AgentService:
         )
         self._auto_ingest_agent_system_prompt(db, agent)
 
-    def create_agent(self, db: Session, agent_in: AgentCreate, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Agent:
+    def create_agent(
+        self,
+        db: Session,
+        agent_in: AgentCreate,
+        tenant_id: uuid.UUID,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> Agent:
         """
-        Create a new agent with tenant context and audit trail
+        Create a new agent with tenant context and audit trail.
+        Supports JWT users and API-key M2M (``user_id`` may be None).
         """
         # Validate model_id if provided
         if agent_in.model_id:
@@ -264,32 +357,28 @@ class AgentService:
                     detail="Invalid model_id. Model not found or is archived."
                 )
 
+        repo = self._repo(db)
+
         # 🚨 CHECK AGENT LIMIT (MAX 5 AGENTS PER TENANT)
-        agent_count = db.query(func.count(Agent.id)).filter(
-            Agent.tenant_id == tenant_id,
-            Agent.is_deleted == False
-        ).scalar()
-        
-        if agent_count >= 5:
+        if repo.count_active_by_workspace(tenant_id) >= 5:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Agent limit reached. You can only create up to 5 agents per tenant."
             )
 
-        # Check for duplicate name within tenant
-        existing = db.query(Agent).filter(
-            Agent.tenant_id == tenant_id,
-            func.lower(Agent.name) == agent_in.name.strip().lower(),
-            Agent.is_deleted == False
-        ).first()
-        if existing:
+        if repo.find_by_name_in_workspace(tenant_id, agent_in.name):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Agent name must be unique within the tenant."
             )
 
-        # Sanitize string fields
-        agent_data = agent_in.model_dump()
+        ticket_data = self._ticket_payload_from_create(agent_in)
+
+        # Sanitize string fields (exclude ticket-only nested objects)
+        agent_data = agent_in.model_dump(
+            exclude={"tts_model", "eleven_labs_api_key", "llm_model", "status"}
+        )
+        agent_data.update(ticket_data)
         for field in ['name', 'system_prompt', 'fallback_response', 'greeting_message']:
             if field in agent_data and agent_data[field]:
                 agent_data[field] = agent_data[field].strip()
@@ -352,51 +441,37 @@ class AgentService:
                     detail="Only one follow-up appointment agent is allowed per tenant.",
                 )
         
-        db_agent = Agent(**agent_data)
-        db.add(db_agent)
         try:
-            db.commit()
+            db_agent = repo.create(agent_data)
         except IntegrityError:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
-        db.refresh(db_agent)
         self._auto_ingest_agent_system_prompt(db, db_agent)
-        
+
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
         """
         Get agent by ID with strict tenant isolation.
-        Returns 403 if agent exists but belongs to different tenant.
-        Returns 404 if agent doesn't exist at all.
+        Returns 404 if agent doesn't exist or belongs to a different workspace.
         """
-        # First, check if agent exists (regardless of tenant)
-        agent = (
-            db.query(Agent)
-            .options(joinedload(Agent.transfer_route))
-            .filter(
-                Agent.id == agent_id,
-                Agent.is_deleted == False,
-            )
-            .first()
-        )
-        
+        agent = self._repo(db).find_by_id(agent_id, load_transfer_route=True)
+
         if not agent:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Agent not found"
             )
         
-        # If agent exists but belongs to different tenant, return 403
         if agent.tenant_id != tenant_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied. You can only access agents within your current tenant."
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found",
             )
-        
+
         return agent
     
     def list_agents(
@@ -404,46 +479,22 @@ class AgentService:
         db: Session, 
         tenant_id: uuid.UUID,
         page: int = 1,
-        limit: int = 10,
+        limit: int = 20,
         search: Optional[str] = None
     ) -> AgentListResponse:
         """
         List agents with pagination, search, and tenant isolation
         """
-        # Calculate offset
-        offset = (page - 1) * limit
-        logger.debug(f"List agents for tenant: {tenant_id}")
-        # Base query with tenant isolation
-        query = db.query(Agent).filter(
-            Agent.tenant_id == tenant_id,
-            Agent.is_deleted == False
+        logger.debug("List agents for tenant: %s", tenant_id)
+        agents, total = self._repo(db).find_by_workspace(
+            tenant_id, page=page, limit=limit, search=search
         )
-        logger.debug(f"Query: {query}")
 
-        # Apply search filter - handle empty strings and whitespace
-        if search and search.strip():
-            search_term = search.strip().lower()
-            query = query.filter(func.lower(Agent.name).like(f"%{search_term}%"))
-        
-        # Get total count
-        total = query.count()
-        
-        # Get paginated results
-        agents = query.offset(offset).limit(limit).all()
-        
-        # Calculate pagination info
-        total_pages = (total + limit - 1) // limit
-        has_next = page * limit < total
-        has_prev = page > 1
-        
         return AgentListResponse(
-            data=[AgentOut.model_validate(agent) for agent in agents],
+            data=[agent_to_out(agent) for agent in agents],
             total=total,
             page=page,
-            limit=limit,
-            total_pages=total_pages,
-            has_next=has_next,
-            has_prev=has_prev
+            page_size=limit,
         )
     
     def update_agent(
@@ -452,14 +503,18 @@ class AgentService:
         agent_id: uuid.UUID, 
         agent_update: AgentUpdate, 
         tenant_id: uuid.UUID,
-        user_id: uuid.UUID
+        user_id: Optional[uuid.UUID] = None,
     ) -> Agent:
         """
         Update agent with tenant isolation and audit trail
         """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
-        
-        update_dict = agent_update.model_dump(exclude_unset=True)
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)
+
+        update_dict = agent_update.model_dump(
+            exclude_unset=True,
+            exclude={"tts_model", "eleven_labs_api_key", "llm_model", "status"},
+        )
+        self._apply_ticket_update(agent_update, agent, update_dict)
 
         # Validate model_id if being updated
         if "model_id" in update_dict and update_dict["model_id"] is not None:
@@ -553,21 +608,17 @@ class AgentService:
                     detail="Agent max tokens must be greater than 0."
                 )
 
-        for field, value in update_dict.items():
-            setattr(agent, field, value)
-        
-        # Update the updated_by field
-        agent.updated_by = user_id
-        
+        if user_id is not None:
+            update_dict["updated_by"] = user_id
+
         try:
-            db.commit()
+            agent = self._repo(db).update(agent, update_dict)
         except IntegrityError:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
-        db.refresh(agent)
         self._auto_ingest_agent_system_prompt(db, agent)
         return agent
 
@@ -683,17 +734,27 @@ No active tenant knowledge base documents were found.
             )
         return "\n".join(lines)
     
-    def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
-        """
-        Soft delete agent with tenant isolation
-        """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
-        
-        # Soft delete
-        agent.is_deleted = True
-        
-        db.commit()
-        return True
+    def delete_agent(
+        self,
+        db: Session,
+        agent_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """Soft delete; raises 409 when an active phone number is still bound."""
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)
+
+        if self.has_active_phone_binding(db, agent.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Agent has an active phone number bound to it. "
+                    "Unassign the phone number before deleting."
+                ),
+            )
+
+        self._repo(db).soft_delete(agent, updated_by=user_id)
     
     def get_agents_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> List[Agent]:
         """

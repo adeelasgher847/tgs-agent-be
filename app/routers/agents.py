@@ -1,113 +1,228 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Any, Optional, Union
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
-from typing import Optional
-from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse, LanguageEnum, VoiceTypeEnum
+
 from app.api.deps import (
-    get_db,
     get_current_user_jwt,
+    get_db,
     require_member_or_admin,
     require_tenant,
-    require_admin_or_owner,
+    require_user_tenant,
 )
-from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
+from app.core.error_responses import build_api_error_payload
+from app.core.llm_models import allowed_llm_models, is_allowed_llm_model
+from app.core.request_auth import ApiKeyPrincipal
+from app.models.user import User
+from app.schemas.agent import (
+    AgentCreate,
+    AgentListResponse,
+    AgentUpdate,
+    LanguageEnum,
+    VoiceTypeEnum,
+    agent_to_out,
+)
 from app.schemas.base import SuccessResponse
 from app.schemas.prompt_engineer import PromptEngineerRequest, PromptEngineerResult
 from app.services.agent_service import agent_service
-from app.services.openai_service import openai_service
 from app.services.credit_service import credit_service
 from app.services.model_service import model_service
+from app.services.openai_service import openai_service
 from app.core.security import decrypt_api_key
-from app.models.user import User
 from app.utils.response import create_success_response
 from app.core.logger import logger
-import uuid
-import json
 
 router = APIRouter()
 
 
-@router.post("/", response_model=SuccessResponse[AgentOut], status_code=status.HTTP_201_CREATED)
+def _request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", "")
+
+
+def _workspace_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+    return principal.current_tenant_id
+
+
+def _actor_user_id(principal: Union[User, ApiKeyPrincipal]) -> Optional[uuid.UUID]:
+    return getattr(principal, "id", None)
+
+
+def _field_errors(exc: ValidationError) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for err in exc.errors():
+        loc = [str(part) for part in err.get("loc", ()) if part != "body"]
+        path = ".".join(loc) if loc else "(root)"
+        out.append({"path": path, "message": err.get("msg", "Invalid value")})
+    return out
+
+
+def _error_response(
+    request: Request,
+    status_code: int,
+    message: str,
+    *,
+    error_code: Optional[str] = None,
+    extras: Optional[dict[str, Any]] = None,
+) -> JSONResponse:
+    payload = build_api_error_payload(
+        status_code,
+        message,
+        error_code=error_code,
+        request_id=_request_id(request),
+        extras=extras,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+def _serialize_out(agent) -> dict[str, Any]:
+    return agent_to_out(agent).model_dump(by_alias=True, mode="json")
+
+
+@router.post("/", status_code=status.HTTP_201_CREATED)
 def create_agent(
     agent_in: AgentCreate,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
-    db: Session = Depends(get_db)
+    request: Request,
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    db: Session = Depends(get_db),
 ):
-    """Create a new agent"""
-    # Trim whitespace from agent name
-    agent_in.name = " ".join(agent_in.name.split())
-    # Both tenant_user and admin_user are validated by their respective middleware
-    # We can use either one since they both represent the same user
-    agent = agent_service.create_agent(db, agent_in, admin_user.current_tenant_id, admin_user.id)
-    return create_success_response(agent, "Agent created successfully", status.HTTP_201_CREATED)
+    """Create agent (JWT or API key). Returns ticket-shaped JSON."""
+    if not is_allowed_llm_model(agent_in.llm_model):
+        return _error_response(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            f"'{agent_in.llm_model}' is not a supported LLM model.",
+            error_code="invalid_llm_model",
+            extras={"allowedValues": allowed_llm_models()},
+        )
+    try:
+        agent = agent_service.create_agent(
+            db,
+            agent_in,
+            _workspace_id(principal),
+            _actor_user_id(principal),
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_400_BAD_REQUEST and "LLM model" in str(exc.detail):
+            return _error_response(
+                request,
+                status.HTTP_400_BAD_REQUEST,
+                str(exc.detail),
+                error_code="invalid_llm_model",
+                extras={"allowedValues": allowed_llm_models()},
+            )
+        raise
+    return JSONResponse(status_code=status.HTTP_201_CREATED, content=_serialize_out(agent))
 
 
-@router.get("/{agent_id}", response_model=SuccessResponse[AgentOut])
+@router.get("/{agent_id}")
 def get_agent(
     agent_id: uuid.UUID,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
-    db: Session = Depends(get_db)
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    db: Session = Depends(get_db),
 ):
-    """Get a specific agent by ID"""
-    agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
-    if not agent:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Agent not found"
-        )
-    return create_success_response(agent, "Agent retrieved successfully")
+    """Get agent by id (404 if missing or other workspace)."""
+    agent = agent_service.get_agent_by_id(db, agent_id, _workspace_id(principal))
+    return _serialize_out(agent)
 
 
-@router.get("/", response_model=SuccessResponse[AgentListResponse])
+@router.get("/", response_model=AgentListResponse, response_model_by_alias=True)
 def list_agents(
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(10, ge=1, le=100, description="Records per page"),
+    page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
+    limit: Optional[int] = Query(
+        None, ge=1, le=100, include_in_schema=False, description="Deprecated alias for pageSize"
+    ),
     search: Optional[str] = Query(None, description="Search by name"),
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
-    db: Session = Depends(get_db)
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    db: Session = Depends(get_db),
 ):
-    """Get agents with pagination and search"""
-    agents = agent_service.list_agents(db, user.current_tenant_id, page, limit, search)
-    return create_success_response(agents, "Agents retrieved successfully")
+    """Paginated list: ``{ data, total, page, pageSize }``."""
+    effective_limit = limit if limit is not None else page_size
+    return agent_service.list_agents(
+        db, _workspace_id(principal), page, effective_limit, search
+    )
 
 
-@router.put("/{agent_id}", response_model=SuccessResponse[AgentOut])
+@router.put("/{agent_id}")
 def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
-    db: Session = Depends(get_db)
+    request: Request,
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    db: Session = Depends(get_db),
 ):
-    """Update an agent"""
-    agent = agent_service.update_agent(db, agent_id, agent_update, admin_user.current_tenant_id, admin_user.id)
-    return create_success_response(agent, "Agent updated successfully")
+    """Update mutable fields (JWT or API key)."""
+    if agent_update.llm_model is not None and not is_allowed_llm_model(agent_update.llm_model):
+        return _error_response(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            f"'{agent_update.llm_model}' is not a supported LLM model.",
+            error_code="invalid_llm_model",
+            extras={"allowedValues": allowed_llm_models()},
+        )
+    try:
+        agent = agent_service.update_agent(
+            db,
+            agent_id,
+            agent_update,
+            _workspace_id(principal),
+            _actor_user_id(principal),
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_400_BAD_REQUEST and "elevenLabsApiKey" in str(exc.detail):
+            return _error_response(
+                request,
+                status.HTTP_400_BAD_REQUEST,
+                str(exc.detail),
+                extras={"fields": [{"path": "elevenLabsApiKey", "message": str(exc.detail)}]},
+            )
+        raise
+    return _serialize_out(agent)
 
 
-@router.delete("/{agent_id}", response_model=SuccessResponse[dict])
+@router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def delete_agent(
     agent_id: uuid.UUID,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
-    db: Session = Depends(get_db)
+    request: Request,
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    db: Session = Depends(get_db),
 ):
-    """Delete an agent"""
-    agent_service.delete_agent(db, agent_id, admin_user.current_tenant_id)
-    return create_success_response({"id": str(agent_id)}, "Agent deleted successfully")
+    """Soft delete; 409 if an active phone number is bound."""
+    try:
+        agent_service.delete_agent(
+            db,
+            agent_id,
+            _workspace_id(principal),
+            user_id=_actor_user_id(principal),
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_409_CONFLICT:
+            return _error_response(
+                request,
+                status.HTTP_409_CONFLICT,
+                str(exc.detail),
+                error_code="agent_has_active_phone_number",
+            )
+        raise
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/search/{search_term}", response_model=SuccessResponse[list[AgentOut]])
+@router.get("/search/{search_term}", response_model=SuccessResponse[list])
 def search_agents(
     search_term: str,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
-    db: Session = Depends(get_db)
+    user: User = Depends(require_member_or_admin),
+    db: Session = Depends(get_db),
 ):
-    """Search agents by name"""
+    """Search agents by name (dashboard JWT)."""
     agents = agent_service.search_agents(db, user.current_tenant_id, search_term)
-    agent_list = [AgentOut.model_validate(agent) for agent in agents]
+    agent_list = [_serialize_out(agent) for agent in agents]
     return create_success_response(agent_list, f"Found {len(agent_list)} agents matching '{search_term}'") 
 
 @router.get("/meta/voice-options")
@@ -123,7 +238,7 @@ def get_voice_options(
 @router.get("/{agent_id}/model-config")
 def get_agent_model_config(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
@@ -131,7 +246,9 @@ def get_agent_model_config(
     Returns agent-specific values if set, otherwise falls back to model defaults.
     """
     try:
-        config = agent_service.get_agent_effective_model_config(db, agent_id, user.current_tenant_id)
+        config = agent_service.get_agent_effective_model_config(
+            db, agent_id, _workspace_id(principal)
+        )
         return create_success_response(
             config,
             "Agent model configuration retrieved successfully"
@@ -148,7 +265,7 @@ def get_agent_model_config(
 @router.get("/{agent_id}/inbound-knowledge-snapshot", response_model=SuccessResponse[dict])
 def get_inbound_knowledge_snapshot(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """
@@ -158,7 +275,7 @@ def get_inbound_knowledge_snapshot(
         snapshot = agent_service.get_inbound_agent_knowledge_snapshot(
             db=db,
             inbound_agent_id=agent_id,
-            tenant_id=user.current_tenant_id,
+            tenant_id=_workspace_id(principal),
         )
         return create_success_response(snapshot, "Inbound knowledge snapshot retrieved successfully")
     except HTTPException:
@@ -173,20 +290,14 @@ def get_inbound_knowledge_snapshot(
 @router.get("/{agent_id}/talk")
 async def get_talk_to_assistant_link(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """
     Get the "Talk to Assistant" link for an agent
     """
     try:
-        # Validate agent exists and belongs to user's tenant
-        agent = agent_service.get_agent_by_id(db, agent_id, user.current_tenant_id)
-        if not agent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Agent not found"
-            )
+        agent = agent_service.get_agent_by_id(db, agent_id, _workspace_id(principal))
         
         # Return the talk link
         talk_url = f"/api/v1/live-voice/talk/{agent_id}"
@@ -217,7 +328,6 @@ async def get_talk_to_assistant_link(
 )
 async def design_agent_prompt(
     request: PromptEngineerRequest,
-    tenant_user: User = Depends(require_tenant),
     user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),
 ):

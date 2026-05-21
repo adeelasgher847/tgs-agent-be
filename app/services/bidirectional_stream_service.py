@@ -9,6 +9,7 @@ from app.services.google_tts_service import google_tts_service
 from app.routers.tts_audio import audio_cache, generate_cache_key
 from app.core.config import settings
 from app.core.logger import logger
+from app.core.agent_runtime import resolve_tts_runtime
 from app.utils.tts_adapter import get_tts_adapter
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 from app.utils.audio_utils import add_ambient_noise_to_mulaw
@@ -17,11 +18,7 @@ from app.utils.audio_utils import add_ambient_noise_to_mulaw
 def _resolve_tts_provider_slug(agent: Optional[Any]) -> Optional[str]:
     if not agent:
         return None
-    provider = getattr(agent, "tts_provider", None)
-    slug = getattr(provider, "slug", None)
-    if slug:
-        return slug.lower()
-    return None
+    return resolve_tts_runtime(agent).adapter_slug
 
 
 async def generate_mulaw_tts(
@@ -60,10 +57,14 @@ async def generate_mulaw_tts(
         if not tts_text:
             return b""
 
+        tts_runtime = resolve_tts_runtime(agent) if agent else None
         selected_voice = voice
         if provider_slug != "google":
-            tts_voice = getattr(agent, "tts_voice", None) if agent else None
-            selected_voice = getattr(tts_voice, "external_voice_id", None) or voice
+            if tts_runtime and tts_runtime.voice_external_id:
+                selected_voice = tts_runtime.voice_external_id
+            else:
+                tts_voice = getattr(agent, "tts_voice", None) if agent else None
+                selected_voice = getattr(tts_voice, "external_voice_id", None) or voice
 
         cache_key = (
             generate_cache_key(tts_text, lang, f"{provider_slug}:{selected_voice}", use_chirp3_hd, "mulaw")
@@ -76,8 +77,12 @@ async def generate_mulaw_tts(
             return audio_cache[cache_key]
 
         if provider_slug == "google":
-            tts_voice = getattr(agent, "tts_voice", None) if agent else None
-            google_voice_name = getattr(tts_voice, "external_voice_id", None)
+            google_voice_name = None
+            if tts_runtime and tts_runtime.voice_external_id:
+                google_voice_name = tts_runtime.voice_external_id
+            else:
+                tts_voice = getattr(agent, "tts_voice", None) if agent else None
+                google_voice_name = getattr(tts_voice, "external_voice_id", None)
             # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
             # Google TTS auto-detects SSML if text starts with <speak>
             # Let SSML control prosody (use defaults when SSML present, don't override)
@@ -93,11 +98,18 @@ async def generate_mulaw_tts(
                 voice_name_override=google_voice_name,
             )
         else:
-            tts_voice = getattr(agent, "tts_voice", None) if agent else None
-            external_voice_id = getattr(tts_voice, "external_voice_id", None)
+            external_voice_id = None
+            settings_json: dict = {}
+            if tts_runtime:
+                external_voice_id = tts_runtime.voice_external_id
+                settings_json = dict(tts_runtime.settings_json)
+            if not external_voice_id:
+                tts_voice = getattr(agent, "tts_voice", None) if agent else None
+                external_voice_id = getattr(tts_voice, "external_voice_id", None)
             if not external_voice_id:
                 raise ValueError("TTS voice is not configured for the selected provider.")
-            settings_json = dict(getattr(agent, "tts_settings_json", None) or {})
+            if not settings_json:
+                settings_json = dict(getattr(agent, "tts_settings_json", None) or {})
             settings_json.setdefault("output_format", "ulaw_8000")
             adapter = get_tts_adapter(provider_slug)
             logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [provider={provider_slug}]")

@@ -20,6 +20,20 @@ from app.models.user import User
 from app.routers.tts_audio import audio_cache
 from app.schemas.agent import AgentCreate
 from app.services.agent_service import agent_service
+
+
+def _agent_create(**overrides) -> AgentCreate:
+    """Minimal valid ticket-shaped create payload for service tests."""
+    data = {
+        "name": overrides.pop("name", "Test Agent"),
+        "llmModel": overrides.pop("llm_model", "gpt-4o-mini"),
+        "ttsModel": overrides.pop(
+            "tts_model",
+            {"provider": "11labs", "voiceId": "voice-id", "language": "en"},
+        ),
+    }
+    data.update(overrides)
+    return AgentCreate.model_validate(data)
 from app.services.bidirectional_stream_service import generate_mulaw_tts
 from app.services.tts_catalog_service import tts_catalog_service
 
@@ -76,7 +90,7 @@ def test_agent_create_rejects_tts_provider_voice_mismatch(tts_db):
     db.add(voice_b)
     db.commit()
 
-    payload = AgentCreate(
+    payload = _agent_create(
         name="Mismatch Agent",
         tts_provider_id=provider_a.id,
         tts_voice_id=voice_b.id,
@@ -102,7 +116,7 @@ def test_agent_create_rejects_tts_payload_api_key(tts_db):
     db.add(voice)
     db.commit()
 
-    payload = AgentCreate(
+    payload = _agent_create(
         name="Unsafe Agent",
         tts_provider_id=provider.id,
         tts_voice_id=voice.id,
@@ -129,7 +143,7 @@ def test_agent_create_rejects_invalid_background_enabled(tts_db):
     db.add(voice)
     db.commit()
 
-    payload = AgentCreate(
+    payload = _agent_create(
         name="Invalid BG Enabled Agent",
         tts_provider_id=provider.id,
         tts_voice_id=voice.id,
@@ -156,7 +170,7 @@ def test_agent_create_rejects_invalid_background_profile(tts_db):
     db.add(voice)
     db.commit()
 
-    payload = AgentCreate(
+    payload = _agent_create(
         name="Invalid BG Profile Agent",
         tts_provider_id=provider.id,
         tts_voice_id=voice.id,
@@ -183,7 +197,7 @@ def test_agent_create_rejects_invalid_background_volume(tts_db):
     db.add(voice)
     db.commit()
 
-    payload = AgentCreate(
+    payload = _agent_create(
         name="Invalid BG Volume Agent",
         tts_provider_id=provider.id,
         tts_voice_id=voice.id,

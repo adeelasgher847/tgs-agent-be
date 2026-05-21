@@ -311,8 +311,11 @@ class ConversationOrchestrator:
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
-            tts_provider = getattr(self._h.agent, "tts_provider", None) if self._h.agent else None
-            tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
+            from app.core.agent_runtime import resolve_tts_runtime
+
+            tts_provider_slug = (
+                resolve_tts_runtime(self._h.agent).adapter_slug if self._h.agent else ""
+            )
             elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
             if elevenlabs_audio_tags_enabled:
                 output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
@@ -443,54 +446,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if call_policy_block:
                 system_prompt = call_policy_block + "\n" + system_prompt
 
-            # Get agent's configured model and provider
-            llm_service = None
-            model_name = "gemini-1.5-flash"  # Default fallback
-            api_key = None
-            temperature = 0.15
-            max_tokens = 100
+            from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
 
-            if self._h.agent and self._h.agent.model:
-                model_name = self._h.agent.model.model_name
-
-                # Decrypt API key if available
-                if self._h.agent.model.api_key:
-                    try:
-                        from app.core.security import decrypt_api_key
-
-                        api_key = decrypt_api_key(self._h.agent.model.api_key)
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt agent API key: {e}")
-                        api_key = None
-                else:
-                    api_key = None
-
-                # Use agent-specific config if available
-                if self._h.agent.agent_temperature is not None:
-                    temperature = self._h.agent.agent_temperature / 100.0
-                elif self._h.agent.model.temperature is not None:
-                    temperature = self._h.agent.model.temperature / 100.0
-
-                if self._h.agent.agent_max_tokens:
-                    max_tokens = self._h.agent.agent_max_tokens
-                elif self._h.agent.model.max_tokens:
-                    max_tokens = self._h.agent.model.max_tokens
-
-                # Select service based on provider
-                if self._h.agent.provider:
-                    provider_name = self._h.agent.provider.name.lower()
-                    if "openai" in provider_name:
-                        llm_service = openai_service
-                    elif "gemini" in provider_name or "google" in provider_name:
-                        llm_service = gemini_service
-                    elif "groq" in provider_name:
-                        llm_service = groq_service
-                    else:
-                        llm_service = gemini_service
-                else:
-                    llm_service = gemini_service
-            else:
-                llm_service = gemini_service
+            llm_runtime = resolve_llm_runtime(self._h.agent)
+            model_name = llm_runtime.model_name
+            api_key = llm_runtime.api_key
+            temperature = llm_runtime.temperature
+            max_tokens = llm_runtime.max_tokens
+            llm_service = llm_service_for_provider(llm_runtime.provider_slug)
 
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0

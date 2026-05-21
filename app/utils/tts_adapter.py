@@ -49,6 +49,10 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
             "metadata_json": payload,
         }
 
+    def _pop_elevenlabs_api_key(self, cfg: dict[str, Any]) -> Optional[str]:
+        key = cfg.pop("elevenlabs_api_key", None) or cfg.pop("xi_api_key", None)
+        return str(key).strip() if key else None
+
     def synthesize(
         self,
         text: str,
@@ -56,6 +60,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         settings_json: Optional[dict[str, Any]] = None,
     ) -> bytes:
         cfg = dict(settings_json or {})
+        api_key_override = self._pop_elevenlabs_api_key(cfg)
         model_id = cfg.pop("model", "eleven_flash_v2_5")
         output_format = cfg.pop("output_format", "ulaw_8000")
         optimize_streaming_latency = int(cfg.pop("optimize_streaming_latency", 4))
@@ -82,6 +87,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
             apply_text_normalization=apply_text_normalization,
             apply_language_text_normalization=apply_language_text_normalization,
             optimize_streaming_latency=optimize_streaming_latency,
+            api_key_override=api_key_override,
         )
 
     def stream_synthesize(
@@ -91,6 +97,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         settings_json: Optional[dict[str, Any]] = None,
     ):
         cfg = dict(settings_json or {})
+        api_key_override = self._pop_elevenlabs_api_key(cfg)
         model_id = cfg.pop("model", "eleven_flash_v2_5")
         output_format = cfg.pop("output_format", "ulaw_8000")
         optimize_streaming_latency = int(cfg.pop("optimize_streaming_latency", 4))
@@ -117,6 +124,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
             apply_text_normalization=apply_text_normalization,
             apply_language_text_normalization=apply_language_text_normalization,
             optimize_streaming_latency=optimize_streaming_latency,
+            api_key_override=api_key_override,
         )
 
     async def async_stream_synthesize(
@@ -130,6 +138,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         Used by _prefetch_tts_audio for the ElevenLabs hot path.
         """
         cfg = dict(settings_json or {})
+        api_key_override = self._pop_elevenlabs_api_key(cfg)
         model_id = cfg.pop("model", "eleven_flash_v2_5")
         output_format = cfg.pop("output_format", "ulaw_8000")
         optimize_streaming_latency = int(cfg.pop("optimize_streaming_latency", 4))
@@ -156,6 +165,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
             apply_text_normalization=apply_text_normalization,
             apply_language_text_normalization=apply_language_text_normalization,
             optimize_streaming_latency=optimize_streaming_latency,
+            api_key_override=api_key_override,
         ):
             yield chunk
 

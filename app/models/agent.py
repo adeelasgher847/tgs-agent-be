@@ -15,15 +15,30 @@ class Agent(Base):
     fallback_response = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
-    updated_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
+    # Nullable so machine-to-machine (API key) requests can create/update agents
+    # without a resolved user_id; dashboard JWT flows still populate these.
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
+    updated_by = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
     model_id = Column(UUID(as_uuid=True), ForeignKey("model.id"), nullable=True)
     provider_id = Column(UUID(as_uuid=True), ForeignKey("provider.id"), nullable=True)  # Provider for filtering models
     provider_agent_id = Column(String(255), nullable=True)
     tts_provider_id = Column(UUID(as_uuid=True), ForeignKey("ttsprovider.id"), nullable=True)
     tts_voice_id = Column(UUID(as_uuid=True), ForeignKey("ttsvoice.id"), nullable=True)
     tts_settings_json = Column(JSON, nullable=True)
-    
+
+    # ── Ticket fields (Sprint 2 agent-management API contract) ───────────────
+    # Lifecycle state surfaced to the frontend list/detail view.
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    # String identifier validated against app.core.llm_models.ALLOWED_LLM_MODELS.
+    llm_model = Column(String(100), nullable=True)
+    # ttsModel triad from the request body — kept as plain strings so the new
+    # endpoint stays decoupled from the legacy TTSProvider/TTSVoice catalog.
+    tts_provider_slug = Column(String(40), nullable=True)
+    tts_voice_external_id = Column(String(255), nullable=True)
+    tts_language = Column(String(20), nullable=True)
+    # BYO ElevenLabs key — encrypted at rest, never returned in GET responses.
+    encrypted_elevenlabs_api_key = Column(Text, nullable=True)
+
     # Agent-specific model configuration (overrides model defaults)
     agent_temperature = Column(Integer, nullable=True)  # Agent-specific temperature (0-100)
     agent_max_tokens = Column(Integer, nullable=True)   # Agent-specific max tokens

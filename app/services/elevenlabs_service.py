@@ -15,8 +15,10 @@ class ElevenLabsService:
         self._base_url = "https://api.elevenlabs.io/v1"
         self._session = requests.Session()
     
-    def get_api_key(self) -> str:
-        """Get ElevenLabs API key"""
+    def get_api_key(self, override: Optional[str] = None) -> str:
+        """Get ElevenLabs API key (tenant BYO override or platform env)."""
+        if override and str(override).strip():
+            return str(override).strip()
         if self._api_key is None:
             env_key = (settings.ELEVENLABS_API_KEY or "").strip()
             api_key = env_key
@@ -104,6 +106,7 @@ class ElevenLabsService:
         apply_language_text_normalization: Optional[bool] = None,
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
+        api_key_override: Optional[str] = None,
     ) -> bytes:
         """
         Convert text to speech using ElevenLabs low-latency stream endpoint.
@@ -120,7 +123,7 @@ class ElevenLabsService:
         Returns:
             Audio data as bytes
         """
-        api_key = self.get_api_key()
+        api_key = self.get_api_key(api_key_override)
 
         try:
             url = f"{self._base_url}/text-to-speech/{voice_id}/stream"
@@ -176,11 +179,12 @@ class ElevenLabsService:
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
         chunk_size: int = 320,
+        api_key_override: Optional[str] = None,
     ) -> Iterator[bytes]:
         """
         Stream ElevenLabs synthesized audio as byte chunks.
         """
-        api_key = self.get_api_key()
+        api_key = self.get_api_key(api_key_override)
         safe_optimize = max(0, min(4, int(optimize_streaming_latency)))
         url = f"{self._base_url}/text-to-speech/{voice_id}/stream"
         headers = {
@@ -238,6 +242,7 @@ class ElevenLabsService:
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
         chunk_size: int = 320,
+        api_key_override: Optional[str] = None,
     ) -> AsyncIterator[bytes]:
         """
         True async streaming via httpx.AsyncClient.
@@ -246,7 +251,7 @@ class ElevenLabsService:
         """
         import httpx
 
-        api_key = self.get_api_key()
+        api_key = self.get_api_key(api_key_override)
         safe_optimize = max(0, min(4, int(optimize_streaming_latency)))
         url = f"{self._base_url}/text-to-speech/{voice_id}/stream"
         headers = {

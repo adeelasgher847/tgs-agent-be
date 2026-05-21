@@ -13,22 +13,33 @@ def build_api_error_payload(
     *,
     error_code: str | None = None,
     request_id: str = "",
+    extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Standard error JSON: { error: { code, message, requestId } }.
+    Standard error JSON: { error: { code, message, requestId, ...extras } }.
 
     Never embeds raw validation field values or unredacted exception text.
     The ``request_id`` should come from ``request.state.request_id`` at the call site.
+
+    ``extras`` (optional) is merged into the inner ``error`` object — used for
+    structured fields like ``allowedValues`` (invalid_llm_model) or ``fields``
+    (validation_error) that the frontend needs to render inline.
     """
     code = error_code or status_to_error_code(status_code)
     message = safe_error_message(detail, status_code=status_code)
-    return {
-        "error": {
-            "code": code,
-            "message": message,
-            "requestId": request_id,
-        }
+    error_obj: dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "requestId": request_id,
     }
+    if extras:
+        # Caller-provided keys take precedence over the base trio only when
+        # explicitly meant to (e.g. a different code) — but typically extras
+        # are additive (allowedValues, fields).
+        for key, value in extras.items():
+            if key not in error_obj:
+                error_obj[key] = value
+    return {"error": error_obj}
 
 
 def build_call_initiate_error_payload(

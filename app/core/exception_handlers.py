@@ -52,13 +52,19 @@ async def validation_exception_handler(
         request.url.path,
         redact_pii(exc.errors()),
     )
+    fields: list[dict[str, str]] = []
+    for err in exc.errors():
+        loc = [str(part) for part in err.get("loc", ()) if part not in ("body",)]
+        path = ".".join(loc) if loc else "(root)"
+        fields.append({"path": path, "message": err.get("msg", "Invalid value")})
     return JSONResponse(
-        status_code=422,
+        status_code=400,
         content=build_api_error_payload(
-            422,
+            400,
             "Request validation failed",
             error_code="validation_error",
             request_id=request_id,
+            extras={"fields": fields} if fields else None,
         ),
         headers={"X-Request-ID": request_id},
     )
