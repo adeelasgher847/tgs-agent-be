@@ -16,7 +16,7 @@ Requirements:
 Verification (after running):
     The seed user should pass require_admin() on any admin-gated route:
         POST /api/v1/users/login
-        body: {"email": "admin@dev.local", "password": "dev-password-change-me"}
+        body: {"email": "admin@example.com", "password": "dev-password-change-me"}
 """
 from __future__ import annotations
 
@@ -39,7 +39,9 @@ from app.core.security import get_password_hash
 # ------------------------------------------------------------------ constants
 
 SEED_TENANT_NAME = "dev-workspace"
-SEED_ADMIN_EMAIL = "admin@dev.local"
+# Use a domain accepted by Pydantic EmailStr (reserved TLDs like .local fail on /users/profile).
+SEED_ADMIN_EMAIL = "admin@example.com"
+LEGACY_SEED_EMAIL = "admin@dev.local"
 SEED_ADMIN_PASSWORD = "dev-password-change-me"
 SEED_ADMIN_FIRST = "Dev"
 SEED_ADMIN_LAST = "Admin"
@@ -100,6 +102,18 @@ def seed(db: Session) -> None:
     user = db.execute(
         select(User).where(User.email == SEED_ADMIN_EMAIL)
     ).scalar_one_or_none()
+
+    if user is None:
+        legacy = db.execute(
+            select(User).where(User.email == LEGACY_SEED_EMAIL)
+        ).scalar_one_or_none()
+        if legacy is not None:
+            legacy.email = SEED_ADMIN_EMAIL
+            db.flush()
+            user = legacy
+            print(
+                f"[seed] Migrated legacy email '{LEGACY_SEED_EMAIL}' -> '{SEED_ADMIN_EMAIL}'"
+            )
 
     if user is None:
         user = User(

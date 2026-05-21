@@ -188,7 +188,7 @@ python scripts/seed_dev_workspace.py
 # 4. Verify seed user can log in (should return JWT)
 curl -s -X POST http://localhost:8000/api/v1/users/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@dev.local","password":"dev-password-change-me"}' | python3 -m json.tool
+  -d '{"email":"admin@example.com","password":"dev-password-change-me"}' | python3 -m json.tool
 
 # 5. Run schema unit tests
 python3 -m pytest tests/db/ -v
@@ -202,7 +202,7 @@ File: `scripts/seed_dev_workspace.py`
 
 Creates:
 - Tenant: `dev-workspace`
-- User: `admin@dev.local` / `dev-password-change-me` (bcrypt hash — can log in via API)
+- User: `admin@example.com` / `dev-password-change-me` (bcrypt hash — can log in via API; not `.local`, which fails `EmailStr` on `/users/profile`)
 - `user_tenant_association` with `role_id` → `admin` role and `is_creator=True`
 - All 5 canonical roles (`owner`, `admin`, `member`, `config`, `readonly`) if missing
 
