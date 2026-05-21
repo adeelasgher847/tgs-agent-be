@@ -17,12 +17,23 @@ from app.core.request_auth import (
 from app.core.workspace import Workspace
 from app.models.refresh_token import RefreshToken
 from app.schemas.auth import TokenResponse, RoleInfo
-from app.services.role_service import is_admin_in_tenant
+from app.services.role_service import is_admin_in_tenant, get_user_role_in_tenant
 from app.services.role_service import get_user_product_in_tenant
 import uuid
 
 security = HTTPBearer()
 security_optional = HTTPBearer(auto_error=False)
+
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _reject_readonly_on_write(request: Request, role_name: str) -> None:
+    """Block readonly role from mutating HTTP methods (GET remains allowed)."""
+    if request.method in _WRITE_METHODS and role_name == "readonly":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Read-only access cannot modify resources",
+        )
 
 
 def get_workspace(request: Request) -> Workspace:
@@ -53,11 +64,14 @@ def get_workspace_api_key(request: Request) -> Workspace:
 
 def _user_from_middleware_jwt(request: Request, db: Session) -> User:
     workspace = get_workspace(request)
-    user = db.query(User).filter(User.id == request.state.user_id).first()
+    user = db.query(User).filter(
+        User.id == request.state.user_id,
+        User.deleted_at.is_(None),
+    ).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
+            detail="User not found or account has been deactivated",
             headers={"WWW-Authenticate": "Bearer"},
         )
     user.current_tenant_id = workspace.id
@@ -132,11 +146,14 @@ def get_current_user_jwt(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.deleted_at.is_(None),
+    ).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
+            detail="User not found or account has been deactivated",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -193,11 +210,14 @@ def require_tenant(
             detail="Invalid tenant in token",
         )
 
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.deleted_at.is_(None),
+    ).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
+            detail="User not found or account has been deactivated",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -245,7 +265,10 @@ def get_optional_tenant_user(
         except ValueError:
             return None
         
-        user = db.query(User).filter(User.id == user_id).first()
+        user = db.query(User).filter(
+            User.id == user_id,
+            User.deleted_at.is_(None),
+        ).first()
         if user:
             user.current_tenant_id = tenant_uuid
         return user
@@ -280,60 +303,48 @@ def require_admin(
 
 
 def require_member(
+    request: Request,
     user: User = Depends(require_user_tenant),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> User:
-    """Ensure user is a member (admin or regular member) in their current tenant."""
+    """Ensure user is a tenant member; readonly may not use write HTTP methods."""
     if not user.current_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
+            detail="No tenant selected. Please set a current tenant.",
         )
-    
-    # Check if user has any role in the tenant (admin or member)
-    from app.models.user import user_tenant_association
-    from app.models.role import Role
-    
-    result = db.query(user_tenant_association).join(Role).filter(
-        user_tenant_association.c.user_id == user.id,
-        user_tenant_association.c.tenant_id == user.current_tenant_id
-    ).first()
-    
-    if not result:
+
+    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+    if not role:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a member of this tenant"
+            detail="You are not a member of this tenant",
         )
-    
+
+    _reject_readonly_on_write(request, role.name)
     return user
 
 
 def require_member_or_admin(
+    request: Request,
     user: User = Depends(require_user_tenant),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> User:
-    """Ensure user is either a member or admin in their current tenant."""
+    """Ensure user is a tenant member; readonly may not use write HTTP methods."""
     if not user.current_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
+            detail="No tenant selected. Please set a current tenant.",
         )
-    
-    # Check if user has any role in the tenant (admin or member)
-    from app.models.user import user_tenant_association
-    from app.models.role import Role
-    
-    result = db.query(user_tenant_association).join(Role).filter(
-        user_tenant_association.c.user_id == user.id,
-        user_tenant_association.c.tenant_id == user.current_tenant_id
-    ).first()
-    
-    if not result:
+
+    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+    if not role:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a member of this tenant"
+            detail="You are not a member of this tenant",
         )
-    
+
+    _reject_readonly_on_write(request, role.name)
     return user
 
 
@@ -443,7 +454,56 @@ def require_admin_or_owner(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin or Owner access required for this operation"
         )
-    
+
+    return user
+
+
+# Roles that may configure workspace settings (but not manage users)
+_CONFIG_ROLES = frozenset({"owner", "admin", "config"})
+
+# All roles grant at least read access; readonly is the floor
+_ANY_ROLE = frozenset({"owner", "admin", "member", "config", "readonly"})
+
+
+def require_config(
+    user: User = Depends(require_user_tenant),
+    db: Session = Depends(get_db),
+) -> User:
+    """Ensure user has config-level access (owner, admin, or config role)."""
+    if not user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant.",
+        )
+
+    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+    if not role or role.name not in _CONFIG_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Config, Admin, or Owner access required for this operation",
+        )
+
+    return user
+
+
+def require_readonly(
+    user: User = Depends(require_user_tenant),
+    db: Session = Depends(get_db),
+) -> User:
+    """Ensure user is a tenant member with at least readonly access."""
+    if not user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant.",
+        )
+
+    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+    if not role or role.name not in _ANY_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this tenant",
+        )
+
     return user
 
 

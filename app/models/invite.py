@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -15,6 +15,11 @@ class Invite(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
     tenant = relationship("Tenant")
     inviter = relationship("User", foreign_keys=[invited_by])
+
+    __table_args__ = (
+        Index("ix_invite_email_tenant_id", "email", "tenant_id"),
+    )

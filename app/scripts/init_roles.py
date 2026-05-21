@@ -24,13 +24,21 @@ def create_required_roles():
                 "description": "Owner role with full access to tenant"
             },
             {
-                "name": "admin", 
+                "name": "admin",
                 "description": "Administrator role with full access"
             },
             {
                 "name": "member",
                 "description": "Regular member role with limited access"
-            }
+            },
+            {
+                "name": "config",
+                "description": "Configure workspace settings; cannot manage users"
+            },
+            {
+                "name": "readonly",
+                "description": "Read-only access; blocked from mutating endpoints"
+            },
         ]
         
         created_count = 0

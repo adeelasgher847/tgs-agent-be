@@ -13,6 +13,7 @@ class Tenant(Base):
     stripe_customer_id = Column(String, nullable=True, index=True)
     stripe_subscription_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
     credits = Column(Numeric(10, 4), default=0, nullable=False)  # Float credits with 4 decimal precision
     

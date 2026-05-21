@@ -115,8 +115,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     # Convert email to lowercase
     login_data.email = login_data.email.lower()
-    # Find user by email
-    user = db.query(User).filter(User.email == login_data.email).first()
+    # Find active (non-deleted) user by email
+    user = db.query(User).filter(
+        User.email == login_data.email,
+        User.deleted_at.is_(None),
+    ).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -241,15 +244,19 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
             detail="Invalid Google token"
         )
 
-    # Prefer matching by provider_user_id for stability
+    # Prefer matching by provider_user_id for stability; exclude soft-deleted accounts
     user = db.query(User).filter(
         User.provider == "google",
-        User.provider_user_id == sub
+        User.provider_user_id == sub,
+        User.deleted_at.is_(None),
     ).first()
 
     # If not found, try link by email (first-time social login)
     if not user:
-        user = db.query(User).filter(User.email == email).first()
+        user = db.query(User).filter(
+            User.email == email,
+            User.deleted_at.is_(None),
+        ).first()
 
     if not user:
         # Create new user
@@ -402,9 +409,15 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
             detail="Invalid or expired refresh token"
         )
 
-    user = db.query(User).filter(User.id == rt.user_id).first()
+    user = db.query(User).filter(
+        User.id == rt.user_id,
+        User.deleted_at.is_(None),
+    ).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account has been deactivated",
+        )
 
     tenant_ids = [t.id for t in user.tenants]
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
@@ -580,9 +593,12 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     """
     Send password reset email to user
     """
-    # Find user by email
-    user = db.query(User).filter(User.email == request.email).first()
-    
+    # Find active user by email (soft-deleted accounts cannot reset password)
+    user = db.query(User).filter(
+        User.email == request.email,
+        User.deleted_at.is_(None),
+    ).first()
+
     # Check if user exists
     if not user:
         raise HTTPException(
