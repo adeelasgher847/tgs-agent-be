@@ -345,6 +345,21 @@ class BindingStatusResponse(BaseModel):
     message: str
 
 
+class BoundAgentBinding(BaseModel):
+    """GET /api/v1/telephony/bindings — one row per bound number ↔ agent."""
+
+    agent_id: uuid.UUID
+    agent_name: Optional[str] = None
+    agent_status: Optional[str] = None
+    number_id: uuid.UUID
+    phone_number: str
+
+
+class BoundAgentBindingList(BaseModel):
+    bindings: List[BoundAgentBinding]
+    total: int
+
+
 # ---------------------------------------------------------------------------
 # Extended list response (binding status + agent name)
 # ---------------------------------------------------------------------------

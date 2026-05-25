@@ -455,6 +455,14 @@ class PhoneNumberService:
             )
         return result
 
+    def list_bound_bindings(self, db: Session, tenant_id: uuid.UUID) -> List[dict]:
+        """Phone numbers currently bound to an agent (assistant_id set)."""
+        return [
+            row
+            for row in self.list_numbers_with_binding(db, tenant_id)
+            if row.get("agent_id") is not None
+        ]
+
     # ------------------------------------------------------------------
     # Number configuration CRUD
     # ------------------------------------------------------------------

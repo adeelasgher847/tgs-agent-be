@@ -2,6 +2,7 @@
 Telephony router — /api/v1/telephony
 
 Sprint 2 endpoints:
+  GET  /bindings   List numbers bound to agents (agent_id per row)
   POST /external   Register a BYO/SIP external number
   POST /bind       Bind a phone number to an agent (agent → ready)
   POST /unbind     Unbind a phone number from its agent (agent → pending)
@@ -18,6 +19,8 @@ from app.schemas.base import SuccessResponse
 from app.schemas.phone_number import (
     BindingStatusResponse,
     BindNumberRequest,
+    BoundAgentBinding,
+    BoundAgentBindingList,
     RegisterExternalNumberRequest,
     RegisterExternalNumberResponse,
     UnbindNumberRequest,
@@ -26,6 +29,29 @@ from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
+
+
+@router.get("/bindings", response_model=SuccessResponse[BoundAgentBindingList])
+async def list_bound_agents(
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+) -> SuccessResponse[BoundAgentBindingList]:
+    """List phone number ↔ agent bindings for this workspace (bound rows only)."""
+    rows = phone_number_service.list_bound_bindings(db, user.current_tenant_id)
+    items = [
+        BoundAgentBinding(
+            agent_id=row["agent_id"],
+            agent_name=row.get("agent_name"),
+            agent_status=row.get("agent_status"),
+            number_id=row["id"],
+            phone_number=row["phone_number"],
+        )
+        for row in rows
+    ]
+    return create_success_response(
+        BoundAgentBindingList(bindings=items, total=len(items)),
+        f"Found {len(items)} bound agent(s)",
+    )
 
 
 @router.post("/external", response_model=SuccessResponse[RegisterExternalNumberResponse])

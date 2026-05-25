@@ -127,93 +127,67 @@ async def initiate_call(
             model_name,
         )
 
-        # Get phone number and credentials - Priority: User Selected > Agent Assigned > Env
+        # Outbound requires an active phone number bound to this agent (telephony bind).
         from app.models.phone_number import PhoneNumber
 
-        phone_number_obj = None
-        from_number: Optional[str] = None
-        use_custom_credentials = False
-        account_sid: Optional[str] = None
-        auth_token: Optional[str] = None
+        phone_number_obj = (
+            db.query(PhoneNumber)
+            .filter(
+                PhoneNumber.assistant_id == agent.id,
+                PhoneNumber.tenant_id == tenant_id_filter,
+                PhoneNumber.status == "active",
+            )
+            .first()
+        )
+        if not phone_number_obj:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "This agent is not bound to an active phone number. "
+                    "Bind via POST /api/v1/telephony/bind before placing outbound calls."
+                ),
+            )
 
-        # Priority 1: Check if user explicitly selected a phone number (VAPI style)
         if call_request.phone_number_id:
             try:
-                phone_number_uuid = uuid.UUID(call_request.phone_number_id)
-                phone_number_obj = phone_number_service.get_phone_number_by_id(
-                    db=db,
-                    phone_number_id=phone_number_uuid,
-                    tenant_id=tenant_id_filter,
-                )
-                if phone_number_obj and phone_number_obj.status == "active":
-                    logger.info(
-                        "✅ Using user selected phone number: %s (ID: %s)",
-                        phone_number_obj.phone_number,
-                        phone_number_uuid,
-                    )
-                elif phone_number_obj and phone_number_obj.status != "active":
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            f"Phone number {call_request.phone_number_id} "
-                            "is not active."
-                        ),
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=(
-                            f"Phone number {call_request.phone_number_id} "
-                            "not found in your account."
-                        ),
-                    )
-            except HTTPException:
-                raise
-            except (ValueError, Exception) as e:
+                requested_id = uuid.UUID(call_request.phone_number_id)
+            except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid phone_number_id format: {str(e)}",
                 )
-
-        # Priority 2: Check if agent has assigned phone number in DB
-        if not phone_number_obj and agent.id:
-            phone_number_obj = (
-                db.query(PhoneNumber)
-                .filter(
-                    PhoneNumber.assistant_id == agent.id,
-                    PhoneNumber.tenant_id == tenant_id_filter,
-                    PhoneNumber.status == "active",
-                )
-                .first()
-            )
-            if phone_number_obj:
-                logger.info(
-                    "✅ Using agent's assigned phone number: %s",
-                    phone_number_obj.phone_number,
+            if requested_id != phone_number_obj.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "phone_number_id must be the phone number bound to this agent "
+                        f"(bound id: {phone_number_obj.id})."
+                    ),
                 )
 
-        # Use selected phone number with credentials if available
-        if (
-            phone_number_obj
-            and phone_number_obj.twilio_account_sid
-            and phone_number_obj.twilio_auth_token
-        ):
-            from_number = phone_number_obj.phone_number
+        from_number = phone_number_obj.phone_number
+        use_custom_credentials = False
+        account_sid: Optional[str] = None
+        auth_token: Optional[str] = None
+
+        if phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
             from app.core.security import decrypt_api_key
 
             account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
             auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
             use_custom_credentials = True
             logger.info(
-                "✅ Using DB phone number: %s with custom credentials", from_number
+                "Using bound number %s with per-number Twilio credentials",
+                from_number,
             )
         else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "No phone number found. Please create and assign a phone number "
-                    "in your account before making calls."
-                ),
+            from app.core.secret_manager import get_twilio_credentials
+
+            account_sid, auth_token = get_twilio_credentials()
+            use_custom_credentials = True
+            logger.info(
+                "Using bound number %s with platform Twilio credentials",
+                from_number,
             )
 
         # Get base URL for webhooks

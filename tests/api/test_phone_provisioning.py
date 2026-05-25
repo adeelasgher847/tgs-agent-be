@@ -288,6 +288,40 @@ class TestRegisterExternalNumber:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/v1/telephony/bindings
+# ---------------------------------------------------------------------------
+
+
+class TestListBoundBindings:
+    def test_list_bound_agents_returns_agent_id(
+        self, authed_client: TestClient, phone_tenant: Tenant, phone_agent: Agent, db
+    ):
+        pn = PhoneNumber(
+            phone_number="+61400000088",
+            tenant_id=phone_tenant.id,
+            provider="twilio",
+            status="active",
+            assistant_id=phone_agent.id,
+        )
+        db.add(pn)
+        db.commit()
+
+        resp = authed_client.get(
+            "/api/v1/telephony/bindings",
+            headers=_headers(phone_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        bindings = resp.json()["data"]["bindings"]
+        match = [b for b in bindings if b["agent_id"] == str(phone_agent.id)]
+        assert len(match) == 1
+        assert match[0]["number_id"] == str(pn.id)
+        assert match[0]["phone_number"] == "+61400000088"
+
+        db.delete(pn)
+        db.commit()
+
+
+# ---------------------------------------------------------------------------
 # POST /api/v1/telephony/bind and /unbind
 # ---------------------------------------------------------------------------
 
