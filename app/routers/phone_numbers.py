@@ -148,19 +148,19 @@ async def create_phone_number(
     from app.models.agent import Agent
     from app.schemas.phone_number import PhoneNumberCreate
 
-    if request.assistant_id:
+    if request.agent_id:
         from sqlalchemy import select as sa_select
 
         agent = db.execute(
             sa_select(Agent).where(
-                Agent.id == request.assistant_id,
+                Agent.id == request.agent_id,
                 Agent.tenant_id == user.current_tenant_id,
             )
         ).scalar_one_or_none()
         if not agent:
             raise HTTPException(
                 status_code=400,
-                detail=f"Agent {request.assistant_id} not found",
+                detail=f"Agent {request.agent_id} not found",
             )
 
     try:
@@ -169,7 +169,7 @@ async def create_phone_number(
             PhoneNumberCreate(
                 phone_number=request.phone_number,
                 label=request.label,
-                assistant_id=request.assistant_id,
+                assistant_id=request.agent_id,
                 tenant_id=user.current_tenant_id,
             ),
         )

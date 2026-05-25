@@ -149,7 +149,10 @@ class PhoneNumberService:
         pn = self._get_by_id(db, phone_number_id, tenant_id)
         if not pn:
             return None
-        for field, value in update_data.model_dump(exclude_unset=True).items():
+        updates = update_data.model_dump(exclude_unset=True)
+        if "agent_id" in updates:
+            updates["assistant_id"] = updates.pop("agent_id")
+        for field, value in updates.items():
             setattr(pn, field, value)
         pn.updated_at = datetime.utcnow()
         db.commit()

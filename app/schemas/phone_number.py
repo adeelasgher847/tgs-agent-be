@@ -1,8 +1,8 @@
 """
 Phone number schemas — Pydantic v2.
 
-Naming note: the DB column is `assistant_id` (legacy); all new endpoints use `agent_id`
-in their request/response bodies. The service layer maps between the two.
+Naming note: the DB column is `assistant_id` (legacy); public API uses `agent_id` only.
+The service layer maps agent_id ↔ assistant_id on the ORM model.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -29,19 +29,6 @@ def _validate_e164(v: str) -> str:
     if not E164_RE.match(v):
         raise ValueError("Phone number must be in E.164 format (e.g. +614xxxxxxxx)")
     return v
-
-
-def _resolve_agent_binding_fields(
-    *,
-    assistant_id: Optional[uuid.UUID],
-    agent_id: Optional[uuid.UUID],
-) -> Optional[uuid.UUID]:
-    """
-    API may send agent_id and/or assistant_id; DB column remains assistant_id only.
-    """
-    if agent_id is not None and assistant_id is not None and agent_id != assistant_id:
-        raise ValueError("agent_id and assistant_id must refer to the same agent")
-    return agent_id if agent_id is not None else assistant_id
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +48,8 @@ class PhoneNumberBase(BaseModel):
 
 
 class PhoneNumberCreate(PhoneNumberBase):
+    """Internal create payload; maps agent_id to DB column assistant_id."""
+
     tenant_id: uuid.UUID
     assistant_id: Optional[uuid.UUID] = None
 
@@ -75,34 +64,26 @@ class PhoneNumberUpdate(BaseModel):
 
     label: Optional[str] = None
     status: Optional[str] = None
-    assistant_id: Optional[uuid.UUID] = None
     agent_id: Optional[uuid.UUID] = Field(
         default=None,
         validation_alias=AliasChoices("agent_id", "agentId"),
-        exclude=True,
+        description="Agent to bind (stored as assistant_id in DB)",
     )
 
-    @field_validator("assistant_id", mode="before")
+    @field_validator("agent_id", mode="before")
     @classmethod
     def empty_str_to_none(cls, v: Any) -> Any:
         return None if v == "" else v
-
-    @model_validator(mode="after")
-    def _merge_agent_binding(self) -> "PhoneNumberUpdate":
-        self.assistant_id = _resolve_agent_binding_fields(
-            assistant_id=self.assistant_id,
-            agent_id=self.agent_id,
-        )
-        return self
 
 
 class PhoneNumberResponse(PhoneNumberBase):
     id: uuid.UUID
     tenant_id: uuid.UUID
     provider: str = "twilio"
-    assistant_id: Optional[uuid.UUID] = None
     agent_id: Optional[uuid.UUID] = Field(
-        None, description="Same as assistant_id (ticket naming); maps to agent.id"
+        default=None,
+        validation_alias=AliasChoices("assistant_id", "agent_id", "agentId"),
+        description="Bound agent id (maps from DB column assistant_id)",
     )
     twilio_phone_number_sid: Optional[str] = None
     twilio_account_sid: Optional[str] = None
@@ -110,16 +91,6 @@ class PhoneNumberResponse(PhoneNumberBase):
     updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
-
-    @model_validator(mode="after")
-    def _mirror_agent_id_on_response(self) -> "PhoneNumberResponse":
-        bound = _resolve_agent_binding_fields(
-            assistant_id=self.assistant_id,
-            agent_id=self.agent_id,
-        )
-        self.assistant_id = bound
-        self.agent_id = bound
-        return self
 
 
 class PhoneNumberList(BaseModel):
@@ -132,11 +103,10 @@ class CreatePhoneNumberRequest(BaseModel):
 
     phone_number: str
     label: Optional[str] = None
-    assistant_id: Optional[uuid.UUID] = None
     agent_id: Optional[uuid.UUID] = Field(
         default=None,
         validation_alias=AliasChoices("agent_id", "agentId"),
-        exclude=True,
+        description="Optional agent to bind on create",
     )
 
     @field_validator("phone_number")
@@ -144,18 +114,10 @@ class CreatePhoneNumberRequest(BaseModel):
     def validate_phone_number(cls, v: str) -> str:
         return _validate_e164(v)
 
-    @field_validator("assistant_id", mode="before")
+    @field_validator("agent_id", mode="before")
     @classmethod
     def empty_str_to_none(cls, v: Any) -> Any:
         return None if v == "" else v
-
-    @model_validator(mode="after")
-    def _merge_agent_binding(self) -> "CreatePhoneNumberRequest":
-        self.assistant_id = _resolve_agent_binding_fields(
-            assistant_id=self.assistant_id,
-            agent_id=self.agent_id,
-        )
-        return self
 
 
 class CreatePhoneNumberResponse(BaseModel):
