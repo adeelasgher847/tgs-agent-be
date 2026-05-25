@@ -35,6 +35,8 @@ class AgentStatusEnum(str, Enum):
     active = "active"
     inactive = "inactive"
     draft = "draft"
+    pending = "pending"  # no phone number bound yet (telephony ticket)
+    ready = "ready"  # bound to a number, callable
 
 
 class TtsModelSchema(BaseModel):

@@ -11,11 +11,25 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
+    # Environment — controls which Twilio credentials are used and Secret Manager behaviour.
+    # Values: "development" | "staging" | "production"
+    ENVIRONMENT: str = "development"
+
     # Twilio Configuration
+    # In production/staging these should come from Secret Manager (see app/core/secret_manager.py).
+    # They are kept here as fallbacks for local development only.
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_PHONE_NUMBER: str = "+13466602410"  # TODO: Replace with your actual Twilio phone number from Twilio Console
+    TWILIO_PHONE_NUMBER: str = "+13466602410"
     ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
+
+    # Twilio test credentials — used automatically when ENVIRONMENT="staging".
+    # Set via Secret Manager or .env.staging; never commit real values.
+    TWILIO_TEST_ACCOUNT_SID: str = ""
+    TWILIO_TEST_AUTH_TOKEN: str = ""
+
+    # GCP Secret Manager project ID (required in staging/production).
+    GCP_PROJECT_ID: str = ""
     
     # Server Configuration
     HOST: str = "0.0.0.0"

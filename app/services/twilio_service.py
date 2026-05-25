@@ -16,17 +16,16 @@ class TwilioService:
         self._client = None
     
     def get_client(self):
-        """Get or create Twilio client"""
+        """Get or create Twilio client using Secret Manager credentials."""
         if self._client is None:
-            account_sid = settings.TWILIO_ACCOUNT_SID
-            auth_token = settings.TWILIO_AUTH_TOKEN
-            
-            if not account_sid or not auth_token:
-                raise Exception("Twilio credentials not found. Please set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN in your config.")
-            
+            from app.core.secret_manager import get_twilio_credentials
+            account_sid, auth_token = get_twilio_credentials()
             self._client = Client(account_sid, auth_token)
-        
         return self._client
+
+    def reset_client(self) -> None:
+        """Force a fresh client on next call (e.g. after credential rotation)."""
+        self._client = None
     
     def get_client_with_credentials(self, account_sid: str, auth_token: str):
         """Get Twilio client with custom credentials"""
@@ -200,9 +199,16 @@ class TwilioService:
 
     # Phone Number Purchasing Methods
     
-    def search_available_numbers(self, country_code: str = "US", area_code: Optional[str] = None, 
-                                contains: Optional[str] = None, voice_enabled: bool = True,
-                                sms_enabled: bool = True, limit: int = 20) -> List[Dict[str, Any]]:
+    def search_available_numbers(
+        self,
+        country_code: str = "US",
+        number_type: str = "local",
+        area_code: Optional[str] = None,
+        contains: Optional[str] = None,
+        voice_enabled: bool = True,
+        sms_enabled: bool = True,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
         """
         Search for available phone numbers
         
@@ -232,8 +238,14 @@ class TwilioService:
             if contains:
                 search_params['contains'] = contains
             
-            # Search for available numbers
-            available_numbers = client.available_phone_numbers(country_code).local.list(**search_params)
+            # Search for available numbers by type
+            phone_numbers_resource = client.available_phone_numbers(country_code)
+            if number_type == "toll_free":
+                available_numbers = phone_numbers_resource.toll_free.list(**search_params)
+            elif number_type == "mobile":
+                available_numbers = phone_numbers_resource.mobile.list(**search_params)
+            else:
+                available_numbers = phone_numbers_resource.local.list(**search_params)
             
             # Format results
             results = []
