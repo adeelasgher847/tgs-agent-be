@@ -2,8 +2,8 @@
 Resolve agent ticket fields for voice/LLM runtime.
 
 Ticket CRUD stores ``llm_model`` and ``ttsModel`` (``tts_provider_slug``, etc.).
-Call paths use these helpers first, then fall back to legacy ``model_id`` /
-``tts_provider_id`` relations when ticket fields are absent.
+Call paths use these helpers first, then fall back to legacy relations when
+ticket fields are absent.
 """
 from __future__ import annotations
 
@@ -14,13 +14,38 @@ from app.core.llm_models import infer_llm_provider
 from app.core.logger import logger
 from app.core.security import decrypt_api_key
 from app.models.agent import Agent
+from app.schemas.agent import normalize_tts_provider_slug
 
 
 _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
+    "elevenlabs": "elevenlabs",
+    "elevenlabs_byo": "elevenlabs",
     "11labs": "elevenlabs",
     "11labs_byo": "elevenlabs",
     "rime": "google",  # no Rime adapter yet — safe telephony fallback
 }
+
+
+def _provider_slug_from_agent(agent: Agent) -> str:
+    if agent.provider and agent.provider.name:
+        pname = agent.provider.name.lower()
+        if "openai" in pname:
+            return "openai"
+        if "groq" in pname:
+            return "groq"
+        if "gemini" in pname or "google" in pname:
+            return "gemini"
+        if "anthropic" in pname or "claude" in pname:
+            return "gemini"
+    if agent.model and getattr(agent.model, "provider", None) and agent.model.provider.name:
+        pname = agent.model.provider.name.lower()
+        if "openai" in pname:
+            return "openai"
+        if "groq" in pname:
+            return "groq"
+        if "gemini" in pname or "google" in pname:
+            return "gemini"
+    return infer_llm_provider(agent.llm_model or "")
 
 
 @dataclass(frozen=True)
@@ -44,9 +69,9 @@ class ResolvedTtsRuntime:
 
 def _ticket_tts_triad(agent: Agent) -> bool:
     return bool(
-        agent.tts_provider_slug
-        and agent.tts_voice_external_id
-        and agent.tts_language
+        getattr(agent, "tts_provider_slug", None)
+        and getattr(agent, "tts_voice_external_id", None)
+        and getattr(agent, "tts_language", None)
     )
 
 
@@ -75,16 +100,15 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         max_tokens = agent.model.max_tokens
 
     if agent.llm_model:
-        provider_slug = infer_llm_provider(agent.llm_model)
         api_key: Optional[str] = None
         if agent.model and agent.model.api_key:
             try:
                 api_key = decrypt_api_key(agent.model.api_key)
             except Exception as exc:
-                logger.error("Failed to decrypt legacy model API key: %s", exc)
+                logger.error("Failed to decrypt model API key: %s", exc)
         return ResolvedLlmRuntime(
             model_name=agent.llm_model,
-            provider_slug=provider_slug,
+            provider_slug=_provider_slug_from_agent(agent),
             api_key=api_key,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -92,15 +116,6 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         )
 
     if agent.model:
-        provider_slug = "gemini"
-        if agent.provider:
-            pname = (agent.provider.name or "").lower()
-            if "openai" in pname:
-                provider_slug = "openai"
-            elif "groq" in pname:
-                provider_slug = "groq"
-            elif "gemini" in pname or "google" in pname:
-                provider_slug = "gemini"
         api_key = None
         if agent.model.api_key:
             try:
@@ -109,7 +124,7 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
                 logger.error("Failed to decrypt agent model API key: %s", exc)
         return ResolvedLlmRuntime(
             model_name=agent.model.model_name,
-            provider_slug=provider_slug,
+            provider_slug=_provider_slug_from_agent(agent),
             api_key=api_key,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -154,12 +169,13 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
             used_ticket_tts=False,
         )
 
-    if agent.language:
-        language = agent.language
-    settings = dict(agent.tts_settings_json or {})
+    agent_language = getattr(agent, "language", None)
+    if agent_language:
+        language = agent_language
+    settings = dict(getattr(agent, "tts_settings_json", None) or {})
 
     if _ticket_tts_triad(agent):
-        slug = (agent.tts_provider_slug or "").lower()
+        slug = normalize_tts_provider_slug(agent.tts_provider_slug or "")
         adapter_slug = _TICKET_TTS_TO_ADAPTER.get(slug, slug)
         if slug == "rime":
             logger.debug(
@@ -169,7 +185,7 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
         voice_id = agent.tts_voice_external_id
         if agent.tts_language:
             language = agent.tts_language
-        if slug == "11labs_byo" and agent.encrypted_elevenlabs_api_key:
+        if slug in ("elevenlabs_byo", "11labs_byo") and agent.encrypted_elevenlabs_api_key:
             try:
                 settings["elevenlabs_api_key"] = decrypt_api_key(
                     agent.encrypted_elevenlabs_api_key

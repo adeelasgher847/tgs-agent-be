@@ -10,6 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.core.config import settings
 from app.models.agent import Agent
 
+# Legacy ticket slugs stored before provider enum rename.
+_TTS_SLUG_ALIASES: dict[str, str] = {
+    "11labs": "elevenlabs",
+    "11labs_byo": "elevenlabs_byo",
+}
+
 
 class LanguageEnum(str, Enum):
     en = "en"
@@ -27,8 +33,8 @@ class VoiceTypeEnum(str, Enum):
 
 class TtsProviderEnum(str, Enum):
     rime = "rime"
-    elevenlabs = "11labs"
-    elevenlabs_byo = "11labs_byo"
+    elevenlabs = "elevenlabs"
+    elevenlabs_byo = "elevenlabs_byo"
 
 
 class AgentStatusEnum(str, Enum):
@@ -39,18 +45,38 @@ class AgentStatusEnum(str, Enum):
     ready = "ready"  # bound to a number, callable
 
 
+def normalize_tts_provider_slug(raw: str) -> str:
+    """Map API / legacy slugs to canonical DB slug."""
+    key = (raw or "").strip().lower()
+    return _TTS_SLUG_ALIASES.get(key, key)
+
+
+def tts_slug_to_api_provider(slug: str) -> TtsProviderEnum:
+    """Map stored slug to API enum (supports legacy rows)."""
+    canonical = normalize_tts_provider_slug(slug)
+    return TtsProviderEnum(canonical)
+
+
 class TtsModelSchema(BaseModel):
-    """Ticket ``ttsModel`` fragment."""
+    """Ticket ``ttsModel`` fragment — validated against TTS catalog in service layer."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     provider: TtsProviderEnum
     voice_id: str = Field(..., min_length=1, max_length=255, alias="voiceId")
-    language: str = Field(..., min_length=2, max_length=20)
+    language: LanguageEnum
 
-    @field_validator("voice_id", "language")
+    @field_validator("provider", mode="before")
     @classmethod
-    def _strip(cls, value: str) -> str:
+    def _normalize_provider(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            canonical = normalize_tts_provider_slug(value)
+            return TtsProviderEnum(canonical).value
+        return value
+
+    @field_validator("voice_id")
+    @classmethod
+    def _strip_voice_id(cls, value: str) -> str:
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("must not be blank")
@@ -58,7 +84,7 @@ class TtsModelSchema(BaseModel):
 
 
 class AgentCreate(BaseModel):
-    """Create body — ticket fields required; voice-platform fields optional."""
+    """Create body — ``llmModel`` + ``ttsModel`` required; no catalog UUIDs in API."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -75,15 +101,10 @@ class AgentCreate(BaseModel):
 
     # Optional voice-runtime fields (dashboard / calls)
     system_prompt: Optional[str] = None
-    language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
     fallback_response: Optional[str] = None
-    model_id: Optional[uuid.UUID] = None
-    provider_id: Optional[uuid.UUID] = None
     agent_temperature: Optional[int] = Field(None, ge=0, le=100)
     agent_max_tokens: Optional[int] = Field(None, gt=0)
-    tts_provider_id: Optional[uuid.UUID] = None
-    tts_voice_id: Optional[uuid.UUID] = None
     tts_settings_json: Optional[Dict[str, Any]] = None
     greeting_message: Optional[str] = None
     is_inbound_agent: bool = False
@@ -98,13 +119,25 @@ class AgentCreate(BaseModel):
             raise ValueError("name must be 3-80 characters after trimming whitespace")
         return normalized
 
+    @field_validator("llm_model")
+    @classmethod
+    def _strip_llm_model(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("llmModel must not be blank")
+        return cleaned
+
     @model_validator(mode="after")
     def _byo_key_rules(self) -> "AgentCreate":
         is_byo = self.tts_model.provider == TtsProviderEnum.elevenlabs_byo
         if is_byo and not (self.eleven_labs_api_key and self.eleven_labs_api_key.strip()):
-            raise ValueError("elevenLabsApiKey is required when ttsModel.provider is '11labs_byo'")
+            raise ValueError(
+                "elevenLabsApiKey is required when ttsModel.provider is 'elevenlabs_byo'"
+            )
         if not is_byo and self.eleven_labs_api_key is not None:
-            raise ValueError("elevenLabsApiKey is only allowed when ttsModel.provider is '11labs_byo'")
+            raise ValueError(
+                "elevenLabsApiKey is only allowed when ttsModel.provider is 'elevenlabs_byo'"
+            )
         return self
 
 
@@ -123,15 +156,10 @@ class AgentUpdate(BaseModel):
     )
 
     system_prompt: Optional[str] = None
-    language: Optional[LanguageEnum] = None
     voice_type: Optional[VoiceTypeEnum] = None
     fallback_response: Optional[str] = None
-    model_id: Optional[uuid.UUID] = None
-    provider_id: Optional[uuid.UUID] = None
     agent_temperature: Optional[int] = Field(None, ge=0, le=100)
     agent_max_tokens: Optional[int] = Field(None, gt=0)
-    tts_provider_id: Optional[uuid.UUID] = None
-    tts_voice_id: Optional[uuid.UUID] = None
     tts_settings_json: Optional[Dict[str, Any]] = None
     greeting_message: Optional[str] = None
     is_inbound_agent: Optional[bool] = None
@@ -148,6 +176,16 @@ class AgentUpdate(BaseModel):
             raise ValueError("name must be 3-80 characters after trimming whitespace")
         return normalized
 
+    @field_validator("llm_model")
+    @classmethod
+    def _strip_llm_model(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("llmModel must not be blank")
+        return cleaned
+
     @model_validator(mode="after")
     def _byo_key_rules(self) -> "AgentUpdate":
         if self.tts_model is not None:
@@ -155,12 +193,14 @@ class AgentUpdate(BaseModel):
             if is_byo and self.eleven_labs_api_key is not None and not self.eleven_labs_api_key.strip():
                 raise ValueError("elevenLabsApiKey must be a non-empty string")
             if not is_byo and self.eleven_labs_api_key is not None:
-                raise ValueError("elevenLabsApiKey is only allowed when ttsModel.provider is '11labs_byo'")
+                raise ValueError(
+                    "elevenLabsApiKey is only allowed when ttsModel.provider is 'elevenlabs_byo'"
+                )
         return self
 
 
 class AgentOut(BaseModel):
-    """API agent projection — ticket fields + optional voice fields; never exposes BYO key."""
+    """API agent projection — ticket fields only; never exposes BYO key or catalog UUIDs."""
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -176,9 +216,6 @@ class AgentOut(BaseModel):
     system_prompt: Optional[str] = None
     language: Optional[str] = None
     voice_type: Optional[str] = None
-    model_id: Optional[uuid.UUID] = None
-    tts_provider_id: Optional[uuid.UUID] = None
-    tts_voice_id: Optional[uuid.UUID] = None
     is_inbound_agent: Optional[bool] = None
     is_follow_up_agent: Optional[bool] = None
 
@@ -189,9 +226,9 @@ def agent_to_out(agent: Agent) -> AgentOut:
     if agent.tts_provider_slug and agent.tts_voice_external_id and agent.tts_language:
         try:
             tts_model = TtsModelSchema(
-                provider=TtsProviderEnum(agent.tts_provider_slug),
+                provider=tts_slug_to_api_provider(agent.tts_provider_slug),
                 voice_id=agent.tts_voice_external_id,
-                language=agent.tts_language,
+                language=LanguageEnum(agent.tts_language),
             )
         except ValueError:
             tts_model = None
@@ -213,9 +250,6 @@ def agent_to_out(agent: Agent) -> AgentOut:
         system_prompt=agent.system_prompt,
         language=agent.language,
         voice_type=agent.voice_type,
-        model_id=agent.model_id,
-        tts_provider_id=agent.tts_provider_id,
-        tts_voice_id=agent.tts_voice_id,
         is_inbound_agent=agent.is_inbound_agent,
         is_follow_up_agent=agent.is_follow_up_agent,
     )

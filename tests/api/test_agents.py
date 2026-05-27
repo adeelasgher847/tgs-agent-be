@@ -18,8 +18,12 @@ from app.core.security import decrypt_api_key
 from app.core.workspace import Workspace
 from app.middleware.api_key_middleware import _attach_workspace_context
 from app.models.agent import Agent
+from app.models.model import Model
 from app.models.phone_number import PhoneNumber
+from app.models.provider import Provider
 from app.models.tenant import Tenant
+from app.models.tts_provider import TTSProvider
+from app.models.tts_voice import TTSVoice
 
 
 _API_KEY = "test-agents-key"
@@ -74,7 +78,7 @@ def _valid_create_body(**overrides) -> dict:
         "name": "Sales Assistant",
         "llmModel": "gpt-4o-mini",
         "ttsModel": {
-            "provider": "11labs",
+            "provider": "elevenlabs",
             "voiceId": "EXAVITQu4vr4xnSDxMaL",
             "language": "en",
         },
@@ -82,6 +86,51 @@ def _valid_create_body(**overrides) -> dict:
     }
     body.update(overrides)
     return body
+
+
+@pytest.fixture(scope="module", autouse=True)
+def agent_catalog(db):
+    """Seed LLM + TTS catalog rows used by name-based agent create/update."""
+    llm_provider = Provider(name="OpenAI", is_active=True)
+    db.add(llm_provider)
+    db.flush()
+    db.add_all(
+        [
+            Model(provider_id=llm_provider.id, model_name="gpt-4o-mini", archive=False),
+            Model(provider_id=llm_provider.id, model_name="gpt-4o", archive=False),
+        ]
+    )
+
+    tts_provider = TTSProvider(slug="elevenlabs", display_name="ElevenLabs", is_active=True)
+    db.add(tts_provider)
+    db.flush()
+    db.add_all(
+        [
+            TTSVoice(
+                provider_id=tts_provider.id,
+                external_voice_id="EXAVITQu4vr4xnSDxMaL",
+                display_name="Sarah",
+                language_code="en",
+                is_active=True,
+            ),
+            TTSVoice(
+                provider_id=tts_provider.id,
+                external_voice_id="vY",
+                display_name="BYO Voice Y",
+                language_code="en",
+                is_active=True,
+            ),
+            TTSVoice(
+                provider_id=tts_provider.id,
+                external_voice_id="vZ",
+                display_name="BYO Voice Z",
+                language_code="en",
+                is_active=True,
+            ),
+        ]
+    )
+    db.commit()
+    yield
 
 
 @pytest.fixture
@@ -143,7 +192,7 @@ class TestCreateAgent:
         assert body["status"] == "active"
         assert "createdAt" in body
         assert body["ttsModel"] == {
-            "provider": "11labs",
+            "provider": "elevenlabs",
             "voiceId": "EXAVITQu4vr4xnSDxMaL",
             "language": "en",
         }
@@ -195,9 +244,20 @@ class TestCreateAgent:
         )
         assert resp.status_code == 400
 
+    def test_create_invalid_voice_id_returns_400(self, authed_client, auth_tenant):
+        body = _valid_create_body()
+        body["ttsModel"]["voiceId"] = "not-a-real-voice"
+        resp = authed_client.post(
+            "/api/v1/agent",
+            json=body,
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 400
+        assert "voiceId" in resp.json()["error"]["message"]
+
     def test_create_byo_without_key_returns_400(self, authed_client, auth_tenant):
         body = _valid_create_body()
-        body["ttsModel"]["provider"] = "11labs_byo"
+        body["ttsModel"]["provider"] = "elevenlabs_byo"
         resp = authed_client.post(
             "/api/v1/agent",
             json=body,
@@ -209,7 +269,7 @@ class TestCreateAgent:
         self, authed_client, auth_tenant, db
     ):
         body = _valid_create_body()
-        body["ttsModel"]["provider"] = "11labs_byo"
+        body["ttsModel"]["provider"] = "elevenlabs_byo"
         body["elevenLabsApiKey"] = "xi-secret-key-1234567890"
 
         resp = authed_client.post(
@@ -220,7 +280,7 @@ class TestCreateAgent:
         assert resp.status_code == 201, resp.text
         out = resp.json()
         assert "elevenLabsApiKey" not in out
-        assert out["ttsModel"]["provider"] == "11labs_byo"
+        assert out["ttsModel"]["provider"] == "elevenlabs_byo"
 
         agent = db.query(Agent).filter(Agent.id == uuid.UUID(out["id"])).first()
         assert agent is not None
@@ -388,7 +448,7 @@ class TestUpdateAgent:
             f"/api/v1/agent/{created['id']}",
             json={
                 "ttsModel": {
-                    "provider": "11labs_byo",
+                    "provider": "elevenlabs_byo",
                     "voiceId": "vY",
                     "language": "en",
                 },
@@ -405,7 +465,7 @@ class TestUpdateAgent:
     def test_put_switch_off_byo_clears_stored_key(self, authed_client, auth_tenant, db):
         # First create with BYO.
         body = _valid_create_body(name=f"BYO-Clr {uuid.uuid4().hex[:6]}")
-        body["ttsModel"]["provider"] = "11labs_byo"
+        body["ttsModel"]["provider"] = "elevenlabs_byo"
         body["elevenLabsApiKey"] = "xi-soon-to-be-cleared"
         created = authed_client.post(
             "/api/v1/agent",
@@ -413,12 +473,12 @@ class TestUpdateAgent:
             headers=_headers(auth_tenant),
         ).json()
 
-        # Switch provider to plain 11labs — server should null out the BYO key.
+        # Switch provider to plain elevenlabs — server should null out the BYO key.
         resp = authed_client.put(
             f"/api/v1/agent/{created['id']}",
             json={
                 "ttsModel": {
-                    "provider": "11labs",
+                    "provider": "elevenlabs",
                     "voiceId": "vZ",
                     "language": "en",
                 }

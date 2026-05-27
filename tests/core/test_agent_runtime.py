@@ -32,7 +32,7 @@ def test_resolve_llm_runtime_prefers_ticket_llm_model():
 
 def test_resolve_tts_runtime_ticket_elevenlabs():
     agent = MagicMock()
-    agent.tts_provider_slug = "11labs"
+    agent.tts_provider_slug = "elevenlabs"
     agent.tts_voice_external_id = "voice-abc"
     agent.tts_language = "en"
     agent.encrypted_elevenlabs_api_key = None
@@ -49,7 +49,7 @@ def test_resolve_tts_runtime_ticket_elevenlabs():
 def test_resolve_tts_runtime_byo_injects_api_key(monkeypatch):
     agent = MagicMock()
     agent.id = uuid.uuid4()
-    agent.tts_provider_slug = "11labs_byo"
+    agent.tts_provider_slug = "elevenlabs_byo"
     agent.tts_voice_external_id = "v1"
     agent.tts_language = "en"
     agent.encrypted_elevenlabs_api_key = "enc"

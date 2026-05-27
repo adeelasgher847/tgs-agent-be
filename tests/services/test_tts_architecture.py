@@ -13,9 +13,11 @@ from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
 from app.db.base import Base
 from app.main import app
 from app.models.agent import Agent
+from app.models.model import Model
 from app.models.tenant import Tenant
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
+from app.models.provider import Provider
 from app.models.user import User
 from app.routers.tts_audio import audio_cache
 from app.schemas.agent import AgentCreate
@@ -29,7 +31,7 @@ def _agent_create(**overrides) -> AgentCreate:
         "llmModel": overrides.pop("llm_model", "gpt-4o-mini"),
         "ttsModel": overrides.pop(
             "tts_model",
-            {"provider": "11labs", "voiceId": "voice-id", "language": "en"},
+            {"provider": "elevenlabs", "voiceId": "voice-id", "language": "en"},
         ),
     }
     data.update(overrides)
@@ -68,6 +70,13 @@ def tts_db():
     db.refresh(tenant)
     db.refresh(user)
 
+    # Seed a minimal LLM catalog row so AgentService can resolve llmModel by name.
+    llm_provider = Provider(name="OpenAI", is_active=True)
+    db.add(llm_provider)
+    db.flush()
+    db.add(Model(provider_id=llm_provider.id, model_name="gpt-4o-mini", archive=False))
+    db.commit()
+
     try:
         yield db, tenant, user
     finally:
@@ -92,14 +101,17 @@ def test_agent_create_rejects_tts_provider_voice_mismatch(tts_db):
 
     payload = _agent_create(
         name="Mismatch Agent",
-        tts_provider_id=provider_a.id,
-        tts_voice_id=voice_b.id,
+        tts_model={
+            "provider": "elevenlabs",
+            "voiceId": "voice-openai",
+            "language": "en",
+        },
     )
 
     with pytest.raises(HTTPException) as excinfo:
         agent_service.create_agent(db, payload, tenant.id, user.id)
-    assert excinfo.value.status_code == 422
-    assert "does not belong" in str(excinfo.value.detail)
+    assert excinfo.value.status_code == 400
+    assert "Invalid ttsModel.voiceId" in str(excinfo.value.detail)
 
 
 def test_agent_create_rejects_tts_payload_api_key(tts_db):
@@ -118,8 +130,11 @@ def test_agent_create_rejects_tts_payload_api_key(tts_db):
 
     payload = _agent_create(
         name="Unsafe Agent",
-        tts_provider_id=provider.id,
-        tts_voice_id=voice.id,
+        tts_model={
+            "provider": "elevenlabs",
+            "voiceId": "voice-eleven",
+            "language": "en",
+        },
         tts_settings_json={"api_key": "should-not-pass"},
     )
 
@@ -145,8 +160,11 @@ def test_agent_create_rejects_invalid_background_enabled(tts_db):
 
     payload = _agent_create(
         name="Invalid BG Enabled Agent",
-        tts_provider_id=provider.id,
-        tts_voice_id=voice.id,
+        tts_model={
+            "provider": "elevenlabs",
+            "voiceId": "voice-eleven",
+            "language": "en",
+        },
         tts_settings_json={"background_enabled": "maybe"},
     )
 
@@ -172,8 +190,11 @@ def test_agent_create_rejects_invalid_background_profile(tts_db):
 
     payload = _agent_create(
         name="Invalid BG Profile Agent",
-        tts_provider_id=provider.id,
-        tts_voice_id=voice.id,
+        tts_model={
+            "provider": "elevenlabs",
+            "voiceId": "voice-eleven",
+            "language": "en",
+        },
         tts_settings_json={"background_profile": "airport"},
     )
 
@@ -199,8 +220,11 @@ def test_agent_create_rejects_invalid_background_volume(tts_db):
 
     payload = _agent_create(
         name="Invalid BG Volume Agent",
-        tts_provider_id=provider.id,
-        tts_voice_id=voice.id,
+        tts_model={
+            "provider": "elevenlabs",
+            "voiceId": "voice-eleven",
+            "language": "en",
+        },
         tts_settings_json={"background_volume": 120},
     )
 

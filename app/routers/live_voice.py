@@ -253,9 +253,8 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
             "agent_name": agent.name,
             "agent_voice_type": agent.voice_type,
             "agent_system_prompt": agent_system_prompt,
-            "model_id": str(agent.model_id) if agent.model_id else None,
             "agent_temperature": agent.agent_temperature,
-            "agent_max_tokens": agent.agent_max_tokens
+            "agent_max_tokens": agent.agent_max_tokens,
         }, {
             "user_id": "anonymous",  # For now, can be enhanced with auth
             "tenant_id": str(agent.tenant_id)
@@ -501,122 +500,74 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
             "message": f"{agent_data['agent_name']} is thinking..."
         })
         
-        # Process with appropriate AI service based on agent's model configuration
+        # Process with LLM resolved from agent ticket fields (llmModel + catalog)
         try:
-            model_id = agent_data.get("model_id")
-            
-            if model_id:
-                # Load model configuration with provider
-                from sqlalchemy.orm import joinedload
-                from app.models.model import Model
-                from app.services.gemini_service import gemini_service
-                from app.core.security import decrypt_api_key
-                
-                try:
-                    model_uuid = uuid.UUID(model_id)
-                    model = db.query(Model).options(joinedload(Model.provider)).filter(
-                        Model.id == model_uuid
-                    ).first()
-                    
-                    if model and not model.archive and model.provider:
-                        # Get provider to determine which service to use
-                        provider_name = model.provider.name.lower()
-                        model_name = model.model_name
-                        
-                        # Get model configuration with agent overrides
-                        temperature = (
-                            (agent_data.get("agent_temperature") / 100.0) 
-                            if agent_data.get("agent_temperature") is not None 
-                            else (model.temperature / 100.0) if model.temperature 
-                            else 0.7
-                        )
-                        max_tokens = (
-                            agent_data.get("agent_max_tokens") 
-                            if agent_data.get("agent_max_tokens") is not None 
-                            else (model.max_tokens or 1000)
-                        )
-                        
-                        # Decrypt model API key if available
-                        api_key = None
-                        if model.api_key:
-                            try:
-                                api_key = decrypt_api_key(model.api_key)
-                            except Exception as e:
-                                logger.warning(f"⚠️ Failed to decrypt model API key: {e}")
-                        
-                        # Route to appropriate service
-                        if 'gemini' in provider_name or 'google' in provider_name:
-                            # Use Gemini service
-                            gemini_response = gemini_service.generate_text(
-                                prompt=user_input,
-                                system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
-                                model_name=model_name,
-                                temperature=temperature,
-                                max_tokens=max_tokens,
-                                api_key=api_key
-                            )
-                            ai_response_text = gemini_response["content"]
-                            response_time = gemini_response["response_time"]
-                            logger.info(f"✅ Live voice: Used Gemini model {model_name} (provider: {provider_name})")
-                        
-                        elif 'openai' in provider_name:
-                            # Use OpenAI service
-                            openai_response = openai_service.process_agent_conversation(
-                                user_input=user_input,
-                                agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
-                                conversation_history=conversation_history[:-1],
-                                model_name=model_name,
-                                temperature=temperature,
-                                max_tokens=max_tokens,
-                                api_key=api_key
-                            )
-                            ai_response_text = openai_response["response"]
-                            response_time = openai_response["response_time"]
-                            logger.info(f"✅ Live voice: Used OpenAI model {model_name} (provider: {provider_name})")
-                        
-                        else:
-                            # Unsupported provider - fall back to default OpenAI
-                            logger.warning(f"⚠️ Unsupported provider {provider_name}, falling back to default OpenAI")
-                            openai_response = openai_service.process_agent_conversation(
-                                user_input=user_input,
-                                agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
-                                conversation_history=conversation_history[:-1]
-                            )
-                            ai_response_text = openai_response["response"]
-                            response_time = openai_response["response_time"]
-                    else:
-                        # Model not found or invalid - use default OpenAI
-                        logger.warning(f"⚠️ Model not found or invalid, using default OpenAI")
-                        openai_response = openai_service.process_agent_conversation(
-                            user_input=user_input,
-                            agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
-                            conversation_history=conversation_history[:-1]
-                        )
-                        ai_response_text = openai_response["response"]
-                        response_time = openai_response["response_time"]
-                
-                except ValueError:
-                    # Invalid UUID - use default OpenAI
-                    logger.warning(f"⚠️ Invalid model_id format, using default OpenAI")
-                    openai_response = openai_service.process_agent_conversation(
-                        user_input=user_input,
-                        agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
-                        conversation_history=conversation_history[:-1]
-                    )
-                    ai_response_text = openai_response["response"]
-                    response_time = openai_response["response_time"]
-            
-            else:
-                # No model_id - use default OpenAI
-                logger.info(f"ℹ️ No model_id configured, using default OpenAI")
+            from sqlalchemy.orm import joinedload
+            from app.models.model import Model
+            from app.core.agent_runtime import resolve_llm_runtime
+            from app.services.gemini_service import gemini_service
+            from app.services.groq_service import groq_service
+
+            agent_uuid = uuid.UUID(agent_data["agent_id"])
+            agent = (
+                db.query(Agent)
+                .options(
+                    joinedload(Agent.model).joinedload(Model.provider),
+                    joinedload(Agent.provider),
+                )
+                .filter(Agent.id == agent_uuid)
+                .first()
+            )
+            if not agent:
+                raise ValueError("Agent not found")
+
+            runtime = resolve_llm_runtime(agent)
+            system_prompt = agent_data["agent_system_prompt"] or "You are a helpful assistant."
+            history = conversation_history[:-1]
+
+            if runtime.provider_slug == "openai":
                 openai_response = openai_service.process_agent_conversation(
                     user_input=user_input,
-                    agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
-                    conversation_history=conversation_history[:-1]
+                    agent_system_prompt=system_prompt,
+                    conversation_history=history,
+                    model_name=runtime.model_name,
+                    temperature=runtime.temperature,
+                    max_tokens=runtime.max_tokens,
+                    api_key=runtime.api_key,
                 )
-            ai_response_text = openai_response["response"]
-            response_time = openai_response["response_time"]
-            
+                ai_response_text = openai_response["response"]
+                response_time = openai_response["response_time"]
+            elif runtime.provider_slug == "groq":
+                groq_response = groq_service.process_agent_conversation(
+                    user_input=user_input,
+                    agent_system_prompt=system_prompt,
+                    conversation_history=history,
+                    model_name=runtime.model_name,
+                    temperature=runtime.temperature,
+                    max_tokens=runtime.max_tokens,
+                    api_key=runtime.api_key,
+                )
+                ai_response_text = groq_response["response"]
+                response_time = groq_response["response_time"]
+            else:
+                gemini_response = gemini_service.generate_text(
+                    prompt=user_input,
+                    system_prompt=system_prompt,
+                    model_name=runtime.model_name,
+                    temperature=runtime.temperature,
+                    max_tokens=runtime.max_tokens,
+                    api_key=runtime.api_key,
+                )
+                ai_response_text = gemini_response["content"]
+                response_time = gemini_response["response_time"]
+
+            logger.info(
+                "Live voice: used %s model %s (ticket_llm=%s)",
+                runtime.provider_slug,
+                runtime.model_name,
+                runtime.used_ticket_llm,
+            )
+
         except Exception as e:
             logger.error(f"Error processing with AI: {e}", exc_info=True)
             # import traceback
