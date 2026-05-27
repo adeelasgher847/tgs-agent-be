@@ -13,7 +13,6 @@ from google.cloud import texttospeech_v1
 from app.core.config import settings
 from typing import Optional, AsyncIterator
 import os
-import json
 import re
 from app.core.logger import logger
 from google.api_core.client_options import ClientOptions
@@ -45,40 +44,12 @@ class GoogleTTSService:
         self._initialize_credentials()
     
     def _initialize_credentials(self):
-        """Initialize Google Cloud credentials (same as STT service)"""
-        if settings.GOOGLE_APPLICATION_CREDENTIALS:
-            creds = settings.GOOGLE_APPLICATION_CREDENTIALS.strip()
-            
-            # Check if it's JSON content (more robust check)
-            is_json = False
-            try:
-                # Try to parse as JSON
-                json.loads(creds)
-                is_json = True
-            except (json.JSONDecodeError, ValueError):
-                # Not JSON, treat as file path
-                is_json = False
-            
-            if is_json:
-                # It's JSON content - write to temporary file
-                import tempfile
-                try:
-                    # Create temporary file
-                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
-                        f.write(creds)
-                        temp_path = f.name
-                    
-                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
-                    logger.info(f"✅ Google TTS: Using credentials from JSON content (temp file: {temp_path})")
-                except Exception as e:
-                    logger.error(f"⚠️ Google TTS: Error creating temp file for JSON credentials: {e}")
-            else:
-                # It's a file path - check if file exists
-                if os.path.exists(creds):
-                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
-                    logger.info(f"✅ Google TTS: Using credentials from file: {creds}")
-                else:
-                    logger.warning(f"⚠️ Google TTS: Credentials file not found: {creds}")
+        """Initialize Google Cloud credentials (shared with Vertex voice LLM)."""
+        from app.core.google_credentials import ensure_google_application_credentials_env
+
+        path = ensure_google_application_credentials_env()
+        if path:
+            logger.info("✅ Google TTS: ADC credentials ready (%s)", path)
     
     def get_client(self):
         """Get Google Cloud TTS client"""

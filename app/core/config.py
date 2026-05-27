@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 
+    # Vertex AI — Gemini 2.5 Flash voice LLM path
+    # Set VERTEX_PROJECT_ID to your GCP project; auth via GOOGLE_APPLICATION_CREDENTIALS.
+    VERTEX_PROJECT_ID: str = ""
+    VERTEX_LOCATION: str = "us-central1"
+    # Model short name used for the Vertex voice path. Override per-deployment if needed.
+    VERTEX_MODEL: str = "gemini-2.5-flash"
+
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
     CLOUD_TTS_ENDPOINT: str = ""  # e.g. https://us-texttospeech.googleapis.com
@@ -130,7 +137,7 @@ class Settings(BaseSettings):
     VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.18
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
-    VOICE_HISTORY_MAX_MESSAGES: int = 50
+    VOICE_HISTORY_MAX_MESSAGES: int = 40
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
@@ -278,7 +285,9 @@ class Settings(BaseSettings):
     VOICE_SLO_ENABLED: bool = True
     VOICE_SLO_STT_FINAL_TO_GEN_START_SEC: float = 0.35
     VOICE_SLO_GEN_START_TO_LLM_FIRST_TOKEN_SEC: float = 0.90
-    VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC: float = 1.40
+    # Ticket target: first text chunk queued to TTS within 600ms of LLM call start at p95.
+    # Reflects Vertex Gemini 2.5 Flash streaming first-token + one sentence-boundary flush.
+    VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC: float = 0.60
     VOICE_SLO_GEN_START_TO_NOW_WARN_SEC: float = 2.00
     
     # Trello — platform-managed inbound call boards (optional)

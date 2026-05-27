@@ -45,6 +45,7 @@ def _provider_slug_from_agent(agent: Agent) -> str:
             return "groq"
         if "gemini" in pname or "google" in pname:
             return "gemini"
+    # Ticket llm_model field takes precedence for provider inference
     return infer_llm_provider(agent.llm_model or "")
 
 
@@ -88,7 +89,11 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     if not agent:
         return default
 
-    temperature = 0.15
+    # Default temperature: Vertex voice path uses 0.3 for natural conversational tone;
+    # all other providers keep 0.15 (shorter, more deterministic voice replies).
+    _inferred_provider = infer_llm_provider(agent.llm_model or "")
+    _default_temp = 0.3 if _inferred_provider == "vertex" else 0.15
+    temperature = _default_temp
     max_tokens = 100
     if agent.agent_temperature is not None:
         temperature = agent.agent_temperature / 100.0
@@ -100,15 +105,17 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         max_tokens = agent.model.max_tokens
 
     if agent.llm_model:
+        provider_slug = _provider_slug_from_agent(agent)
         api_key: Optional[str] = None
-        if agent.model and agent.model.api_key:
+        # Vertex Gemini 2.5 uses GOOGLE_APPLICATION_CREDENTIALS (ADC), not Model.api_key.
+        if provider_slug != "vertex" and agent.model and agent.model.api_key:
             try:
                 api_key = decrypt_api_key(agent.model.api_key)
             except Exception as exc:
                 logger.error("Failed to decrypt model API key: %s", exc)
         return ResolvedLlmRuntime(
             model_name=agent.llm_model,
-            provider_slug=_provider_slug_from_agent(agent),
+            provider_slug=provider_slug,
             api_key=api_key,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -146,12 +153,15 @@ def llm_service_for_provider(provider_slug: str) -> Any:
     from app.services.gemini_service import gemini_service
     from app.services.groq_service import groq_service
     from app.services.openai_service import openai_service
+    from app.services.vertex_llm_service import vertex_llm_service
 
     slug = (provider_slug or "").lower()
     if slug == "openai":
         return openai_service
     if slug == "groq":
         return groq_service
+    if slug == "vertex":
+        return vertex_llm_service
     return gemini_service
 
 
