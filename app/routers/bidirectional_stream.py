@@ -339,15 +339,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         )
         self._stt_soft_min_words = max(1, min(6, self._stt_soft_min_words))
         self._barge_in_min_conf: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.40) or 0.40
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.30) or 0.30
         )
         self._barge_in_min_conf = max(0.15, min(0.5, self._barge_in_min_conf))
         self._barge_in_min_conf_1w: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.65) or 0.65
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.55) or 0.55
         )
         self._barge_in_min_conf_1w = max(0.4, min(0.75, self._barge_in_min_conf_1w))
         self._barge_in_cooldown_sec: float = float(
-            getattr(settings, "VOICE_BARGE_IN_COOLDOWN_SEC", 0.50) or 0.50
+            getattr(settings, "VOICE_BARGE_IN_COOLDOWN_SEC", 1.0) or 1.0
         )
         self._barge_in_cooldown_sec = max(0.0, min(2.0, self._barge_in_cooldown_sec))
         # Monotonic time before which interim barge-in is suppressed (echo guard).
@@ -413,6 +413,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         #       the visible transcript never shows the same agent line twice).
         # Bounded to the last 5 entries — O(1) cost, no added latency.
         self._recent_agent_pairs: list[tuple[str, str, float]] = []
+        self._inflight_tts_snippets: list[tuple[str, float]] = []
         self._DUP_USER_TURN_WINDOW_SEC: float = 15.0
         self._AGENT_LINE_DEDUP_WINDOW_SEC: float = 25.0
         self._RECENT_AGENT_PAIRS_MAX: int = 5
@@ -763,6 +764,21 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             return
         self._barge_in_allowed_after_mono = time.monotonic() + self._barge_in_cooldown_sec
 
+    async def _queue_agent_tts(
+        self,
+        task: Dict[str, Any],
+        *,
+        arm_cooldown: bool = False,
+    ) -> None:
+        """Queue TTS and record snippet for in-flight echo guard (main-style barge-in)."""
+        text = (task.get("text") or "").strip()
+        if not self._tts_pipeline or not text:
+            return
+        await self._tts_pipeline.queue_tts(task)
+        self._record_inflight_tts_for_echo_guard(text)
+        if arm_cooldown:
+            self._arm_barge_in_cooldown()
+
     async def _cancel_inflight_llm_response(self) -> None:
         """Stop background LLM+TTS for this turn (barge-in or final regen)."""
         # Signal Vertex producer thread to stop before cancelling the asyncio task —
@@ -791,6 +807,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         if spec and not spec.done():
             spec.cancel()
         self._speculative_prefetch_task = None
+        self._clear_inflight_tts_echo_guard()
 
     async def _respond_screening_decline_and_end(self) -> None:
         """User declined screening — short goodbye TTS then hang up (no LLM)."""
@@ -802,13 +819,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             self._prev_tts_tail = b""
             await self._add_to_transcript("agent", msg, "agent_response")
             if self._tts_pipeline:
-                await self._tts_pipeline.queue_tts({
-                    "text": msg,
-                    "use_ssml": self._use_ssml,
-                    "is_final": True,
-                    "end_call_after": True,
-                })
-                self._arm_barge_in_cooldown()
+                await self._queue_agent_tts(
+                    {
+                        "text": msg,
+                        "use_ssml": self._use_ssml,
+                        "is_final": True,
+                        "end_call_after": True,
+                    },
+                    arm_cooldown=True,
+                )
         except Exception as e:
             logger.error("respond_screening_decline_and_end: %s", e, exc_info=True)
 
@@ -891,6 +910,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             await self._cancel_inflight_llm_response()
 
         self._tts_cancel.clear()
+        self._clear_inflight_tts_echo_guard()
         try:
             await asyncio.wait_for(
                 self.generate_and_stream_response(transcript, confidence, is_greeting=False),
@@ -1172,13 +1192,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         ack = random.choice(acks)
         if not self._tts_pipeline:
             return
-        await self._tts_pipeline.queue_tts({
-            "text": ack,
-            "chunk_id": "quick_ack",
-            "use_ssml": False,
-            "is_acknowledgement": True,
-            "is_final": False
-        })
+        await self._queue_agent_tts(
+            {
+                "text": ack,
+                "chunk_id": "quick_ack",
+                "use_ssml": False,
+                "is_acknowledgement": True,
+                "is_final": False,
+            },
+        )
         self._last_quick_ack_user_norm = user_norm
         self._last_quick_ack_mono = now_mono
 
@@ -1291,13 +1313,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 # Queue greeting TTS directly (skip LLM!)
                 if not self._tts_pipeline:
                     return
-                await self._tts_pipeline.queue_tts({
-                    "text": greeting_text,
-                    "chunk_id": "greeting",
-                    "use_ssml": self._use_ssml,
-                    "is_final": True
-                })
-                self._arm_barge_in_cooldown()
+                await self._queue_agent_tts(
+                    {
+                        "text": greeting_text,
+                        "chunk_id": "greeting",
+                        "use_ssml": self._use_ssml,
+                        "is_final": True,
+                    },
+                    arm_cooldown=True,
+                )
 
                 # Mark as not primed for the greeting
                 self._twilio_buffer_primed = False
@@ -1306,7 +1330,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             
             # Reset TTS state for new response generation
             self._tts_cancel.clear()
-            self._pipeline.reset_llm_cancel()   # Clear Vertex cancel event for this new turn
+            self._clear_inflight_tts_echo_guard()
+            self._pipeline.reset_llm_cancel()   # Clear LLM cancel event for this new turn
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
@@ -1944,7 +1969,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     # Lower floor to 2 words (was hardcoded 5): allows the 150ms time
                     # gate to flush short confident fragments like "Sure," or "Got it."
                     # without waiting for a full sentence to accumulate first.
-                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 2):
+                    if len(words) < self.TTS_FLUSH_MIN_WORDS:
                         return None
 
                     # Flush around ~4-6 words to start speaking quickly.
@@ -2044,14 +2069,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                             chunk_counter += 1
                             if self._tts_pipeline:
-                                await self._tts_pipeline.queue_tts({
-                                    "text": enhanced_text,
-                                    "chunk_id": chunk_counter,
-                                    "use_ssml": self._use_ssml,
-                                    "is_final": False,
-                                })
-                                if first_tts_chunk:
-                                    self._arm_barge_in_cooldown()
+                                await self._queue_agent_tts(
+                                    {
+                                        "text": enhanced_text,
+                                        "chunk_id": chunk_counter,
+                                        "use_ssml": self._use_ssml,
+                                        "is_final": False,
+                                    },
+                                    arm_cooldown=first_tts_chunk,
+                                )
                                 _vm = getattr(self, "_voice_metrics", None)
                                 if _vm:
                                     _vm.mark_first_tts_queued()
@@ -2101,30 +2127,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     chunk_counter += 1
                     if self._tts_pipeline:
-                        await self._tts_pipeline.queue_tts({
-                            "text": enhanced_text,
-                            "chunk_id": chunk_counter,
-                            "use_ssml": self._use_ssml,
-                            "is_final": True,
-                            "end_call_after": end_call_after and not transfer_after,
-                            "transfer_after": transfer_after,
-                        })
-                        if first_tts_chunk:
-                            self._arm_barge_in_cooldown()
+                        await self._queue_agent_tts(
+                            {
+                                "text": enhanced_text,
+                                "chunk_id": chunk_counter,
+                                "use_ssml": self._use_ssml,
+                                "is_final": True,
+                                "end_call_after": end_call_after and not transfer_after,
+                                "transfer_after": transfer_after,
+                            },
+                            arm_cooldown=first_tts_chunk,
+                        )
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_first_tts_queued()
                         _schedule_deferred_memory_once()
                 elif transfer_after and not self._tts_cancel.is_set() and self._tts_pipeline:
                     chunk_counter += 1
-                    await self._tts_pipeline.queue_tts({
-                        "text": "One moment.",
-                        "chunk_id": chunk_counter,
-                        "use_ssml": self._use_ssml,
-                        "is_final": True,
-                        "end_call_after": False,
-                        "transfer_after": True,
-                    })
+                    await self._queue_agent_tts(
+                        {
+                            "text": "One moment.",
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._use_ssml,
+                            "is_final": True,
+                            "end_call_after": False,
+                            "transfer_after": True,
+                        },
+                        arm_cooldown=True,
+                    )
                     _vm = getattr(self, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
@@ -2163,11 +2193,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 out_text = settings.VOICE_LLM_FALLBACK_RESPONSE
                             chunk_counter += 1
                             if self._tts_pipeline and out_text:
-                                await self._tts_pipeline.queue_tts({
-                                    "text": out_text,
-                                    "use_ssml": self._use_ssml,
-                                    "is_final": True,
-                                })
+                                await self._queue_agent_tts(
+                                    {
+                                        "text": out_text,
+                                        "use_ssml": self._use_ssml,
+                                        "is_final": True,
+                                    },
+                                    arm_cooldown=True,
+                                )
                                 asyncio.create_task(
                                     self._deferred_conversation_memory_update(turn_context, user_text)
                                 )
@@ -2177,12 +2210,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         utt = tone_adapter(final_text, turn_context, self._use_ssml)
                         chunk_counter += 1
                         if self._tts_pipeline:
-                            await self._tts_pipeline.queue_tts({
-                                "text": utt,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": True
-                            })
+                            await self._queue_agent_tts(
+                                {
+                                    "text": utt,
+                                    "chunk_id": chunk_counter,
+                                    "use_ssml": self._use_ssml,
+                                    "is_final": True,
+                                },
+                                arm_cooldown=True,
+                            )
                             asyncio.create_task(
                                 self._deferred_conversation_memory_update(turn_context, user_text)
                             )

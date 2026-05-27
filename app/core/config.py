@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # Deepgram fires many more partials than classic Google STT. Running LLM on every
     # interim → double replies + TTS "breaks." Default: final STT only (one reply per
     # utterance). Set True for lower first-token latency at the cost of stability.
-    VOICE_ENABLE_INTERIM_LLM: bool = True
+    VOICE_ENABLE_INTERIM_LLM: bool = False
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
     VOICE_MIN_INTERIM_WORDS: int = 2
     VOICE_MIN_INTERIM_CONFIDENCE: float = 0.14
@@ -128,20 +128,18 @@ class Settings(BaseSettings):
     VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK: bool = True
     VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.12
     VOICE_STT_SOFT_MIN_WORDS: int = 2
-    # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
-    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.20
-    # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
-    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.25
-    # Ignore interim barge-in for this many seconds after the first TTS chunk is queued
-    # (reduces false cancels from phone echo of the agent's own voice).
-    VOICE_BARGE_IN_COOLDOWN_SEC: float = 0.50
+    # Barge-in (user talks over agent): main-style thresholds (2+ words @ 0.30, 1 word @ 0.55).
+    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.30
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.55
+    # Suppress interim barge-in briefly after agent TTS starts (phone echo guard).
+    VOICE_BARGE_IN_COOLDOWN_SEC: float = 1.0
     VOICE_HISTORY_MAX_MESSAGES: int = 40
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
     VOICE_TTS_FLUSH_MAX_WORDS: int = 6
     # If no sentence boundary yet, flush after this many seconds (once min words met).
-    VOICE_TTS_TIME_FLUSH_SEC: float = 0.10
+    VOICE_TTS_TIME_FLUSH_SEC: float = 0.25
     # Keep a short (but non-zero) guard after pickup so ringback artifacts are skipped
     # without delaying real user speech by multiple seconds.
     VOICE_POST_PICKUP_STT_GRACE_SEC: float = 0.35

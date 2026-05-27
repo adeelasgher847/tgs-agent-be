@@ -144,6 +144,52 @@ class BookingMixin:
                         return True
         return False
 
+    _INFLIGHT_TTS_ECHO_WINDOW_SEC: float = 15.0
+    _INFLIGHT_TTS_SNIPPETS_MAX: int = 12
+
+    def _clear_inflight_tts_echo_guard(self) -> None:
+        """Reset per-turn TTS snippets used for interim barge-in echo detection."""
+        self._inflight_tts_snippets: list[tuple[str, float]] = []
+
+    def _record_inflight_tts_for_echo_guard(self, text: str) -> None:
+        """
+        Remember text queued/spoken this turn so interim STT echo does not barge-in.
+
+        Unlike ``_recent_agent_pairs`` (filled after transcript commit), this tracks
+        partial TTS flushes while the agent is still speaking.
+        """
+        snippet = (text or "").strip()
+        if not snippet:
+            return
+        norm = self._normalize_turn_text(snippet)
+        if not norm:
+            return
+        if not hasattr(self, "_inflight_tts_snippets"):
+            self._inflight_tts_snippets = []
+        now = time.monotonic()
+        self._inflight_tts_snippets.append((norm, now))
+        cutoff = now - self._INFLIGHT_TTS_ECHO_WINDOW_SEC
+        self._inflight_tts_snippets = [
+            (n, ts) for n, ts in self._inflight_tts_snippets if ts >= cutoff
+        ][-self._INFLIGHT_TTS_SNIPPETS_MAX :]
+
+    def _stt_overlaps_spoken_text(self, transcript: str, spoken_norm: str, *, min_words: int) -> bool:
+        t_norm = self._normalize_turn_text(transcript)
+        if not t_norm or not spoken_norm:
+            return False
+        t_words = t_norm.split()
+        if len(t_words) < min_words:
+            return False
+        if len(t_words) >= 2 and (t_norm in spoken_norm or spoken_norm in t_norm):
+            return True
+        t_set = set(t_words)
+        s_set = set(spoken_norm.split())
+        if len(s_set) < min_words:
+            return False
+        overlap = len(t_set & s_set)
+        shorter = min(len(t_set), len(s_set))
+        return shorter > 0 and overlap / shorter >= 0.80
+
     def _is_agent_self_echo(self, transcript: str, *, min_words: int = 4) -> bool:
         """
         True when incoming STT text closely matches text the agent recently spoke.
@@ -155,35 +201,26 @@ class BookingMixin:
 
         Window: 12 s — covers TTS latency, full playback, and STT pipeline lag.
         """
-        if not transcript or not self._recent_agent_pairs:
+        if not transcript:
             return False
-        t_norm = self._normalize_turn_text(transcript)
-        if not t_norm:
-            return False
-        t_words = t_norm.split()
-        if len(t_words) < min_words:
-            return False
-        t_word_set = set(t_words)
         now = time.monotonic()
-        for _u, a_norm, ts in self._recent_agent_pairs:
-            if (now - ts) > 12.0:
+        for _u, a_norm, ts in getattr(self, "_recent_agent_pairs", []):
+            if (now - ts) > 12.0 or not a_norm:
                 continue
-            if not a_norm:
-                continue
-            # Substring match catches short echo fragments on the agent line.
-            if len(t_words) >= 2 and t_norm in a_norm:
-                return True
-            a_word_set = set(a_norm.split())
-            if len(a_word_set) < min_words:
-                continue
-            overlap = len(t_word_set & a_word_set)
-            shorter = min(len(t_word_set), len(a_word_set))
-            if shorter > 0 and overlap / shorter >= 0.80:
+            if self._stt_overlaps_spoken_text(transcript, a_norm, min_words=min_words):
                 return True
         return False
 
     def _is_likely_agent_echo_for_barge_in(self, transcript: str) -> bool:
         """Interim barge-in guard: suppress cancel when STT likely picked up agent TTS."""
+        if not transcript:
+            return False
+        now = time.monotonic()
+        for spoken_norm, ts in getattr(self, "_inflight_tts_snippets", []):
+            if (now - ts) > self._INFLIGHT_TTS_ECHO_WINDOW_SEC:
+                continue
+            if self._stt_overlaps_spoken_text(transcript, spoken_norm, min_words=2):
+                return True
         return self._is_agent_self_echo(transcript, min_words=2)
 
     def _extract_caller_location_from_transcript(self) -> str:

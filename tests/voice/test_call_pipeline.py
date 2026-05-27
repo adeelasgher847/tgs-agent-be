@@ -127,6 +127,7 @@ def _base_handler() -> Handler:
     h._pipeline = PipelineSession(history=h._conversation_history_cache)
     h._llm_cancel_event = h._pipeline.llm_cancel
     h._recent_agent_pairs = []
+    h._inflight_tts_snippets = []
     h._DUP_USER_TURN_WINDOW_SEC = 15.0
     h._AGENT_LINE_DEDUP_WINDOW_SEC = 25.0
     h._RECENT_AGENT_PAIRS_MAX = 5
@@ -557,6 +558,27 @@ class TestBargeIn:
         h._remember_agent_turn = BookingMixin._remember_agent_turn.__get__(h, type(h))
         h._remember_agent_turn(
             None,
+            "Hello yes I can hear you how can I help you today",
+        )
+
+        asyncio.run(h._maybe_process_interim("hello yes", 0.85))
+
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
+
+    def test_barge_in_suppressed_on_inflight_tts_echo(self):
+        """Partial TTS flush echo must not barge-in before transcript commit."""
+        from app.voice.booking_mixin import BookingMixin
+
+        h = _base_handler()
+        h.is_speaking = True
+        h._tts_pipeline.is_speaking = True
+        h._record_inflight_tts_for_echo_guard = (
+            BookingMixin._record_inflight_tts_for_echo_guard.__get__(h, type(h))
+        )
+        h._is_likely_agent_echo_for_barge_in = (
+            BookingMixin._is_likely_agent_echo_for_barge_in.__get__(h, type(h))
+        )
+        h._record_inflight_tts_for_echo_guard(
             "Hello yes I can hear you how can I help you today",
         )
 
