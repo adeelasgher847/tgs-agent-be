@@ -94,15 +94,31 @@ def _empty_handler() -> Handler:
     h._llm_response_task = None
     h._rag_prefetch_task = None
     h._rag_prefetch_user_text = ""
+    h._rag_prefetch_min_words = 1
+    h._rag_prefetch_min_confidence = 0.05
+    h._speculative_prefetch_task = None
     h.is_speaking = False
     h._barge_in_min_conf = 0.26
     h._barge_in_min_conf_1w = 0.52
+    h._barge_in_cooldown_sec = 0.0
+    h._barge_in_allowed_after_mono = 0.0
+    h._is_likely_agent_echo_for_barge_in = lambda _t: False  # type: ignore[method-assign]
     h._stt_min_final_confidence = 0.26
     h._enable_soft_final_fallback = True
     h._stt_soft_min_final_confidence = 0.16
     h._stt_soft_min_words = 2
     h._prefetch_rag_context = AsyncMock(return_value=("", {}))  # type: ignore[method-assign]
     h._llm_turn_serial_lock = asyncio.Lock()
+    from app.voice.pipeline_session import PipelineSession
+
+    h._conversation_history_cache = []
+    h._pipeline = PipelineSession(history=h._conversation_history_cache)
+    h._llm_cancel_event = h._pipeline.llm_cancel
+    h._tts_cancel = asyncio.Event()
+    h._llm_last_answered_transcript = ""
+    h._llm_last_answered_ts = 0.0
+    h._screening_decline_handled = False
+    h.call_session = None
     return h
 
 

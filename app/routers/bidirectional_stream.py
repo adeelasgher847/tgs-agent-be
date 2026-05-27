@@ -339,13 +339,19 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         )
         self._stt_soft_min_words = max(1, min(6, self._stt_soft_min_words))
         self._barge_in_min_conf: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.26) or 0.26
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.40) or 0.40
         )
         self._barge_in_min_conf = max(0.15, min(0.5, self._barge_in_min_conf))
         self._barge_in_min_conf_1w: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.65) or 0.65
         )
         self._barge_in_min_conf_1w = max(0.4, min(0.75, self._barge_in_min_conf_1w))
+        self._barge_in_cooldown_sec: float = float(
+            getattr(settings, "VOICE_BARGE_IN_COOLDOWN_SEC", 0.50) or 0.50
+        )
+        self._barge_in_cooldown_sec = max(0.0, min(2.0, self._barge_in_cooldown_sec))
+        # Monotonic time before which interim barge-in is suppressed (echo guard).
+        self._barge_in_allowed_after_mono: float = 0.0
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -750,6 +756,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
     
     # Removed chunk-based STT processing; relying on Deepgram streaming endpointing
 
+    def _arm_barge_in_cooldown(self) -> None:
+        """Suppress interim barge-in briefly after agent TTS starts (echo guard)."""
+        if self._barge_in_cooldown_sec <= 0:
+            self._barge_in_allowed_after_mono = 0.0
+            return
+        self._barge_in_allowed_after_mono = time.monotonic() + self._barge_in_cooldown_sec
+
     async def _cancel_inflight_llm_response(self) -> None:
         """Stop background LLM+TTS for this turn (barge-in or final regen)."""
         # Signal Vertex producer thread to stop before cancelling the asyncio task —
@@ -795,6 +808,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                     "is_final": True,
                     "end_call_after": True,
                 })
+                self._arm_barge_in_cooldown()
         except Exception as e:
             logger.error("respond_screening_decline_and_end: %s", e, exc_info=True)
 
@@ -856,8 +870,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 else:
                     # Interim LLM already running with the correct transcript —
                     # let it finish without a second generation.
-                    pass
-                return
+                    return
             else:
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
@@ -1019,11 +1032,23 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 or (word_count >= 1 and confidence >= self._barge_in_min_conf_1w)
             )
             if is_barge_in:
-                await self._cancel_inflight_llm_response()
-                self._turn_response_started = False
-                self._turn_response_seed_text = ""
-                self._last_interim_text = ""
-                return
+                now_mono = time.monotonic()
+                if now_mono < self._barge_in_allowed_after_mono:
+                    logger.debug(
+                        "Barge-in suppressed (cooldown %.0fms remaining)",
+                        (self._barge_in_allowed_after_mono - now_mono) * 1000,
+                    )
+                elif self._is_likely_agent_echo_for_barge_in(transcript):
+                    logger.info(
+                        "Barge-in suppressed (likely agent TTS echo): %r",
+                        transcript[:80],
+                    )
+                else:
+                    await self._cancel_inflight_llm_response()
+                    self._turn_response_started = False
+                    self._turn_response_seed_text = ""
+                    self._last_interim_text = ""
+                    return
 
             # RAG prefetch: fire vector-DB retrieval as soon as we have a confident
             # partial so it overlaps Deepgram endpointing time. This saves ~2s because
@@ -1272,6 +1297,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                     "use_ssml": self._use_ssml,
                     "is_final": True
                 })
+                self._arm_barge_in_cooldown()
 
                 # Mark as not primed for the greeting
                 self._twilio_buffer_primed = False
@@ -2024,6 +2050,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     "use_ssml": self._use_ssml,
                                     "is_final": False,
                                 })
+                                if first_tts_chunk:
+                                    self._arm_barge_in_cooldown()
                                 _vm = getattr(self, "_voice_metrics", None)
                                 if _vm:
                                     _vm.mark_first_tts_queued()
@@ -2081,6 +2109,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "end_call_after": end_call_after and not transfer_after,
                             "transfer_after": transfer_after,
                         })
+                        if first_tts_chunk:
+                            self._arm_barge_in_cooldown()
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_first_tts_queued()

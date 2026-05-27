@@ -144,17 +144,16 @@ class BookingMixin:
                         return True
         return False
 
-    def _is_agent_self_echo(self, transcript: str) -> bool:
+    def _is_agent_self_echo(self, transcript: str, *, min_words: int = 4) -> bool:
         """
-        True when an incoming STT final closely matches text the agent recently spoke.
+        True when incoming STT text closely matches text the agent recently spoke.
 
         Phone-line sidetone and open-mic setups can feed the agent's TTS audio back
-        into the STT stream as a "final" transcript.  The word-overlap check requires
-        ≥80 % of the shorter text's words to be shared, with a minimum of 4 words in
-        the transcript so that short overlapping phrases don't trigger false positives.
+        into the STT stream.  Finals use ``min_words=4``; interim barge-in uses
+        ``_is_likely_agent_echo_for_barge_in`` (min_words=2) so short echoes like
+        "hello yes" do not cancel the rest of the reply.
 
-        Window: 12 s — covers TTS latency, full playback of long replies, plus STT
-        pipeline lag before the echo arrives as a final result.
+        Window: 12 s — covers TTS latency, full playback, and STT pipeline lag.
         """
         if not transcript or not self._recent_agent_pairs:
             return False
@@ -162,7 +161,7 @@ class BookingMixin:
         if not t_norm:
             return False
         t_words = t_norm.split()
-        if len(t_words) < 4:
+        if len(t_words) < min_words:
             return False
         t_word_set = set(t_words)
         now = time.monotonic()
@@ -171,14 +170,21 @@ class BookingMixin:
                 continue
             if not a_norm:
                 continue
+            # Substring match catches short echo fragments on the agent line.
+            if len(t_words) >= 2 and t_norm in a_norm:
+                return True
             a_word_set = set(a_norm.split())
-            if len(a_word_set) < 4:
+            if len(a_word_set) < min_words:
                 continue
             overlap = len(t_word_set & a_word_set)
             shorter = min(len(t_word_set), len(a_word_set))
-            if overlap / shorter >= 0.80:
+            if shorter > 0 and overlap / shorter >= 0.80:
                 return True
         return False
+
+    def _is_likely_agent_echo_for_barge_in(self, transcript: str) -> bool:
+        """Interim barge-in guard: suppress cancel when STT likely picked up agent TTS."""
+        return self._is_agent_self_echo(transcript, min_words=2)
 
     def _extract_caller_location_from_transcript(self) -> str:
         """

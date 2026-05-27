@@ -61,6 +61,8 @@ def _base_handler() -> Handler:
     h.is_speaking = False
     h._barge_in_min_conf = 0.26
     h._barge_in_min_conf_1w = 0.52
+    h._barge_in_cooldown_sec = 0.0
+    h._barge_in_allowed_after_mono = 0.0
     h._tts_cancel = asyncio.Event()
 
     # TTS
@@ -120,6 +122,10 @@ def _base_handler() -> Handler:
 
     # Conversation history + dedup
     h._conversation_history_cache = []
+    from app.voice.pipeline_session import PipelineSession
+
+    h._pipeline = PipelineSession(history=h._conversation_history_cache)
+    h._llm_cancel_event = h._pipeline.llm_cancel
     h._recent_agent_pairs = []
     h._DUP_USER_TURN_WINDOW_SEC = 15.0
     h._AGENT_LINE_DEDUP_WINDOW_SEC = 25.0
@@ -522,6 +528,39 @@ class TestBargeIn:
         h._tts_pipeline.is_speaking = True
 
         asyncio.run(h._maybe_process_interim("hmm", 0.30))
+
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
+
+    def test_barge_in_suppressed_during_cooldown(self):
+        """Interim barge-in must not fire while the post-TTS cooldown is active."""
+        h = _base_handler()
+        h._barge_in_cooldown_sec = 0.5
+        h._arm_barge_in_cooldown()
+        h.is_speaking = True
+        h._tts_pipeline.is_speaking = True
+        h._is_agent_self_echo = MagicMock(return_value=False)
+        h._is_likely_agent_echo_for_barge_in = MagicMock(return_value=False)
+
+        asyncio.run(h._maybe_process_interim("no wait stop", 0.85))
+
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
+
+    def test_barge_in_suppressed_on_agent_echo(self):
+        """Phone echo of agent TTS must not cancel in-flight playback."""
+        h = _base_handler()
+        h.is_speaking = True
+        h._tts_pipeline.is_speaking = True
+        h._is_agent_self_echo = BookingMixin._is_agent_self_echo.__get__(h, type(h))
+        h._is_likely_agent_echo_for_barge_in = BookingMixin._is_likely_agent_echo_for_barge_in.__get__(
+            h, type(h)
+        )
+        h._remember_agent_turn = BookingMixin._remember_agent_turn.__get__(h, type(h))
+        h._remember_agent_turn(
+            None,
+            "Hello yes I can hear you how can I help you today",
+        )
+
+        asyncio.run(h._maybe_process_interim("hello yes", 0.85))
 
         h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
 
@@ -1006,6 +1045,20 @@ class TestTranscriptAccuracy:
         h._is_agent_self_echo = BookingMixin._is_agent_self_echo.__get__(h, type(h))
         h._remember_agent_turn("", "Hello! How can I help you today?")
         assert h._is_agent_self_echo("I want to book an appointment") is False
+
+    def test_barge_in_echo_guard_two_words(self):
+        from app.voice.booking_mixin import BookingMixin
+
+        h = _base_handler()
+        h._remember_agent_turn = BookingMixin._remember_agent_turn.__get__(h, type(h))
+        h._is_likely_agent_echo_for_barge_in = (
+            BookingMixin._is_likely_agent_echo_for_barge_in.__get__(h, type(h))
+        )
+        h._remember_agent_turn(
+            "",
+            "Hello yes I can hear you how can I help you today",
+        )
+        assert h._is_likely_agent_echo_for_barge_in("hello yes") is True
 
     def test_normalize_turn_text_lowercases_and_strips(self):
         h = _base_handler()

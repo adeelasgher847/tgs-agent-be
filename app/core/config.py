@@ -129,10 +129,12 @@ class Settings(BaseSettings):
     VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.12
     VOICE_STT_SOFT_MIN_WORDS: int = 2
     # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
-    # Slightly below old 0.30 so a softer "wait" / "hold on" still cancels TTS.
-    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.18
+    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.20
     # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
-    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.25
+    # Ignore interim barge-in for this many seconds after the first TTS chunk is queued
+    # (reduces false cancels from phone echo of the agent's own voice).
+    VOICE_BARGE_IN_COOLDOWN_SEC: float = 0.50
     VOICE_HISTORY_MAX_MESSAGES: int = 40
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
