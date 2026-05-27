@@ -19,11 +19,10 @@ ALLOWED_LLM_MODELS: Final[tuple[str, ...]] = (
     "gpt-4-turbo",
     "gpt-4.1",
     "gpt-4.1-mini",
-    # Google Gemini (API-key path via google-genai SDK)
+    # Google Gemini (Google AI Studio / google-genai + GEMINI_API_KEY)
     "gemini-1.5-pro",
     "gemini-1.5-flash",
     "gemini-2.0-flash",
-    # Google Gemini via Vertex AI (ADC / service account)
     "gemini-2.5-flash",
     # Anthropic
     "claude-3-5-sonnet",
@@ -54,8 +53,6 @@ def infer_llm_provider(model_name: str) -> str:
     name = (model_name or "").strip().lower()
     if name.startswith("gpt") or name.startswith("o1") or name.startswith("o3"):
         return "openai"
-    if name == "gemini-2.5-flash":
-        return "vertex"
     if name.startswith("gemini"):
         return "gemini"
     if name.startswith("claude"):

@@ -24,7 +24,6 @@ redis
 websockets
 aiohttp
 google-genai
-google-cloud-aiplatform>=1.60.0
 pinecone>=6.0.0
 pypdf
 bcrypt==4.1.2

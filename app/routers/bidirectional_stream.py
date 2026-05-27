@@ -122,13 +122,6 @@ from app.services.transcript_service import transcript_service
 from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
-from app.services.vertex_llm_service import (
-    vertex_llm_service,
-    VertexQuotaError,
-    VertexTimeoutError,
-    VertexContentFilterError,
-    VERTEX_FALLBACK_RESPONSE,
-)
 from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
@@ -1759,15 +1752,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 + system_prompt
             )
 
-            # Vertex path: build a variant of system_prompt WITHOUT embedded history
-            # so history is NOT duplicated when stream_turn passes it as Content roles.
+            # Gemini 2.5 Flash (google-genai) path: build a variant of system_prompt WITHOUT embedded history
+            # so history is not duplicated when stream_turn passes it separately.
             if history_text:
-                _vertex_sys_prompt = system_prompt.replace(
+                _structured_sys_prompt = system_prompt.replace(
                     f"Previous conversation:\n{history_text}",
                     "Previous conversation:",
                 )
             else:
-                _vertex_sys_prompt = system_prompt
+                _structured_sys_prompt = system_prompt
 
             # Get agent's configured model and provider.
             # Ticket field (agent.llm_model) takes priority over legacy model relation.
@@ -1784,8 +1777,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 _rt = resolve_llm_runtime(self.agent)
                 model_name = _rt.model_name
                 api_key = _rt.api_key
-                # Vertex voice path defaults to 0.3; other providers keep existing default
-                _default_temp = 0.3 if _rt.provider_slug == "vertex" else 0.15
+                # Gemini 2.5 Flash voice path defaults to 0.3; other providers keep existing default
+                _default_temp = 0.3 if model_name == "gemini-2.5-flash" else 0.15
                 temperature = _rt.temperature if _rt.temperature != 0.15 else _default_temp
                 max_tokens = _rt.max_tokens
                 llm_service = llm_service_for_provider(_rt.provider_slug)
@@ -1936,12 +1929,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     return m.end()
 
                 _first_token_marked = False
-                # Vertex path: use stream_turn with structured inputs (no history in system_prompt)
-                # so conversation history is NOT duplicated inside the system blob.
+                # Gemini 2.5 Flash (google-genai) path: use stream_turn with structured inputs + cancel_event.
                 # Other providers use stream_text with the full combined system_prompt.
-                if service is vertex_llm_service:
+                if service is gemini_service and model == "gemini-2.5-flash":
                     _llm_gen = service.stream_turn(
-                        system_prompt=_vertex_sys_prompt,
+                        system_prompt=_structured_sys_prompt,
                         conversation_history=_filtered_history_pairs,
                         caller_transcript=user_text,
                         kb_context=rag_context_block,
@@ -1949,6 +1941,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         max_tokens=max_tokens,
                         model_name=model,
                         cancel_event=self._llm_cancel_event,
+                        api_key=api_key_override,
                     )
                 else:
                     _llm_gen = service.stream_text(
@@ -2113,25 +2106,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             try:
                 # Use agent's configured model and service
                 final_text = await try_stream(llm_service, model_name, api_key)
-            except (VertexQuotaError, VertexTimeoutError, VertexContentFilterError) as vertex_err:
-                # Structured Vertex errors: log safely (no prompt content) and emit canned response
-                _err_kind = type(vertex_err).__name__
-                logger.warning(
-                    "[Vertex] %s for model=%s session=%s — emitting fallback response",
-                    _err_kind, model_name, self.call_session_id,
-                )
-                final_text = VERTEX_FALLBACK_RESPONSE
-                if not self._tts_cancel.is_set() and self._tts_pipeline:
-                    chunk_counter += 1
-                    await self._tts_pipeline.queue_tts({
-                        "text": VERTEX_FALLBACK_RESPONSE,
-                        "chunk_id": chunk_counter,
-                        "use_ssml": self._use_ssml,
-                        "is_final": True,
-                    })
-                    asyncio.create_task(
-                        self._deferred_conversation_memory_update(turn_context, user_text)
-                    )
             except Exception as e:
                 logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
                 # Fallback: try alternate service
@@ -2156,7 +2130,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             safe_tts_text = self._prepare_tts_text(final_text)
                             out_text = tone_adapter(safe_tts_text.strip(), turn_context, self._use_ssml)
                             if not out_text:
-                                out_text = VERTEX_FALLBACK_RESPONSE
+                                out_text = settings.VOICE_LLM_FALLBACK_RESPONSE
                             chunk_counter += 1
                             if self._tts_pipeline and out_text:
                                 await self._tts_pipeline.queue_tts({
@@ -2169,7 +2143,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 )
                     except Exception as e:
                         logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
-                        final_text = VERTEX_FALLBACK_RESPONSE
+                        final_text = settings.VOICE_LLM_FALLBACK_RESPONSE
                         utt = tone_adapter(final_text, turn_context, self._use_ssml)
                         chunk_counter += 1
                         if self._tts_pipeline:

@@ -44,7 +44,7 @@ class GoogleTTSService:
         self._initialize_credentials()
     
     def _initialize_credentials(self):
-        """Initialize Google Cloud credentials (shared with Vertex voice LLM)."""
+        """Initialize Google Cloud credentials for Google Cloud TTS (service account JSON)."""
         from app.core.google_credentials import ensure_google_application_credentials_env
 
         path = ensure_google_application_credentials_env()

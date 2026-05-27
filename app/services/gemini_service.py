@@ -5,7 +5,7 @@ Handles all Gemini-related operations including text generation
 
 from google import genai
 from app.core.config import settings
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, AsyncIterator, Tuple
 import time
 import json
 
@@ -145,7 +145,8 @@ class GeminiService:
                           model_name: str = "gemini-1.5-flash",
                           temperature: float = 0.7,
                           max_tokens: int = 1000,
-                          api_key: str = None):
+                          api_key: str = None,
+                          cancel_event=None) -> AsyncIterator[str]:
         """Yield text chunks from Gemini as they arrive (streaming).
         This returns an async iterator of strings.
         """
@@ -163,6 +164,7 @@ class GeminiService:
 
         q: Queue = Queue()
         SENTINEL = object()
+        cancel_flag = threading.Event()
 
         def producer():
             try:
@@ -175,6 +177,8 @@ class GeminiService:
                     },
                 )
                 for chunk in response:
+                    if cancel_flag.is_set():
+                        break
                     try:
                         text = self._extract_text_from_response(chunk)
                         if text:
@@ -192,6 +196,9 @@ class GeminiService:
         loop = asyncio.get_event_loop()
 
         while True:
+            if cancel_event is not None and getattr(cancel_event, "is_set", None) and cancel_event.is_set():
+                cancel_flag.set()
+                break
             chunk = await loop.run_in_executor(None, q.get)
             if isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "__error__":
                 # Raise so caller can handle fallback logic instead of speaking error text
@@ -199,6 +206,53 @@ class GeminiService:
             if chunk is SENTINEL:
                 break
             yield str(chunk)
+
+    async def stream_turn(
+        self,
+        *,
+        system_prompt: str,
+        conversation_history: List[Tuple[str, str]],
+        caller_transcript: str,
+        kb_context: str = "",
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        model_name: str = "gemini-1.5-flash",
+        api_key: str = None,
+        cancel_event=None,
+    ) -> AsyncIterator[str]:
+        """
+        Structured streaming helper for the voice pipeline.
+
+        Keeps the ticket's high-level shape (system + history + transcript + KB)
+        while using the Google AI Studio (google-genai) API-key backend.
+        """
+        # Build a single user message that includes history and KB context.
+        # We keep the system prompt separate via stream_text(system_prompt=...).
+        history_lines: List[str] = []
+        for role, content in conversation_history or []:
+            if not content:
+                continue
+            label = "Agent" if role in ("agent", "assistant", "model") else "Client"
+            history_lines.append(f"{label}: {content}")
+
+        user_parts: List[str] = []
+        if history_lines:
+            user_parts.append("Previous conversation:\n" + "\n".join(history_lines))
+        user_parts.append("Caller:\n" + (caller_transcript or "").strip())
+        if kb_context:
+            user_parts.append("[Context]\n" + kb_context)
+        user_message = "\n\n".join([p for p in user_parts if p]).strip() or " "
+
+        async for chunk in self.stream_text(
+            prompt=user_message,
+            system_prompt=system_prompt,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key=api_key,
+            cancel_event=cancel_event,
+        ):
+            yield chunk
     
     def chat_completion(self, messages: List[Dict[str, str]], 
                        system_prompt: str = None, 

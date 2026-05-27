@@ -1,23 +1,18 @@
 """
-Unit tests for the Vertex AI Gemini 2.5 Flash voice LLM service.
+Unit tests for the Gemini 2.5 Flash voice LLM path (Google AI Studio / google-genai).
 
-Covers:
-  - Prompt construction (system at index 0, no prompt leakage in logs)
-  - History pruning (> 20 turns trimmed to 40 messages)
-  - Cancellation (cancel_event stops streaming, no further chunks yielded)
-  - Error fallback (quota/timeout/filter → canned sorry phrase)
-  - Model allow-listing (gemini-2.5-flash present, infer_llm_provider returns vertex)
-  - agent_runtime routing (llm_service_for_provider("vertex") returns vertex_llm_service)
-
-Run:
-    pytest tests/voice/test_vertex_llm.py -v
+These tests are intentionally lightweight and offline-friendly. They validate:
+  - Model allow-listing + provider inference
+  - Default runtime temperature for gemini-2.5-flash (0.3)
+  - Prompt construction shape for stream_turn()
+  - Cancellation plumbing (PipelineSession + cancel_event passthrough)
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 from typing import AsyncIterator, List
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -48,10 +43,10 @@ class TestLlmModels:
         assert "gemini-2.5-flash" in ALLOWED_LLM_MODELS
         assert is_allowed_llm_model("gemini-2.5-flash")
 
-    def test_infer_provider_returns_vertex(self):
+    def test_infer_provider_returns_gemini(self):
         from app.core.llm_models import infer_llm_provider
 
-        assert infer_llm_provider("gemini-2.5-flash") == "vertex"
+        assert infer_llm_provider("gemini-2.5-flash") == "gemini"
 
     def test_infer_provider_other_gemini_still_gemini(self):
         from app.core.llm_models import infer_llm_provider
@@ -85,14 +80,7 @@ class TestGoogleCredentials:
 
 
 class TestAgentRuntimeRouting:
-    def test_vertex_provider_returns_vertex_service(self):
-        from app.core.agent_runtime import llm_service_for_provider
-        from app.services.vertex_llm_service import vertex_llm_service
-
-        svc = llm_service_for_provider("vertex")
-        assert svc is vertex_llm_service
-
-    def test_resolve_llm_runtime_vertex_skips_model_api_key(self):
+    def test_resolve_llm_runtime_gemini_25_flash_defaults(self):
         from types import SimpleNamespace
 
         from app.core.agent_runtime import resolve_llm_runtime
@@ -105,7 +93,8 @@ class TestAgentRuntimeRouting:
             provider=None,
         )
         runtime = resolve_llm_runtime(agent)  # type: ignore[arg-type]
-        assert runtime.provider_slug == "vertex"
+        assert runtime.provider_slug == "gemini"
+        assert runtime.temperature == 0.3
         assert runtime.api_key is None
 
     def test_openai_provider_unchanged(self):
@@ -121,90 +110,56 @@ class TestAgentRuntimeRouting:
         assert llm_service_for_provider("unknown") is gemini_service
 
 
-# ---------------------------------------------------------------------------
-# 3. stream_text: prompt construction
-# ---------------------------------------------------------------------------
+class TestGeminiStreamTurn:
+    def test_stream_turn_builds_user_message_and_passes_cancel_event(self):
+        from app.services.gemini_service import gemini_service
 
+        received = {}
 
-def _make_fake_vertex_module(model_cls):
-    """Build a sys.modules patch for vertexai.generative_models with a custom model."""
-    fake = MagicMock()
-    fake.GenerativeModel = model_cls
-    fake.GenerationConfig = MagicMock(return_value=MagicMock())
-    # Content/Part: lightweight stand-ins
-    fake.Content = MagicMock(
-        side_effect=lambda role, parts: MagicMock(role=role, parts=parts)
-    )
-    fake.Part.from_text = MagicMock(side_effect=lambda t: MagicMock(text=t))
-    return fake
+        async def _fake_stream_text(**kwargs):
+            received.update(kwargs)
+            if False:
+                yield  # pragma: no cover
 
+        original = gemini_service.stream_text
+        gemini_service.stream_text = _fake_stream_text  # type: ignore[method-assign]
+        try:
+            cancel = asyncio.Event()
 
-class TestVertexPromptConstruction:
-    def test_system_injected_as_system_instruction_not_user_msg(self):
-        captured = {}
+            async def _run():
+                await _collect(
+                    gemini_service.stream_turn(
+                        system_prompt="SYS",
+                        conversation_history=[("client", "hi"), ("agent", "hello")],
+                        caller_transcript="How are you?",
+                        kb_context="KB",
+                        temperature=0.3,
+                        max_tokens=10,
+                        model_name="gemini-2.5-flash",
+                        api_key="k",
+                        cancel_event=cancel,
+                    )
+                )
 
-        class FakeChunk:
-            text = "Hello world"
+            run(_run())
+        finally:
+            gemini_service.stream_text = original  # type: ignore[method-assign]
 
-        class FakeModel:
-            def __init__(self, model_name, system_instruction=None, **kw):
-                captured["model_name"] = model_name
-                captured["system_instruction"] = system_instruction
-
-            def generate_content(self, contents, generation_config, stream):
-                captured["user_part"] = contents[0].parts[0].text
-                return iter([FakeChunk()])
-
-        from app.services.vertex_llm_service import VertexLlmService
-
-        svc = VertexLlmService()
-        svc._initialized = True
-
-        with patch.dict("sys.modules", {"vertexai.generative_models": _make_fake_vertex_module(FakeModel)}):
-            run(_collect(svc.stream_text(
-                prompt="What are your hours?",
-                system_prompt="You are a helpful assistant.",
-                model_name="gemini-2.5-flash",
-            )))
-
-        assert captured["system_instruction"] == "You are a helpful assistant."
-        assert "What are your hours?" in captured["user_part"]
-        # System prompt must NOT appear inside the user content
-        assert "System:" not in captured.get("user_part", "")
-
-    def test_system_prompt_not_logged_in_full(self, caplog):
-        long_system_prompt = "CONFIDENTIAL: " + "x" * 500
-
-        class FakeChunk:
-            text = "ok"
-
-        class FakeModel:
-            def __init__(self, *a, **kw):
-                pass
-
-            def generate_content(self, *a, **kw):
-                return iter([FakeChunk()])
-
-        from app.services.vertex_llm_service import VertexLlmService
-
-        svc = VertexLlmService()
-        svc._initialized = True
-
-        with caplog.at_level(logging.DEBUG, logger="app"):
-            with patch.dict("sys.modules", {"vertexai.generative_models": _make_fake_vertex_module(FakeModel)}):
-                run(_collect(svc.stream_text(
-                    prompt="hi",
-                    system_prompt=long_system_prompt,
-                    model_name="gemini-2.5-flash",
-                )))
-
-        for record in caplog.records:
-            assert long_system_prompt not in record.getMessage()
-
-
-# ---------------------------------------------------------------------------
-# 4. History pruning: > 20 turns → trimmed to 40 messages
-# ---------------------------------------------------------------------------
+        assert received["system_prompt"] == "SYS"
+        assert received["model_name"] == "gemini-2.5-flash"
+        assert received["temperature"] == 0.3
+        assert received["max_tokens"] == 10
+        assert received["api_key"] == "k"
+        assert received["cancel_event"] is cancel
+        # Prompt should include history + caller + context
+        msg = received["prompt"]
+        assert "Previous conversation:" in msg
+        assert "Client: hi" in msg
+        assert "Agent: hello" in msg
+        assert "Caller:" in msg
+        assert "How are you?" in msg
+        assert "[Context]" in msg
+        assert "KB" in msg
 
 
 class TestHistoryPruning:
@@ -269,103 +224,13 @@ class TestCancellation:
         result = run(_run())
         assert result == ["chunk0", "chunk1", "chunk2"]
 
-    def test_vertex_stream_text_pre_cancelled_yields_nothing(self):
-        class FakeChunk:
-            text = "should not yield"
-
-        class FakeModel:
-            def __init__(self, *a, **kw):
-                pass
-
-            def generate_content(self, *a, **kw):
-                def _gen():
-                    for _ in range(100):
-                        yield FakeChunk()
-                return _gen()
-
-        from app.services.vertex_llm_service import VertexLlmService
-
-        svc = VertexLlmService()
-        svc._initialized = True
-
-        async def _run():
-            cancel = asyncio.Event()
-            cancel.set()
-            with patch.dict("sys.modules", {"vertexai.generative_models": _make_fake_vertex_module(FakeModel)}):
-                return await _collect(svc.stream_text(
-                    prompt="hello",
-                    system_prompt="sys",
-                    model_name="gemini-2.5-flash",
-                    cancel_event=cancel,
-                ))
-
-        chunks = run(_run())
-        assert chunks == []
-
-
-# ---------------------------------------------------------------------------
-# 6. Error fallback: quota / timeout / filter → typed errors
-# ---------------------------------------------------------------------------
-
-
-class TestErrorFallback:
-    def _make_error_model(self, message: str):
-        class FakeModel:
-            def __init__(self, *a, **kw):
-                pass
-
-            def generate_content(self, *a, **kw):
-                raise Exception(message)
-
-        return FakeModel
-
-    def test_quota_error(self):
-        from app.services.vertex_llm_service import VertexLlmService, VertexQuotaError
-
-        svc = VertexLlmService()
-        svc._initialized = True
-        fake = _make_fake_vertex_module(self._make_error_model("RESOURCE_EXHAUSTED 429"))
-
-        async def _run():
-            with patch.dict("sys.modules", {"vertexai.generative_models": fake}):
-                await _collect(svc.stream_text(prompt="hi", model_name="gemini-2.5-flash"))
-
-        with pytest.raises(VertexQuotaError):
-            run(_run())
-
-    def test_content_filter_error(self):
-        from app.services.vertex_llm_service import VertexLlmService, VertexContentFilterError
-
-        svc = VertexLlmService()
-        svc._initialized = True
-        fake = _make_fake_vertex_module(self._make_error_model("blocked due to safety policy"))
-
-        async def _run():
-            with patch.dict("sys.modules", {"vertexai.generative_models": fake}):
-                await _collect(svc.stream_text(prompt="hi", model_name="gemini-2.5-flash"))
-
-        with pytest.raises(VertexContentFilterError):
-            run(_run())
-
-    def test_timeout_error(self):
-        from app.services.vertex_llm_service import VertexLlmService, VertexTimeoutError
-
-        svc = VertexLlmService()
-        svc._initialized = True
-        fake = _make_fake_vertex_module(self._make_error_model("deadline exceeded: timeout"))
-
-        async def _run():
-            with patch.dict("sys.modules", {"vertexai.generative_models": fake}):
-                await _collect(svc.stream_text(prompt="hi", model_name="gemini-2.5-flash"))
-
-        with pytest.raises(VertexTimeoutError):
-            run(_run())
-
+class TestFallbackPhrase:
     def test_fallback_response_phrase(self):
-        from app.services.vertex_llm_service import VERTEX_FALLBACK_RESPONSE
+        from app.core.config import settings
 
-        assert "sorry" in VERTEX_FALLBACK_RESPONSE.lower()
-        assert "did not catch" in VERTEX_FALLBACK_RESPONSE.lower()
+        msg = settings.VOICE_LLM_FALLBACK_RESPONSE
+        assert "sorry" in msg.lower()
+        assert "did not catch" in msg.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -431,8 +296,8 @@ class TestPipelineSession:
 
     def test_cancel_inflight_sets_llm_cancel_event(self):
         """
-        _cancel_inflight_llm_response must set _llm_cancel_event so Vertex
-        producer thread stops without waiting for asyncio task cancel.
+        _cancel_inflight_llm_response must set _llm_cancel_event so the
+        streaming producer can stop without waiting for asyncio task cancel.
         """
         # Verify the cancel path calls _pipeline.cancel_llm() which sets the event.
         from app.voice.pipeline_session import PipelineSession
@@ -449,103 +314,6 @@ class TestPipelineSession:
         )
 
 
-class TestBidirectionalVertexCancelEvent:
-    def test_bidirectional_passes_cancel_event_to_vertex(self):
-        """
-        When llm_service is vertex_llm_service, try_stream must pass
-        cancel_event=self._llm_cancel_event to stream_turn / stream_text.
-        """
-        received_kwargs: dict = {}
-
-        async def _fake_stream_turn(**kwargs):
-            received_kwargs.update(kwargs)
-            if False:
-                yield  # make it an async generator
-
-        from app.services.vertex_llm_service import vertex_llm_service
-
-        original = vertex_llm_service.stream_turn
-        vertex_llm_service.stream_turn = _fake_stream_turn  # type: ignore[method-assign]
-
-        try:
-            import asyncio
-
-            async def _run():
-                # Minimal simulation of what try_stream does for Vertex path
-                cancel_event = asyncio.Event()
-                _gen = vertex_llm_service.stream_turn(
-                    system_prompt="sys",
-                    conversation_history=[],
-                    caller_transcript="hi",
-                    kb_context="",
-                    temperature=0.3,
-                    max_tokens=100,
-                    model_name="gemini-2.5-flash",
-                    cancel_event=cancel_event,
-                )
-                # drain
-                async for _ in _gen:
-                    pass
-                return cancel_event
-
-            event = asyncio.run(_run())
-            assert "cancel_event" in received_kwargs
-            assert received_kwargs["cancel_event"] is event
-        finally:
-            vertex_llm_service.stream_turn = original  # type: ignore[method-assign]
-
-    def test_vertex_error_queues_fallback_tts(self):
-        """
-        When VertexQuotaError is raised, the handler must queue VERTEX_FALLBACK_RESPONSE
-        to TTS and not propagate the raw error text to the caller.
-        """
-        from app.services.vertex_llm_service import VERTEX_FALLBACK_RESPONSE, VertexQuotaError
-
-        # Simulate handler error-catch logic
-        tts_queued: list[str] = []
-
-        class FakeTtsPipeline:
-            async def queue_tts(self, payload):
-                tts_queued.append(payload["text"])
-
-        async def _run():
-            pipeline = FakeTtsPipeline()
-            try:
-                raise VertexQuotaError("quota exhausted")
-            except VertexQuotaError:
-                await pipeline.queue_tts({"text": VERTEX_FALLBACK_RESPONSE, "is_final": True})
-
-        asyncio.run(_run())
-        assert len(tts_queued) == 1
-        assert tts_queued[0] == VERTEX_FALLBACK_RESPONSE
-
-    def test_resolve_llm_runtime_vertex_default_temp(self):
-        """resolve_llm_runtime returns temperature=0.3 for gemini-2.5-flash when no agent_temperature."""
-        from app.core.agent_runtime import resolve_llm_runtime
-        from unittest.mock import MagicMock
-
-        agent = MagicMock()
-        agent.llm_model = "gemini-2.5-flash"
-        agent.agent_temperature = None
-        agent.agent_max_tokens = None
-        agent.model = None
-        agent.provider = None
-
-        rt = resolve_llm_runtime(agent)
-        assert rt.provider_slug == "vertex"
-        assert abs(rt.temperature - 0.3) < 1e-6, f"Expected 0.3, got {rt.temperature}"
-
-    def test_resolve_llm_runtime_vertex_agent_temp_override(self):
-        """Per-agent agent_temperature overrides the 0.3 default."""
-        from app.core.agent_runtime import resolve_llm_runtime
-        from unittest.mock import MagicMock
-
-        agent = MagicMock()
-        agent.llm_model = "gemini-2.5-flash"
-        agent.agent_temperature = 50  # → 0.5
-        agent.agent_max_tokens = None
-        agent.model = None
-        agent.provider = None
-
-        rt = resolve_llm_runtime(agent)
-        assert abs(rt.temperature - 0.5) < 1e-6, f"Expected 0.5, got {rt.temperature}"
+#
+# Vertex-specific integration tests were removed when gemini-2.5-flash was
+# routed to Google AI Studio (GeminiService) instead of Vertex.

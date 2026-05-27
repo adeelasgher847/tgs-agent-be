@@ -89,10 +89,9 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     if not agent:
         return default
 
-    # Default temperature: Vertex voice path uses 0.3 for natural conversational tone;
-    # all other providers keep 0.15 (shorter, more deterministic voice replies).
-    _inferred_provider = infer_llm_provider(agent.llm_model or "")
-    _default_temp = 0.3 if _inferred_provider == "vertex" else 0.15
+    # Default temperature: Gemini 2.5 Flash voice path uses 0.3 for natural conversational tone;
+    # other providers keep 0.15 (shorter, more deterministic voice replies).
+    _default_temp = 0.3 if (agent.llm_model or "").strip() == "gemini-2.5-flash" else 0.15
     temperature = _default_temp
     max_tokens = 100
     if agent.agent_temperature is not None:
@@ -107,8 +106,8 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     if agent.llm_model:
         provider_slug = _provider_slug_from_agent(agent)
         api_key: Optional[str] = None
-        # Vertex Gemini 2.5 uses GOOGLE_APPLICATION_CREDENTIALS (ADC), not Model.api_key.
-        if provider_slug != "vertex" and agent.model and agent.model.api_key:
+        # Google AI Studio (GeminiService) uses API keys; decrypt model.api_key when present.
+        if agent.model and agent.model.api_key:
             try:
                 api_key = decrypt_api_key(agent.model.api_key)
             except Exception as exc:
@@ -153,15 +152,12 @@ def llm_service_for_provider(provider_slug: str) -> Any:
     from app.services.gemini_service import gemini_service
     from app.services.groq_service import groq_service
     from app.services.openai_service import openai_service
-    from app.services.vertex_llm_service import vertex_llm_service
 
     slug = (provider_slug or "").lower()
     if slug == "openai":
         return openai_service
     if slug == "groq":
         return groq_service
-    if slug == "vertex":
-        return vertex_llm_service
     return gemini_service
 
 

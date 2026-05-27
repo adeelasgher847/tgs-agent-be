@@ -47,8 +47,9 @@ class PricingService:
         # -----------------------------
         self.gemini = {
             "gemini-2.5-pro": (0.63, 5.00),
-            "gemini-2.5-flash": (0.15, 1.25),
-            "gemini-2.5-flash-preview": (0.15, 1.25),
+            # Google AI Studio paid tier (text/image/video): ai.google.dev/gemini-api/docs/pricing
+            "gemini-2.5-flash": (0.30, 2.50),
+            "gemini-2.5-flash-preview": (0.30, 2.50),
             "gemini-2.5-flash-lite": (0.05, 0.20),
             "gemini-2.0-flash": (0.05, 0.20),
             "gemini-2.0-flash-lite": (0.04, 0.15),

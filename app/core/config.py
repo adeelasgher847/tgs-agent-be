@@ -94,12 +94,8 @@ class Settings(BaseSettings):
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
 
-    # Vertex AI — Gemini 2.5 Flash voice LLM path
-    # Set VERTEX_PROJECT_ID to your GCP project; auth via GOOGLE_APPLICATION_CREDENTIALS.
-    VERTEX_PROJECT_ID: str = ""
-    VERTEX_LOCATION: str = "us-central1"
-    # Model short name used for the Vertex voice path. Override per-deployment if needed.
-    VERTEX_MODEL: str = "gemini-2.5-flash"
+    # Canned voice LLM reply when the provider errors (quota, timeout, filter, etc.)
+    VOICE_LLM_FALLBACK_RESPONSE: str = "I am sorry, I did not catch that"
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
