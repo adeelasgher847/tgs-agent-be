@@ -48,7 +48,7 @@ api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
 # Invite sub-routes must be registered BEFORE workspace.router so that
 # /workspace/invite and /workspace/invitations take priority over /workspace/{workspace_id}.
 api_router.include_router(workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"])
-api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
+api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"],include_in_schema=False)
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Calls"])

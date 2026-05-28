@@ -18,7 +18,6 @@ from app.api.deps import (
     require_user_tenant,
 )
 from app.core.error_responses import build_api_error_payload
-from app.core.llm_models import allowed_llm_models, is_allowed_llm_model
 from app.core.request_auth import ApiKeyPrincipal
 from app.models.user import User
 from app.schemas.agent import (
@@ -93,14 +92,6 @@ def create_agent(
     db: Session = Depends(get_db),
 ):
     """Create agent (JWT or API key). Returns ticket-shaped JSON."""
-    if not is_allowed_llm_model(agent_in.llm_model):
-        return _error_response(
-            request,
-            status.HTTP_400_BAD_REQUEST,
-            f"'{agent_in.llm_model}' is not a supported LLM model.",
-            error_code="invalid_llm_model",
-            extras={"allowedValues": allowed_llm_models()},
-        )
     try:
         agent = agent_service.create_agent(
             db,
@@ -115,7 +106,7 @@ def create_agent(
                 status.HTTP_400_BAD_REQUEST,
                 str(exc.detail),
                 error_code="invalid_llm_model",
-                extras={"allowedValues": allowed_llm_models()},
+                extras={"allowedValues": agent_service.list_active_llm_model_names(db)},
             )
         raise
     return JSONResponse(status_code=status.HTTP_201_CREATED, content=_serialize_out(agent))
@@ -159,14 +150,6 @@ def update_agent(
     db: Session = Depends(get_db),
 ):
     """Update mutable fields (JWT or API key)."""
-    if agent_update.llm_model is not None and not is_allowed_llm_model(agent_update.llm_model):
-        return _error_response(
-            request,
-            status.HTTP_400_BAD_REQUEST,
-            f"'{agent_update.llm_model}' is not a supported LLM model.",
-            error_code="invalid_llm_model",
-            extras={"allowedValues": allowed_llm_models()},
-        )
     try:
         agent = agent_service.update_agent(
             db,
@@ -176,6 +159,14 @@ def update_agent(
             _actor_user_id(principal),
         )
     except HTTPException as exc:
+        if exc.status_code == status.HTTP_400_BAD_REQUEST and "LLM model" in str(exc.detail):
+            return _error_response(
+                request,
+                status.HTTP_400_BAD_REQUEST,
+                str(exc.detail),
+                error_code="invalid_llm_model",
+                extras={"allowedValues": agent_service.list_active_llm_model_names(db)},
+            )
         if exc.status_code == status.HTTP_400_BAD_REQUEST and "elevenLabsApiKey" in str(exc.detail):
             return _error_response(
                 request,

@@ -15,14 +15,15 @@ from app.schemas.agent import (
     AgentUpdate,
     AgentListResponse,
     AgentStatusEnum,
+    TtsModelSchema,
     TtsProviderEnum,
     agent_to_out,
+    normalize_tts_provider_slug,
 )
 from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
 from app.services.rag_service import rag_service
 from app.core.config import settings
-from app.core.llm_models import is_allowed_llm_model
 from app.core.security import encrypt_api_key
 from app.repositories.agent_repository import AgentRepository
 from fastapi import HTTPException, status
@@ -38,12 +39,84 @@ class AgentService:
     def _repo(self, db: Session) -> AgentRepository:
         return AgentRepository(db)
 
-    def _assert_llm_model(self, llm_model: str) -> None:
-        if not is_allowed_llm_model(llm_model):
+    def list_active_llm_model_names(self, db: Session) -> list[str]:
+        rows = (
+            db.query(Model.model_name)
+            .filter(Model.archive == False)  # noqa: E712
+            .order_by(Model.model_name)
+            .all()
+        )
+        return [r[0] for r in rows]
+
+    def _resolve_llm_model(self, db: Session, llm_model: str) -> Model:
+        name = llm_model.strip()
+        model = (
+            db.query(Model)
+            .filter(Model.model_name == name, Model.archive == False)  # noqa: E712
+            .first()
+        )
+        if not model:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"'{llm_model}' is not a supported LLM model.",
+                detail=f"'{name}' is not a supported LLM model.",
             )
+        return model
+
+    def _resolve_tts_model(self, db: Session, tts: TtsModelSchema) -> dict[str, Any]:
+        slug = normalize_tts_provider_slug(tts.provider.value)
+        # BYO key is not a separate voice provider in our catalog; it only
+        # changes runtime behavior (inject ElevenLabs API key).
+        provider_lookup_slug = (
+            "elevenlabs" if slug == TtsProviderEnum.elevenlabs_byo.value else slug
+        )
+        provider = (
+            db.query(TTSProvider)
+            .filter(
+                TTSProvider.slug == provider_lookup_slug,
+                TTSProvider.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid ttsModel.provider '{tts.provider.value}'. Provider not found or inactive.",
+            )
+
+        voice = (
+            db.query(TTSVoice)
+            .filter(
+                TTSVoice.provider_id == provider.id,
+                TTSVoice.external_voice_id == tts.voice_id,
+                TTSVoice.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not voice:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid ttsModel.voiceId '{tts.voice_id}' for provider '{tts.provider.value}'."
+                ),
+            )
+
+        lang = tts.language.value
+        if voice.language_code and voice.language_code.lower() != lang.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"ttsModel.language '{lang}' does not match voice language "
+                    f"'{voice.language_code}'."
+                ),
+            )
+
+        return {
+            "tts_provider_slug": slug,
+            "tts_voice_external_id": tts.voice_id,
+            "tts_language": lang,
+            "tts_provider_id": provider.id,
+            "tts_voice_id": voice.id,
+        }
 
     def _encrypt_byo_key(self, raw_key: str) -> str:
         try:
@@ -55,32 +128,37 @@ class AgentService:
                 detail="Could not securely store the provided ElevenLabs key",
             )
 
-    def _ticket_payload_from_create(self, agent_in: AgentCreate) -> Dict[str, Any]:
-        self._assert_llm_model(agent_in.llm_model)
+    def _ticket_payload_from_create(self, db: Session, agent_in: AgentCreate) -> Dict[str, Any]:
+        model = self._resolve_llm_model(db, agent_in.llm_model)
+        tts_fields = self._resolve_tts_model(db, agent_in.tts_model)
         encrypted_key: Optional[str] = None
         if agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo:
             encrypted_key = self._encrypt_byo_key(agent_in.eleven_labs_api_key or "")
         return {
-            "llm_model": agent_in.llm_model,
-            "tts_provider_slug": agent_in.tts_model.provider.value,
-            "tts_voice_external_id": agent_in.tts_model.voice_id,
-            "tts_language": agent_in.tts_model.language,
+            "llm_model": model.model_name,
+            "model_id": model.id,
+            "provider_id": model.provider_id,
             "status": agent_in.status.value,
             "encrypted_elevenlabs_api_key": encrypted_key,
+            **tts_fields,
         }
 
     def _apply_ticket_update(
-        self, agent_in: AgentUpdate, agent: Agent, update_dict: Dict[str, Any]
+        self,
+        db: Session,
+        agent_in: AgentUpdate,
+        agent: Agent,
+        update_dict: Dict[str, Any],
     ) -> None:
         if agent_in.llm_model is not None:
-            self._assert_llm_model(agent_in.llm_model)
-            update_dict["llm_model"] = agent_in.llm_model
+            model = self._resolve_llm_model(db, agent_in.llm_model)
+            update_dict["llm_model"] = model.model_name
+            update_dict["model_id"] = model.id
+            update_dict["provider_id"] = model.provider_id
         if agent_in.status is not None:
             update_dict["status"] = agent_in.status.value
         if agent_in.tts_model is not None:
-            update_dict["tts_provider_slug"] = agent_in.tts_model.provider.value
-            update_dict["tts_voice_external_id"] = agent_in.tts_model.voice_id
-            update_dict["tts_language"] = agent_in.tts_model.language
+            update_dict.update(self._resolve_tts_model(db, agent_in.tts_model))
             if agent_in.tts_model.provider != TtsProviderEnum.elevenlabs_byo:
                 update_dict["encrypted_elevenlabs_api_key"] = None
         if agent_in.eleven_labs_api_key is not None:
@@ -96,7 +174,7 @@ class AgentService:
             ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="elevenLabsApiKey is required when ttsModel.provider is '11labs_byo'",
+                    detail="elevenLabsApiKey is required when ttsModel.provider is 'elevenlabs_byo'",
                 )
 
     def has_active_phone_binding(self, db: Session, agent_id: uuid.UUID) -> bool:
@@ -109,58 +187,6 @@ class AgentService:
             .limit(1)
         )
         return db.execute(stmt).first() is not None
-
-    def _validate_tts_selection(
-        self,
-        db: Session,
-        *,
-        tts_provider_id: Optional[uuid.UUID],
-        tts_voice_id: Optional[uuid.UUID],
-    ) -> Dict[str, Any]:
-        """
-        Validate optional TTS provider/voice selection.
-        Returns normalized ids where provider can be inferred from voice.
-        """
-        normalized = {
-            "tts_provider_id": tts_provider_id,
-            "tts_voice_id": tts_voice_id,
-        }
-
-        if not tts_provider_id and not tts_voice_id:
-            return normalized
-
-        provider = None
-        if tts_provider_id:
-            provider = db.query(TTSProvider).filter(TTSProvider.id == tts_provider_id).first()
-            if not provider or not provider.is_active:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid tts_provider_id. Provider not found or inactive.",
-                )
-
-        if tts_voice_id:
-            voice = db.query(TTSVoice).filter(TTSVoice.id == tts_voice_id).first()
-            if not voice or not voice.is_active:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid tts_voice_id. Voice not found or inactive.",
-                )
-
-            if provider and voice.provider_id != provider.id:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Selected TTS voice does not belong to the selected provider.",
-                )
-
-            normalized["tts_provider_id"] = provider.id if provider else voice.provider_id
-            normalized["tts_voice_id"] = voice.id
-        elif provider:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="tts_voice_id is required when selecting a tts_provider_id.",
-            )
-
-        return normalized
 
     def _validate_tts_settings_payload(self, tts_settings_json: Optional[Dict[str, Any]]) -> None:
         if not tts_settings_json:
@@ -345,18 +371,6 @@ class AgentService:
         Create a new agent with tenant context and audit trail.
         Supports JWT users and API-key M2M (``user_id`` may be None).
         """
-        # Validate model_id if provided
-        if agent_in.model_id:
-            model = db.query(Model).filter(
-                Model.id == agent_in.model_id,
-                Model.archive == False  # Only allow active models
-            ).first()
-            if not model:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid model_id. Model not found or is archived."
-                )
-
         repo = self._repo(db)
 
         # 🚨 CHECK AGENT LIMIT (MAX 5 AGENTS PER TENANT)
@@ -372,7 +386,7 @@ class AgentService:
                 detail="Agent name must be unique within the tenant."
             )
 
-        ticket_data = self._ticket_payload_from_create(agent_in)
+        ticket_data = self._ticket_payload_from_create(db, agent_in)
 
         # Sanitize string fields (exclude ticket-only nested objects)
         agent_data = agent_in.model_dump(
@@ -405,13 +419,6 @@ class AgentService:
         agent_data['created_by'] = user_id
         agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
 
-        normalized_tts = self._validate_tts_selection(
-            db,
-            tts_provider_id=agent_data.get("tts_provider_id"),
-            tts_voice_id=agent_data.get("tts_voice_id"),
-        )
-        agent_data["tts_provider_id"] = normalized_tts.get("tts_provider_id")
-        agent_data["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
         self._validate_transfer_route_for_tenant(db, tenant_id, agent_data.get("transfer_route_id"))
 
@@ -514,19 +521,7 @@ class AgentService:
             exclude_unset=True,
             exclude={"tts_model", "eleven_labs_api_key", "llm_model", "status"},
         )
-        self._apply_ticket_update(agent_update, agent, update_dict)
-
-        # Validate model_id if being updated
-        if "model_id" in update_dict and update_dict["model_id"] is not None:
-            model = db.query(Model).filter(
-                Model.id == update_dict["model_id"],
-                Model.archive == False  # Only allow active models
-            ).first()
-            if not model:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid model_id. Model not found or is archived."
-                )
+        self._apply_ticket_update(db, agent_update, agent, update_dict)
 
         # Enforce one dedicated inbound agent per tenant.
         if update_dict.get("is_inbound_agent") is True:
@@ -556,13 +551,6 @@ class AgentService:
                     detail="Only one follow-up appointment agent is allowed per tenant.",
                 )
 
-        normalized_tts = self._validate_tts_selection(
-            db,
-            tts_provider_id=update_dict.get("tts_provider_id", agent.tts_provider_id),
-            tts_voice_id=update_dict.get("tts_voice_id", agent.tts_voice_id),
-        )
-        update_dict["tts_provider_id"] = normalized_tts.get("tts_provider_id")
-        update_dict["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(update_dict.get("tts_settings_json"))
 
         if "transfer_route_id" in update_dict:
