@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
     
+    # Rime Labs TTS Configuration
+    RIME_API_KEY: str = ""
+
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
     # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only

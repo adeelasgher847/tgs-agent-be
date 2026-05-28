@@ -292,6 +292,12 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         
         # TTS (Output) state - Parallel Pipeline
         self.is_speaking = False
+        # _is_tts_playing: True ONLY when audio frames are actively streaming to
+        # Twilio.  Used as the barge-in gate instead of is_speaking (which flips
+        # True when synthesis tasks are created, before any audio reaches Twilio).
+        # This prevents false-positive barge-in cancellation during the LLM→TTS
+        # synthesis phase — the root cause of "2-3 words then silence".
+        self._is_tts_playing: bool = False
         self._tts_cancel = asyncio.Event()   # barge-in cancel signal
         self._tts_lock = asyncio.Lock()      # serialize TTS streams
         self._tts_worker_task = None         # Backwards-compatible handle to pipeline worker
@@ -306,6 +312,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         # user turn when interim/final regeneration paths overlap.
         self._last_quick_ack_user_norm: str = ""
         self._last_quick_ack_mono: float = 0.0
+        # Latency instrumentation timestamps (wall-clock via time.perf_counter)
+        self._metric_stt_final_ts: float = 0.0        # STT final received
+        self._metric_gen_start_ts: float = 0.0        # LLM generation started
+        self._metric_first_token_ts: float = 0.0      # First LLM token received
+        self._metric_first_audio_ts: float = 0.0      # First audio frame sent to Twilio
+        self._metric_barge_in_ts: float = 0.0         # Barge-in event fired
+        self._metric_audio_cut_ts: float = 0.0        # Audio stream actually stopped
         
         # Session data
         self.call_session = None
@@ -904,6 +917,28 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
         try:
+            # Strict barge-in on FINAL events: if audio is actively playing, cut it
+            # immediately before any DB work so the caller is never left waiting.
+            if self._is_tts_playing and (transcript or "").strip():
+                _barge_ts = time.monotonic()
+                self._metric_barge_in_ts = _barge_ts
+                logger.info(
+                    "[Barge-in/final] TTS cut by final STT: %r",
+                    (transcript or "")[:40],
+                )
+                await self._cancel_inflight_llm_response()
+                self._metric_audio_cut_ts = time.monotonic()
+                _cut_ms = (self._metric_audio_cut_ts - _barge_ts) * 1000
+                logger.info(
+                    "[Metrics] interruption_detection_to_audio_cut=%.0f ms (final)",
+                    _cut_ms,
+                )
+                self._is_tts_playing = False
+                self._turn_response_started = False
+                self._turn_response_seed_text = ""
+                self._last_interim_text = ""
+                # Fall through — still process transcript and generate new response.
+
             async with self._voice_transcript_lock:
                 if not self._should_accept_final_transcript(transcript, confidence):
                     return
@@ -929,6 +964,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                     return
 
                 self._voice_metrics.begin_turn_at_stt_final()
+                self._metric_stt_final_ts = time.perf_counter()
 
                 # 🎯 Check for goodbye words FIRST - end call if detected
                 if await self._check_and_end_call_if_goodbye(transcript):
@@ -994,18 +1030,27 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
 
             word_count = len(transcript.split())
 
-            # Barge-in: require real speech (not filler noise) while the agent is speaking.
-            # The previous "any word" gate was triggering on "uh", "mm", and phantom short
-            # STT hits, which cancelled good in-flight replies and produced the "arr arr"
-            # stutter. Two thresholds keep both worlds (tuned via settings.* for soft speech):
-            #   • ≥2 words → VOICE_BARGE_IN_MIN_CONFIDENCE
-            #   • 1 word  → VOICE_BARGE_IN_MIN_CONFIDENCE_1W
-            is_barge_in = self._tts_pipeline and self._tts_pipeline.is_speaking and (
-                (word_count >= 2 and confidence >= self._barge_in_min_conf)
-                or (word_count >= 1 and confidence >= self._barge_in_min_conf_1w)
-            )
+            # ── Barge-in gate ────────────────────────────────────────────────────
+            # Strict policy: ANY non-empty STT event (interim or final) while audio is
+            # actively playing to Twilio fires barge-in immediately.  The sole false-
+            # trigger protection is `_is_tts_playing` itself — it is only True after the
+            # first real 20ms mulaw frame has been sent to the Twilio WebSocket, so
+            # synthesis-in-flight (no audio yet) never triggers this path.
+            is_barge_in = self._is_tts_playing and bool((transcript or "").strip())
             if is_barge_in:
+                _barge_ts = time.monotonic()
+                self._metric_barge_in_ts = _barge_ts
+                logger.info(
+                    "[Barge-in] triggered: words=%d conf=%.2f transcript=%r",
+                    word_count, confidence, (transcript or "")[:40],
+                )
                 await self._cancel_inflight_llm_response()
+                self._metric_audio_cut_ts = time.monotonic()
+                _cut_ms = (self._metric_audio_cut_ts - _barge_ts) * 1000
+                logger.info(
+                    "[Metrics] interruption_detection_to_audio_cut=%.0f ms", _cut_ms
+                )
+                self._is_tts_playing = False
                 self._turn_response_started = False
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
@@ -1268,8 +1313,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             self._tts_cancel.clear()
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
+            self._is_tts_playing = False        # Audio not yet streaming for this turn
 
             self._voice_metrics.start_generation()
+            self._metric_gen_start_ts = time.perf_counter()
+            _stt_to_gen_ms = (self._metric_gen_start_ts - self._metric_stt_final_ts) * 1000
+            if self._metric_stt_final_ts > 0:
+                logger.info("[Metrics] stt_final_to_gen_start=%.0f ms", _stt_to_gen_ms)
             slowpath_started_at = time.perf_counter()
 
             def _remaining_slowpath_budget(default_timeout: float) -> float:
@@ -1881,6 +1931,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     return m.end()
 
                 _first_token_marked = False
+                _first_token_recorded = False
                 async for chunk in service.stream_text(
                     prompt=user_text,
                     system_prompt=system_prompt,
@@ -1903,6 +1954,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_llm_first_token()
+                    if not _first_token_recorded:
+                        _first_token_recorded = True
+                        self._metric_first_token_ts = time.perf_counter()
 
                     # Detect END_CALL early (may appear late, but handle if it appears mid-stream)
                     if _RE_VOICE_END_CALL.search(response_accum):

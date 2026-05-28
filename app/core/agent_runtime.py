@@ -19,7 +19,8 @@ from app.models.agent import Agent
 _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
     "11labs": "elevenlabs",
     "11labs_byo": "elevenlabs",
-    "rime": "google",  # no Rime adapter yet — safe telephony fallback
+    # "rime" now has its own adapter — no longer falls back to google.
+    "rime": "rime",
 }
 
 
@@ -43,11 +44,11 @@ class ResolvedTtsRuntime:
 
 
 def _ticket_tts_triad(agent: Agent) -> bool:
-    return bool(
-        agent.tts_provider_slug
-        and agent.tts_voice_external_id
-        and agent.tts_language
+    # Rime has a built-in default voice — allow ticket path even without explicit voice_id.
+    has_voice = bool(agent.tts_voice_external_id) or (
+        (agent.tts_provider_slug or "").lower() == "rime"
     )
+    return bool(agent.tts_provider_slug and agent.tts_language and has_voice)
 
 
 def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
@@ -161,11 +162,6 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
     if _ticket_tts_triad(agent):
         slug = (agent.tts_provider_slug or "").lower()
         adapter_slug = _TICKET_TTS_TO_ADAPTER.get(slug, slug)
-        if slug == "rime":
-            logger.debug(
-                "Agent %s uses ticket TTS provider 'rime'; falling back to google TTS adapter",
-                agent.id,
-            )
         voice_id = agent.tts_voice_external_id
         if agent.tts_language:
             language = agent.tts_language
@@ -176,6 +172,12 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
                 )
             except Exception as exc:
                 logger.error("Failed to decrypt BYO ElevenLabs key for agent %s: %s", agent.id, exc)
+        # Normalize speed + volume for all providers (default 1.0 if absent).
+        settings.setdefault("speed", float(settings.get("speed", 1.0)))
+        settings.setdefault("volume", float(settings.get("volume", 1.0)))
+        # For Rime: ensure default voice when none configured.
+        if adapter_slug == "rime" and not voice_id:
+            voice_id = "mistv2_Wildflower"
         settings.setdefault("language_code", language)
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,
@@ -190,6 +192,8 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
         adapter_slug = (legacy_provider.slug or "google").lower()
         tts_voice = getattr(agent, "tts_voice", None)
         voice_id = getattr(tts_voice, "external_voice_id", None) if tts_voice else None
+        settings.setdefault("speed", float(settings.get("speed", 1.0)))
+        settings.setdefault("volume", float(settings.get("volume", 1.0)))
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,
             voice_external_id=voice_id,

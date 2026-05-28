@@ -90,3 +90,39 @@ def get_twilio_credentials() -> Tuple[str, str]:
 
 def is_staging() -> bool:
     return settings.ENVIRONMENT.lower() == "staging"
+
+
+@lru_cache(maxsize=1)
+def get_rime_api_key() -> str:
+    """
+    Return the Rime TTS API key appropriate for the current environment.
+
+    - production/staging → GCP Secret Manager (secret name: RIME_API_KEY), with
+      env-var fallback so deployments that set the var directly still work.
+    - development → plain env-var / .env value.
+
+    Raises RuntimeError if no key is available so the call fails early with a
+    clear message rather than silently sending unauthenticated requests.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        secret_key = _fetch_from_secret_manager("RIME_API_KEY")
+        if secret_key:
+            return secret_key
+        # Fall back to env var (covers deployments that inject the var via CI/CD).
+        env_key = getattr(settings, "RIME_API_KEY", "") or ""
+        if env_key.strip():
+            return env_key.strip()
+        raise RuntimeError(
+            f"RIME_API_KEY unavailable in {env}. "
+            "Set it in GCP Secret Manager (secret: RIME_API_KEY) or as an env var."
+        )
+
+    # development — plain env var / .env
+    env_key = getattr(settings, "RIME_API_KEY", "") or ""
+    if not env_key.strip():
+        raise ValueError(
+            "RIME_API_KEY is not set. Add it to your .env file for local development."
+        )
+    return env_key.strip()

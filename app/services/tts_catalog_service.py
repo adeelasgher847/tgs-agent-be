@@ -27,6 +27,13 @@ class TTSCatalogService:
                 "supports_streaming": True,
                 "supports_ssml": True,
             },
+            {
+                "slug": "rime",
+                "display_name": "Rime Labs",
+                "is_active": True,
+                "supports_streaming": True,
+                "supports_ssml": False,
+            },
         ]
 
         selected = None

@@ -168,6 +168,27 @@ class TtsStreamMixin:
                                     # WebSocket already closed (hangup). Stop sending immediately.
                                     self._tts_cancel.set()
                                     return
+                                # Mark audio as actively playing on the first real frame sent.
+                                if not getattr(self, "_is_tts_playing", False):
+                                    self._is_tts_playing = True
+                                    _first_audio_ts = time.perf_counter()
+                                    self._metric_first_audio_ts = _first_audio_ts
+                                    _first_token_ts = getattr(self, "_metric_first_token_ts", 0.0)
+                                    if _first_token_ts > 0:
+                                        _ttfa_ms = (_first_audio_ts - _first_token_ts) * 1000
+                                        logger.info(
+                                            "[Metrics] llm_first_token_to_first_audio_chunk=%.0f ms",
+                                            _ttfa_ms,
+                                        )
+                                    # End-to-end latency: caller speech → first agent audio out.
+                                    # Parsed by scripts/latency_p95.py to compute staging p95.
+                                    _stt_final_ts = getattr(self, "_metric_stt_final_ts", 0.0)
+                                    if _stt_final_ts > 0:
+                                        _e2e_ms = (_first_audio_ts - _stt_final_ts) * 1000
+                                        logger.info(
+                                            "[Metrics] stt_final_to_first_audio=%.0f ms",
+                                            _e2e_ms,
+                                        )
                                 if not pace:
                                     return
                                 # Pacing with drift correction (shared state)
@@ -318,11 +339,13 @@ class TtsStreamMixin:
                                 return
                             if _is_prefetched_iter:
                                 audio_iter = prefetched_bytes
-                            elif tts_provider_slug and tts_provider_slug != "google":
+                            elif tts_provider_slug and tts_provider_slug not in ("google", ""):
                                 external_voice_id = tts_runtime.voice_external_id
                                 if not external_voice_id:
                                     tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
                                     external_voice_id = getattr(tts_voice, "external_voice_id", None)
+                                if not external_voice_id and tts_provider_slug == "rime":
+                                    external_voice_id = "mistv2_Wildflower"
                                 if not external_voice_id:
                                     raise ValueError("TTS voice is not configured for streaming.")
                                 adapter = get_tts_adapter(tts_provider_slug)
@@ -331,26 +354,53 @@ class TtsStreamMixin:
                                     provider_settings.setdefault("output_format", "ulaw_8000")
                                     previous_text = (self._elevenlabs_prev_tts_text or "").strip()
                                     if previous_text:
-                                        # Maintain natural continuity across app-level chunked TTS requests.
                                         provider_settings["previous_text"] = previous_text[-500:]
+                                elif tts_provider_slug == "rime":
+                                    # Rime uses async_stream_synthesize — no output_format key needed
+                                    # (mulaw 8 kHz is the default in RimeTTSAdapter).
+                                    pass
                                 else:
                                     provider_settings.setdefault("output_format", "ulaw_8000")
-                                sync_iter = adapter.stream_synthesize(
-                                    text=streaming_text,
-                                    voice_external_id=external_voice_id,
-                                    settings_json=provider_settings,
-                                )
 
-                                async def _async_iter_from_sync(sync_source):
-                                    iterator = iter(sync_source)
-                                    sentinel = object()
-                                    while True:
-                                        chunk = await asyncio.to_thread(next, iterator, sentinel)
-                                        if chunk is sentinel:
-                                            break
-                                        yield chunk
+                                # Prefer async streaming for providers that support it (Rime, ElevenLabs).
+                                if hasattr(adapter, "async_stream_synthesize"):
+                                    _cancel_ref = self._tts_cancel
 
-                                audio_iter = _async_iter_from_sync(sync_iter)
+                                    async def _async_stream_adapter(
+                                        _adapter=adapter,
+                                        _text=streaming_text,
+                                        _vid=external_voice_id,
+                                        _cfg=provider_settings,
+                                        _cancel=_cancel_ref,
+                                    ):
+                                        async for chunk in _adapter.async_stream_synthesize(
+                                            text=_text,
+                                            voice_external_id=_vid,
+                                            settings_json=_cfg,
+                                        ):
+                                            if _cancel.is_set():
+                                                break
+                                            if chunk:
+                                                yield chunk
+
+                                    audio_iter = _async_stream_adapter()
+                                else:
+                                    sync_iter = adapter.stream_synthesize(
+                                        text=streaming_text,
+                                        voice_external_id=external_voice_id,
+                                        settings_json=provider_settings,
+                                    )
+
+                                    async def _async_iter_from_sync(sync_source):
+                                        iterator = iter(sync_source)
+                                        sentinel = object()
+                                        while True:
+                                            chunk = await asyncio.to_thread(next, iterator, sentinel)
+                                            if chunk is sentinel:
+                                                break
+                                            yield chunk
+
+                                    audio_iter = _async_iter_from_sync(sync_iter)
                             else:
                                 # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
                                 # Keep this subtle to avoid uncanny/unstable cadence.
@@ -492,7 +542,8 @@ class TtsStreamMixin:
                     if self._tts_cancel.is_set():
                         self._prev_tts_tail = b""
                     self.is_speaking = False
-        
+                    self._is_tts_playing = False
+
         except Exception as e:
             logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
 
@@ -528,27 +579,33 @@ class TtsStreamMixin:
             if not streaming_text or not streaming_text.strip():
                 return None
 
-            if tts_provider_slug and tts_provider_slug != "google":
+            if tts_provider_slug and tts_provider_slug not in ("google", ""):
                 external_voice_id = tts_runtime.voice_external_id
                 if not external_voice_id:
                     tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
                     external_voice_id = getattr(tts_voice, "external_voice_id", None)
+                if not external_voice_id and tts_provider_slug == "rime":
+                    external_voice_id = "mistv2_Wildflower"
                 if not external_voice_id:
                     return None
                 adapter = get_tts_adapter(tts_provider_slug)
                 provider_settings = dict(tts_runtime.settings_json)
-                provider_settings.setdefault("output_format", "ulaw_8000")
                 if tts_provider_slug == "elevenlabs":
+                    provider_settings.setdefault("output_format", "ulaw_8000")
                     previous_text = (self._elevenlabs_prev_tts_text or "").strip()
                     if previous_text:
                         provider_settings["previous_text"] = previous_text[-500:]
+                elif tts_provider_slug == "rime":
+                    # Rime adapter handles format internally; no output_format key needed.
+                    pass
+                else:
+                    provider_settings.setdefault("output_format", "ulaw_8000")
 
-                # Use true async streaming for ElevenLabs to avoid blocking the event loop.
-                # For other non-Google providers fall back to the sync-wrapped path.
-                if tts_provider_slug == "elevenlabs" and hasattr(adapter, "async_stream_synthesize"):
+                # Use true async streaming for providers that support it (Rime, ElevenLabs).
+                if hasattr(adapter, "async_stream_synthesize"):
                     _cancel_ref = self._tts_cancel
 
-                    async def _async_elevenlabs_iter(
+                    async def _async_provider_iter(
                         _adapter=adapter,
                         _text=streaming_text,
                         _vid=external_voice_id,
@@ -565,7 +622,7 @@ class TtsStreamMixin:
                             if chunk:
                                 yield chunk
 
-                    return _async_elevenlabs_iter()
+                    return _async_provider_iter()
 
                 sync_iter = adapter.stream_synthesize(
                     text=streaming_text,

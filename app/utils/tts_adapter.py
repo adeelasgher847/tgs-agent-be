@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, AsyncIterator, Dict, Optional
 
 from app.models.tts_provider import TTSProvider
 from app.services.elevenlabs_service import elevenlabs_service
@@ -236,12 +236,111 @@ class GoogleTTSAdapter(BaseTTSProviderAdapter):
         )
 
 
+class RimeTTSAdapter(BaseTTSProviderAdapter):
+    """
+    Adapter for Rime Labs TTS (mistv2 model).
+
+    Telephony output: mulaw 8 kHz — matches Twilio MULAW 8000 directly.
+    Default voice: mistv2_Wildflower (configurable via voiceId per agent).
+
+    settings_json keys (all optional):
+        speed    (float, default 1.0) — mapped to Rime speedAlpha
+        volume   (float, default 1.0) — post-processing gain (0.0–2.0)
+        model_id (str,   default "mistv2")
+    """
+
+    _DEFAULT_VOICE = "mistv2_Wildflower"
+    _DEFAULT_MODEL = "mistv2"
+
+    def list_voices(self) -> list[dict[str, Any]]:
+        # Rime does not expose a public voice catalogue endpoint; return a
+        # static list of known mistv2 voices for the UI voice picker.
+        return [
+            {"voice_id": "mistv2_Wildflower", "name": "Wildflower (mistv2)"},
+            {"voice_id": "mistv2_Meadow", "name": "Meadow (mistv2)"},
+            {"voice_id": "mistv2_Brook", "name": "Brook (mistv2)"},
+            {"voice_id": "mistv2_Cliff", "name": "Cliff (mistv2)"},
+            {"voice_id": "mistv2_Stone", "name": "Stone (mistv2)"},
+        ]
+
+    def normalize_voice_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "external_voice_id": payload.get("voice_id"),
+            "display_name": payload.get("name") or "Rime Voice",
+            "language_code": "en",
+            "gender": None,
+            "accent": None,
+            "description": "Rime Labs mistv2 voice",
+            "preview_audio_url": None,
+            "sample_rate_hz": 8000,
+            "metadata_json": payload,
+        }
+
+    def synthesize(
+        self,
+        text: str,
+        voice_external_id: str,
+        settings_json: Optional[dict[str, Any]] = None,
+    ) -> bytes:
+        import asyncio
+        cfg = dict(settings_json or {})
+        speed = float(cfg.get("speed", 1.0))
+        model_id = cfg.get("model_id", self._DEFAULT_MODEL)
+        speaker = voice_external_id or self._DEFAULT_VOICE
+        from app.services.rime_tts_service import rime_tts_service
+        return asyncio.get_event_loop().run_until_complete(
+            rime_tts_service.synthesize(
+                text=text,
+                speaker=speaker,
+                model_id=model_id,
+                speed_alpha=speed,
+                sample_rate=8000,
+                audio_format="mulaw",
+            )
+        )
+
+    async def async_stream_synthesize(
+        self,
+        text: str,
+        voice_external_id: str,
+        settings_json: Optional[dict[str, Any]] = None,
+    ) -> AsyncIterator[bytes]:
+        """True async streaming — yields raw mulaw bytes as they arrive."""
+        cfg = dict(settings_json or {})
+        speed = float(cfg.get("speed", 1.0))
+        model_id = cfg.get("model_id", self._DEFAULT_MODEL)
+        speaker = voice_external_id or self._DEFAULT_VOICE
+        from app.services.rime_tts_service import rime_tts_service
+        async for chunk in rime_tts_service.stream_text_to_speech(
+            text=text,
+            speaker=speaker,
+            model_id=model_id,
+            speed_alpha=speed,
+            sample_rate=8000,
+            audio_format="mulaw",
+        ):
+            yield chunk
+
+    def stream_synthesize(
+        self,
+        text: str,
+        voice_external_id: str,
+        settings_json: Optional[dict[str, Any]] = None,
+    ):
+        # Sync streaming is not used for Rime; callers should use async_stream_synthesize.
+        raise NotImplementedError(
+            "Use async_stream_synthesize for Rime TTS streaming"
+        )
+
+
 def get_tts_adapter(provider_slug: str) -> BaseTTSProviderAdapter:
     slug = (provider_slug or "").strip().lower()
     if slug == "elevenlabs":
         return ElevenLabsAdapter()
     if slug == "google":
         return GoogleTTSAdapter()
+    if slug == "rime":
+        return RimeTTSAdapter()
     raise ValueError(f"Unsupported TTS provider: {provider_slug}")
 
 

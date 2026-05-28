@@ -59,6 +59,7 @@ def _base_handler() -> Handler:
 
     # Barge-in
     h.is_speaking = False
+    h._is_tts_playing = False  # audio not actively streaming (new gate for false-positive fix)
     h._barge_in_min_conf = 0.26
     h._barge_in_min_conf_1w = 0.52
     h._tts_cancel = asyncio.Event()
@@ -157,6 +158,14 @@ def _base_handler() -> Handler:
 
     # Voice metrics (used inside generate_and_stream_response)
     h._voice_metrics = MagicMock()
+
+    # Latency metric timestamps (new — required by generate_and_stream_response)
+    h._metric_stt_final_ts = 0.0
+    h._metric_gen_start_ts = 0.0
+    h._metric_first_token_ts = 0.0
+    h._metric_first_audio_ts = 0.0
+    h._metric_barge_in_ts = 0.0
+    h._metric_audio_cut_ts = 0.0
 
     # TTS SSML flag and crossfade state
     h._use_ssml = False
@@ -489,6 +498,7 @@ class TestBargeIn:
     def test_barge_in_cancels_tts_when_agent_speaking(self):
         h = _base_handler()
         h.is_speaking = True
+        h._is_tts_playing = True   # audio actively streaming — required for barge-in to fire
         h._tts_pipeline.is_speaking = True
 
         asyncio.run(h._maybe_process_interim("no wait stop", 0.85))
@@ -499,6 +509,7 @@ class TestBargeIn:
         """1 word at or above BARGE_IN_MIN_CONF_1W must trigger cancel."""
         h = _base_handler()
         h.is_speaking = True
+        h._is_tts_playing = True   # audio actively streaming
         h._tts_pipeline.is_speaking = True
 
         asyncio.run(h._maybe_process_interim("stop", 0.55))
