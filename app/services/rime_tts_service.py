@@ -101,7 +101,9 @@ class RimeTtsService:
         headers = {
             "Authorization": f"Bearer {self._api_key()}",
             "Content-Type": "application/json",
-            "Accept": "audio/basic",  # mulaw MIME
+            # Streaming format is controlled by Accept (not JSON audioFormat).
+            # audio/basic returns non-mulaw bytes → Twilio plays as garbled "cheeee" noise.
+            "Accept": "audio/x-mulaw",
         }
 
         t0 = time.perf_counter()

@@ -205,6 +205,7 @@ class TestRimeTTSAdapter:
         import httpx
 
         captured_payload: dict = {}
+        captured_headers: dict = {}
 
         class _FakeResponse:
             status_code = 200
@@ -229,6 +230,8 @@ class TestRimeTTSAdapter:
         mock_client.is_closed = False
 
         def _fake_stream_call(method, url, json=None, headers=None):
+            if headers:
+                captured_headers.update(headers)
             return _FakeStream(json or {})
 
         mock_client.stream.side_effect = _fake_stream_call
@@ -245,6 +248,9 @@ class TestRimeTTSAdapter:
 
         assert captured_payload.get("streaming") is True, (
             "Rime API payload must include streaming=True"
+        )
+        assert captured_headers.get("Accept") == "audio/x-mulaw", (
+            "Rime streaming must request mulaw via Accept header (Twilio telephony)"
         )
 
 
