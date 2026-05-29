@@ -57,6 +57,30 @@ def tts_slug_to_api_provider(slug: str) -> TtsProviderEnum:
     return TtsProviderEnum(canonical)
 
 
+class TtsSettingsJsonSchema(BaseModel):
+    """
+    Optional TTS voice tuning stored on ``agent.tts_settings_json``.
+
+    Omit the whole object at create/update to keep normal call-time defaults
+    (speed 1.0, volume 1.0). Shown in Swagger as the default example shape.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    speed: float = Field(
+        default=1.0,
+        ge=0.25,
+        le=2.0,
+        description="Speech rate. 1.0 = normal, lower = slower, higher = faster.",
+    )
+    volume: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=2.0,
+        description="Output loudness. 1.0 = normal, 0 = silence, up to 2.0 = louder.",
+    )
+
+
 class TtsModelSchema(BaseModel):
     """Ticket ``ttsModel`` fragment — validated against TTS catalog in service layer."""
 
@@ -105,7 +129,14 @@ class AgentCreate(BaseModel):
     fallback_response: Optional[str] = None
     agent_temperature: Optional[int] = Field(None, ge=0, le=100)
     agent_max_tokens: Optional[int] = Field(None, gt=0)
-    tts_settings_json: Optional[Dict[str, Any]] = None
+    tts_settings_json: Optional[TtsSettingsJsonSchema] = Field(
+        default=None,
+        description=(
+            "Optional TTS tuning. Example uses normal speed/volume (1.0). "
+            "Omit entirely to use the same defaults at call time."
+        ),
+        json_schema_extra={"example": {"speed": 1.0, "volume": 1.0}},
+    )
     greeting_message: Optional[str] = None
     is_inbound_agent: bool = False
     is_follow_up_agent: bool = False
@@ -160,7 +191,14 @@ class AgentUpdate(BaseModel):
     fallback_response: Optional[str] = None
     agent_temperature: Optional[int] = Field(None, ge=0, le=100)
     agent_max_tokens: Optional[int] = Field(None, gt=0)
-    tts_settings_json: Optional[Dict[str, Any]] = None
+    tts_settings_json: Optional[TtsSettingsJsonSchema] = Field(
+        default=None,
+        description=(
+            "Optional TTS tuning. Example uses normal speed/volume (1.0). "
+            "Omit entirely to use the same defaults at call time."
+        ),
+        json_schema_extra={"example": {"speed": 1.0, "volume": 1.0}},
+    )
     greeting_message: Optional[str] = None
     is_inbound_agent: Optional[bool] = None
     is_follow_up_agent: Optional[bool] = None
