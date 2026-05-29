@@ -210,6 +210,43 @@ class AgentService:
                 detail="TTS provider credentials must not be passed in request payload.",
             )
 
+        # Validate speed / volume — accept flat or nested ("settings": {...}).
+        # Ranges match agent_runtime clamps so the API rejects out-of-bounds
+        # input rather than silently coercing it during call setup.
+        nested = tts_settings_json.get("settings") if isinstance(tts_settings_json, dict) else None
+        combined: Dict[str, Any] = {}
+        if isinstance(nested, dict):
+            combined.update(nested)
+        combined.update({k: v for k, v in tts_settings_json.items() if k != "settings"})
+
+        if "speed" in combined:
+            try:
+                speed = float(combined["speed"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="ttsSettingsJson.speed must be a number between 0.25 and 2.0.",
+                )
+            if speed < 0.25 or speed > 2.0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="ttsSettingsJson.speed must be between 0.25 and 2.0.",
+                )
+
+        if "volume" in combined:
+            try:
+                voice_volume = float(combined["volume"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="ttsSettingsJson.volume must be a number between 0.0 and 2.0.",
+                )
+            if voice_volume < 0.0 or voice_volume > 2.0:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="ttsSettingsJson.volume must be between 0.0 and 2.0.",
+                )
+
         if "background_enabled" in tts_settings_json:
             raw_enabled = tts_settings_json.get("background_enabled")
             if isinstance(raw_enabled, bool):

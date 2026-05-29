@@ -17,7 +17,11 @@ from app.core.logger import logger
 from app.services.bidirectional_stream_service import generate_mulaw_tts
 from app.services.credit_service import credit_service
 from app.services.google_tts_service import google_tts_service
-from app.utils.audio_utils import stream_mulaw_bytes_over_twilio, crossfade_mulaw_segments
+from app.utils.audio_utils import (
+    apply_volume_fade,
+    crossfade_mulaw_segments,
+    stream_mulaw_bytes_over_twilio,
+)
 from app.utils.tts_adapter import get_tts_adapter
 from app.utils.tts_preprocessing import detect_emotion
 from app.utils.ssml_utils import strip_ssml_tags, smart_chunk_text
@@ -82,6 +86,23 @@ class TtsStreamMixin:
             pct = 50.0
         pct = max(0.0, min(100.0, pct))
         return pct / 100.0
+
+    def _resolve_voice_volume(self) -> float:
+        """
+        Resolve TTS voice volume (linear gain) from agent settings.
+        1.0 = unchanged. Applied uniformly to all providers (Google,
+        ElevenLabs, Rime) at the mulaw playback boundary.
+
+        Distinct from `background_volume` which only affects the optional
+        office ambient bed (ElevenLabs profile).
+        """
+        if not self.agent:
+            return 1.0
+        try:
+            runtime = resolve_tts_runtime(self.agent)
+            return float(runtime.settings_json.get("volume", 1.0))
+        except Exception:
+            return 1.0
 
     async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False, prefetched_bytes: Any = None):
         """
@@ -206,6 +227,8 @@ class TtsStreamMixin:
                                 elif sleep_dur < -0.03:
                                     state["next_send"] = time.perf_counter()
 
+                            voice_gain = self._resolve_voice_volume()
+
                             async def stream_mulaw_from_audio_iter(audio_iter):
                                 """
                                 Consume an async iterator of MULAW bytes and stream as 20ms frames.
@@ -213,6 +236,8 @@ class TtsStreamMixin:
                                 - Optional jitter-buffer priming (first speak only)
                                 - Single crossfade bridge at chunk boundary (prev tail + next head)
                                 - Tail holdback (20ms) between chunks to avoid clicks/distortion
+                                - User-configurable voice gain applied per chunk (not on priming
+                                  / silence-drain frames, which stay at 0xFF).
                                 """
                                 if self._is_background_audio_enabled():
                                     self._background_audio.set_user_level(self._resolve_background_volume())
@@ -244,6 +269,8 @@ class TtsStreamMixin:
                                         return
                                     if not chunk_bytes:
                                         continue
+                                    if voice_gain != 1.0:
+                                        chunk_bytes = apply_volume_fade(chunk_bytes, voice_gain)
                                     byte_buf.extend(chunk_bytes)
 
                                     # Convert bytes to 20ms frames
@@ -491,6 +518,13 @@ class TtsStreamMixin:
                         if is_final and to_stream:
                             to_stream = apply_micro_fade_out(to_stream, duration_ms=25.0)
 
+                        # User-configurable TTS voice gain (uniform across providers).
+                        # Applied on speech bytes only; jitter priming + silence drain
+                        # frames keep their 0xFF mulaw silence below.
+                        voice_gain = self._resolve_voice_volume()
+                        if to_stream and voice_gain != 1.0:
+                            to_stream = apply_volume_fade(to_stream, voice_gain)
+
                         # Mix with ambient bed only when explicitly enabled for office profile.
                         if self._is_background_audio_enabled():
                             self._background_audio.set_user_level(self._resolve_background_volume())
@@ -719,6 +753,13 @@ class TtsStreamMixin:
                         agent=self.agent,
                     )
 
+                    # Apply user-configurable voice gain BEFORE crossfade split so
+                    # both prefix_main and the crossfaded suffix join are scaled
+                    # consistently across all providers.
+                    voice_gain = self._resolve_voice_volume()
+                    if prefix_audio and voice_gain != 1.0:
+                        prefix_audio = apply_volume_fade(prefix_audio, voice_gain)
+
                     # Hold back 50ms for crossfade with next chunk (smooth transitions)
                     overlap_bytes = 400  # 50ms at 8kHz
                     if len(prefix_audio) > overlap_bytes:
@@ -752,7 +793,10 @@ class TtsStreamMixin:
                             suffix_audio = await suffix_task
                         except Exception:
                             suffix_audio = b""
-                        
+
+                        if suffix_audio and voice_gain != 1.0:
+                            suffix_audio = apply_volume_fade(suffix_audio, voice_gain)
+
                         if not self._tts_cancel.is_set():
                             if suffix_audio:
                                 # Crossfade boundary to eliminate clicks

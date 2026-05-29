@@ -23,6 +23,42 @@ _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
     "rime": "rime",
 }
 
+# User-facing speed/volume bounds (uniform across all TTS providers).
+# Mental model: 1.0 = normal, <1 = slower/quieter, >1 = faster/louder.
+TTS_SPEED_MIN = 0.25
+TTS_SPEED_MAX = 2.0
+TTS_VOLUME_MIN = 0.0
+TTS_VOLUME_MAX = 2.0
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _merge_nested_tts_settings(raw: dict[str, Any]) -> dict[str, Any]:
+    """
+    Accept both flat and nested shapes for tts_settings_json.
+
+    Flat (preferred): {"speed": 0.8, "volume": 1.0, ...}
+    Nested (UI/legacy): {"settings": {"speed": 0.8, "volume": 1.0}, ...}
+
+    Nested keys are merged into the top level WITHOUT overwriting an explicit
+    top-level value (top level wins on conflict).
+    """
+    merged = dict(raw or {})
+    nested = merged.get("settings")
+    if isinstance(nested, dict):
+        for k, v in nested.items():
+            merged.setdefault(k, v)
+    return merged
+
 
 @dataclass(frozen=True)
 class ResolvedLlmRuntime:
@@ -157,7 +193,16 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
 
     if agent.language:
         language = agent.language
-    settings = dict(agent.tts_settings_json or {})
+    settings = _merge_nested_tts_settings(agent.tts_settings_json or {})
+
+    # Normalise + clamp user-facing speed/volume so downstream adapters can
+    # rely on safe ranges. Uniform semantics across all providers:
+    #   speed: 1.0 = normal, 0.8 = slower, 1.2 = faster
+    #   volume: 1.0 = normal, 0.0 = silence, 2.0 = max louder
+    speed = _clamp(_coerce_float(settings.get("speed", 1.0), 1.0), TTS_SPEED_MIN, TTS_SPEED_MAX)
+    volume = _clamp(_coerce_float(settings.get("volume", 1.0), 1.0), TTS_VOLUME_MIN, TTS_VOLUME_MAX)
+    settings["speed"] = speed
+    settings["volume"] = volume
 
     if _ticket_tts_triad(agent):
         slug = (agent.tts_provider_slug or "").lower()
@@ -172,9 +217,6 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
                 )
             except Exception as exc:
                 logger.error("Failed to decrypt BYO ElevenLabs key for agent %s: %s", agent.id, exc)
-        # Normalize speed + volume for all providers (default 1.0 if absent).
-        settings.setdefault("speed", float(settings.get("speed", 1.0)))
-        settings.setdefault("volume", float(settings.get("volume", 1.0)))
         # For Rime: ensure default voice when none configured.
         if adapter_slug == "rime" and not voice_id:
             voice_id = "mistv2_Wildflower"
@@ -192,8 +234,6 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
         adapter_slug = (legacy_provider.slug or "google").lower()
         tts_voice = getattr(agent, "tts_voice", None)
         voice_id = getattr(tts_voice, "external_voice_id", None) if tts_voice else None
-        settings.setdefault("speed", float(settings.get("speed", 1.0)))
-        settings.setdefault("volume", float(settings.get("volume", 1.0)))
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,
             voice_external_id=voice_id,

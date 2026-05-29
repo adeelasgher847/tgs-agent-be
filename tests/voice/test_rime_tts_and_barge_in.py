@@ -166,7 +166,12 @@ class TestRimeTTSAdapter:
         assert all(c == b"\xff" * 160 for c in chunks)
 
     def test_rime_speed_mapped_from_settings(self):
-        """speed key in settings_json is forwarded as speedAlpha to service."""
+        """User-facing speed maps to Rime speedAlpha with mistv2 inversion.
+
+        Rime docs: mist/mistv2 use speedAlpha < 1.0 = FASTER, > 1.0 = SLOWER.
+        We expose a uniform mental model (speed > 1.0 = faster, regardless of
+        provider), so for mistv2 we send 1 / user_speed.
+        """
         from app.utils.tts_adapter import RimeTTSAdapter
 
         received: dict = {}
@@ -191,7 +196,38 @@ class TestRimeTTSAdapter:
 
             asyncio.run(_run())
 
-        assert abs(received.get("speed_alpha", 0) - 1.3) < 0.01
+        # user speed 1.3 (faster) → speedAlpha 1/1.3 ≈ 0.769 (faster on mistv2)
+        assert abs(received.get("speed_alpha", 0) - (1.0 / 1.3)) < 0.01
+
+    def test_rime_slower_speed_maps_to_higher_alpha(self):
+        """User speed 0.8 (slower) must produce speedAlpha > 1.0 on mistv2."""
+        from app.utils.tts_adapter import RimeTTSAdapter
+
+        received: dict = {}
+
+        async def _fake_stream(text, speaker, model_id, speed_alpha, **kw):
+            received["speed_alpha"] = speed_alpha
+            yield b"\xff" * 160
+
+        with patch(
+            "app.services.rime_tts_service.rime_tts_service.stream_text_to_speech",
+            side_effect=_fake_stream,
+        ):
+            adapter = RimeTTSAdapter()
+
+            async def _run():
+                async for _ in adapter.async_stream_synthesize(
+                    text="Test",
+                    voice_external_id="mistv2_Wildflower",
+                    settings_json={"speed": 0.8},
+                ):
+                    pass
+
+            asyncio.run(_run())
+
+        # user speed 0.8 (slower) → speedAlpha 1/0.8 = 1.25 (slower on mistv2)
+        assert received.get("speed_alpha", 0) > 1.0
+        assert abs(received["speed_alpha"] - 1.25) < 0.01
 
     def test_rime_stream_synthesize_raises_not_implemented(self):
         from app.utils.tts_adapter import RimeTTSAdapter
