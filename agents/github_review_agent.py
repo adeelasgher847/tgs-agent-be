@@ -9,7 +9,7 @@ Uses Claude claude-opus-4-7 with tool use to:
 
 Usage:
     python agents/github_review_agent.py                   # review staged/unstaged vs HEAD
-    python agents/github_review_agent.py --base main       # review current branch vs main
+    python agents/github_review_agent.py --base v1         # review current branch vs v1
     python agents/github_review_agent.py --pr 42           # review GitHub PR #42 (needs gh CLI)
 """
 
@@ -264,7 +264,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GitHub code review agent")
     parser.add_argument(
         "--base",
-        default="main",
+        default="v1",
         help="Base git ref to compare against (default: main)",
     )
     parser.add_argument(
