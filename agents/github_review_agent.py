@@ -42,9 +42,18 @@ def list_changed_files(base: str) -> str:
 
 def get_git_diff(base: str, file_path: Optional[str] = None) -> str:
     """Return unified diff vs base ref, optionally scoped to one file."""
-    cmd = ["git", "diff", base, "HEAD", "--", file_path] if file_path else ["git", "diff", base, "HEAD"]
-    diff = _run(cmd)
-    # Truncate very large diffs to stay within context limits
+    # --diff-filter=d excludes deleted; --text forces text output but we handle errors
+    cmd = (
+        ["git", "diff", "--text", base, "HEAD", "--", file_path]
+        if file_path
+        else ["git", "diff", "--text", "--diff-filter=d", base, "HEAD"]
+    )
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        diff = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return "git diff timed out"
+    diff = diff.strip() if diff.strip() else "(no output)"
     if len(diff) > 20_000:
         diff = diff[:20_000] + "\n... (truncated, diff too large)"
     return diff
