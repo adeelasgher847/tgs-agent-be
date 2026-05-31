@@ -10,6 +10,9 @@ pydantic
 pydantic-settings
 pytest
 httpx
+anthropic
+flake8
+mypy
 requests
 python-multipart
 pydantic[email]
