@@ -1,0 +1,210 @@
+from datetime import datetime, timedelta, timezone
+from typing import Optional, List
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from app.core.config import settings
+import uuid
+import secrets
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Create JWT access token with expiration"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        # Use the configured expiration time (15 minutes by default)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str) -> Optional[dict]:
+    """Verify and decode JWT token"""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+
+def is_token_expired(token: str) -> bool:
+    """Check if token is expired"""
+    payload = verify_token(token)
+    if not payload:
+        return True
+    
+    exp_timestamp = payload.get("exp")
+    if not exp_timestamp:
+        return True
+    
+    exp_time = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+    return datetime.now(timezone.utc) > exp_time
+
+def get_token_info(token: str) -> Optional[dict]:
+    """Get comprehensive token information"""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        exp_timestamp = payload.get("exp")
+        iat_timestamp = payload.get("iat")
+        
+        token_info = {
+            "user_id": payload.get("user_id"),
+            "email": payload.get("email"),
+            "tenant_id": payload.get("tenant_id"),
+            "type": payload.get("type"),
+            "expires_at": datetime.fromtimestamp(exp_timestamp, tz=timezone.utc).isoformat() if exp_timestamp else None,
+            "issued_at": datetime.fromtimestamp(iat_timestamp, tz=timezone.utc).isoformat() if iat_timestamp else None,
+            "is_expired": False,
+            "expires_in_minutes": None
+        }
+        
+        if exp_timestamp:
+            exp_time = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
+            now = datetime.now(timezone.utc)
+            token_info["is_expired"] = now > exp_time
+            if not token_info["is_expired"]:
+                remaining = exp_time - now
+                token_info["expires_in_minutes"] = int(remaining.total_seconds() / 60)
+        
+        return token_info
+    except JWTError:
+        return None
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """Hash password"""
+    return pwd_context.hash(password)
+
+def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.UUID] = None, role: Optional[str] = None):
+    """
+    Create JWT token for user with 15-minute expiration
+    
+    Args:
+        user_id: User's ID (UUID)
+        email: User's email
+        tenant_id: Current tenant ID (UUID, optional)
+        role: User's role in the current tenant (optional)
+    
+    Returns:
+        JWT token that expires in 15 minutes
+    """
+    token_data = {
+        "user_id": str(user_id),  # Convert UUID to string
+        "email": email,
+        "tenant_id": str(tenant_id) if tenant_id else None,  # Convert UUID to string
+        "role": role,  # User's role in the current tenant
+        "iat": datetime.now(timezone.utc),  # Issued at
+        "type": "access"
+    }
+    
+    # Explicitly set 15-minute expiration
+    expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    return create_access_token(data=token_data, expires_delta=expires_delta)
+
+def generate_password_reset_token() -> str:
+    """
+    Generate a secure random token for password reset
+    
+    Returns:
+        str: A secure random token
+    """
+    return secrets.token_urlsafe(32)
+
+def create_password_reset_token(user_id: uuid.UUID) -> tuple[str, datetime]:
+    """
+    Create a password reset token with expiration
+    
+    Args:
+        user_id: User's ID (UUID)
+    
+    Returns:
+        tuple: (token, expiration_datetime)
+    """
+    token = generate_password_reset_token()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)
+    return token, expires_at
+
+def create_refresh_token_value() -> str:
+    """Create secure random refresh token string."""
+    return secrets.token_urlsafe(48)
+
+def refresh_token_expires_at() -> datetime:
+    """Get refresh token expiration time (7 days from now)."""
+    return datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+# API Key Encryption Functions using JWT
+def encrypt_api_key(api_key: str) -> str:
+    """
+    Encrypt an API key using JWT
+    
+    Args:
+        api_key: Plain text API key
+        
+    Returns:
+        Encrypted API key as JWT token
+    """
+    if not api_key:
+        return api_key
+    
+    try:
+        # Create a JWT token with the API key as payload
+        payload = {
+            "api_key": api_key,
+            "type": "encrypted_api_key",
+            "iat": datetime.now(timezone.utc)
+        }
+        encrypted_token = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+        return encrypted_token
+    except Exception as e:
+        raise ValueError(f"API key encryption failed: {str(e)}")
+
+def decrypt_api_key(encrypted_api_key: str) -> str:
+    """
+    Decrypt an API key from JWT
+    
+    Args:
+        encrypted_api_key: Encrypted API key as JWT token
+        
+    Returns:
+        Decrypted plain text API key
+    """
+    if not encrypted_api_key:
+        return encrypted_api_key
+    
+    try:
+        # Decode the JWT token to get the API key
+        payload = jwt.decode(encrypted_api_key, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        
+        # Verify it's an API key token
+        if payload.get("type") != "encrypted_api_key":
+            raise ValueError("Invalid token type")
+        
+        return payload.get("api_key", "")
+    except JWTError as e:
+        raise ValueError(f"API key decryption failed: {str(e)}")
+
+def is_api_key_encrypted(api_key: str) -> bool:
+    """
+    Check if an API key appears to be encrypted (JWT format)
+    
+    Args:
+        api_key: API key to check
+        
+    Returns:
+        True if the key appears to be encrypted, False otherwise
+    """
+    if not api_key:
+        return False
+    
+    try:
+        # Try to decode as JWT
+        payload = jwt.decode(api_key, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload.get("type") == "encrypted_api_key"
+    except JWTError:
+        return False
