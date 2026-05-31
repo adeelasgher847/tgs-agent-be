@@ -1,0 +1,70 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    name: Claude Code Review
+    runs-on: ubuntu-latest
+    environment: production        # reads ANTHROPIC_API_KEY from your production env
+
+    permissions:
+      contents: read
+      pull-requests: write         # needed to post the review comment
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0           # full history so git diff vs base works
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run AI code review
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python agents/github_review_agent.py \
+            --base "${{ github.event.pull_request.base.ref }}" \
+            | tee review_output.txt
+
+      - name: Post review as PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('review_output.txt', 'utf8');
+
+            // Find and delete any previous AI review comments on this PR
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const c of comments.data) {
+              if (c.body.startsWith('<!-- ai-review -->')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: c.id,
+                });
+              }
+            }
+
+            // Post the fresh review
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `<!-- ai-review -->\n## 🤖 AI Code Review\n\n${review}`,
+            });
