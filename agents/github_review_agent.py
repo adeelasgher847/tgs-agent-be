@@ -9,7 +9,7 @@ Uses Claude claude-opus-4-7 with tool use to:
 
 Usage:
     python agents/github_review_agent.py                   # review staged/unstaged vs HEAD
-    python agents/github_review_agent.py --base v1         # review current branch vs v1
+    python agents/github_review_agent.py --base origin/v1  # review current branch vs v1
     python agents/github_review_agent.py --pr 42           # review GitHub PR #42 (needs gh CLI)
 """
 
@@ -26,10 +26,13 @@ import anthropic
 # Tool implementations
 # ---------------------------------------------------------------------------
 
-def _run(cmd: list[str], cwd: str = ".") -> str:
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
-    out = result.stdout + result.stderr
-    return out.strip() if out.strip() else "(no output)"
+def _run(cmd: list[str], cwd: str = ".", timeout: int = 120) -> str:
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout)
+        out = result.stdout + result.stderr
+        return out.strip() if out.strip() else "(no output)"
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after {timeout}s: {' '.join(cmd)}"
 
 
 def list_changed_files(base: str) -> str:
@@ -50,11 +53,13 @@ def get_git_diff(base: str, file_path: Optional[str] = None) -> str:
 def get_file_content(file_path: str) -> str:
     """Read a file from the working tree."""
     try:
-        with open(file_path) as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
         if len(content) > 10_000:
             content = content[:10_000] + "\n... (truncated)"
         return content
+    except UnicodeDecodeError:
+        return f"Binary file (skipped): {file_path}"
     except FileNotFoundError:
         return f"File not found: {file_path}"
 
@@ -62,20 +67,20 @@ def get_file_content(file_path: str) -> str:
 def run_linter(file_path: Optional[str] = None) -> str:
     """Run flake8 on a file or the whole project."""
     target = file_path or "."
-    out = _run(["python", "-m", "flake8", "--max-line-length=100", target])
+    out = _run([sys.executable, "-m", "flake8", "--max-line-length=100", target])
     return out if out else "No linting issues found."
 
 
 def run_type_check(file_path: Optional[str] = None) -> str:
     """Run mypy for type checking."""
     target = file_path or "app"
-    out = _run(["python", "-m", "mypy", "--ignore-missing-imports", target])
+    out = _run([sys.executable, "-m", "mypy", "--ignore-missing-imports", target])
     return out if out else "No type errors found."
 
 
 def run_tests() -> str:
     """Run the test suite and return a summary."""
-    out = _run(["python", "-m", "pytest", "--tb=short", "-q"])
+    out = _run([sys.executable, "-m", "pytest", "--tb=short", "-q"])
     return out
 
 
@@ -211,25 +216,23 @@ def run_review(base: str) -> None:
         }
     ]
 
-    print(f"\n🔍  Starting code review (base: {base}) …\n{'─' * 60}\n")
+    print(f"\n🔍  Starting code review (base: {base}) …\n{'─' * 60}\n", file=sys.stderr)
 
     # Agentic loop
     while True:
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-opus-4-5",
             max_tokens=8192,
-            thinking={"type": "adaptive"},
-            system=SYSTEM_PROMPT,
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             tools=TOOLS,
             messages=messages,
-            cache_control={"type": "ephemeral"},  # cache the stable system + tools prefix
         )
 
         # Accumulate the assistant turn
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "end_turn":
-            # Print the final review
+            # Print the final review to stdout only
             for block in response.content:
                 if block.type == "text":
                     print(block.text)
@@ -239,7 +242,7 @@ def run_review(base: str) -> None:
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    print(f"  ⚙  {block.name}({json.dumps(block.input, separators=(',', ':'))})")
+                    print(f"  ⚙  {block.name}({json.dumps(block.input, separators=(',', ':'))})", file=sys.stderr)
                     result = execute_tool(block.name, block.input)
                     tool_results.append(
                         {
@@ -264,8 +267,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GitHub code review agent")
     parser.add_argument(
         "--base",
-        default="v1",
-        help="Base git ref to compare against (default: main)",
+        default="origin/v1",
+        help="Base git ref to compare against (default: origin/v1)",
     )
     parser.add_argument(
         "--pr",

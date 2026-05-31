@@ -4,21 +4,28 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     name: Claude Code Review
     runs-on: ubuntu-latest
-    environment: production        # reads ANTHROPIC_API_KEY from your production env
+    environment: ai-review              # dedicated env — no protection rules, holds ANTHROPIC_API_KEY
 
     permissions:
       contents: read
-      pull-requests: write         # needed to post the review comment
+      pull-requests: write
 
     steps:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0           # full history so git diff vs base works
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -26,16 +33,18 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install anthropic flake8 mypy pytest httpx
 
       - name: Run AI code review
         id: review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash
         run: |
+          set -euo pipefail
           python agents/github_review_agent.py \
-            --base "${{ github.event.pull_request.base.ref }}" \
-            | tee review_output.txt
+            --base "origin/${{ github.event.pull_request.base.ref }}" \
+            > review_output.txt
 
       - name: Post review as PR comment
         if: always()
@@ -43,9 +52,19 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const review = fs.readFileSync('review_output.txt', 'utf8');
 
-            // Find and delete any previous AI review comments on this PR
+            let review;
+            try {
+              review = fs.readFileSync('review_output.txt', 'utf8').trim();
+            } catch (e) {
+              review = '⚠️ Review output not found — the agent may have crashed. Check the workflow logs.';
+            }
+
+            if (!review) {
+              review = '⚠️ The agent produced no output. Check the workflow logs.';
+            }
+
+            // Delete previous AI review comments
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -61,7 +80,7 @@ jobs:
               }
             }
 
-            // Post the fresh review
+            // Post fresh review
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
