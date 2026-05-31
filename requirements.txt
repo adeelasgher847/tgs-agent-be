@@ -7,4 +7,7 @@ python-jose[cryptography]
 passlib[bcrypt]
 pydantic
 pytest
-httpx 
+httpx
+anthropic
+flake8
+mypy 
