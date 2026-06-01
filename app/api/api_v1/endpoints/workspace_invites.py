@@ -6,6 +6,7 @@ GET  /api/v1/workspace/invitations    — admin only, JWT required
 """
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -51,7 +52,7 @@ def invite_team_member(
             detail="A pending invitation already exists for this email in this workspace",
         )
 
-    token = str(uuid.uuid4())
+    token = secrets.token_urlsafe(32)
     invite = Invite(
         email=body.email,
         tenant_id=tenant_id,

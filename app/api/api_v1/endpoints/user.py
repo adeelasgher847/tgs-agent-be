@@ -28,6 +28,7 @@ from typing import Optional
 import re
 from app.core.logger import logger
 from app.services.role_service import get_default_product_id
+from app.utils.rate_limiter import enforce_login_rate_limit
 
 router = APIRouter()
 
@@ -107,7 +108,11 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=SuccessResponse[TokenResponse])
-def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+def login(
+    login_data: LoginRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(enforce_login_rate_limit),
+):
     """
     User login endpoint that returns JWT token with role information as object.
     Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
@@ -211,7 +216,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login/google", response_model=SuccessResponse[TokenResponse])
-def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
+def google_login(
+    req: GoogleLoginRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(enforce_login_rate_limit),
+):
     try:
         logger.debug(f'Google token received: {req.google_token}')
         idinfo = google_id_token.verify_oauth2_token(
