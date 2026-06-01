@@ -60,6 +60,42 @@ class TestPhoneRedaction:
         assert REDACTED in redact_pii("dial 14155552671 today")
 
 
+class TestPhoneFalsePositives:
+    """Log-like strings that must not be partially mangled by digit-based phone rules."""
+
+    def test_stripe_payment_intent_id_redacted_whole(self):
+        msg = "stripe payment_intent=pi_3O9KqL2eZvKYlo2C0Y7bQJ0a status=succeeded"
+        result = redact_pii(msg)
+        assert "pi_3O9KqL2eZvKYlo2C0Y7bQJ0a" not in result
+        assert "pi_[REDACTED]" not in result
+        assert REDACTED in result
+
+    def test_digits_after_pi_prefix_redacted_whole(self):
+        msg = "retry pi_312345678901234567890 failed"
+        result = redact_pii(msg)
+        assert "pi_312345678901234567890" not in result
+        assert "pi_[REDACTED]" not in result
+        assert REDACTED in result
+
+    def test_stripe_charge_id_redacted_whole(self):
+        msg = "webhook ch_3AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 received"
+        result = redact_pii(msg)
+        assert "ch_3AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" not in result
+        assert REDACTED in result
+
+    def test_thirteen_digit_timestamp_not_nanp(self):
+        """13-digit ms values are outside NANP; bare E.164 rule now requires '+'."""
+        msg = "x-request-start=1737123456789 correlation=abc"
+        result = redact_pii(msg)
+        # Not matched as phone; may still be redacted by the 8–17 digit account rule.
+        assert "1737123456789" not in result
+        assert REDACTED in result
+
+    def test_stripe_session_id_already_redacted(self):
+        sid = "cs_test_a1Iuv1jSR1k18o02TejSCvXs97HNOJcypVXoLEfjh4OHhrFcYhaaLHvWz7"
+        assert sid not in redact_pii(f"checkout session {sid}")
+
+
 class TestCardRedaction:
     def test_visa_16_digits(self):
         assert REDACTED in redact_pii("Card: 4111 1111 1111 1111")
@@ -75,8 +111,8 @@ class TestSsnRedaction:
     def test_hyphenated(self):
         assert REDACTED in redact_pii("SSN: 123-45-6789")
 
-    def test_nine_digits(self):
-        assert REDACTED in redact_pii("Social 123456789 on file")
+    def test_spaced(self):
+        assert REDACTED in redact_pii("SSN: 123 45 6789")
 
 
 class TestAccountRedaction:
@@ -265,6 +301,28 @@ class TestPiiLoggingFilter:
         formatted = record.getMessage()
         assert "+1571290424242" not in formatted
         assert REDACTED in formatted
+
+    def test_filter_suppresses_args_on_redaction_failure(self, monkeypatch):
+        from app.core import logger as logger_module
+
+        def _boom(_args: object) -> object:
+            raise RuntimeError("regex failure")
+
+        monkeypatch.setattr(logger_module, "_redact_log_args", _boom)
+        filt = _PiiRedactionFilter()
+        record = logging.LogRecord(
+            name="tgs_agent",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="Call failed: %s",
+            args=("user@secret.com",),
+            exc_info=None,
+        )
+        filt.filter(record)
+        formatted = record.getMessage()
+        assert "user@secret.com" not in formatted
+        assert "[PII redaction error — args suppressed]" in formatted
 
     def test_formatter_redacts_traceback(self):
         fmt = _PiiRedactingFormatter("%(message)s")
