@@ -8,8 +8,10 @@ Call paths use these helpers first, then fall back to legacy ``model_id`` /
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Union
+from uuid import UUID
 
+from app.core.config import settings
 from app.core.llm_models import infer_llm_provider
 from app.core.logger import logger
 from app.core.security import decrypt_api_key
@@ -42,6 +44,29 @@ class ResolvedTtsRuntime:
     used_ticket_tts: bool
 
 
+def _decrypt_stored_api_key(
+    encrypted: str,
+    *,
+    agent_id: Union[UUID, str, None],
+    credential_label: str,
+) -> str:
+    """Decrypt a stored API key; fail fast with a clear operator-facing error."""
+    try:
+        return decrypt_api_key(encrypted)
+    except Exception as exc:
+        logger.error(
+            "Failed to decrypt %s for agent %s: %s",
+            credential_label,
+            agent_id,
+            exc,
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"Agent {agent_id}: stored {credential_label} is corrupted or unreadable. "
+            "Re-save the API key in agent settings."
+        ) from exc
+
+
 def _ticket_tts_triad(agent: Agent) -> bool:
     return bool(
         agent.tts_provider_slug
@@ -53,8 +78,8 @@ def _ticket_tts_triad(agent: Agent) -> bool:
 def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     """Pick LLM model + provider for conversation / scheduling paths."""
     default = ResolvedLlmRuntime(
-        model_name="gemini-1.5-flash",
-        provider_slug="gemini",
+        model_name=settings.DEFAULT_LLM_MODEL,
+        provider_slug=settings.DEFAULT_LLM_PROVIDER,
         api_key=None,
         temperature=0.15,
         max_tokens=100,
@@ -78,10 +103,11 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         provider_slug = infer_llm_provider(agent.llm_model)
         api_key: Optional[str] = None
         if agent.model and agent.model.api_key:
-            try:
-                api_key = decrypt_api_key(agent.model.api_key)
-            except Exception as exc:
-                logger.error("Failed to decrypt legacy model API key: %s", exc)
+            api_key = _decrypt_stored_api_key(
+                agent.model.api_key,
+                agent_id=agent.id,
+                credential_label="LLM model API key",
+            )
         return ResolvedLlmRuntime(
             model_name=agent.llm_model,
             provider_slug=provider_slug,
@@ -92,7 +118,7 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         )
 
     if agent.model:
-        provider_slug = "gemini"
+        provider_slug = settings.DEFAULT_LLM_PROVIDER
         if agent.provider:
             pname = (agent.provider.name or "").lower()
             if "openai" in pname:
@@ -103,10 +129,11 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
                 provider_slug = "gemini"
         api_key = None
         if agent.model.api_key:
-            try:
-                api_key = decrypt_api_key(agent.model.api_key)
-            except Exception as exc:
-                logger.error("Failed to decrypt agent model API key: %s", exc)
+            api_key = _decrypt_stored_api_key(
+                agent.model.api_key,
+                agent_id=agent.id,
+                credential_label="LLM model API key",
+            )
         return ResolvedLlmRuntime(
             model_name=agent.model.model_name,
             provider_slug=provider_slug,
@@ -161,21 +188,20 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
     if _ticket_tts_triad(agent):
         slug = (agent.tts_provider_slug or "").lower()
         adapter_slug = _TICKET_TTS_TO_ADAPTER.get(slug, slug)
-        if slug == "rime":
-            logger.debug(
-                "Agent %s uses ticket TTS provider 'rime'; falling back to google TTS adapter",
+        if slug == "rime" and adapter_slug == "google":
+            logger.warning(
+                "Agent %s: Rime TTS not yet available — falling back to Google TTS",
                 agent.id,
             )
         voice_id = agent.tts_voice_external_id
         if agent.tts_language:
             language = agent.tts_language
         if slug == "11labs_byo" and agent.encrypted_elevenlabs_api_key:
-            try:
-                settings["elevenlabs_api_key"] = decrypt_api_key(
-                    agent.encrypted_elevenlabs_api_key
-                )
-            except Exception as exc:
-                logger.error("Failed to decrypt BYO ElevenLabs key for agent %s: %s", agent.id, exc)
+            settings["elevenlabs_api_key"] = _decrypt_stored_api_key(
+                agent.encrypted_elevenlabs_api_key,
+                agent_id=agent.id,
+                credential_label="BYO ElevenLabs API key",
+            )
         settings.setdefault("language_code", language)
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,

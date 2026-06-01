@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     
     GEMINI_API_KEY: str = ""
+    # Default LLM when an agent has no ticket llm_model or legacy model relation.
+    DEFAULT_LLM_MODEL: str = "gemini-1.5-flash"
+    DEFAULT_LLM_PROVIDER: str = "gemini"
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
     
