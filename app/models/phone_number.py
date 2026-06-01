@@ -1,4 +1,13 @@
-from sqlalchemy import Column, String, DateTime, Integer, Boolean, ForeignKey, UniqueConstraint, Text
+from sqlalchemy import (
+    Column,
+    String,
+    DateTime,
+    Integer,
+    Boolean,
+    ForeignKey,
+    UniqueConstraint,
+    CheckConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -28,9 +37,9 @@ class PhoneNumber(Base):
     twilio_account_sid = Column(String(255), nullable=True)
     twilio_auth_token = Column(String(500), nullable=True)  # encrypted at rest
 
-    # SIP/BYO external number credentials (encrypted at rest)
+    # SIP/BYO external number credentials — sip_password encrypted via encrypt_api_key() before persist
     sip_username = Column(String(255), nullable=True)
-    sip_password = Column(Text, nullable=True)  # encrypted at rest
+    sip_password = Column(String(500), nullable=True)  # JWT-encrypted at rest (see app.core.security)
 
     # Agent binding (FK agent.id). Column name assistant_id is legacy; APIs also accept/return agent_id.
     assistant_id = Column(UUID(as_uuid=True), ForeignKey("agent.id"), nullable=True)
@@ -51,6 +60,10 @@ class PhoneNumber(Base):
     # Global unique constraint: a phone number can belong to only one tenant.
     __table_args__ = (
         UniqueConstraint("phone_number", name="uq_phone_number_global"),
+        CheckConstraint(
+            "provider IN ('twilio', 'external')",
+            name="ck_phonenumber_provider",
+        ),
     )
 
     def __repr__(self) -> str:

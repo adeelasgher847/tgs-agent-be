@@ -26,6 +26,7 @@ from app.middleware.api_key_middleware import _attach_workspace_context
 from app.models.agent import Agent
 from app.models.phone_number import NumberConfiguration, PhoneNumber
 from app.models.tenant import Tenant
+from app.core.security import decrypt_api_key, is_api_key_encrypted
 from app.schemas.agent import AgentStatusEnum, agent_to_out
 
 
@@ -265,7 +266,27 @@ class TestRegisterExternalNumber:
         assert pn is not None
         assert pn.provider == "external"
         assert pn.sip_username == "sip_user@example.com"
-        assert pn.sip_password is not None  # encrypted, not plaintext
+        assert pn.sip_password is not None
+        assert pn.sip_password != "supersecret"
+        assert is_api_key_encrypted(pn.sip_password)
+        assert decrypt_api_key(pn.sip_password) == "supersecret"
+
+        assert "sip_password" not in body["data"]
+        assert "sip_password" not in resp.text
+
+        list_resp = authed_client.get(
+            "/api/v1/phone-numbers/",
+            headers=_headers(phone_tenant),
+        )
+        assert list_resp.status_code == 200
+        assert "sip_password" not in list_resp.text
+
+        detail_resp = authed_client.get(
+            f"/api/v1/phone-numbers/{pn.id}",
+            headers=_headers(phone_tenant),
+        )
+        assert detail_resp.status_code == 200
+        assert "sip_password" not in detail_resp.text
 
         # cleanup
         db.delete(pn)
