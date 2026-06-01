@@ -14,7 +14,11 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.middleware.rate_limit_middleware import RateLimitMiddleware, _sha256
+from app.middleware.rate_limit_middleware import (
+    RateLimitMiddleware,
+    _sha256,
+    _should_skip,
+)
 from app.middleware.request_id_middleware import RequestIdMiddleware
 
 
@@ -33,6 +37,10 @@ def _make_app(limit: int = 5, window: int = 60) -> FastAPI:
 
     @mini.post("/api/v1/users/login")
     def login():
+        return {"ok": True}
+
+    @mini.post("/api/v1/users/register")
+    def register():
         return {"ok": True}
 
     return mini
@@ -84,17 +92,48 @@ class TestSkipPaths:
             resp = client.get("/health")
         assert resp.status_code == 200
 
-    def test_login_not_rate_limited(self):
+    def test_users_paths_are_not_whitelisted(self):
+        assert _should_skip("/api/v1/users/register") is False
+        assert _should_skip("/api/v1/users/forgot-password") is False
+        assert _should_skip("/api/v1/users/login") is False
+
+    def test_login_bypasses_global_middleware_bucket(self):
+        """Login uses route-level limiter only; middleware must not 429 on global key."""
         app = _make_app()
-        with patch("app.middleware.rate_limit_middleware._get_redis", return_value=None):
+        pipe_cls = _fake_redis_pipeline([999])
+
+        mock_r = MagicMock()
+        mock_r.pipeline.return_value = pipe_cls()
+        mock_r.zremrangebyscore = AsyncMock()
+
+        with patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r):
             client = TestClient(app, raise_server_exceptions=False)
             resp = client.post("/api/v1/users/login")
+
         assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
 # Allowed requests pass through
 # ---------------------------------------------------------------------------
+
+class TestAuthSensitive:
+    def test_register_exceeding_auth_limit_returns_429(self):
+        app = _make_app()
+        pipe_cls = _fake_redis_pipeline([11])
+
+        mock_r = MagicMock()
+        mock_r.pipeline.return_value = pipe_cls()
+        mock_r.zremrangebyscore = AsyncMock()
+
+        with patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r):
+            with patch.object(settings, "LOGIN_RATE_LIMIT", 10):
+                client = TestClient(app, raise_server_exceptions=False)
+                resp = client.post("/api/v1/users/register")
+
+        assert resp.status_code == 429
+        assert resp.json()["error"]["code"] == "rate_limit_exceeded"
+
 
 class TestAllowed:
     def test_request_within_limit_passes(self):

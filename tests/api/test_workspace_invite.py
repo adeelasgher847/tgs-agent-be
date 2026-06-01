@@ -7,6 +7,7 @@ POST /api/v1/accept-invite  (expired token regression)
 """
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -121,8 +122,10 @@ class TestInviteSuccess:
         assert invite.status == "pending"
         assert invite.tenant_id == admin_user.current_tenant_id
 
-        # token must be a valid UUID
-        uuid.UUID(invite.token)
+        # token must be URL-safe secrets output, not a UUID
+        assert len(invite.token) >= 32
+        with pytest.raises(ValueError):
+            uuid.UUID(invite.token)
 
         # expires ~7 days from now (SQLite strips tzinfo so compare as naive)
         exp = invite.expires_at
@@ -133,7 +136,8 @@ class TestInviteSuccess:
 
         call_kwargs = mock_send.call_args.kwargs
         assert call_kwargs["email"] == email
-        uuid.UUID(call_kwargs["invite_token"])
+        assert call_kwargs["invite_token"] == invite.token
+        assert len(call_kwargs["invite_token"]) >= 32
 
     def test_invite_response_omits_token(self, authed_client):
         email = f"notoken-{uuid.uuid4().hex[:6]}@example.com"
@@ -220,7 +224,7 @@ class TestListInvitations:
 
 class TestExpiredInviteToken:
     def test_expired_token_returns_error_and_sets_expired_status(self, client, db, admin_user):
-        token = str(uuid.uuid4())
+        token = secrets.token_urlsafe(32)
         invite = Invite(
             email=f"exp-{uuid.uuid4().hex[:6]}@example.com",
             tenant_id=admin_user.current_tenant_id,

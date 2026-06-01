@@ -213,8 +213,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True
     
-    # Login rate limiting (requests per minute)
-    LOGIN_RATE_LIMIT: int = 5
+    # Login rate limiting — per-IP, stricter than global API limit (enforce_login_rate_limit)
+    LOGIN_RATE_LIMIT: int = 10
     LOGIN_RATE_WINDOW: int = 60  # seconds
     
     # Webhook rate limiting (requests per minute)
