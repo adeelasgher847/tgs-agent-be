@@ -15,7 +15,6 @@ from app.api.deps import (
     get_db,
     require_member_or_admin,
     require_tenant,
-    require_user_tenant,
 )
 from app.core.error_responses import build_api_error_payload
 from app.core.request_auth import ApiKeyPrincipal

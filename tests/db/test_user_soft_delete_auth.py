@@ -19,12 +19,16 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.deps import (
+    get_active_user_by_id,
+    get_current_user_jwt,
     require_config,
     require_readonly,
+    require_write_access,
     _CONFIG_ROLES,
     _ANY_ROLE,
     _reject_readonly_on_write,
 )
+from app.core.security import create_user_token
 from app.core.security import (
     get_password_hash,
     create_refresh_token_value,
@@ -103,6 +107,70 @@ class TestReadonlyWriteGuard:
         request = MagicMock()
         request.method = "POST"
         _reject_readonly_on_write(request, "admin")
+
+
+class TestRequireWriteAccessUnit:
+    def test_readonly_post_raises(self, db):
+        request = MagicMock()
+        request.method = "POST"
+        user = User()
+        user.id = uuid.uuid4()
+        user.current_tenant_id = uuid.uuid4()
+        role = MagicMock()
+        role.name = "readonly"
+        with patch(
+            "app.api.deps.get_user_role_in_tenant", return_value=role
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                require_write_access(request=request, user=user, db=db)
+        assert exc_info.value.status_code == 403
+
+    def test_readonly_get_allowed(self, db):
+        request = MagicMock()
+        request.method = "GET"
+        user = User()
+        user.id = uuid.uuid4()
+        user.current_tenant_id = uuid.uuid4()
+        role = MagicMock()
+        role.name = "readonly"
+        with patch(
+            "app.api.deps.get_user_role_in_tenant", return_value=role
+        ):
+            result = require_write_access(request=request, user=user, db=db)
+        assert result is user
+
+
+# -------------------------------------------------------- get_current_user_jwt
+
+class TestGetCurrentUserJwtSoftDelete:
+    def test_deleted_user_rejected_via_bearer(self, db, deleted_user):
+        token = create_user_token(
+            user_id=deleted_user.id,
+            email=deleted_user.email,
+            tenant_id=deleted_user.current_tenant_id,
+        )
+        request = MagicMock()
+        request.method = "GET"
+        credentials = MagicMock()
+        credentials.credentials = token
+
+        with patch("app.api.deps.get_auth_method", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                get_current_user_jwt(
+                    request=request,
+                    credentials=credentials,
+                    db=db,
+                )
+        assert exc_info.value.status_code == 401
+        assert "deactivated" in exc_info.value.detail.lower()
+
+    def test_active_user_loaded_by_id(self, db, active_user):
+        loaded = get_active_user_by_id(db, active_user.id)
+        assert loaded is not None
+        assert loaded.id == active_user.id
+
+    def test_deleted_user_not_loaded_by_id(self, db, deleted_user):
+        assert get_active_user_by_id(db, deleted_user.id) is None
 
 
 # ---------------------------------------------------------------- login tests

@@ -26,6 +26,17 @@ security_optional = HTTPBearer(auto_error=False)
 
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+_DEACTIVATED_USER_DETAIL = "User not found or account has been deactivated"
+
+
+def get_active_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[User]:
+    """Load a user only when not soft-deleted (``deleted_at IS NULL``)."""
+    return (
+        db.query(User)
+        .filter(User.id == user_id, User.deleted_at.is_(None))
+        .first()
+    )
+
 
 def _reject_readonly_on_write(request: Request, role_name: str) -> None:
     """Block readonly role from mutating HTTP methods (GET remains allowed)."""
@@ -64,14 +75,11 @@ def get_workspace_api_key(request: Request) -> Workspace:
 
 def _user_from_middleware_jwt(request: Request, db: Session) -> User:
     workspace = get_workspace(request)
-    user = db.query(User).filter(
-        User.id == request.state.user_id,
-        User.deleted_at.is_(None),
-    ).first()
+    user = get_active_user_by_id(db, request.state.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or account has been deactivated",
+            detail=_DEACTIVATED_USER_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
     user.current_tenant_id = workspace.id
@@ -146,14 +154,11 @@ def get_current_user_jwt(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = db.query(User).filter(
-        User.id == user_id,
-        User.deleted_at.is_(None),
-    ).first()
+    user = get_active_user_by_id(db, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or account has been deactivated",
+            detail=_DEACTIVATED_USER_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -210,14 +215,11 @@ def require_tenant(
             detail="Invalid tenant in token",
         )
 
-    user = db.query(User).filter(
-        User.id == user_id,
-        User.deleted_at.is_(None),
-    ).first()
+    user = get_active_user_by_id(db, user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or account has been deactivated",
+            detail=_DEACTIVATED_USER_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -235,6 +237,19 @@ def require_user_tenant(
             detail="This operation requires a user session",
         )
     return principal
+
+
+def require_write_access(
+    request: Request,
+    user: User = Depends(require_user_tenant),
+    db: Session = Depends(get_db),
+) -> User:
+    """Tenant user; readonly role cannot use POST/PUT/PATCH/DELETE."""
+    if user.current_tenant_id:
+        role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+        if role:
+            _reject_readonly_on_write(request, role.name)
+    return user
 
 
 def get_optional_tenant_user(
@@ -265,10 +280,7 @@ def get_optional_tenant_user(
         except ValueError:
             return None
         
-        user = db.query(User).filter(
-            User.id == user_id,
-            User.deleted_at.is_(None),
-        ).first()
+        user = get_active_user_by_id(db, user_id)
         if user:
             user.current_tenant_id = tenant_uuid
         return user
@@ -277,7 +289,7 @@ def get_optional_tenant_user(
 
 
 def require_admin(
-    user: User = Depends(require_user_tenant),
+    user: User = Depends(require_write_access),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is an admin in their current tenant."""
@@ -303,8 +315,7 @@ def require_admin(
 
 
 def require_member(
-    request: Request,
-    user: User = Depends(require_user_tenant),
+    user: User = Depends(require_write_access),
     db: Session = Depends(get_db),
 ) -> User:
     """Ensure user is a tenant member; readonly may not use write HTTP methods."""
@@ -321,13 +332,11 @@ def require_member(
             detail="You are not a member of this tenant",
         )
 
-    _reject_readonly_on_write(request, role.name)
     return user
 
 
 def require_member_or_admin(
-    request: Request,
-    user: User = Depends(require_user_tenant),
+    user: User = Depends(require_write_access),
     db: Session = Depends(get_db),
 ) -> User:
     """Ensure user is a tenant member; readonly may not use write HTTP methods."""
@@ -344,7 +353,6 @@ def require_member_or_admin(
             detail="You are not a member of this tenant",
         )
 
-    _reject_readonly_on_write(request, role.name)
     return user
 
 
@@ -397,7 +405,7 @@ def require_active_tenant(
 
 
 def require_owner(
-    user: User = Depends(require_user_tenant),
+    user: User = Depends(require_write_access),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is owner (only) in their current tenant."""
@@ -428,7 +436,7 @@ def require_owner(
 
 
 def require_admin_or_owner(
-    user: User = Depends(require_user_tenant),
+    user: User = Depends(require_write_access),
     db: Session = Depends(get_db)
 ) -> User:
     """Ensure user is admin or owner in their current tenant."""
@@ -466,7 +474,7 @@ _ANY_ROLE = frozenset({"owner", "admin", "member", "config", "readonly"})
 
 
 def require_config(
-    user: User = Depends(require_user_tenant),
+    user: User = Depends(require_write_access),
     db: Session = Depends(get_db),
 ) -> User:
     """Ensure user has config-level access (owner, admin, or config role)."""
