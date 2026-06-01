@@ -11,7 +11,14 @@ from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
-from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security, issue_tokens_for_user
+from app.api.deps import (
+    get_db,
+    get_active_user_by_id,
+    get_current_user_jwt,
+    require_member_or_admin,
+    security,
+    issue_tokens_for_user,
+)
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
 from app.core.security import create_refresh_token_value, refresh_token_expires_at
 from app.core.security import is_token_expired, verify_token
@@ -391,10 +398,21 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     3) If refresh_token invalid/expired -> return 401
     """
 
-    # 1) If access token is still valid
+    # 1) If access token is still valid (and user is not soft-deleted)
     if req.access_token:
         payload = verify_token(req.access_token)
         if payload and not is_token_expired(req.access_token):
+            user_id_str = payload.get("user_id")
+            if user_id_str:
+                try:
+                    user_id = uuid.UUID(user_id_str)
+                except ValueError:
+                    user_id = None
+                if user_id and not get_active_user_by_id(db, user_id):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User not found or account has been deactivated",
+                    )
             return {
                 "status_code": 200,
                 "message": "Access token still valid"
@@ -409,10 +427,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
             detail="Invalid or expired refresh token"
         )
 
-    user = db.query(User).filter(
-        User.id == rt.user_id,
-        User.deleted_at.is_(None),
-    ).first()
+    user = get_active_user_by_id(db, rt.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -681,13 +696,12 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
             }
         )
     
-    # Get user
-    user = db.query(User).filter(User.id == reset_token.user_id).first()
+    user = get_active_user_by_id(db, reset_token.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "message": "User not found.",
+                "message": "User not found or account has been deactivated.",
                 "error_type": "user_not_found"
             }
         )
@@ -725,13 +739,11 @@ def get_user_profile(
     Get complete user profile information including role and tenant details.
     Requires JWT Bearer token authentication.
     """
-    # Fetch user with all related data
-    user = db.query(User).filter(User.id == current_user.id).first()
-    
+    user = get_active_user_by_id(db, current_user.id)
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account has been deactivated",
         )
     
     # Stripe credits are now processed via webhook; no crediting logic here.

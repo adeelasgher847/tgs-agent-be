@@ -57,9 +57,17 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_constraint(_CHECK_NAME, "role", type_="check")
 
-    # Remove the two new roles (only if no users are assigned to them)
+    # Remove the two new roles only when no user_tenant_association references them.
     op.execute(
         sa.text(
-            "DELETE FROM role WHERE name IN ('config', 'readonly')"
+            """
+            DELETE FROM role
+            WHERE name IN ('config', 'readonly')
+              AND id NOT IN (
+                  SELECT DISTINCT role_id
+                  FROM user_tenant_association
+                  WHERE role_id IS NOT NULL
+              )
+            """
         )
     )
