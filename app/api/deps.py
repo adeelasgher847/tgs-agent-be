@@ -249,7 +249,7 @@ def get_optional_tenant_user(
         if user:
             user.current_tenant_id = tenant_uuid
         return user
-    except:
+    except Exception:
         return None
 
 
