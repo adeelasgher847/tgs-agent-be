@@ -62,6 +62,8 @@ def _base_handler() -> Handler:
     h._is_tts_playing = False  # audio not actively streaming (new gate for false-positive fix)
     h._barge_in_min_conf = 0.26
     h._barge_in_min_conf_1w = 0.52
+    h._barge_in_min_words = 2
+    h._barge_in_rejected_while_playing = 0
     h._tts_cancel = asyncio.Event()
 
     # TTS
@@ -505,16 +507,16 @@ class TestBargeIn:
 
         h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once()
 
-    def test_barge_in_single_word_high_confidence(self):
-        """1 word at or above BARGE_IN_MIN_CONF_1W must trigger cancel."""
+    def test_barge_in_single_word_high_confidence_does_not_cancel_by_default(self):
+        """Default min 2 words: lone 'stop' must not cancel even at high confidence."""
         h = _base_handler()
         h.is_speaking = True
-        h._is_tts_playing = True   # audio actively streaming
+        h._is_tts_playing = True
         h._tts_pipeline.is_speaking = True
 
         asyncio.run(h._maybe_process_interim("stop", 0.55))
 
-        h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once()
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
 
     def test_barge_in_does_not_trigger_when_agent_silent(self):
         """If agent is not speaking, barge-in must NOT cancel the (empty) queue."""
@@ -527,9 +529,10 @@ class TestBargeIn:
         h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
 
     def test_barge_in_single_word_low_confidence_no_cancel(self):
-        """1 word below BARGE_IN_MIN_CONF_1W must NOT trigger cancel."""
+        """Filler / low-confidence 1-word must NOT trigger cancel."""
         h = _base_handler()
         h.is_speaking = True
+        h._is_tts_playing = True
         h._tts_pipeline.is_speaking = True
 
         asyncio.run(h._maybe_process_interim("hmm", 0.30))

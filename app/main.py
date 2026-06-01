@@ -15,6 +15,7 @@ from app.utils.rate_limiter import init_rate_limiter
 
 from app.core.config import settings
 from app.core.logger import setup_logging, logger
+from app.core.secret_manager import get_rime_api_key
 from app.core.shutdown import graceful_shutdown
 from app.core.exception_handlers import register_exception_handlers
 from app.middleware.api_key_middleware import ApiKeyMiddleware
@@ -40,6 +41,13 @@ async def lifespan(app: FastAPI):
         logger.info("Rate limiter initialized successfully")
     except Exception as exc:
         logger.warning("Rate limiter initialization failed: %s — continuing without rate limiting", exc)
+
+    try:
+        get_rime_api_key()
+        logger.info("Rime TTS API key configured")
+    except (ValueError, RuntimeError) as exc:
+        logger.error("Rime TTS misconfigured: %s", exc)
+        raise
 
     yield
 

@@ -37,8 +37,8 @@ NATURAL CONVERSATION FEATURES (Vapi-Style):
    - Example: <speak>Hmm <break time="120ms"/> I think I can help with that.</speak>
 
 3. Turn-Taking & Barge-In:
-   - ENABLED - Agent stops immediately when user starts speaking
-   - Detection: 2+ words (interim confidence can be noisy; barge-in should not depend on confidence)
+   - ENABLED - Agent stops when user speech is detected over playing TTS
+   - Gate: `_is_tts_playing` + min word count + STT confidence floor + filler reject
    - Checked FIRST before interim gating (highest priority!)
    - TTS queue cleared (prevents old audio from resuming)
    - Barge-in still uses interim; normal replies prefer final when interim LLM is off
@@ -312,7 +312,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         # user turn when interim/final regeneration paths overlap.
         self._last_quick_ack_user_norm: str = ""
         self._last_quick_ack_mono: float = 0.0
-        # Latency instrumentation timestamps (wall-clock via time.perf_counter)
+        # Latency instrumentation timestamps (time.perf_counter() — single clock for all deltas)
         self._metric_stt_final_ts: float = 0.0        # STT final received
         self._metric_gen_start_ts: float = 0.0        # LLM generation started
         self._metric_first_token_ts: float = 0.0      # First LLM token received
@@ -359,6 +359,11 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
         )
         self._barge_in_min_conf_1w = max(0.4, min(0.75, self._barge_in_min_conf_1w))
+        self._barge_in_min_words: int = int(
+            getattr(settings, "VOICE_BARGE_IN_MIN_WORDS", 2) or 2
+        )
+        self._barge_in_min_words = max(1, min(4, self._barge_in_min_words))
+        self._barge_in_rejected_while_playing: int = 0
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -913,22 +918,77 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         if low in filler:
             return False
         return True
-    
+
+    _BARGE_IN_FILLER_WORDS = frozenset(
+        {
+            "uh",
+            "um",
+            "hmm",
+            "mm",
+            "ah",
+            "er",
+            "huh",
+            "mhm",
+            "mmm",
+            "eh",
+            "ugh",
+        }
+    )
+
+    def _is_stt_filler_for_barge_in(self, transcript: str) -> bool:
+        """Reject phantom Deepgram hits (uh/mm, uh huh) from cutting active TTS."""
+        low = re.sub(r"[^a-z ]+", "", (transcript or "").lower()).strip()
+        if not low:
+            return True
+        if low in self._BARGE_IN_FILLER_WORDS:
+            return True
+        tokens = low.split()
+        return bool(tokens) and all(t in self._BARGE_IN_FILLER_WORDS for t in tokens)
+
+    def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
+        """
+        True when STT looks like real user speech over the agent (not noise/filler).
+
+        Gates (all required): non-empty text, not filler-only, word count ≥
+        VOICE_BARGE_IN_MIN_WORDS, and confidence at or above
+        VOICE_BARGE_IN_MIN_CONFIDENCE (multi-word) or VOICE_BARGE_IN_MIN_CONFIDENCE_1W
+        when min words is 1.
+        """
+        text = (transcript or "").strip()
+        if not text or self._is_stt_filler_for_barge_in(text):
+            return False
+        word_count = len(text.split())
+        if word_count < self._barge_in_min_words:
+            return False
+        if word_count >= 2:
+            return confidence >= self._barge_in_min_conf
+        return confidence >= self._barge_in_min_conf_1w
+
+    def _log_barge_in_suppressed(self, transcript: str, confidence: float, reason: str) -> None:
+        """Staging/debug: count STT events that looked like speech but failed barge-in gates."""
+        self._barge_in_rejected_while_playing += 1
+        logger.debug(
+            "[Barge-in] suppressed (%s): words=%d conf=%.2f rejected_total=%d text=%r",
+            reason,
+            len((transcript or "").split()),
+            confidence,
+            self._barge_in_rejected_while_playing,
+            (transcript or "")[:40],
+        )
+
     async def _process_transcript(self, transcript: str, confidence: float):
         """Process a transcript (final result)"""
         try:
-            # Strict barge-in on FINAL events: if audio is actively playing, cut it
-            # immediately before any DB work so the caller is never left waiting.
-            if self._is_tts_playing and (transcript or "").strip():
-                _barge_ts = time.monotonic()
-                self._metric_barge_in_ts = _barge_ts
+            # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
+            if self._is_tts_playing and self._should_barge_in_on_stt(transcript, confidence):
+                self._metric_barge_in_ts = time.perf_counter()
                 logger.info(
                     "[Barge-in/final] TTS cut by final STT: %r",
                     (transcript or "")[:40],
                 )
                 await self._cancel_inflight_llm_response()
-                self._metric_audio_cut_ts = time.monotonic()
-                _cut_ms = (self._metric_audio_cut_ts - _barge_ts) * 1000
+                self._metric_audio_cut_ts = time.perf_counter()
+                _cut_ms = (self._metric_audio_cut_ts - self._metric_barge_in_ts) * 1000
                 logger.info(
                     "[Metrics] interruption_detection_to_audio_cut=%.0f ms (final)",
                     _cut_ms,
@@ -1031,22 +1091,29 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             word_count = len(transcript.split())
 
             # ── Barge-in gate ────────────────────────────────────────────────────
-            # Strict policy: ANY non-empty STT event (interim or final) while audio is
-            # actively playing to Twilio fires barge-in immediately.  The sole false-
-            # trigger protection is `_is_tts_playing` itself — it is only True after the
-            # first real 20ms mulaw frame has been sent to the Twilio WebSocket, so
-            # synthesis-in-flight (no audio yet) never triggers this path.
-            is_barge_in = self._is_tts_playing and bool((transcript or "").strip())
+            # Cut when audio is actively playing AND STT looks like real speech.
+            # `_is_tts_playing` only gates on streaming audio; word count, confidence,
+            # and filler rejection block phantom Deepgram hits on silence.
+            is_barge_in = False
+            if self._is_tts_playing:
+                if self._should_barge_in_on_stt(transcript, confidence):
+                    is_barge_in = True
+                elif (transcript or "").strip():
+                    if self._is_stt_filler_for_barge_in(transcript):
+                        self._log_barge_in_suppressed(transcript, confidence, "filler")
+                    elif word_count < self._barge_in_min_words:
+                        self._log_barge_in_suppressed(transcript, confidence, "min_words")
+                    else:
+                        self._log_barge_in_suppressed(transcript, confidence, "confidence")
             if is_barge_in:
-                _barge_ts = time.monotonic()
-                self._metric_barge_in_ts = _barge_ts
+                self._metric_barge_in_ts = time.perf_counter()
                 logger.info(
                     "[Barge-in] triggered: words=%d conf=%.2f transcript=%r",
                     word_count, confidence, (transcript or "")[:40],
                 )
                 await self._cancel_inflight_llm_response()
-                self._metric_audio_cut_ts = time.monotonic()
-                _cut_ms = (self._metric_audio_cut_ts - _barge_ts) * 1000
+                self._metric_audio_cut_ts = time.perf_counter()
+                _cut_ms = (self._metric_audio_cut_ts - self._metric_barge_in_ts) * 1000
                 logger.info(
                     "[Metrics] interruption_detection_to_audio_cut=%.0f ms", _cut_ms
                 )

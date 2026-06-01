@@ -42,11 +42,8 @@ class RimeTtsService:
     def __init__(self) -> None:
         # Client is created lazily (no event loop at module import time).
         self._client: Optional[httpx.AsyncClient] = None
-
-    def _api_key(self) -> str:
-        # get_rime_api_key() handles env-resolution for dev/staging/production,
-        # including GCP Secret Manager in production, with a clear error on missing key.
-        return get_rime_api_key()
+        # Resolve once at construction so a missing key fails before any live call.
+        self._api_key = get_rime_api_key()
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -99,7 +96,7 @@ class RimeTtsService:
             "streaming": True,  # required for chunked HTTP streaming response
         }
         headers = {
-            "Authorization": f"Bearer {self._api_key()}",
+            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             # Streaming format is controlled by Accept (not JSON audioFormat).
             # audio/basic returns non-mulaw bytes → Twilio plays as garbled "cheeee" noise.

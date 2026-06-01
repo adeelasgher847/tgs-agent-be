@@ -1,6 +1,9 @@
 import sys, os
 from unittest.mock import MagicMock
 
+# Rime TTS is validated at app startup; tests must not depend on a developer .env file.
+os.environ.setdefault("RIME_API_KEY", "test-rime-key-for-pytest")
+
 # Mock google submodules recursively to avoid ImportError
 # We must mock every level that is imported
 sys.modules["google"] = MagicMock()

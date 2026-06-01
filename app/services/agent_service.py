@@ -225,12 +225,18 @@ class AgentService:
             except (TypeError, ValueError):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="ttsSettingsJson.speed must be a number between 0.25 and 2.0.",
+                    detail=(
+                        f"ttsSettingsJson.speed must be a number between "
+                        f"{settings.TTS_SPEED_MIN} and {settings.TTS_SPEED_MAX}."
+                    ),
                 )
-            if speed < 0.25 or speed > 2.0:
+            if speed < settings.TTS_SPEED_MIN or speed > settings.TTS_SPEED_MAX:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="ttsSettingsJson.speed must be between 0.25 and 2.0.",
+                    detail=(
+                        f"ttsSettingsJson.speed must be between "
+                        f"{settings.TTS_SPEED_MIN} and {settings.TTS_SPEED_MAX}."
+                    ),
                 )
 
         if "volume" in combined:
@@ -239,12 +245,18 @@ class AgentService:
             except (TypeError, ValueError):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="ttsSettingsJson.volume must be a number between 0.0 and 2.0.",
+                    detail=(
+                        f"ttsSettingsJson.volume must be a number between "
+                        f"{settings.TTS_VOLUME_MIN} and {settings.TTS_VOLUME_MAX}."
+                    ),
                 )
-            if voice_volume < 0.0 or voice_volume > 2.0:
+            if voice_volume < settings.TTS_VOLUME_MIN or voice_volume > settings.TTS_VOLUME_MAX:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="ttsSettingsJson.volume must be between 0.0 and 2.0.",
+                    detail=(
+                        f"ttsSettingsJson.volume must be between "
+                        f"{settings.TTS_VOLUME_MIN} and {settings.TTS_VOLUME_MAX}."
+                    ),
                 )
 
         if "background_enabled" in tts_settings_json:
