@@ -52,8 +52,10 @@ class CallFlowService:
         load_relations: bool = False,
     ) -> CallFlow:
         repo = CallFlowRepository(db)
-        flow = repo.find_by_id(flow_id, load_relations=load_relations)
-        if flow is None or flow.tenant_id != tenant_id:
+        flow = repo.find_by_id(
+            flow_id, tenant_id=tenant_id, load_relations=load_relations
+        )
+        if flow is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Call flow {flow_id} not found",

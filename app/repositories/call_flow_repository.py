@@ -26,10 +26,13 @@ class CallFlowRepository:
         self,
         flow_id: uuid.UUID,
         *,
+        tenant_id: Optional[uuid.UUID] = None,
         include_deleted: bool = False,
         load_relations: bool = False,
     ) -> Optional[CallFlow]:
         stmt = select(CallFlow).where(CallFlow.id == flow_id)
+        if tenant_id is not None:
+            stmt = stmt.where(CallFlow.tenant_id == tenant_id)
         if not include_deleted:
             stmt = stmt.where(CallFlow.is_deleted == False)  # noqa: E712
         if load_relations:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Boolean, Index
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Boolean, Index, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -25,7 +25,7 @@ class CallFlow(Base):
     settings = Column(JSONB, nullable=True)
     is_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
 
     # Relationships
     tenant = relationship("Tenant")
@@ -47,4 +47,5 @@ class CallFlow(Base):
 
     __table_args__ = (
         Index("ix_callflow_tenant_id", "tenant_id"),
+        CheckConstraint("direction IN ('inbound', 'outbound')", name="ck_callflow_direction"),
     )

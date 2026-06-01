@@ -77,10 +77,9 @@ class FolderService:
     ) -> dict:
         folder = self._get_folder_or_404(db, folder_id, tenant_id)
 
-        # Verify flow belongs to tenant
         cf_repo = CallFlowRepository(db)
-        flow = cf_repo.find_by_id(flow_id)
-        if flow is None or flow.tenant_id != tenant_id:
+        flow = cf_repo.find_by_id(flow_id, tenant_id=tenant_id)
+        if flow is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Call flow {flow_id} not found in workspace",

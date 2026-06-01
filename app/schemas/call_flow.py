@@ -61,6 +61,15 @@ class CallFlowUpdate(BaseModel):
     flow_data: Optional[FlowDataSchema] = Field(None, alias="flowData")
     settings: Optional[Dict[str, Any]] = None
 
+    @model_validator(mode="after")
+    def prompt_and_rollback_exclusive(self) -> "CallFlowUpdate":
+        if self.prompt and self.current_prompt_id:
+            raise ValueError(
+                "'prompt' and 'currentPromptId' are mutually exclusive — "
+                "use 'prompt' to create a new version or 'currentPromptId' to roll back, not both."
+            )
+        return self
+
 
 class CallFlowOut(BaseModel):
     """Full flow response including all prompt versions."""
