@@ -69,15 +69,15 @@ class TtsSettingsJsonSchema(BaseModel):
 
     speed: float = Field(
         default=1.0,
-        ge=0.25,
-        le=2.0,
+        ge=settings.TTS_SPEED_MIN,
+        le=settings.TTS_SPEED_MAX,
         description="Speech rate. 1.0 = normal, lower = slower, higher = faster.",
     )
     volume: float = Field(
         default=1.0,
-        ge=0.0,
-        le=2.0,
-        description="Output loudness. 1.0 = normal, 0 = silence, up to 2.0 = louder.",
+        ge=settings.TTS_VOLUME_MIN,
+        le=settings.TTS_VOLUME_MAX,
+        description="Output loudness. 1.0 = normal, 0 = silence, up to max = louder.",
     )
 
 

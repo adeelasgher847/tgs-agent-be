@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Dict, Optional
 
+from app.core.secret_manager import get_rime_api_key
 from app.models.tts_provider import TTSProvider
 from app.services.elevenlabs_service import elevenlabs_service
 from app.services.google_tts_service import google_tts_service
@@ -278,6 +279,10 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
     # mist / mistv2: speedAlpha < 1.0 is FASTER, > 1.0 is SLOWER (per Rime docs).
     # mistv3 / arcana: convention matches user mental model (>1 = faster).
     _SPEED_INVERTED_MODELS = {"mist", "mistv2"}
+
+    def __init__(self) -> None:
+        # Fail at adapter construction — not on first mid-call synthesis request.
+        self._api_key = get_rime_api_key()
 
     @classmethod
     def _user_speed_to_speed_alpha(cls, user_speed: float, model_id: str) -> float:

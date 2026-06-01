@@ -6,8 +6,7 @@ Tests cover:
       streaming=true in Rime payload
   2.  agent_runtime — 'rime' slug resolves to 'rime' adapter (not 'google')
   3.  agent_runtime — speed/volume defaults normalised for all providers
-  4.  Strict barge-in (interim): ANY non-empty STT event while _is_tts_playing=True
-      must cancel immediately — no conf/word/filler gates.
+  4.  Guarded barge-in (interim): _is_tts_playing + confidence floor + filler reject.
   5.  Barge-in DOES NOT fire while synthesis in-flight but audio not yet playing.
   6.  Barge-in DOES NOT fire when agent is silent (_is_tts_playing=False).
   7.  Barge-in fires on FINAL events too (_process_transcript path).
@@ -62,6 +61,8 @@ def _base_handler() -> Handler:
 
     h._barge_in_min_conf = 0.40
     h._barge_in_min_conf_1w = 0.55
+    h._barge_in_min_words = 2
+    h._barge_in_rejected_while_playing = 0
     h._tts_cancel = asyncio.Event()
     h._tts_lock = asyncio.Lock()
 
@@ -116,6 +117,18 @@ class TestRimeTTSAdapter:
         from app.utils.tts_adapter import get_tts_adapter, RimeTTSAdapter
         adapter = get_tts_adapter("rime")
         assert isinstance(adapter, RimeTTSAdapter)
+
+    def test_rime_adapter_init_fails_without_api_key(self):
+        from app.core.secret_manager import get_rime_api_key
+        from app.utils.tts_adapter import RimeTTSAdapter
+
+        get_rime_api_key.cache_clear()
+        with patch(
+            "app.utils.tts_adapter.get_rime_api_key",
+            side_effect=ValueError("RIME_API_KEY is not set"),
+        ):
+            with pytest.raises(ValueError, match="RIME_API_KEY is not set"):
+                RimeTTSAdapter()
 
     def test_rime_default_voice_fallback(self):
         from app.utils.tts_adapter import RimeTTSAdapter
@@ -357,14 +370,13 @@ class TestAgentRuntimeRime:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Strict barge-in gate — interim events
+# 3. Guarded barge-in gate — interim events
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestStrictBargeIn:
+class TestGuardedBargeIn:
     """
-    Strict policy: ANY non-empty STT event while _is_tts_playing=True must cancel
-    TTS immediately.  No confidence, word-count, or filler gates apply once audio
-    is actively streaming to Twilio.
+    Barge-in while _is_tts_playing: confidence floor (2+ vs 1 word) and filler
+    rejection. Phantom STT on silence must not cancel active TTS.
     """
 
     def test_barge_in_fires_when_audio_actively_playing(self):
@@ -374,28 +386,58 @@ class TestStrictBargeIn:
         asyncio.run(h._maybe_process_interim("stop wait please", 0.85))
         h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once()
 
-    def test_barge_in_fires_on_single_word_any_confidence(self):
-        """Single word at any confidence level cancels when playing."""
+    def test_barge_in_does_not_fire_on_single_word_even_high_confidence(self):
+        """Default min 2 words: single-word 'stop' must not cancel (phantom guard)."""
         h = _base_handler()
         h._is_tts_playing = True
-        asyncio.run(h._maybe_process_interim("stop", 0.05))
+        asyncio.run(h._maybe_process_interim("stop", 0.85))
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
+
+    def test_barge_in_fires_on_single_word_when_min_words_is_one(self):
+        """Opt-in 1-word mode: high-confidence 'stop' cancels when playing."""
+        h = _base_handler()
+        h._barge_in_min_words = 1
+        h._is_tts_playing = True
+        asyncio.run(h._maybe_process_interim("stop", 0.55))
         h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once()
 
-    def test_barge_in_fires_on_filler_word_when_playing(self):
-        """'uh' / 'mm' / 'hmm' cancel immediately when audio is playing — strict mode."""
+    def test_barge_in_does_not_fire_on_single_word_low_confidence(self):
+        """Single word below BARGE_IN_MIN_CONF_1W must not cancel (min_words=1)."""
+        h = _base_handler()
+        h._barge_in_min_words = 1
+        h._is_tts_playing = True
+        asyncio.run(h._maybe_process_interim("stop", 0.05))
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
+
+    def test_barge_in_does_not_fire_on_multi_word_filler_phrase(self):
+        """All-filler phrases like 'uh huh' must not cancel."""
+        h = _base_handler()
+        h._is_tts_playing = True
+        asyncio.run(h._maybe_process_interim("uh huh", 0.90))
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
+
+    def test_barge_in_does_not_fire_on_filler_word_when_playing(self):
+        """Phantom fillers must not cut TTS while audio is playing."""
         for filler in ["uh", "um", "hmm", "mm", "ah"]:
             h = _base_handler()
             h._is_tts_playing = True
-            asyncio.run(h._maybe_process_interim(filler, 0.10))
-            h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once(), (
-                f"Filler '{filler}' must trigger barge-in when audio is playing (strict mode)"
+            asyncio.run(h._maybe_process_interim(filler, 0.90))
+            h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called(), (
+                f"Filler '{filler}' must not trigger barge-in (phantom STT guard)"
             )
 
-    def test_barge_in_fires_on_any_confidence(self):
-        """Even near-zero confidence triggers when audio is playing."""
+    def test_barge_in_does_not_fire_on_low_confidence_multi_word(self):
+        """Multi-word below BARGE_IN_MIN_CONFIDENCE must not cancel."""
         h = _base_handler()
         h._is_tts_playing = True
-        asyncio.run(h._maybe_process_interim("actually", 0.01))
+        asyncio.run(h._maybe_process_interim("actually wait", 0.01))
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
+
+    def test_barge_in_fires_at_multi_word_confidence_floor(self):
+        """Two words at or above BARGE_IN_MIN_CONFIDENCE cancel when playing."""
+        h = _base_handler()
+        h._is_tts_playing = True
+        asyncio.run(h._maybe_process_interim("actually wait", 0.45))
         h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once()
 
     def test_barge_in_does_not_fire_when_synthesis_in_flight_but_no_audio_yet(self):
@@ -695,19 +737,13 @@ class TestFirstAudioLatency:
 
 class TestRimeTtsService:
     def test_missing_api_key_raises_value_error(self):
+        from app.core.secret_manager import get_rime_api_key
         from app.services.rime_tts_service import RimeTtsService
 
-        svc = RimeTtsService()
-
-        with patch("app.core.secret_manager.get_rime_api_key", side_effect=ValueError("no key")):
-
-            async def _run():
-                chunks = []
-                async for chunk in svc.stream_text_to_speech("hello"):
-                    chunks.append(chunk)
-
-            with pytest.raises((ValueError, RuntimeError, Exception)):
-                asyncio.run(_run())
+        get_rime_api_key.cache_clear()
+        with patch("app.services.rime_tts_service.get_rime_api_key", side_effect=ValueError("no key")):
+            with pytest.raises(ValueError, match="no key"):
+                RimeTtsService()
 
     def test_stream_yields_bytes_on_success(self):
         from app.services.rime_tts_service import RimeTtsService

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from app.core.config import settings
 from app.core.llm_models import infer_llm_provider
 from app.core.logger import logger
 from app.core.security import decrypt_api_key
@@ -23,12 +24,11 @@ _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
     "rime": "rime",
 }
 
-# User-facing speed/volume bounds (uniform across all TTS providers).
-# Mental model: 1.0 = normal, <1 = slower/quieter, >1 = faster/louder.
-TTS_SPEED_MIN = 0.25
-TTS_SPEED_MAX = 2.0
-TTS_VOLUME_MIN = 0.0
-TTS_VOLUME_MAX = 2.0
+# Re-export config bounds for call sites/tests (source of truth: settings / .env).
+TTS_SPEED_MIN: float = settings.TTS_SPEED_MIN
+TTS_SPEED_MAX: float = settings.TTS_SPEED_MAX
+TTS_VOLUME_MIN: float = settings.TTS_VOLUME_MIN
+TTS_VOLUME_MAX: float = settings.TTS_VOLUME_MAX
 
 
 def _coerce_float(value: Any, default: float) -> float:

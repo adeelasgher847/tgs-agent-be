@@ -128,11 +128,13 @@ class Settings(BaseSettings):
     VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK: bool = True
     VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.12
     VOICE_STT_SOFT_MIN_WORDS: int = 2
-    # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
-    # Slightly below old 0.30 so a softer "wait" / "hold on" still cancels TTS.
-    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.18
-    # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
-    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
+    # Barge-in (user talks over agent): require at least this many STT words while TTS plays.
+    # Default 2 filters phantom 1-word Deepgram hits ("uh", noise artefacts) on silence.
+    VOICE_BARGE_IN_MIN_WORDS: int = 2
+    # Min STT confidence when word count >= VOICE_BARGE_IN_MIN_WORDS.
+    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.26
+    # Only used when VOICE_BARGE_IN_MIN_WORDS == 1 (one-word interrupts like "stop").
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.52
     VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
@@ -152,6 +154,12 @@ class Settings(BaseSettings):
     # Allow RAG prefetch to start earlier than interim-LLM gates.
     VOICE_RAG_PREFETCH_MIN_WORDS: int = 1
     VOICE_RAG_PREFETCH_MIN_CONFIDENCE: float = 0.05
+    # TTS speed/volume bounds — shared by API schema (TtsSettingsJsonSchema) and
+    # runtime clamping (resolve_tts_runtime). Tune per deploy without code changes.
+    TTS_SPEED_MIN: float = 0.25
+    TTS_SPEED_MAX: float = 2.0
+    TTS_VOLUME_MIN: float = 0.0
+    TTS_VOLUME_MAX: float = 2.0
     # Start TTS streaming sooner for short first chunks.
     VOICE_TTS_STREAM_MIN_WORDS: int = 2
     # Twilio jitter buffer priming frames (20ms each) for low-latency voice output.

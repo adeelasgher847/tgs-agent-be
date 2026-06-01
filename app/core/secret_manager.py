@@ -101,8 +101,9 @@ def get_rime_api_key() -> str:
       env-var fallback so deployments that set the var directly still work.
     - development → plain env-var / .env value.
 
-    Raises RuntimeError if no key is available so the call fails early with a
-    clear message rather than silently sending unauthenticated requests.
+    Raises ValueError (development) or RuntimeError (staging/production) if no
+    key is available so callers fail at startup rather than sending unauthenticated
+    requests mid-call.
     """
     env = settings.ENVIRONMENT.lower()
 
