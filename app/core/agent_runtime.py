@@ -247,9 +247,6 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
                 agent_id=agent.id,
                 credential_label="BYO ElevenLabs API key",
             )
-        # For Rime: ensure default voice when none configured.
-        if adapter_slug == "rime" and not voice_id:
-            voice_id = "mistv2_Wildflower"
         settings.setdefault("language_code", language)
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,
