@@ -386,7 +386,32 @@ class PhoneNumberService:
 
         pn.assistant_id = agent_id
         agent.status = "ready"
-        db.commit()
+        try:
+            db.commit()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            db.rollback()
+            logger.error("bind_number commit failed for agent %s: %s", agent_id, exc)
+            try:
+                # Re-fetch after rollback — in-memory ``agent`` may be expired.
+                agent_row = db.execute(
+                    select(Agent).where(
+                        Agent.id == agent_id, Agent.tenant_id == tenant_id
+                    )
+                ).scalar_one_or_none()
+                if agent_row is not None:
+                    agent_row.status = "error"
+                    db.commit()
+            except Exception as inner:
+                db.rollback()
+                logger.error(
+                    "Could not persist error status for agent %s: %s", agent_id, inner
+                )
+            raise HTTPException(
+                status_code=500,
+                detail="Phone number binding failed unexpectedly. Agent marked as error.",
+            )
         db.refresh(pn)
         return pn
 

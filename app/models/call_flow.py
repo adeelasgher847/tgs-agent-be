@@ -47,5 +47,14 @@ class CallFlow(Base):
 
     __table_args__ = (
         Index("ix_callflow_tenant_id", "tenant_id"),
-        CheckConstraint("direction IN ('inbound', 'outbound')", name="ck_callflow_direction"),
+        Index("ix_callflow_agent_id", "agent_id"),
+        CheckConstraint(
+            "direction IN ('inbound', 'outbound', 'bidirectional')",
+            name="ck_callflow_direction",
+        ),
+        CheckConstraint(
+            "welcome_message_type IS NULL OR "
+            "welcome_message_type IN ('user_initiated', 'ai_dynamic', 'ai_custom')",
+            name="ck_callflow_welcome_message_type",
+        ),
     )

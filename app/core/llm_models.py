@@ -6,27 +6,31 @@ Single source of truth for the ``llm_model`` field on agents. Read by the
 ``allowedValues`` array returned with ``invalid_llm_model`` errors.
 
 Add/remove a model by editing :data:`ALLOWED_LLM_MODELS` only — do not
-hardcode model identifiers anywhere else.
+hardcode model identifiers anywhere else.  The Alembic migration
+``20260602_schema_v2_completion`` builds ``ck_agent_llm_model`` from this tuple
+via ``_llm_check_sql()`` in that revision file.
 """
 from __future__ import annotations
 
 from typing import Final
 
 ALLOWED_LLM_MODELS: Final[tuple[str, ...]] = (
-    # OpenAI
-    "gpt-4o",
+    # OpenAI — ticket required + existing
     "gpt-4o-mini",
-    "gpt-4-turbo",
+    "gpt-4o",
     "gpt-4.1",
     "gpt-4.1-mini",
-    # Google Gemini
+    "gpt-4-turbo",
+    # Google Gemini — ticket required + existing
+    "gemini-2.5-flash",
+    "gemini-2.0-flash-001",
+    "gemini-2.0-flash",
     "gemini-1.5-pro",
     "gemini-1.5-flash",
-    "gemini-2.0-flash",
-    # Anthropic
+    # Anthropic — existing
     "claude-3-5-sonnet",
     "claude-3-haiku",
-    # Groq
+    # Groq — existing
     "llama-3.1-70b-versatile",
     "llama-3.1-8b-instant",
 )

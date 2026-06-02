@@ -11,11 +11,16 @@ from dataclasses import dataclass
 from typing import Any, Optional, Union
 from uuid import UUID
 
+from typing import TYPE_CHECKING
+
 from app.core.config import settings
 from app.core.llm_models import infer_llm_provider
 from app.core.logger import logger
 from app.core.security import decrypt_api_key
 from app.models.agent import Agent
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 
 _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
@@ -203,8 +208,16 @@ def llm_service_for_provider(provider_slug: str) -> Any:
     return gemini_service
 
 
-def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
-    """Map ticket ``ttsModel`` (or legacy relations) to adapter + voice id."""
+def resolve_tts_runtime(
+    agent: Optional[Agent],
+    db: "Session | None" = None,
+) -> ResolvedTtsRuntime:
+    """Map ticket ``ttsModel`` (or legacy relations) to adapter + voice id.
+
+    ``db`` is used only when the agent uses a BYO ElevenLabs key stored with
+    pgcrypto encryption.  Pass the caller's existing session when available;
+    if omitted and needed a short-lived session is opened automatically.
+    """
     language = "en"
     settings: dict[str, Any] = {}
 
@@ -242,11 +255,23 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
         if agent.tts_language:
             language = agent.tts_language
         if slug == "11labs_byo" and agent.encrypted_elevenlabs_api_key:
-            settings["elevenlabs_api_key"] = _decrypt_stored_api_key(
-                agent.encrypted_elevenlabs_api_key,
-                agent_id=agent.id,
-                credential_label="BYO ElevenLabs API key",
-            )
+            try:
+                from app.core.db_encryption import decrypt_stored_elevenlabs_key
+                settings["elevenlabs_api_key"] = decrypt_stored_elevenlabs_key(
+                    agent.encrypted_elevenlabs_api_key,
+                    db=db,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to decrypt BYO ElevenLabs API key for agent %s: %s",
+                    agent.id,
+                    exc,
+                    exc_info=True,
+                )
+                raise RuntimeError(
+                    f"Agent {agent.id}: stored BYO ElevenLabs API key is corrupted or "
+                    "unreadable. Re-save the API key in agent settings."
+                ) from exc
         # For Rime: ensure default voice when none configured.
         if adapter_slug == "rime" and not voice_id:
             voice_id = "mistv2_Wildflower"
@@ -281,6 +306,9 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
     )
 
 
-def resolve_tts_adapter_slug(agent: Optional[Agent]) -> Optional[str]:
+def resolve_tts_adapter_slug(
+    agent: Optional[Agent],
+    db: "Session | None" = None,
+) -> Optional[str]:
     """Convenience for call sites that only need the adapter slug string."""
-    return resolve_tts_runtime(agent).adapter_slug
+    return resolve_tts_runtime(agent, db=db).adapter_slug

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
 
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
+    # Symmetric encryption key for agent.encrypted_elevenlabs_api_key (pgp_sym_encrypt).
+    # In production/staging load from Secret Manager; never commit a real value.
+    ELEVENLABS_ENCRYPTION_KEY: str = ""
     # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
     # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
     ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True

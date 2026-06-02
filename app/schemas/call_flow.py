@@ -13,6 +13,13 @@ from app.schemas.prompt_version import PromptVersionOut
 class DirectionEnum(str, Enum):
     inbound = "inbound"
     outbound = "outbound"
+    bidirectional = "bidirectional"
+
+
+class WelcomeMessageTypeEnum(str, Enum):
+    user_initiated = "user_initiated"
+    ai_dynamic = "ai_dynamic"
+    ai_custom = "ai_custom"
 
 
 class FlowDataSchema(BaseModel):
@@ -39,7 +46,7 @@ class CallFlowCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     direction: DirectionEnum
     agent_id: uuid.UUID = Field(..., alias="agentId")
-    welcome_message_type: Optional[str] = Field(None, alias="welcomeMessageType", max_length=50)
+    welcome_message_type: Optional[WelcomeMessageTypeEnum] = Field(None, alias="welcomeMessageType")
     custom_welcome_message: Optional[str] = Field(None, alias="customWelcomeMessage")
     prompt: Optional[str] = None
     notes: Optional[str] = None  # notes for the initial prompt version
@@ -53,7 +60,7 @@ class CallFlowUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     direction: Optional[DirectionEnum] = None
     agent_id: Optional[uuid.UUID] = Field(None, alias="agentId")
-    welcome_message_type: Optional[str] = Field(None, alias="welcomeMessageType", max_length=50)
+    welcome_message_type: Optional[WelcomeMessageTypeEnum] = Field(None, alias="welcomeMessageType")
     custom_welcome_message: Optional[str] = Field(None, alias="customWelcomeMessage")
     prompt: Optional[str] = None
     notes: Optional[str] = None  # notes for the new prompt version

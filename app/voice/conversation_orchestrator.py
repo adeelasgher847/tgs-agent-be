@@ -314,7 +314,11 @@ class ConversationOrchestrator:
             from app.core.agent_runtime import resolve_tts_runtime
 
             tts_provider_slug = (
-                resolve_tts_runtime(self._h.agent).adapter_slug if self._h.agent else ""
+                resolve_tts_runtime(
+                    self._h.agent, db=getattr(self._h, "db", None)
+                ).adapter_slug
+                if self._h.agent
+                else ""
             )
             elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
             if elevenlabs_audio_tags_enabled:

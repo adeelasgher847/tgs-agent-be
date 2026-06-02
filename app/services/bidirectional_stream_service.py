@@ -3,7 +3,10 @@ Service functions for bidirectional streaming.
 Handles TTS generation and TwiML building.
 """
 
-from typing import Optional, Any
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 from app.services.google_tts_service import google_tts_service
 from app.routers.tts_audio import audio_cache, generate_cache_key
@@ -15,10 +18,13 @@ from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 from app.utils.audio_utils import add_ambient_noise_to_mulaw
 
 
-def _resolve_tts_provider_slug(agent: Optional[Any]) -> Optional[str]:
+def _resolve_tts_provider_slug(
+    agent: Optional[Any],
+    db: "Session | None" = None,
+) -> Optional[str]:
     if not agent:
         return None
-    return resolve_tts_runtime(agent).adapter_slug
+    return resolve_tts_runtime(agent, db=db).adapter_slug
 
 
 async def generate_mulaw_tts(
@@ -30,6 +36,7 @@ async def generate_mulaw_tts(
     use_ssml: bool = False,
     add_office_bg: bool = False,
     agent: Optional[Any] = None,
+    db: "Session | None" = None,
 ) -> bytes:
     """
     Generate mu-law (8kHz) TTS audio using Chirp 3: HD model.
@@ -52,12 +59,12 @@ async def generate_mulaw_tts(
 
     try:
         # Cache key aligned with existing cache strategy (include ssml flag)
-        provider_slug = _resolve_tts_provider_slug(agent) or "google"
+        provider_slug = _resolve_tts_provider_slug(agent, db=db) or "google"
         tts_text = prepare_tts_text_for_provider(text.strip(), provider_slug)
         if not tts_text:
             return b""
 
-        tts_runtime = resolve_tts_runtime(agent) if agent else None
+        tts_runtime = resolve_tts_runtime(agent, db=db) if agent else None
         selected_voice = voice
         if provider_slug != "google":
             if tts_runtime and tts_runtime.voice_external_id:

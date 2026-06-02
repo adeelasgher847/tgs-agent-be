@@ -24,7 +24,7 @@ from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
 from app.services.rag_service import rag_service
 from app.core.config import settings
-from app.core.security import encrypt_api_key
+from app.core.db_encryption import encrypt_elevenlabs_key
 from app.repositories.agent_repository import AgentRepository
 from fastapi import HTTPException, status
 import uuid
@@ -118,9 +118,9 @@ class AgentService:
             "tts_voice_id": voice.id,
         }
 
-    def _encrypt_byo_key(self, raw_key: str) -> str:
+    def _encrypt_byo_key(self, raw_key: str, db: Session) -> str:
         try:
-            return encrypt_api_key(raw_key)
+            return encrypt_elevenlabs_key(raw_key, db)
         except ValueError as exc:
             logger.error("ElevenLabs BYO key encryption failed: %s", exc)
             raise HTTPException(
@@ -133,7 +133,7 @@ class AgentService:
         tts_fields = self._resolve_tts_model(db, agent_in.tts_model)
         encrypted_key: Optional[str] = None
         if agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo:
-            encrypted_key = self._encrypt_byo_key(agent_in.eleven_labs_api_key or "")
+            encrypted_key = self._encrypt_byo_key(agent_in.eleven_labs_api_key or "", db)
         return {
             "llm_model": model.model_name,
             "model_id": model.id,
@@ -163,7 +163,7 @@ class AgentService:
                 update_dict["encrypted_elevenlabs_api_key"] = None
         if agent_in.eleven_labs_api_key is not None:
             update_dict["encrypted_elevenlabs_api_key"] = self._encrypt_byo_key(
-                agent_in.eleven_labs_api_key
+                agent_in.eleven_labs_api_key, db
             )
         if agent_in.tts_model is not None:
             new_is_byo = agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo

@@ -3,6 +3,10 @@ from unittest.mock import MagicMock
 
 # Rime TTS is validated at app startup; tests must not depend on a developer .env file.
 os.environ.setdefault("RIME_API_KEY", "test-rime-key-for-pytest")
+os.environ.setdefault(
+    "ELEVENLABS_ENCRYPTION_KEY",
+    "test-elevenlabs-encryption-key-for-pytest-only",
+)
 
 # Mock google submodules recursively to avoid ImportError
 # We must mock every level that is imported
@@ -28,6 +32,13 @@ sys.modules["google.api_core.exceptions"] = MagicMock()
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pytest
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "integration: tests that require a live PostgreSQL database",
+    )
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

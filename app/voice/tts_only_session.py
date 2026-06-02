@@ -69,6 +69,7 @@ class TtsOnlySession:
             speaking_rate=1.0,
             add_office_bg=False,
             agent=self.agent,
+            db=self.db,
         )
 
         audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
@@ -77,7 +78,9 @@ class TtsOnlySession:
         if self.agent and audio_bytes:
             try:
                 voice_gain = float(
-                    resolve_tts_runtime(self.agent).settings_json.get("volume", 1.0)
+                    resolve_tts_runtime(self.agent, db=self.db).settings_json.get(
+                        "volume", 1.0
+                    )
                 )
             except Exception:
                 voice_gain = 1.0

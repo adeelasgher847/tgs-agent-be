@@ -20,7 +20,9 @@ from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.middleware.api_key_middleware import _attach_workspace_context
 from app.models.agent import Agent
@@ -28,6 +30,7 @@ from app.models.phone_number import NumberConfiguration, PhoneNumber
 from app.models.tenant import Tenant
 from app.core.security import decrypt_api_key, is_api_key_encrypted
 from app.schemas.agent import AgentStatusEnum, agent_to_out
+from app.services.phone_number_service import PhoneNumberService
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +459,36 @@ class TestBindUnbind:
             headers=_headers(phone_tenant),
         )
         assert resp.status_code == 404
+
+    def test_bind_commit_failure_sets_agent_error_and_rolls_back_binding(
+        self, phone_tenant: Tenant, phone_agent: Agent, db
+    ):
+        """First commit fails → rollback; agent re-fetched and marked error."""
+        pn = self._create_number(db, phone_tenant.id, "+61400000099")
+        svc = PhoneNumberService()
+        commits = {"n": 0}
+        real_commit = db.commit
+
+        def _flaky_commit() -> None:
+            commits["n"] += 1
+            if commits["n"] == 1:
+                raise SQLAlchemyError("simulated bind commit failure")
+            real_commit()
+
+        with patch.object(db, "commit", side_effect=_flaky_commit):
+            with pytest.raises(HTTPException) as exc_info:
+                svc.bind_number(db, pn.id, phone_agent.id, phone_tenant.id)
+            assert exc_info.value.status_code == 500
+
+        db.expire_all()
+        db.refresh(pn)
+        fresh_agent = db.get(Agent, phone_agent.id)
+        assert pn.assistant_id is None
+        assert fresh_agent is not None
+        assert fresh_agent.status == "error"
+
+        db.delete(pn)
+        db.commit()
 
     def test_bind_accepts_ticket_camel_case_aliases(
         self, authed_client: TestClient, phone_tenant: Tenant, phone_agent: Agent, db

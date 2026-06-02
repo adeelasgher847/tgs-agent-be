@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.db_encryption import decrypt_stored_elevenlabs_key, is_pgcrypto_ciphertext
 from app.core.request_auth import AUTH_METHOD_JWT
-from app.core.security import decrypt_api_key
 from app.core.workspace import Workspace
 from app.middleware.api_key_middleware import _attach_workspace_context
 from app.models.agent import Agent
@@ -111,6 +111,42 @@ def other_tenant(db) -> Tenant:
 
 
 @pytest.fixture
+def byo_sqlite_encrypt_compat(db, monkeypatch):
+    """SQLite has no pgcrypto — BYO API tests use JWT-shaped ciphertext on that dialect.
+
+    Production pgcrypto storage is covered by
+    ``tests/db/test_schema_v2_alembic_integration.py::TestByoPgcryptoOnPostgres``.
+    """
+    if db.get_bind().dialect.name != "sqlite":
+        yield
+        return
+    from app.core.security import encrypt_api_key
+
+    def _jwt_encrypt(plaintext: str, _db) -> str:
+        return encrypt_api_key(plaintext) if plaintext else ""
+
+    monkeypatch.setattr(
+        "app.services.agent_service.encrypt_elevenlabs_key",
+        _jwt_encrypt,
+    )
+    yield
+
+
+def _assert_byo_key_roundtrip(db, agent: Agent, expected_key: str) -> None:
+    """Verify stored BYO key decrypts to the original plaintext."""
+    assert agent.encrypted_elevenlabs_api_key
+    assert agent.encrypted_elevenlabs_api_key != expected_key
+    if db.get_bind().dialect.name == "postgresql":
+        assert is_pgcrypto_ciphertext(agent.encrypted_elevenlabs_api_key), (
+            "Expected pgcrypto ciphertext on PostgreSQL"
+        )
+    decrypted = decrypt_stored_elevenlabs_key(
+        agent.encrypted_elevenlabs_api_key, db=db
+    )
+    assert decrypted == expected_key
+
+
+@pytest.fixture
 def authed_client(client: TestClient, auth_tenant: Tenant):
     payload = _payload_for(auth_tenant)
 
@@ -150,6 +186,22 @@ class TestCreateAgent:
         # BYO key must never appear in any response.
         assert "elevenLabsApiKey" not in body
         assert "encrypted_elevenlabs_api_key" not in body
+
+    def test_create_default_status_pending_when_omitted(
+        self, authed_client, auth_tenant, db
+    ):
+        body = _valid_create_body()
+        body.pop("status", None)
+        resp = authed_client.post(
+            "/api/v1/agent",
+            json=body,
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["status"] == "pending"
+        agent = db.query(Agent).filter(Agent.id == uuid.UUID(resp.json()["id"])).first()
+        assert agent is not None
+        assert agent.status == "pending"
 
     def test_create_name_too_short_returns_400_with_fields(self, authed_client, auth_tenant):
         resp = authed_client.post(
@@ -206,7 +258,7 @@ class TestCreateAgent:
         assert resp.status_code == 400
 
     def test_create_byo_encrypts_key_and_hides_in_response(
-        self, authed_client, auth_tenant, db
+        self, authed_client, auth_tenant, db, byo_sqlite_encrypt_compat
     ):
         body = _valid_create_body()
         body["ttsModel"]["provider"] = "11labs_byo"
@@ -224,9 +276,7 @@ class TestCreateAgent:
 
         agent = db.query(Agent).filter(Agent.id == uuid.UUID(out["id"])).first()
         assert agent is not None
-        assert agent.encrypted_elevenlabs_api_key
-        assert agent.encrypted_elevenlabs_api_key != "xi-secret-key-1234567890"
-        assert decrypt_api_key(agent.encrypted_elevenlabs_api_key) == "xi-secret-key-1234567890"
+        _assert_byo_key_roundtrip(db, agent, "xi-secret-key-1234567890")
 
     def test_create_non_byo_with_key_returns_400(self, authed_client, auth_tenant):
         body = _valid_create_body(elevenLabsApiKey="should-not-be-allowed")
@@ -377,7 +427,9 @@ class TestUpdateAgent:
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "invalid_llm_model"
 
-    def test_put_byo_persists_encrypted_key(self, authed_client, auth_tenant, db):
+    def test_put_byo_persists_encrypted_key(
+        self, authed_client, auth_tenant, db, byo_sqlite_encrypt_compat
+    ):
         created = authed_client.post(
             "/api/v1/agent",
             json=_valid_create_body(name=f"BYO-Upd {uuid.uuid4().hex[:6]}"),
@@ -400,9 +452,11 @@ class TestUpdateAgent:
         assert "elevenLabsApiKey" not in resp.json()
 
         agent = db.query(Agent).filter(Agent.id == uuid.UUID(created["id"])).first()
-        assert decrypt_api_key(agent.encrypted_elevenlabs_api_key) == "xi-rotated-key-2026"
+        _assert_byo_key_roundtrip(db, agent, "xi-rotated-key-2026")
 
-    def test_put_switch_off_byo_clears_stored_key(self, authed_client, auth_tenant, db):
+    def test_put_switch_off_byo_clears_stored_key(
+        self, authed_client, auth_tenant, db, byo_sqlite_encrypt_compat
+    ):
         # First create with BYO.
         body = _valid_create_body(name=f"BYO-Clr {uuid.uuid4().hex[:6]}")
         body["ttsModel"]["provider"] = "11labs_byo"

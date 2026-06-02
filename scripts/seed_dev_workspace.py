@@ -27,10 +27,15 @@ from pathlib import Path
 # Allow importing from the project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import uuid as _uuid_mod
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
+from app.models.agent import Agent
+from app.models.call_flow import CallFlow
+from app.models.prompt_version import PromptVersion
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.user import User, user_tenant_association
@@ -163,6 +168,82 @@ def seed(db: Session) -> None:
             print("[seed] Updated existing user-tenant link to role 'admin'")
         else:
             print("[seed] User-tenant link already exists with role 'admin'")
+
+    # Step 5 — sample agent (v2 ticket shape)
+    agent = db.execute(
+        select(Agent).where(
+            Agent.tenant_id == tenant.id,
+            Agent.name == "dev-agent",
+            Agent.is_deleted == False,  # noqa: E712
+        )
+    ).scalar_one_or_none()
+
+    if agent is None:
+        agent = Agent(
+            id=_uuid_mod.uuid4(),
+            tenant_id=tenant.id,
+            name="dev-agent",
+            status="pending",
+            llm_model="gpt-4o-mini",
+            tts_provider_slug="elevenlabs",
+            tts_voice_external_id="21m00Tcm4TlvDq8ikWAM",  # ElevenLabs Rachel (example)
+            tts_language="en",
+            smart_callback=False,
+        )
+        db.add(agent)
+        db.flush()
+        print(f"[seed] Created sample agent 'dev-agent' id={agent.id}")
+    else:
+        print(f"[seed] Sample agent 'dev-agent' already exists id={agent.id}")
+
+    # Step 6 — sample call flow
+    flow = db.execute(
+        select(CallFlow).where(
+            CallFlow.tenant_id == tenant.id,
+            CallFlow.agent_id == agent.id,
+            CallFlow.name == "dev-flow",
+            CallFlow.is_deleted == False,  # noqa: E712
+        )
+    ).scalar_one_or_none()
+
+    if flow is None:
+        flow = CallFlow(
+            id=_uuid_mod.uuid4(),
+            tenant_id=tenant.id,
+            agent_id=agent.id,
+            name="dev-flow",
+            direction="outbound",
+            welcome_message_type="ai_dynamic",
+        )
+        db.add(flow)
+        db.flush()
+        print(f"[seed] Created sample call flow 'dev-flow' id={flow.id}")
+    else:
+        print(f"[seed] Sample call flow 'dev-flow' already exists id={flow.id}")
+
+    # Step 7 — sample prompt version + set as current
+    prompt_version = db.execute(
+        select(PromptVersion).where(PromptVersion.flow_id == flow.id)
+    ).scalar_one_or_none()
+
+    if prompt_version is None:
+        prompt_version = PromptVersion(
+            id=_uuid_mod.uuid4(),
+            flow_id=flow.id,
+            prompt_text=(
+                "You are a helpful voice assistant for the dev workspace. "
+                "Greet the caller and ask how you can help them today."
+            ),
+            notes="Initial seed prompt",
+        )
+        db.add(prompt_version)
+        db.flush()
+        flow.current_prompt_id = prompt_version.id
+        print(f"[seed] Created sample prompt version id={prompt_version.id}")
+    else:
+        if flow.current_prompt_id is None:
+            flow.current_prompt_id = prompt_version.id
+        print(f"[seed] Sample prompt version already exists id={prompt_version.id}")
 
     db.commit()
     print("[seed] Done.")

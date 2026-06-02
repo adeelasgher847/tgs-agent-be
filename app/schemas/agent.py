@@ -43,6 +43,7 @@ class AgentStatusEnum(str, Enum):
     draft = "draft"
     pending = "pending"  # no phone number bound yet (telephony ticket)
     ready = "ready"  # bound to a number, callable
+    error = "error"  # provisioning failure (v2)
 
 
 def normalize_tts_provider_slug(raw: str) -> str:
@@ -115,7 +116,7 @@ class AgentCreate(BaseModel):
     name: str = Field(..., min_length=3, max_length=80)
     llm_model: str = Field(..., min_length=1, max_length=100, alias="llmModel")
     tts_model: TtsModelSchema = Field(..., alias="ttsModel")
-    status: AgentStatusEnum = AgentStatusEnum.active
+    status: AgentStatusEnum = AgentStatusEnum.pending
     eleven_labs_api_key: Optional[str] = Field(
         default=None,
         alias="elevenLabsApiKey",
@@ -272,9 +273,9 @@ def agent_to_out(agent: Agent) -> AgentOut:
             tts_model = None
 
     try:
-        status = AgentStatusEnum(agent.status or "active")
+        status = AgentStatusEnum(agent.status or "pending")
     except ValueError:
-        status = AgentStatusEnum.active
+        status = AgentStatusEnum.pending
 
     return AgentOut(
         id=agent.id,

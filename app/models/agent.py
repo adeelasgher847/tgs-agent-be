@@ -28,7 +28,7 @@ class Agent(Base):
 
     # ── Ticket fields (Sprint 2 agent-management API contract) ───────────────
     # Lifecycle state surfaced to the frontend list/detail view.
-    status = Column(String(20), nullable=False, default="active", server_default="active")
+    status = Column(String(20), nullable=False, default="pending", server_default="pending")
     # String identifier validated against app.core.llm_models.ALLOWED_LLM_MODELS.
     llm_model = Column(String(100), nullable=True)
     # ttsModel triad from the request body — kept as plain strings so the new
@@ -36,8 +36,10 @@ class Agent(Base):
     tts_provider_slug = Column(String(40), nullable=True)
     tts_voice_external_id = Column(String(255), nullable=True)
     tts_language = Column(String(20), nullable=True)
-    # BYO ElevenLabs key — encrypted at rest, never returned in GET responses.
+    # BYO ElevenLabs key — pgp_sym_encrypt at rest (base64 TEXT), never returned in GET responses.
     encrypted_elevenlabs_api_key = Column(Text, nullable=True)
+    # Smart callback flag — agent proactively calls back when a slot opens.
+    smart_callback = Column(Boolean, default=False, nullable=False, server_default="false")
 
     # Agent-specific model configuration (overrides model defaults)
     agent_temperature = Column(Integer, nullable=True)  # Agent-specific temperature (0-100)
@@ -75,6 +77,7 @@ class Agent(Base):
     transfer_route = relationship("TransferRoute", back_populates="agents")
 
     __table_args__ = (
+        Index("ix_agent_tenant_id", "tenant_id"),
         Index(
             "uq_agent_single_inbound_per_tenant",
             "tenant_id",
