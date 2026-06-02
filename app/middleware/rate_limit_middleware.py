@@ -33,29 +33,56 @@ _SKIP_EXACT = {
     "/docs",
     "/redoc",
     "/openapi.json",
+    "/health",
+    "/api/v1/health",
     "/api/v1/tenants/create",
 }
 
+# Prefix skips for webhooks, voice/streaming, and public checkout — not user auth routes.
 _SKIP_PREFIXES = (
-    "/api/v1/users/",
     "/api/v1/api-keys/",
-    "/api/v1/accept-invite",
     "/api/v1/plans/public",
     "/api/v1/tenants/start-credit-checkout-session",
     "/api/v1/auth/",
     "/api/v1/billing/webhook",
     "/api/v1/voice/",
     "/api/v1/stream/",
-    "/health",
     "/docs/",
     "/redoc/",
 )
+
+# Unauthenticated POST endpoints targeted by bots (per-path, per-IP stricter limit).
+_AUTH_SENSITIVE_POST_PATHS: frozenset[str] = frozenset({
+    "/api/v1/users/register",
+    "/api/v1/users/forgot-password",
+    "/api/v1/users/reset-password",
+    "/api/v1/users/refresh",
+    "/api/v1/accept-invite/accept-invite",
+})
+
+# Login/google login use enforce_login_rate_limit() on the route (same Redis helper).
+_LOGIN_POST_PATHS: frozenset[str] = frozenset({
+    "/api/v1/users/login",
+    "/api/v1/users/login/google",
+})
 
 
 def _should_skip(path: str) -> bool:
     if path in _SKIP_EXACT:
         return True
     return any(path.startswith(p) for p in _SKIP_PREFIXES)
+
+
+def _client_host(scope: Scope) -> str:
+    client = scope.get("client")
+    return client[0] if client else "unknown"
+
+
+def _is_auth_sensitive_post(scope: Scope) -> bool:
+    if scope.get("method") != "POST":
+        return False
+    path = scope.get("path", "")
+    return path in _AUTH_SENSITIVE_POST_PATHS
 
 
 def _sha256(raw: str) -> str:
@@ -100,9 +127,7 @@ def _identity_key(scope: Scope) -> str:
         user_id = getattr(state, "user_id", None)
         return f"jwt:{user_id}" if user_id else "jwt:unknown"
 
-    client = scope.get("client")
-    host = client[0] if client else "unknown"
-    return f"ip:{host}"
+    return f"ip:{_client_host(scope)}"
 
 
 async def _check_rate_limit(key: str, limit: int, window: int) -> tuple[bool, float]:
@@ -145,17 +170,19 @@ async def _check_rate_limit(key: str, limit: int, window: int) -> tuple[bool, fl
         return True, 0.0
 
 
-def _rate_limited_response(retry_after_ts: float) -> bytes:
+def build_rate_limit_error(retry_after_ts: float) -> dict[str, str]:
+    """Structured rate-limit error body (inner ``error`` object, without requestId)."""
     retry_dt = datetime.fromtimestamp(retry_after_ts, tz=timezone.utc)
     retry_iso = retry_dt.isoformat().replace("+00:00", "Z")
-    payload = {
-        "error": {
-            "code": "rate_limit_exceeded",
-            "message": "Too many requests. Please retry after the time indicated.",
-            "retryAfter": retry_iso,
-        }
+    return {
+        "code": "rate_limit_exceeded",
+        "message": "Too many requests. Please retry after the time indicated.",
+        "retryAfter": retry_iso,
     }
-    return json.dumps(payload).encode()
+
+
+def _rate_limited_response(retry_after_ts: float) -> bytes:
+    return json.dumps({"error": build_rate_limit_error(retry_after_ts)}).encode()
 
 
 class RateLimitMiddleware:
@@ -182,28 +209,48 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Stricter per-IP limit on auth-adjacent POST routes (register, reset, etc.).
+        if _is_auth_sensitive_post(scope):
+            auth_key = f"auth:{path}:{_client_host(scope)}"
+            allowed, retry_after = await _check_rate_limit(
+                auth_key, settings.LOGIN_RATE_LIMIT, settings.LOGIN_RATE_WINDOW
+            )
+            if not allowed:
+                await self._send_rate_limited(scope, receive, send, retry_after)
+                return
+
+        # Login routes rely on enforce_login_rate_limit() Depends — skip middleware auth bucket.
+        if scope.get("method") == "POST" and path in _LOGIN_POST_PATHS:
+            await self.app(scope, receive, send)
+            return
+
         key = _identity_key(scope)
         allowed, retry_after = await _check_rate_limit(
             key, settings.API_RATE_LIMIT, settings.API_RATE_WINDOW
         )
 
         if not allowed:
-            from starlette.requests import Request
-
-            request = Request(scope, receive)
-            request_id = get_request_id(request)
-            body = _rate_limited_response(retry_after)
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 429,
-                    "headers": [
-                        [b"content-type", b"application/json"],
-                        [b"x-request-id", request_id.encode()],
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": body})
+            await self._send_rate_limited(scope, receive, send, retry_after)
             return
 
         await self.app(scope, receive, send)
+
+    async def _send_rate_limited(
+        self, scope: Scope, receive: Receive, send: Send, retry_after: float
+    ) -> None:
+        from starlette.requests import Request
+
+        request = Request(scope, receive)
+        request_id = get_request_id(request)
+        body = _rate_limited_response(retry_after)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 429,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                    [b"x-request-id", request_id.encode()],
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})

@@ -256,6 +256,8 @@ class TtsPipeline:
 
         if hasattr(self._handler, "is_speaking"):
             self._handler.is_speaking = False
+        if hasattr(self._handler, "_is_tts_playing"):
+            self._handler._is_tts_playing = False
         if hasattr(self._handler, "_twilio_buffer_primed"):
             self._handler._twilio_buffer_primed = False
         if hasattr(self._handler, "_prev_tts_tail"):

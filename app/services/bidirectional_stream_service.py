@@ -66,10 +66,22 @@ async def generate_mulaw_tts(
                 tts_voice = getattr(agent, "tts_voice", None) if agent else None
                 selected_voice = getattr(tts_voice, "external_voice_id", None) or voice
 
+        # Bake user-configurable speed into the cache key so two agents with
+        # identical text/voice but different speed don't share a cached blob.
+        # Volume is NOT included — it is applied as a mulaw post-process at
+        # playback boundary (tts_stream_mixin), so the cache stays neutral.
+        cache_speed = 1.0
+        if tts_runtime:
+            try:
+                cache_speed = float(tts_runtime.settings_json.get("speed", 1.0))
+            except (TypeError, ValueError):
+                cache_speed = 1.0
+
         cache_key = (
             generate_cache_key(tts_text, lang, f"{provider_slug}:{selected_voice}", use_chirp3_hd, "mulaw")
             + ("_ssml" if use_ssml else "")
             + ("_officebg" if add_office_bg else "")
+            + f"_sp{cache_speed:.2f}"
         )
 
         if cache_key in audio_cache:

@@ -3,9 +3,9 @@ Centralised PII redaction utility.
 
 Patterns covered:
   - Email addresses
-  - Phone numbers (E.164 and common US/intl formats)
+  - Phone numbers (E.164 with leading +, US NANP compact, and formatted US/intl)
   - Credit/debit card numbers (13-19 digits, optionally dash/space separated)
-  - US Social Security Numbers (###-##-#### and plain 9-digit)
+  - US Social Security Numbers (###-##-#### only; bare 9-digit omitted — too many false positives)
   - Bank / account numbers (8-17 consecutive digits not already matched above)
   - Full names following common honorifics (Mr / Mrs / Ms / Dr / Prof)
 
@@ -47,6 +47,16 @@ _URL_SECRET_PARAM_RE = re.compile(
 # Phase 3 (HIPAA): populate with clinical-term and diagnosis-code patterns.
 _HIPAA_PATTERNS: list[tuple[str, re.Pattern[str]]] = []
 
+# Do not treat digit runs after Stripe/Twilio-style ID prefixes as phone numbers.
+_PHONE_ID_PREFIX_EXCLUSION = (
+    "(?<!pi_)(?<!ch_)(?<!sub_)(?<!cus_)(?<!acct_)(?<!in_)(?<!evt_)"
+    "(?<!price_)(?<!prod_)(?<!seti_)(?<!re_)(?<!pm_)(?<!src_)(?<!tok_)(?<!card_)"
+    "(?<!ba_)(?<!txn_)(?<!si_)(?<!sk_)(?<!pk_)(?<!cs_)"
+)
+# Standalone digit run: not embedded in alphanumeric tokens or opaque IDs.
+_PHONE_STANDALONE_START = "(?<![A-Za-z0-9_])"
+_PHONE_STANDALONE_END = "(?![0-9])"
+
 # ---------------------------------------------------------------------------
 # Compiled patterns – ordered so more-specific patterns run first
 # ---------------------------------------------------------------------------
@@ -67,15 +77,24 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         REDACTED,
         re.compile(r"\bcs_(?:test|live)_[A-Za-z0-9]+\b", re.IGNORECASE),
     ),
+    # Other Stripe object ids (pi_, ch_, sub_, …) — whole token before digit-based phone rules
+    (
+        REDACTED,
+        re.compile(
+            r"\b(?:pi|ch|sub|cus|acct|in|evt|price|prod|seti|re|pm|src|tok|card|ba|txn|si|sk|pk)"
+            r"_[A-Za-z0-9]+\b",
+            re.IGNORECASE,
+        ),
+    ),
     # Credit / debit card  (13-19 digits, optional separators every 4)
     (
         REDACTED,
         re.compile(r"\b(?:\d[ \-]?){13,18}\d\b"),
     ),
-    # SSN  ###-##-####  or  9 consecutive digits
+    # SSN: ###-##-#### only (bare 9-digit omitted — false-positives on SIDs, UUIDs, etc.)
     (
         REDACTED,
-        re.compile(r"\b\d{3}[- ]\d{2}[- ]\d{4}\b|\b\d{9}\b"),
+        re.compile(r"\b\d{3}[- ]\d{2}[- ]\d{4}\b"),
     ),
     # UK National Insurance (NINO)
     (
@@ -92,10 +111,25 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         REDACTED,
         re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"),
     ),
-    # E.164 and compact international digit runs (ticket spec: +?[0-9]{10,15})
+    # E.164: leading + required (avoids bare 10–15 digit IDs, timestamps, Stripe suffixes)
     (
         REDACTED,
-        re.compile(r"\+?[0-9]{10,15}\b"),
+        re.compile(
+            _PHONE_ID_PREFIX_EXCLUSION
+            + _PHONE_STANDALONE_START
+            + r"\+[1-9]\d{9,14}"
+            + _PHONE_STANDALONE_END
+        ),
+    ),
+    # US NANP compact: 10 digits or leading 1 + 10 (no +); not 12+ digit timestamps/IDs
+    (
+        REDACTED,
+        re.compile(
+            _PHONE_ID_PREFIX_EXCLUSION
+            + _PHONE_STANDALONE_START
+            + r"(?:1[2-9]\d{2}[2-9]\d{6}|[2-9]\d{2}[2-9]\d{6})"
+            + _PHONE_STANDALONE_END
+        ),
     ),
     # Phone numbers – formatted US/intl styles
     (
@@ -236,20 +270,19 @@ def safe_error_message(detail: Any, *, status_code: int = 400) -> str:
 
 
 _STATUS_TO_ERROR_CODE: dict[int, str] = {
-    400: "bad_request",
-    401: "unauthorized",
-    403: "forbidden",
-    404: "not_found",
-    405: "method_not_allowed",
-    409: "conflict",
-    413: "payload_too_large",
-    422: "validation_error",
-    429: "too_many_requests",
-    500: "internal_error",
-    502: "bad_gateway",
-    503: "service_unavailable",
+    400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    409: "CONFLICT",
+    422: "VALIDATION_ERROR",
+    429: "TOO_MANY_REQUESTS",
+    500: "INTERNAL_ERROR",
+    502: "BAD_GATEWAY",
+    503: "SERVICE_UNAVAILABLE",
 }
 
 
 def status_to_error_code(status_code: int) -> str:
-    return _STATUS_TO_ERROR_CODE.get(status_code, "http_error")
+    return _STATUS_TO_ERROR_CODE.get(status_code, "HTTP_ERROR")

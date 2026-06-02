@@ -21,6 +21,9 @@ def _redact_log_value(value: object) -> object:
     return redact_pii(value)
 
 
+_PII_REDACTION_ERROR_ARGS: tuple[str, ...] = ("[PII redaction error — args suppressed]",)
+
+
 def _redact_log_args(args: object) -> object:
     if isinstance(args, dict):
         return {key: _redact_log_value(val) for key, val in args.items()}
@@ -42,7 +45,7 @@ class _PiiRedactionFilter(logging.Filter):
             try:
                 record.args = _redact_log_args(record.args)
             except Exception:
-                pass
+                record.args = _PII_REDACTION_ERROR_ARGS
 
         return True
 

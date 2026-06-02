@@ -51,6 +51,93 @@ def _has_index(conn, index_name: str) -> bool:
     ).scalar()
 
 
+def _column_is_nullable(conn, table: str, column: str) -> bool:
+    row = conn.execute(
+        sa.text(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = :tbl AND column_name = :col"
+        ),
+        {"tbl": table, "col": column},
+    ).scalar()
+    return row == "YES"
+
+
+def _backfill_agent_audit_nulls(conn) -> None:
+    """Fill NULL audit FKs before restoring NOT NULL (rows written via M2M API key)."""
+    has_null = conn.execute(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM agent WHERE created_by IS NULL OR updated_by IS NULL)"
+        )
+    ).scalar()
+    if not has_null:
+        return
+
+    # Prefer a user linked to the agent's tenant; fall back to any user in the DB.
+    conn.execute(
+        sa.text(
+            """
+            UPDATE agent AS a
+            SET created_by = COALESCE(
+                a.created_by,
+                (
+                    SELECT uta.user_id
+                    FROM user_tenant_association uta
+                    WHERE uta.tenant_id = a.tenant_id
+                    ORDER BY uta.user_id
+                    LIMIT 1
+                ),
+                (SELECT u.id FROM "user" u ORDER BY u.id LIMIT 1)
+            )
+            WHERE a.created_by IS NULL
+            """
+        )
+    )
+    conn.execute(
+        sa.text(
+            """
+            UPDATE agent AS a
+            SET updated_by = COALESCE(
+                a.updated_by,
+                a.created_by,
+                (
+                    SELECT uta.user_id
+                    FROM user_tenant_association uta
+                    WHERE uta.tenant_id = a.tenant_id
+                    ORDER BY uta.user_id
+                    LIMIT 1
+                ),
+                (SELECT u.id FROM "user" u ORDER BY u.id LIMIT 1)
+            )
+            WHERE a.updated_by IS NULL
+            """
+        )
+    )
+
+    remaining = conn.execute(
+        sa.text(
+            "SELECT COUNT(*) FROM agent WHERE created_by IS NULL OR updated_by IS NULL"
+        )
+    ).scalar()
+    if remaining:
+        raise RuntimeError(
+            f"Cannot restore NOT NULL on agent.created_by/updated_by: "
+            f"{remaining} row(s) still have NULL audit user IDs (no users in DB to backfill)."
+        )
+
+
+def _restore_agent_audit_not_null(conn, column: str) -> None:
+    if not _has_column(conn, "agent", column):
+        return
+    if not _column_is_nullable(conn, "agent", column):
+        return
+    op.alter_column(
+        "agent",
+        column,
+        existing_type=postgresql.UUID(as_uuid=True),
+        nullable=False,
+    )
+
+
 def upgrade() -> None:
     conn = op.get_bind()
 
@@ -121,18 +208,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     conn = op.get_bind()
 
-    op.alter_column(
-        "agent",
-        "updated_by",
-        existing_type=postgresql.UUID(as_uuid=True),
-        nullable=False,
-    )
-    op.alter_column(
-        "agent",
-        "created_by",
-        existing_type=postgresql.UUID(as_uuid=True),
-        nullable=False,
-    )
+    _backfill_agent_audit_nulls(conn)
+    _restore_agent_audit_not_null(conn, "updated_by")
+    _restore_agent_audit_not_null(conn, "created_by")
 
     if _has_index(conn, "ix_agent_status"):
         op.drop_index("ix_agent_status", table_name="agent")

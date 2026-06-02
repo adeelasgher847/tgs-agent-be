@@ -60,6 +60,42 @@ class TestPhoneRedaction:
         assert REDACTED in redact_pii("dial 14155552671 today")
 
 
+class TestPhoneFalsePositives:
+    """Log-like strings that must not be partially mangled by digit-based phone rules."""
+
+    def test_stripe_payment_intent_id_redacted_whole(self):
+        msg = "stripe payment_intent=pi_3O9KqL2eZvKYlo2C0Y7bQJ0a status=succeeded"
+        result = redact_pii(msg)
+        assert "pi_3O9KqL2eZvKYlo2C0Y7bQJ0a" not in result
+        assert "pi_[REDACTED]" not in result
+        assert REDACTED in result
+
+    def test_digits_after_pi_prefix_redacted_whole(self):
+        msg = "retry pi_312345678901234567890 failed"
+        result = redact_pii(msg)
+        assert "pi_312345678901234567890" not in result
+        assert "pi_[REDACTED]" not in result
+        assert REDACTED in result
+
+    def test_stripe_charge_id_redacted_whole(self):
+        msg = "webhook ch_3AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 received"
+        result = redact_pii(msg)
+        assert "ch_3AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" not in result
+        assert REDACTED in result
+
+    def test_thirteen_digit_timestamp_not_nanp(self):
+        """13-digit ms values are outside NANP; bare E.164 rule now requires '+'."""
+        msg = "x-request-start=1737123456789 correlation=abc"
+        result = redact_pii(msg)
+        # Not matched as phone; may still be redacted by the 8–17 digit account rule.
+        assert "1737123456789" not in result
+        assert REDACTED in result
+
+    def test_stripe_session_id_already_redacted(self):
+        sid = "cs_test_a1Iuv1jSR1k18o02TejSCvXs97HNOJcypVXoLEfjh4OHhrFcYhaaLHvWz7"
+        assert sid not in redact_pii(f"checkout session {sid}")
+
+
 class TestCardRedaction:
     def test_visa_16_digits(self):
         assert REDACTED in redact_pii("Card: 4111 1111 1111 1111")
@@ -75,8 +111,8 @@ class TestSsnRedaction:
     def test_hyphenated(self):
         assert REDACTED in redact_pii("SSN: 123-45-6789")
 
-    def test_nine_digits(self):
-        assert REDACTED in redact_pii("Social 123456789 on file")
+    def test_spaced(self):
+        assert REDACTED in redact_pii("SSN: 123 45 6789")
 
 
 class TestAccountRedaction:
@@ -266,6 +302,28 @@ class TestPiiLoggingFilter:
         assert "+1571290424242" not in formatted
         assert REDACTED in formatted
 
+    def test_filter_suppresses_args_on_redaction_failure(self, monkeypatch):
+        from app.core import logger as logger_module
+
+        def _boom(_args: object) -> object:
+            raise RuntimeError("regex failure")
+
+        monkeypatch.setattr(logger_module, "_redact_log_args", _boom)
+        filt = _PiiRedactionFilter()
+        record = logging.LogRecord(
+            name="tgs_agent",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="Call failed: %s",
+            args=("user@secret.com",),
+            exc_info=None,
+        )
+        filt.filter(record)
+        formatted = record.getMessage()
+        assert "user@secret.com" not in formatted
+        assert "[PII redaction error — args suppressed]" in formatted
+
     def test_formatter_redacts_traceback(self):
         fmt = _PiiRedactingFormatter("%(message)s")
         try:
@@ -302,21 +360,19 @@ class TestSafeErrorMessage:
 class TestBuildApiErrorPayload:
     def test_structure(self):
         payload = build_api_error_payload(404, "Agent not found")
-        err = payload["error"]
-        assert err["code"] == "not_found"
-        assert err["message"] == "Agent not found"
-        assert "requestId" in err
+        assert payload["error_code"] == "NOT_FOUND"
+        assert payload["message"] == "Agent not found"
+        assert payload["status_code"] == 404
 
     def test_pii_in_detail_redacted(self):
         payload = build_api_error_payload(400, "Invalid user bob@example.com")
-        assert REDACTED in payload["error"]["message"]
-        assert "bob@example.com" not in payload["error"]["message"]
+        assert REDACTED in payload["message"]
+        assert "bob@example.com" not in payload["message"]
 
     def test_500_never_leaks_exception_text(self):
         payload = build_api_error_payload(500, "user@leak.com timeout")
-        err = payload["error"]
-        assert "leak.com" not in err["message"]
-        assert err["code"] == "internal_error"
+        assert "leak.com" not in payload["message"]
+        assert payload["error_code"] == "INTERNAL_ERROR"
 
 
 class TestCallInitiateErrorPayload:
@@ -337,9 +393,8 @@ class TestCallInitiateErrorPayload:
         payload = build_call_initiate_error_payload(
             500, "call to +14155552671 failed", req
         )
-        # detail is a top-level alias of error.message for n8n compatibility.
-        assert payload["detail"] == payload["error"]["message"]
-        assert "+14155552671" not in payload["error"]["message"]
+        assert payload["detail"] == payload["message"]
+        assert "+14155552671" not in payload["message"]
         assert payload["board_id"] == "b1"
         assert payload["monday_item_id"] == "m1"
 
@@ -349,32 +404,27 @@ class TestCallInitiateErrorPayload:
 # ---------------------------------------------------------------------------
 
 class TestExceptionHandlers:
-    def _mock_request(self):
+    def test_http_exception_no_raw_pii(self):
+        import asyncio
         from unittest.mock import MagicMock
 
         request = MagicMock()
         request.method = "GET"
         request.url.path = "/test"
-        request.state.request_id = "test-req-id"
-        return request
-
-    def test_http_exception_no_raw_pii(self):
-        import asyncio
-
-        request = self._mock_request()
         exc = HTTPException(status_code=400, detail="Bad email user@leak.com")
         response = asyncio.run(http_exception_handler(request, exc))
         body = response.body.decode()
         assert "user@leak.com" not in body
         assert REDACTED in body
-        # new envelope shape
-        assert '"error"' in body
-        assert '"code"' in body
+        assert "error_code" in body
 
     def test_http_exception_500_generic_message(self):
         import asyncio
+        from unittest.mock import MagicMock
 
-        request = self._mock_request()
+        request = MagicMock()
+        request.method = "GET"
+        request.url.path = "/test"
         exc = HTTPException(status_code=500, detail="DB error for user@leak.com")
         response = asyncio.run(http_exception_handler(request, exc))
         body = response.body.decode()
@@ -402,18 +452,20 @@ class TestExceptionHandlers:
         resp = client.post("/items", json={"email": "not-an-email"})
         assert resp.status_code == 422
         data = resp.json()
-        # new nested envelope
-        assert data["error"]["code"] == "validation_error"
-        assert data["error"]["message"] == "Request validation failed"
+        assert data["error_code"] == "VALIDATION_ERROR"
+        assert data["message"] == "Request validation failed"
         assert "not-an-email" not in str(data)
 
     def test_unhandled_exception_safe(self):
         import asyncio
+        from unittest.mock import MagicMock
 
-        request = self._mock_request()
+        request = MagicMock()
+        request.method = "POST"
+        request.url.path = "/test"
         response = asyncio.run(
             unhandled_exception_handler(request, RuntimeError("user@secret.com"))
         )
         data = response.body.decode()
         assert "user@secret.com" not in data
-        assert "internal_error" in data
+        assert "INTERNAL_ERROR" in data

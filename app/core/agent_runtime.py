@@ -8,8 +8,10 @@ Call paths use these helpers first, then fall back to legacy ``model_id`` /
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Union
+from uuid import UUID
 
+from app.core.config import settings
 from app.core.llm_models import infer_llm_provider
 from app.core.logger import logger
 from app.core.security import decrypt_api_key
@@ -19,8 +21,44 @@ from app.models.agent import Agent
 _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
     "11labs": "elevenlabs",
     "11labs_byo": "elevenlabs",
-    "rime": "google",  # no Rime adapter yet — safe telephony fallback
+    # "rime" now has its own adapter — no longer falls back to google.
+    "rime": "rime",
 }
+
+# Re-export config bounds for call sites/tests (source of truth: settings / .env).
+TTS_SPEED_MIN: float = settings.TTS_SPEED_MIN
+TTS_SPEED_MAX: float = settings.TTS_SPEED_MAX
+TTS_VOLUME_MIN: float = settings.TTS_VOLUME_MIN
+TTS_VOLUME_MAX: float = settings.TTS_VOLUME_MAX
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _merge_nested_tts_settings(raw: dict[str, Any]) -> dict[str, Any]:
+    """
+    Accept both flat and nested shapes for tts_settings_json.
+
+    Flat (preferred): {"speed": 0.8, "volume": 1.0, ...}
+    Nested (UI/legacy): {"settings": {"speed": 0.8, "volume": 1.0}, ...}
+
+    Nested keys are merged into the top level WITHOUT overwriting an explicit
+    top-level value (top level wins on conflict).
+    """
+    merged = dict(raw or {})
+    nested = merged.get("settings")
+    if isinstance(nested, dict):
+        for k, v in nested.items():
+            merged.setdefault(k, v)
+    return merged
 
 
 @dataclass(frozen=True)
@@ -42,19 +80,42 @@ class ResolvedTtsRuntime:
     used_ticket_tts: bool
 
 
+def _decrypt_stored_api_key(
+    encrypted: str,
+    *,
+    agent_id: Union[UUID, str, None],
+    credential_label: str,
+) -> str:
+    """Decrypt a stored API key; fail fast with a clear operator-facing error."""
+    try:
+        return decrypt_api_key(encrypted)
+    except Exception as exc:
+        logger.error(
+            "Failed to decrypt %s for agent %s: %s",
+            credential_label,
+            agent_id,
+            exc,
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"Agent {agent_id}: stored {credential_label} is corrupted or unreadable. "
+            "Re-save the API key in agent settings."
+        ) from exc
+
+
 def _ticket_tts_triad(agent: Agent) -> bool:
-    return bool(
-        agent.tts_provider_slug
-        and agent.tts_voice_external_id
-        and agent.tts_language
+    # Rime has a built-in default voice — allow ticket path even without explicit voice_id.
+    has_voice = bool(agent.tts_voice_external_id) or (
+        (agent.tts_provider_slug or "").lower() == "rime"
     )
+    return bool(agent.tts_provider_slug and agent.tts_language and has_voice)
 
 
 def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     """Pick LLM model + provider for conversation / scheduling paths."""
     default = ResolvedLlmRuntime(
-        model_name="gemini-1.5-flash",
-        provider_slug="gemini",
+        model_name=settings.DEFAULT_LLM_MODEL,
+        provider_slug=settings.DEFAULT_LLM_PROVIDER,
         api_key=None,
         temperature=0.15,
         max_tokens=100,
@@ -78,10 +139,11 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         provider_slug = infer_llm_provider(agent.llm_model)
         api_key: Optional[str] = None
         if agent.model and agent.model.api_key:
-            try:
-                api_key = decrypt_api_key(agent.model.api_key)
-            except Exception as exc:
-                logger.error("Failed to decrypt legacy model API key: %s", exc)
+            api_key = _decrypt_stored_api_key(
+                agent.model.api_key,
+                agent_id=agent.id,
+                credential_label="LLM model API key",
+            )
         return ResolvedLlmRuntime(
             model_name=agent.llm_model,
             provider_slug=provider_slug,
@@ -92,7 +154,7 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         )
 
     if agent.model:
-        provider_slug = "gemini"
+        provider_slug = settings.DEFAULT_LLM_PROVIDER
         if agent.provider:
             pname = (agent.provider.name or "").lower()
             if "openai" in pname:
@@ -103,10 +165,11 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
                 provider_slug = "gemini"
         api_key = None
         if agent.model.api_key:
-            try:
-                api_key = decrypt_api_key(agent.model.api_key)
-            except Exception as exc:
-                logger.error("Failed to decrypt agent model API key: %s", exc)
+            api_key = _decrypt_stored_api_key(
+                agent.model.api_key,
+                agent_id=agent.id,
+                credential_label="LLM model API key",
+            )
         return ResolvedLlmRuntime(
             model_name=agent.model.model_name,
             provider_slug=provider_slug,
@@ -156,26 +219,37 @@ def resolve_tts_runtime(agent: Optional[Agent]) -> ResolvedTtsRuntime:
 
     if agent.language:
         language = agent.language
-    settings = dict(agent.tts_settings_json or {})
+    settings = _merge_nested_tts_settings(agent.tts_settings_json or {})
+
+    # Normalise + clamp user-facing speed/volume so downstream adapters can
+    # rely on safe ranges. Uniform semantics across all providers:
+    #   speed: 1.0 = normal, 0.8 = slower, 1.2 = faster
+    #   volume: 1.0 = normal, 0.0 = silence, 2.0 = max louder
+    speed = _clamp(_coerce_float(settings.get("speed", 1.0), 1.0), TTS_SPEED_MIN, TTS_SPEED_MAX)
+    volume = _clamp(_coerce_float(settings.get("volume", 1.0), 1.0), TTS_VOLUME_MIN, TTS_VOLUME_MAX)
+    settings["speed"] = speed
+    settings["volume"] = volume
 
     if _ticket_tts_triad(agent):
         slug = (agent.tts_provider_slug or "").lower()
         adapter_slug = _TICKET_TTS_TO_ADAPTER.get(slug, slug)
-        if slug == "rime":
-            logger.debug(
-                "Agent %s uses ticket TTS provider 'rime'; falling back to google TTS adapter",
+        if slug == "rime" and adapter_slug == "google":
+            logger.warning(
+                "Agent %s: Rime TTS not yet available — falling back to Google TTS",
                 agent.id,
             )
         voice_id = agent.tts_voice_external_id
         if agent.tts_language:
             language = agent.tts_language
         if slug == "11labs_byo" and agent.encrypted_elevenlabs_api_key:
-            try:
-                settings["elevenlabs_api_key"] = decrypt_api_key(
-                    agent.encrypted_elevenlabs_api_key
-                )
-            except Exception as exc:
-                logger.error("Failed to decrypt BYO ElevenLabs key for agent %s: %s", agent.id, exc)
+            settings["elevenlabs_api_key"] = _decrypt_stored_api_key(
+                agent.encrypted_elevenlabs_api_key,
+                agent_id=agent.id,
+                credential_label="BYO ElevenLabs API key",
+            )
+        # For Rime: ensure default voice when none configured.
+        if adapter_slug == "rime" and not voice_id:
+            voice_id = "mistv2_Wildflower"
         settings.setdefault("language_code", language)
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,

@@ -7,8 +7,13 @@ from fastapi import WebSocket
 from app.core.logger import logger
 from app.services.call_session_service import call_session_service
 from app.services.agent_service import agent_service
+from app.core.agent_runtime import resolve_tts_runtime
 from app.services.bidirectional_stream_service import generate_mulaw_tts
-from app.utils.audio_utils import stream_mulaw_bytes_over_twilio, apply_micro_fade_in
+from app.utils.audio_utils import (
+    apply_micro_fade_in,
+    apply_volume_fade,
+    stream_mulaw_bytes_over_twilio,
+)
 
 
 class TtsOnlySession:
@@ -67,6 +72,17 @@ class TtsOnlySession:
         )
 
         audio_bytes = apply_micro_fade_in(audio_bytes, duration_ms=25.0)
+
+        # Uniform user-configurable voice gain (matches BidirectionalStreamHandler).
+        if self.agent and audio_bytes:
+            try:
+                voice_gain = float(
+                    resolve_tts_runtime(self.agent).settings_json.get("volume", 1.0)
+                )
+            except Exception:
+                voice_gain = 1.0
+            if voice_gain != 1.0:
+                audio_bytes = apply_volume_fade(audio_bytes, voice_gain)
 
         await stream_mulaw_bytes_over_twilio(
             websocket=self.websocket,

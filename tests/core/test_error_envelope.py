@@ -80,7 +80,7 @@ class TestErrorEnvelope:
         assert resp.status_code == 404
         data = resp.json()
         _assert_envelope(data, "not_found")
-        assert data["error"]["message"] == "Route not found"
+        assert data["error"]["message"] == "Not Found"
 
     def test_request_id_in_response_header(self):
         resp = self.client.get("/raise-http")

@@ -427,3 +427,20 @@ def test_generate_mulaw_tts_separate_cache_entries_per_background():
         asyncio.run(generate_mulaw_tts(text="Same text", lang="en", voice="female", agent=agent_b))
 
     assert calls["n"] == 2
+
+
+def test_ensure_default_provider_seeds_rime(tts_db):
+    """ensure_default_provider must create a 'rime' provider row idempotently."""
+    db, _, _ = tts_db
+
+    # First call: seeds all three default providers including rime.
+    tts_catalog_service.ensure_default_provider(db)
+    provider = tts_catalog_service.get_provider_by_slug(db, "rime")
+    assert provider is not None, "rime provider must be present after default seeding"
+    assert provider.is_active is True
+    assert provider.supports_streaming is True
+
+    # Second call: must not raise or create a duplicate.
+    tts_catalog_service.ensure_default_provider(db)
+    count = db.query(TTSProvider).filter(TTSProvider.slug == "rime").count()
+    assert count == 1, "ensure_default_provider must be idempotent (no duplicate rime rows)"
