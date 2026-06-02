@@ -12,6 +12,7 @@ class RefreshToken(Base):
     revoked = Column(Boolean, default=False, nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     replaced_by_token = Column(String(255), nullable=True)
     replaced_access_token = Column(String, nullable=True) # <- new column
 
