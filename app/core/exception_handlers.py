@@ -18,6 +18,21 @@ def _get_request_id(request: Request) -> str:
 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     request_id = _get_request_id(request)
+    if (
+        exc.status_code == 429
+        and isinstance(exc.detail, dict)
+        and exc.detail.get("code") == "rate_limit_exceeded"
+    ):
+        error = dict(exc.detail)
+        error.setdefault("requestId", request_id)
+        return JSONResponse(
+            status_code=429,
+            content={"error": error},
+            headers={
+                **(getattr(exc, "headers", None) or {}),
+                "X-Request-ID": request_id,
+            },
+        )
     return JSONResponse(
         status_code=exc.status_code,
         content=build_api_error_payload(exc.status_code, exc.detail, request_id=request_id),
@@ -25,20 +40,6 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
             **(getattr(exc, "headers", None) or {}),
             "X-Request-ID": request_id,
         },
-    )
-
-
-async def not_found_handler(request: Request, exc: Exception) -> JSONResponse:
-    request_id = _get_request_id(request)
-    return JSONResponse(
-        status_code=404,
-        content=build_api_error_payload(
-            404,
-            "Route not found",
-            error_code="not_found",
-            request_id=request_id,
-        ),
-        headers={"X-Request-ID": request_id},
     )
 
 
@@ -96,8 +97,3 @@ def register_exception_handlers(app) -> None:
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
-    # 404 for unknown routes — must come after the generic HTTPException handler.
-    # Starlette raises a plain HTTPException(404) for missing routes, so
-    # http_exception_handler already covers it; not_found_handler is the
-    # explicit hook for the 404 status specifically.
-    app.add_exception_handler(404, not_found_handler)

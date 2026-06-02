@@ -77,6 +77,8 @@ class PhoneNumberUpdate(BaseModel):
 
 
 class PhoneNumberResponse(PhoneNumberBase):
+    """Phone number detail — never includes twilio_auth_token, sip_password, or other secrets."""
+
     id: uuid.UUID
     tenant_id: uuid.UUID
     provider: str = "twilio"
@@ -255,6 +257,8 @@ class RegisterExternalNumberRequest(BaseModel):
 
 
 class RegisterExternalNumberResponse(BaseModel):
+    """External number registration result — sip_password is write-only and never returned."""
+
     id: uuid.UUID
     phone_number: str
     provider: Literal["external"]

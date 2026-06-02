@@ -313,7 +313,7 @@ class PhoneNumberService:
         phone_number: str,
         tenant_id: uuid.UUID,
         sip_username: str,
-        sip_password: str,
+        sip_password: Optional[str] = None,
         label: Optional[str] = None,
     ) -> PhoneNumber:
         """Register a BYO / SIP external number (provider='external')."""
@@ -335,7 +335,7 @@ class PhoneNumberService:
             status="active",
             provider="external",
             sip_username=sip_username,
-            sip_password=encrypt_api_key(sip_password),
+            sip_password=encrypt_api_key(sip_password) if sip_password else None,
         )
         db.add(pn)
         try:

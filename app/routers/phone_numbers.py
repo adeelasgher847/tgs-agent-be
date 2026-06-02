@@ -67,8 +67,11 @@ async def search_phone_numbers(
             limit=limit,
         )
     except Exception as exc:
-        logger.error("Twilio number search failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"Twilio search failed: {exc}")
+        logger.error("Twilio number search failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail="Phone number search temporarily unavailable. Please try again.",
+        )
 
     return create_success_response(
         PhoneNumberSearchResponse(available_numbers=results, total=len(results)),

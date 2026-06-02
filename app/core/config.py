@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # Server Configuration
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    DEBUG: bool = True
+    DEBUG: bool = False
     APP_VERSION: str = "1.0.0"
 
     # CORS — comma-separated list of allowed origins.
@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     
     GEMINI_API_KEY: str = ""
+    # Default LLM when an agent has no ticket llm_model or legacy model relation.
+    DEFAULT_LLM_MODEL: str = "gemini-1.5-flash"
+    DEFAULT_LLM_PROVIDER: str = "gemini"
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
     
@@ -210,8 +213,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True
     
-    # Login rate limiting (requests per minute)
-    LOGIN_RATE_LIMIT: int = 5
+    # Login rate limiting — per-IP, stricter than global API limit (enforce_login_rate_limit)
+    LOGIN_RATE_LIMIT: int = 10
     LOGIN_RATE_WINDOW: int = 60  # seconds
     
     # Webhook rate limiting (requests per minute)

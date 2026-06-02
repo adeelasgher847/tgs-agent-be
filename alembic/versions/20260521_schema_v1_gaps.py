@@ -9,7 +9,7 @@ Run:
 Revert:
     alembic downgrade -1
 """
-from typing import Sequence, Union
+from typing import Optional, Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
@@ -18,6 +18,42 @@ revision: str = "20260521_schema_v1_gaps"
 down_revision: Union[str, Sequence[str], None] = "20260518_tenant_name_uq"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+
+_USER_FK_NAME = "user_current_tenant_id_fkey"
+
+
+def _has_constraint(conn, table: str, constraint: str) -> bool:
+    return conn.execute(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.table_constraints "
+            "WHERE table_schema = 'public' AND table_name = :tbl AND constraint_name = :con)"
+        ),
+        {"tbl": table, "con": constraint},
+    ).scalar()
+
+
+def _fk_on_column(conn, table: str, column: str) -> Optional[str]:
+    return conn.execute(
+        sa.text(
+            "SELECT tc.constraint_name "
+            "FROM information_schema.table_constraints tc "
+            "JOIN information_schema.key_column_usage kcu "
+            "  ON tc.constraint_schema = kcu.constraint_schema "
+            "  AND tc.constraint_name = kcu.constraint_name "
+            "WHERE tc.table_schema = 'public' "
+            "  AND tc.table_name = :tbl "
+            "  AND tc.constraint_type = 'FOREIGN KEY' "
+            "  AND kcu.column_name = :col "
+            "LIMIT 1"
+        ),
+        {"tbl": table, "col": column},
+    ).scalar()
+
+
+def _drop_user_current_tenant_fk(conn) -> None:
+    fk_name = _fk_on_column(conn, "user", "current_tenant_id")
+    if fk_name:
+        op.drop_constraint(fk_name, "user", type_="foreignkey")
 
 
 def upgrade() -> None:
@@ -44,17 +80,18 @@ def upgrade() -> None:
     )
     op.create_index("ix_user_deleted_at", "user", ["deleted_at"], unique=False)
 
-    # Drop existing FK (no ondelete) and recreate with ON DELETE SET NULL.
-    # PostgreSQL auto-names the constraint; use the SQLAlchemy-generated name.
-    op.drop_constraint("user_current_tenant_id_fkey", "user", type_="foreignkey")
-    op.create_foreign_key(
-        "user_current_tenant_id_fkey",
-        "user",
-        "tenant",
-        ["current_tenant_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    # Drop existing FK (name may differ from SQLAlchemy default) and recreate with ON DELETE SET NULL.
+    conn = op.get_bind()
+    _drop_user_current_tenant_fk(conn)
+    if not _has_constraint(conn, "user", _USER_FK_NAME):
+        op.create_foreign_key(
+            _USER_FK_NAME,
+            "user",
+            "tenant",
+            ["current_tenant_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
     op.execute(
         sa.text(
@@ -133,14 +170,16 @@ def downgrade() -> None:
     )
 
     # -------------------------------------------------------------------- user
-    op.drop_constraint("user_current_tenant_id_fkey", "user", type_="foreignkey")
-    op.create_foreign_key(
-        "user_current_tenant_id_fkey",
-        "user",
-        "tenant",
-        ["current_tenant_id"],
-        ["id"],
-    )
+    conn = op.get_bind()
+    _drop_user_current_tenant_fk(conn)
+    if not _fk_on_column(conn, "user", "current_tenant_id"):
+        op.create_foreign_key(
+            _USER_FK_NAME,
+            "user",
+            "tenant",
+            ["current_tenant_id"],
+            ["id"],
+        )
     op.drop_index("ix_user_deleted_at", table_name="user")
     op.drop_column("user", "deleted_at")
     op.drop_column("user", "updated_at")

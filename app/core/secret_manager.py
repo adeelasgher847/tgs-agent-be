@@ -30,14 +30,18 @@ def _fetch_from_secret_manager(secret_id: str) -> Optional[str]:
     if not settings.GCP_PROJECT_ID:
         return None
     try:
+        from google.api_core.exceptions import NotFound, PermissionDenied
         from google.cloud import secretmanager  # type: ignore
 
         client = secretmanager.SecretManagerServiceClient()
         name = f"projects/{settings.GCP_PROJECT_ID}/secrets/{secret_id}/versions/latest"
         response = client.access_secret_version(request={"name": name})
         return response.payload.data.decode("utf-8").strip()
+    except (PermissionDenied, NotFound) as exc:
+        logger.error("Secret Manager permanent failure for %s: %s", secret_id, exc)
+        return None
     except Exception as exc:
-        logger.warning("Secret Manager fetch failed for %s: %s", secret_id, exc)
+        logger.warning("Secret Manager transient failure for %s: %s", secret_id, exc)
         return None
 
 
