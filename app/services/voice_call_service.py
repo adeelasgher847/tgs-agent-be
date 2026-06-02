@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.error_responses import build_call_initiate_error_payload
+from app.middleware.request_id_middleware import get_request_id
 from app.core.logger import logger
 from app.models.user import User
 from app.schemas.twilio import (
@@ -392,17 +393,23 @@ async def initiate_call(
         )
 
     except HTTPException as e:
+        request_id = get_request_id(http_request)
         logger.warning("Call initiate HTTP error: %s", e.detail)
         return JSONResponse(
             status_code=e.status_code,
             content=build_call_initiate_error_payload(
-                e.status_code, e.detail, call_request
+                e.status_code, e.detail, call_request, request_id=request_id
             ),
+            headers={"X-Request-ID": request_id},
         )
     except Exception as e:  # pragma: no cover - defensive
+        request_id = get_request_id(http_request)
         logger.error("Call initiate failed: %s", e, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content=build_call_initiate_error_payload(500, None, call_request),
+            content=build_call_initiate_error_payload(
+                500, None, call_request, request_id=request_id
+            ),
+            headers={"X-Request-ID": request_id},
         )
 

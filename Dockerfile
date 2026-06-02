@@ -16,8 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's code into the container
 COPY . /app
 
-# Expose port 8000 to the outside world
-EXPOSE 8000
+# PORT defaults to 8000; override via environment variable at runtime.
+ENV PORT=8000
+EXPOSE ${PORT}
 
-# Command to run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Use shell form so $PORT is expanded at container start time.
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}

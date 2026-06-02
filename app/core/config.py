@@ -20,7 +20,12 @@ class Settings(BaseSettings):
     # Server Configuration
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    DEBUG: bool = True
+    DEBUG: bool = False
+    APP_VERSION: str = "1.0.0"
+
+    # CORS — comma-separated list of allowed origins.
+    # Example: "https://app.example.com,https://admin.example.com"
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
     
     # Webhook Configuration
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
@@ -180,16 +185,16 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True
     
-    # Login rate limiting (requests per minute)
-    LOGIN_RATE_LIMIT: int = 5
+    # Login rate limiting — per-IP, stricter than global API limit (enforce_login_rate_limit)
+    LOGIN_RATE_LIMIT: int = 10
     LOGIN_RATE_WINDOW: int = 60  # seconds
     
     # Webhook rate limiting (requests per minute)
     WEBHOOK_RATE_LIMIT: int = 100
     WEBHOOK_RATE_WINDOW: int = 60  # seconds
     
-    # General API rate limiting (requests per minute)
-    API_RATE_LIMIT: int = 1000
+    # General API rate limiting — global sliding-window middleware
+    API_RATE_LIMIT: int = 60   # requests per window per identity
     API_RATE_WINDOW: int = 60  # seconds
 
     # Google OAuth

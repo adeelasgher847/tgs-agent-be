@@ -270,19 +270,20 @@ def safe_error_message(detail: Any, *, status_code: int = 400) -> str:
 
 
 _STATUS_TO_ERROR_CODE: dict[int, str] = {
-    400: "BAD_REQUEST",
-    401: "UNAUTHORIZED",
-    403: "FORBIDDEN",
-    404: "NOT_FOUND",
-    405: "METHOD_NOT_ALLOWED",
-    409: "CONFLICT",
-    422: "VALIDATION_ERROR",
-    429: "TOO_MANY_REQUESTS",
-    500: "INTERNAL_ERROR",
-    502: "BAD_GATEWAY",
-    503: "SERVICE_UNAVAILABLE",
+    400: "bad_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "payload_too_large",
+    422: "validation_error",
+    429: "too_many_requests",
+    500: "internal_error",
+    502: "bad_gateway",
+    503: "service_unavailable",
 }
 
 
 def status_to_error_code(status_code: int) -> str:
-    return _STATUS_TO_ERROR_CODE.get(status_code, "HTTP_ERROR")
+    return _STATUS_TO_ERROR_CODE.get(status_code, "http_error")
