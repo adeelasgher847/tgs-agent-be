@@ -18,6 +18,21 @@ def _get_request_id(request: Request) -> str:
 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     request_id = _get_request_id(request)
+    if (
+        exc.status_code == 429
+        and isinstance(exc.detail, dict)
+        and exc.detail.get("code") == "rate_limit_exceeded"
+    ):
+        error = dict(exc.detail)
+        error.setdefault("requestId", request_id)
+        return JSONResponse(
+            status_code=429,
+            content={"error": error},
+            headers={
+                **(getattr(exc, "headers", None) or {}),
+                "X-Request-ID": request_id,
+            },
+        )
     return JSONResponse(
         status_code=exc.status_code,
         content=build_api_error_payload(exc.status_code, exc.detail, request_id=request_id),

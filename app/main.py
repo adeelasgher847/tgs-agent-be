@@ -20,6 +20,7 @@ from app.core.exception_handlers import register_exception_handlers
 from app.middleware.api_key_middleware import ApiKeyMiddleware
 from app.middleware.body_limit_middleware import BodyLimitMiddleware
 from app.middleware.pii_logging_middleware import PiiLoggingMiddleware
+from app.middleware.rate_limit_middleware import RateLimitMiddleware
 from app.middleware.request_id_middleware import RequestIdMiddleware
 
 # ---------------------------------------------------------------------------
@@ -100,27 +101,31 @@ register_exception_handlers(app)
 # Middleware stack (add_middleware is LIFO — LAST added = OUTERMOST on request).
 #
 # Incoming (outer → inner):
-#   CORS → RequestId → BodyLimit → PiiLogging → ApiKey → route handler
+#   CORS → RequestId → BodyLimit → PiiLogging → ApiKey → RateLimit → handler
 #
 # CORS must be outermost so browser OPTIONS preflight gets Allow-Origin headers
 # before ApiKey can return 401. M2M clients (no browser) skip preflight entirely.
+# RateLimit runs after ApiKey so auth identity is resolved before rate-keying.
 # ---------------------------------------------------------------------------
 
 _allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 
-# 1. Innermost — API key / JWT (actual requests only; OPTIONS passes through).
+# 1. Innermost — sliding-window rate limiter (auth identity already resolved).
+app.add_middleware(RateLimitMiddleware)
+
+# 2. API key / JWT auth (actual requests only; OPTIONS passes through).
 app.add_middleware(ApiKeyMiddleware)
 
-# 2. PII-safe request logging
+# 3. PII-safe request logging
 app.add_middleware(PiiLoggingMiddleware)
 
-# 3. Body size limit (10 MB)
+# 4. Body size limit (10 MB)
 app.add_middleware(BodyLimitMiddleware)
 
-# 4. Request ID — nanoid on request.state before auth errors are built.
+# 5. Request ID — nanoid on request.state before auth errors are built.
 app.add_middleware(RequestIdMiddleware)
 
-# 5. Outermost — CORS handles preflight and adds headers to all responses (incl. 401).
+# 6. Outermost — CORS handles preflight and adds headers to all responses (incl. 401).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,

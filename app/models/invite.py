@@ -11,7 +11,7 @@ class Invite(Base):
     tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id'), nullable=False)
     invited_by = Column(UUID(as_uuid=True), ForeignKey('user.id'), nullable=False)
     token = Column(String, unique=True, nullable=False, index=True)
-    status = Column(String, default="PENDING", nullable=False)
+    status = Column(String, default="pending", nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
