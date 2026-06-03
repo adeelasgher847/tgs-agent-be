@@ -104,8 +104,18 @@ def _empty_handler() -> Handler:
     h._enable_soft_final_fallback = True
     h._stt_soft_min_final_confidence = 0.16
     h._stt_soft_min_words = 2
+    h._rag_prefetch_min_words = 1
+    h._rag_prefetch_min_confidence = 0.05
+    h._speculative_prefetch_task = None
+    h._run_speculative_tts_prefetch = AsyncMock()  # type: ignore[method-assign]
     h._prefetch_rag_context = AsyncMock(return_value=("", {}))  # type: ignore[method-assign]
     h._llm_turn_serial_lock = asyncio.Lock()
+    h._tts_cancel = asyncio.Event()
+    h._llm_last_answered_transcript = ""
+    h._llm_last_answered_ts = 0.0
+    h.call_session = None
+    h._screening_decline_handled = False
+    h._jd_recruitment_screening_active = lambda: False  # type: ignore[method-assign, assignment]
     return h
 
 

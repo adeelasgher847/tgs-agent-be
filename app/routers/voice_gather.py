@@ -22,7 +22,6 @@ from app.services.call_session_service import call_session_service
 from app.services.deepgram_stt_service import deepgram_stt_service
 from app.services.google_tts_service import google_tts_service
 from app.services.voice_logging_service import VoiceLoggingService
-from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.model_service import ModelService
 from app.core.config import settings

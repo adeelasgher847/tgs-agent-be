@@ -116,20 +116,25 @@ def _ticket_tts_triad(agent: Agent) -> bool:
     return bool(agent.tts_provider_slug and agent.tts_language and has_voice)
 
 
+def _is_gemini_provider(provider_slug: str) -> bool:
+    return (provider_slug or "").lower() == "gemini"
+
+
 def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     """Pick LLM model + provider for conversation / scheduling paths."""
+    _default_temperature = float(getattr(settings, "VOICE_LLM_DEFAULT_TEMPERATURE", 0.3))
     default = ResolvedLlmRuntime(
         model_name=settings.DEFAULT_LLM_MODEL,
         provider_slug=settings.DEFAULT_LLM_PROVIDER,
         api_key=None,
-        temperature=0.15,
+        temperature=_default_temperature,
         max_tokens=100,
         used_ticket_llm=False,
     )
     if not agent:
         return default
 
-    temperature = 0.15
+    temperature = _default_temperature
     max_tokens = 100
     if agent.agent_temperature is not None:
         temperature = agent.agent_temperature / 100.0
@@ -143,7 +148,9 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     if agent.llm_model:
         provider_slug = infer_llm_provider(agent.llm_model)
         api_key: Optional[str] = None
-        if agent.model and agent.model.api_key:
+        # Gemini/Google models authenticate via ADC (GOOGLE_APPLICATION_CREDENTIALS).
+        # Never use model.api_key for the voice Vertex path — ignore it even if set.
+        if not _is_gemini_provider(provider_slug) and agent.model and agent.model.api_key:
             api_key = _decrypt_stored_api_key(
                 agent.model.api_key,
                 agent_id=agent.id,
@@ -169,7 +176,8 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
             elif "gemini" in pname or "google" in pname:
                 provider_slug = "gemini"
         api_key = None
-        if agent.model.api_key:
+        # Gemini/Google: skip model.api_key — auth via ADC
+        if not _is_gemini_provider(provider_slug) and agent.model.api_key:
             api_key = _decrypt_stored_api_key(
                 agent.model.api_key,
                 agent_id=agent.id,
@@ -195,17 +203,23 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
 
 
 def llm_service_for_provider(provider_slug: str) -> Any:
-    """Return the shared LLM service instance for a provider slug."""
-    from app.services.gemini_service import gemini_service
+    """Return the shared LLM service instance for a provider slug.
+
+    Gemini/Google → VertexGeminiService (ADC auth, correct system_instruction).
+    OpenAI / Groq → unchanged.
+    gemini_service is kept for RAG embeddings only (embed_text path).
+    """
     from app.services.groq_service import groq_service
     from app.services.openai_service import openai_service
+    from app.services.vertex_gemini_service import vertex_gemini_service
 
     slug = (provider_slug or "").lower()
     if slug == "openai":
         return openai_service
     if slug == "groq":
         return groq_service
-    return gemini_service
+    # Default: gemini / google → Vertex AI path
+    return vertex_gemini_service
 
 
 def resolve_tts_runtime(
