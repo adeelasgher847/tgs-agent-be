@@ -38,3 +38,4 @@ timezonefinder
 tzdata
 python-docx
 nanoid
+PyYAML

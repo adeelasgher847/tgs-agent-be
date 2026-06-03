@@ -48,9 +48,8 @@ _AsyncSessionLocal: Optional[sessionmaker] = None
 
 _SKIP_EXACT = {
     "/",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
+    "/api/docs",
+    "/api/docs/openapi.yaml",
     "/api/v1/tenants/create",
 }
 
@@ -65,8 +64,7 @@ _SKIP_PREFIXES = (
     "/api/v1/voice/",
     "/api/v1/stream/",
     "/health",
-    "/docs/",
-    "/redoc/",
+    "/api/docs/",
 )
 
 def _get_redis() -> Optional[aioredis.Redis]:

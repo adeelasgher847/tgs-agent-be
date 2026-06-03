@@ -30,9 +30,8 @@ from app.middleware.request_id_middleware import get_request_id
 
 _SKIP_EXACT = {
     "/",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
+    "/api/docs",
+    "/api/docs/openapi.yaml",
     "/health",
     "/api/v1/health",
     "/api/v1/tenants/create",
@@ -47,8 +46,7 @@ _SKIP_PREFIXES = (
     "/api/v1/billing/webhook",
     "/api/v1/voice/",
     "/api/v1/stream/",
-    "/docs/",
-    "/redoc/",
+    "/api/docs/",
 )
 
 # Unauthenticated POST endpoints targeted by bots (per-path, per-IP stricter limit).

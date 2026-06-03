@@ -16,8 +16,6 @@ from app.core.request_auth import AUTH_METHOD_JWT
 from app.core.workspace import Workspace
 from app.middleware.api_key_middleware import _attach_workspace_context
 from app.models.tenant import Tenant
-
-
 _API_KEY = "test-workspace-key"
 
 
@@ -142,6 +140,38 @@ class TestGetWorkspace:
             headers=_headers(auth_tenant),
         )
         assert resp.status_code == 403
+
+    def test_get_nonexistent_workspace_returns_404(self, client, db):
+        """Valid auth with a workspace that was soft-deleted → 404."""
+        # Create a workspace, soft-delete it so find_by_id returns None, then assert 404.
+        non_existent = Tenant(
+            name=f"Gone-{uuid.uuid4().hex[:8]}",
+            schema_name=f"gone_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(non_existent)
+        db.commit()
+        db.refresh(non_existent)
+
+        payload = _payload_for(non_existent)
+
+        # Soft-delete the tenant so the repository can't find it.
+        from datetime import datetime, timezone
+        non_existent.deleted_at = datetime.now(timezone.utc)
+        db.commit()
+
+        async def _resolve(_key_hash, _workspace_id):
+            return payload
+
+        with patch(
+            "app.middleware.api_key_middleware._resolve_api_key",
+            side_effect=_resolve,
+        ):
+            resp = client.get(
+                f"/api/v1/workspace/{non_existent.id}",
+                headers=_headers(non_existent),
+            )
+        assert resp.status_code == 404, resp.text
 
 
 @pytest.mark.usefixtures("db")
