@@ -182,14 +182,34 @@ def _fake_response_iter(texts: list[str]):
     return iter(_FakeChunk(t) for t in texts)
 
 
+async def _async_fake_response_iter(texts: list[str]):
+    """Return async generator of fake Vertex response chunks (matches generate_content_async)."""
+    class _FakeChunk:
+        def __init__(self, t: str):
+            self._text = t
+
+        @property
+        def text(self):
+            return self._text
+
+    for t in texts:
+        yield _FakeChunk(t)
+
+
 def test_vertex_stream_text_yields_chunks():
-    """Happy path: stream returns token chunks in order."""
+    """Happy path: stream returns token chunks in order via generate_content_async."""
     chunks = ["Hello", " there", "!"]
 
     import sys
+
+    mock_model = MagicMock()
+    mock_model.generate_content_async = AsyncMock(
+        return_value=_async_fake_response_iter(chunks)
+    )
+
     sys.modules["vertexai"] = SimpleNamespace(init=lambda **k: None)
     sys.modules["vertexai.generative_models"] = SimpleNamespace(
-        GenerativeModel=MagicMock(),
+        GenerativeModel=MagicMock(return_value=mock_model),
         GenerationConfig=MagicMock(),
         Content=_FakeContent,
         Part=_FakePart,
@@ -199,7 +219,6 @@ def test_vertex_stream_text_yields_chunks():
         with (
             patch("app.services.vertex_gemini_service._ensure_vertex_init"),
             patch("app.services.vertex_gemini_service.build_vertex_contents", return_value=[]),
-            patch("asyncio.to_thread", new=AsyncMock(return_value=_fake_response_iter(chunks))),
         ):
             svc = VertexGeminiService()
             result = []
@@ -218,29 +237,32 @@ def test_vertex_stream_text_yields_chunks():
 
 
 def test_vertex_stream_cancelled_by_event():
-    """cancel_event stops the stream mid-way."""
+    """cancel_event stops the stream mid-way via generate_content_async."""
     chunks = ["tok1", "tok2", "tok3", "tok4"]
     cancel = asyncio.Event()
 
-    class _ChunkObj:
-        def __init__(self, t):
-            self._t = t
+    async def _cancelling_iter():
+        class _ChunkObj:
+            def __init__(self, t):
+                self._t = t
 
-        @property
-        def text(self):
-            return self._t
+            @property
+            def text(self):
+                return self._t
 
-    class _StopAfterTwo:
-        def __iter__(self):
-            for i, t in enumerate(chunks):
-                if i == 2:
-                    cancel.set()
-                yield _ChunkObj(t)
+        for i, t in enumerate(chunks):
+            if i == 2:
+                cancel.set()
+            yield _ChunkObj(t)
 
     import sys
     sys.modules.setdefault("vertexai", SimpleNamespace(init=lambda **k: None))
+
+    mock_model = MagicMock()
+    mock_model.generate_content_async = AsyncMock(return_value=_cancelling_iter())
+
     sys.modules["vertexai.generative_models"] = SimpleNamespace(
-        GenerativeModel=MagicMock(),
+        GenerativeModel=MagicMock(return_value=mock_model),
         GenerationConfig=MagicMock(),
         Content=_FakeContent,
         Part=_FakePart,
@@ -250,7 +272,6 @@ def test_vertex_stream_cancelled_by_event():
         with (
             patch("app.services.vertex_gemini_service._ensure_vertex_init"),
             patch("app.services.vertex_gemini_service.build_vertex_contents", return_value=[]),
-            patch("asyncio.to_thread", new=AsyncMock(return_value=_StopAfterTwo())),
         ):
             svc = VertexGeminiService()
             result = []
@@ -315,8 +336,14 @@ def test_vertex_stream_quota_error_raises_vertex_llm_error():
     async def _run():
         import sys
         sys.modules.setdefault("vertexai", SimpleNamespace(init=lambda **k: None))
+
+        mock_model = MagicMock()
+        mock_model.generate_content_async = AsyncMock(
+            side_effect=RuntimeError("quota exceeded in stream")
+        )
+
         sys.modules["vertexai.generative_models"] = SimpleNamespace(
-            GenerativeModel=MagicMock(),
+            GenerativeModel=MagicMock(return_value=mock_model),
             GenerationConfig=MagicMock(),
             Content=_FakeContent,
             Part=_FakePart,
@@ -324,10 +351,6 @@ def test_vertex_stream_quota_error_raises_vertex_llm_error():
         with (
             patch("app.services.vertex_gemini_service._ensure_vertex_init"),
             patch("app.services.vertex_gemini_service.build_vertex_contents", return_value=[]),
-            patch(
-                "app.services.vertex_gemini_service.asyncio.to_thread",
-                new=AsyncMock(side_effect=RuntimeError("quota exceeded in stream")),
-            ),
         ):
             svc = VertexGeminiService()
             with pytest.raises(VertexLlmError) as exc_info:

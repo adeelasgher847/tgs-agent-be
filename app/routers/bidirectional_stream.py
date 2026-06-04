@@ -366,6 +366,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         )
         self._barge_in_min_words = max(1, min(4, self._barge_in_min_words))
         self._barge_in_rejected_while_playing: int = 0
+        # Dead-zone: suppress interim-triggered barge-in for N ms after TTS audio
+        # starts playing.  Prevents Deepgram's stale interims (from the user's
+        # original speech still being processed) from immediately cutting the
+        # agent's response before the user has heard anything.
+        self._tts_play_start_ts: float = 0.0
+        self._barge_in_dead_zone_ms: float = float(
+            getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 600) or 600
+        )
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -1105,7 +1113,19 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             # and filler rejection block phantom Deepgram hits on silence.
             is_barge_in = False
             if self._is_tts_playing:
-                if self._should_barge_in_on_stt(transcript, confidence):
+                # Dead-zone: ignore interims that arrive within N ms of TTS starting.
+                # Deepgram can send stale interims (from the user's original speech)
+                # at almost exactly the moment the first audio frame is sent to Twilio.
+                # Without this guard, barge-in fires instantly and the user hears nothing.
+                _in_dead_zone = (
+                    self._tts_play_start_ts > 0
+                    and (time.perf_counter() - self._tts_play_start_ts) * 1000
+                    < self._barge_in_dead_zone_ms
+                )
+                if _in_dead_zone:
+                    if (transcript or "").strip():
+                        self._log_barge_in_suppressed(transcript, confidence, "tts_dead_zone")
+                elif self._should_barge_in_on_stt(transcript, confidence):
                     is_barge_in = True
                 elif (transcript or "").strip():
                     if self._is_stt_filler_for_barge_in(transcript):

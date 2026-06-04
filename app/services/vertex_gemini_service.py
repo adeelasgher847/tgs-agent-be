@@ -138,18 +138,16 @@ class VertexGeminiService:
             max_output_tokens=int(max_tokens),
         )
 
+        # Use the async SDK method so chunks are yielded as they arrive without
+        # blocking the event loop.  The sync generate_content() path runs its
+        # entire HTTP round-trip inside asyncio.to_thread and only returns after
+        # ALL tokens are buffered — effectively disabling streaming.
         try:
-            responses = await asyncio.to_thread(
-                model.generate_content,
+            async for response in await model.generate_content_async(
                 contents,
                 generation_config=generation_config,
                 stream=True,
-            )
-        except Exception as exc:
-            raise _classify_vertex_error(exc) from exc
-
-        try:
-            for response in responses:
+            ):
                 # Honour barge-in / interruption cancel
                 if cancel_event is not None and cancel_event.is_set():
                     logger.debug("[VertexGemini] cancel_event set — stopping stream")

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # Server Configuration
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    DEBUG: bool = False
+    DEBUG: bool = True
     APP_VERSION: str = "1.0.0"
 
     # CORS — comma-separated list of allowed origins.
