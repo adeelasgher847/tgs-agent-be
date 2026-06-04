@@ -1,6 +1,7 @@
 openapi: 3.0.3
 info:
-  title: FastAPI
+  title: Happy Assist Ai
+  description: Multi-tenant SaaS Voice Agent Backend
   version: 1.0.0
 paths:
   /:
@@ -832,11 +833,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Search by name
-          title: Search
+          type: string
+          nullable: true
         description: Search by name
       responses:
         '200':
@@ -1461,11 +1459,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by specific agent ID
-          title: Agent Id
+          type: string
+          nullable: true
         description: Filter by specific agent ID
       responses:
         '200':
@@ -1501,26 +1496,20 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agentid
+          type: string
+          nullable: true
       - name: userId
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Userid
+          type: string
+          nullable: true
       - name: callSessionId
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Callsessionid
+          type: string
+          nullable: true
       responses:
         '200':
           description: Successful Response
@@ -1551,18 +1540,14 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agentid
+          type: string
+          nullable: true
       - name: callSessionId
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Callsessionid
+          type: string
+          nullable: true
       responses:
         '200':
           description: Successful Response
@@ -1716,11 +1701,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Area code to filter by e.g. 02
-          title: Areacode
+          type: string
+          nullable: true
         description: Area code to filter by e.g. 02
       - name: limit
         in: query
@@ -2223,18 +2205,14 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Id
+          type: string
+          nullable: true
       - name: status
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Status
+          type: string
+          nullable: true
       responses:
         '200':
           description: Successful Response
@@ -2345,74 +2323,53 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by call type (inbound, outbound, web)
-          title: Call Type
+          type: string
+          nullable: true
         description: Filter by call type (inbound, outbound, web)
       - name: success_evaluation
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by success (success, fail, null)
-          title: Success Evaluation
+          type: string
+          nullable: true
         description: Filter by success (success, fail, null)
       - name: agent_id
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          description: Filter by agent ID
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         description: Filter by agent ID
       - name: date_from
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Filter from date
-          title: Date From
+          type: string
+          format: date-time
+          nullable: true
         description: Filter from date
       - name: date_to
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Filter to date
-          title: Date To
+          type: string
+          format: date-time
+          nullable: true
         description: Filter to date
       - name: transferred
         in: query
         required: false
         schema:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          description: Filter by transferred calls
-          title: Transferred
+          type: boolean
+          nullable: true
         description: Filter by transferred calls
       - name: ended_reason
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Filter by ended reason
-          title: Ended Reason
+          type: string
+          nullable: true
         description: Filter by ended reason
       responses:
         '200':
@@ -2471,23 +2428,17 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Stats from date
-          title: Date From
+          type: string
+          format: date-time
+          nullable: true
         description: Stats from date
       - name: date_to
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Stats to date
-          title: Date To
+          type: string
+          format: date-time
+          nullable: true
         description: Stats to date
       responses:
         '200':
@@ -2544,23 +2495,17 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Filter from date
-          title: Date From
+          type: string
+          format: date-time
+          nullable: true
         description: Filter from date
       - name: date_to
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Filter to date
-          title: Date To
+          type: string
+          format: date-time
+          nullable: true
         description: Filter to date
       responses:
         '200':
@@ -2621,23 +2566,17 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Export from date
-          title: Date From
+          type: string
+          format: date-time
+          nullable: true
         description: Export from date
       - name: date_to
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          description: Export to date
-          title: Date To
+          type: string
+          format: date-time
+          nullable: true
         description: Export to date
       - name: format
         in: query
@@ -3489,11 +3428,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Optional language code filter
-          title: Language
+          type: string
+          nullable: true
         description: Optional language code filter
       responses:
         '200':
@@ -3790,11 +3726,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Optional phone number ID to use for all calls in CSV
-          title: Phone Number Id
+          type: string
+          nullable: true
         description: Optional phone number ID to use for all calls in CSV
       requestBody:
         required: true
@@ -3907,11 +3840,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: Optional phone number ID from DB to use for call
-          title: Phone Number Id
+          type: string
+          nullable: true
         description: Optional phone number ID from DB to use for call
       responses:
         '200':
@@ -4034,12 +3964,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: CRM config ID. Pass to get that CRM's board URL; omit for first
-            linked board.
-          title: Crm Config Id
+          type: string
+          nullable: true
         description: CRM config ID. Pass to get that CRM's board URL; omit for first
           linked board.
       responses:
@@ -4100,11 +4026,8 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          description: CRM config ID to clear. If omitted, first linked board is used.
-          title: Crm Config Id
+          type: string
+          nullable: true
         description: CRM config ID to clear. If omitted, first linked board is used.
       responses:
         '200':
@@ -4393,11 +4316,9 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
       - name: active_only
         in: query
         required: false
@@ -4519,11 +4440,9 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
       - name: include_inactive
         in: query
         required: false
@@ -4658,11 +4577,9 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
       responses:
         '200':
           description: Successful Response
@@ -5632,13 +5549,9 @@ paths:
         in: query
         required: false
         schema:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          description: Optional CRM config ID to force for all bulk items. If omitted,
-            uses selected/linked Trello fallback logic.
-          title: Crm Config Id
+          type: string
+          format: uuid
+          nullable: true
         description: Optional CRM config ID to force for all bulk items. If omitted,
           uses selected/linked Trello fallback logic.
       requestBody:
@@ -6112,53 +6025,36 @@ components:
           $ref: '#/components/schemas/AgentStatusEnum'
           default: pending
         elevenLabsApiKey:
-          anyOf:
-          - type: string
-            maxLength: 500
-            minLength: 1
-          - type: 'null'
-          title: Elevenlabsapikey
+          type: string
+          maxLength: 500
+          minLength: 1
+          nullable: true
         system_prompt:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: System Prompt
+          type: string
+          nullable: true
         voice_type:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/VoiceTypeEnum'
-          - type: 'null'
+          nullable: true
         fallback_response:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Fallback Response
+          type: string
+          nullable: true
         agent_temperature:
-          anyOf:
-          - type: integer
-            maximum: 100.0
-            minimum: 0.0
-          - type: 'null'
-          title: Agent Temperature
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          nullable: true
         agent_max_tokens:
-          anyOf:
-          - type: integer
-            exclusiveMinimum: 0.0
-          - type: 'null'
-          title: Agent Max Tokens
+          type: integer
+          exclusiveMinimum: 0.0
+          nullable: true
         tts_settings_json:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/TtsSettingsJsonSchema'
-          - type: 'null'
-          description: Optional TTS tuning. Example uses normal speed/volume (1.0).
-            Omit entirely to use the same defaults at call time.
-          example:
-            speed: 1.0
-            volume: 1.0
+          nullable: true
         greeting_message:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Greeting Message
+          type: string
+          nullable: true
         is_inbound_agent:
           type: boolean
           title: Is Inbound Agent
@@ -6168,11 +6064,9 @@ components:
           title: Is Follow Up Agent
           default: false
         transfer_route_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Transfer Route Id
+          type: string
+          format: uuid
+          nullable: true
       additionalProperties: false
       type: object
       required:
@@ -6215,14 +6109,12 @@ components:
           type: string
           title: Name
         llmModel:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Llmmodel
+          type: string
+          nullable: true
         ttsModel:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/TtsModelSchema'
-          - type: 'null'
+          nullable: true
         status:
           $ref: '#/components/schemas/AgentStatusEnum'
         createdAt:
@@ -6230,42 +6122,28 @@ components:
           format: date-time
           title: Createdat
         updatedAt:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updatedat
+          type: string
+          format: date-time
+          nullable: true
         tenant_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Tenant Id
+          type: string
+          format: uuid
+          nullable: true
         system_prompt:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: System Prompt
+          type: string
+          nullable: true
         language:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Language
+          type: string
+          nullable: true
         voice_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Voice Type
+          type: string
+          nullable: true
         is_inbound_agent:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Is Inbound Agent
+          type: boolean
+          nullable: true
         is_follow_up_agent:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Is Follow Up Agent
+          type: boolean
+          nullable: true
       type: object
       required:
       - id
@@ -6288,91 +6166,64 @@ components:
     AgentUpdate:
       properties:
         name:
-          anyOf:
-          - type: string
-            maxLength: 80
-            minLength: 3
-          - type: 'null'
-          title: Name
+          type: string
+          maxLength: 80
+          minLength: 3
+          nullable: true
         llmModel:
-          anyOf:
-          - type: string
-            maxLength: 100
-            minLength: 1
-          - type: 'null'
-          title: Llmmodel
+          type: string
+          maxLength: 100
+          minLength: 1
+          nullable: true
         ttsModel:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/TtsModelSchema'
-          - type: 'null'
+          nullable: true
         status:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/AgentStatusEnum'
-          - type: 'null'
+          nullable: true
         elevenLabsApiKey:
-          anyOf:
-          - type: string
-            maxLength: 500
-            minLength: 1
-          - type: 'null'
-          title: Elevenlabsapikey
+          type: string
+          maxLength: 500
+          minLength: 1
+          nullable: true
         system_prompt:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: System Prompt
+          type: string
+          nullable: true
         voice_type:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/VoiceTypeEnum'
-          - type: 'null'
+          nullable: true
         fallback_response:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Fallback Response
+          type: string
+          nullable: true
         agent_temperature:
-          anyOf:
-          - type: integer
-            maximum: 100.0
-            minimum: 0.0
-          - type: 'null'
-          title: Agent Temperature
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          nullable: true
         agent_max_tokens:
-          anyOf:
-          - type: integer
-            exclusiveMinimum: 0.0
-          - type: 'null'
-          title: Agent Max Tokens
+          type: integer
+          exclusiveMinimum: 0.0
+          nullable: true
         tts_settings_json:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/TtsSettingsJsonSchema'
-          - type: 'null'
-          description: Optional TTS tuning. Example uses normal speed/volume (1.0).
-            Omit entirely to use the same defaults at call time.
-          example:
-            speed: 1.0
-            volume: 1.0
+          nullable: true
         greeting_message:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Greeting Message
+          type: string
+          nullable: true
         is_inbound_agent:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Is Inbound Agent
+          type: boolean
+          nullable: true
         is_follow_up_agent:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Is Follow Up Agent
+          type: boolean
+          nullable: true
         transfer_route_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Transfer Route Id
+          type: string
+          format: uuid
+          nullable: true
       additionalProperties: false
       type: object
       title: AgentUpdate
@@ -6411,11 +6262,9 @@ components:
           format: date-time
           title: Created At
         last_used_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Last Used At
+          type: string
+          format: date-time
+          nullable: true
         raw_key:
           type: string
           title: Raw Key
@@ -6454,11 +6303,9 @@ components:
           format: date-time
           title: Created At
         last_used_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Last Used At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -6482,30 +6329,22 @@ components:
           minLength: 5
           title: Customer Phone
         customer_email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Email
+          type: string
+          nullable: true
         appointment_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Appointment Reason
+          type: string
+          nullable: true
         slot_start:
           type: string
           format: date-time
           title: Slot Start
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
       type: object
       required:
       - customer_name
@@ -6523,11 +6362,9 @@ components:
           format: uuid
           title: Tenant Id
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         customer_name:
           type: string
           title: Customer Name
@@ -6535,15 +6372,11 @@ components:
           type: string
           title: Customer Phone
         customer_email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Email
+          type: string
+          nullable: true
         appointment_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Appointment Reason
+          type: string
+          nullable: true
         duration_minutes:
           type: integer
           title: Duration Minutes
@@ -6554,42 +6387,30 @@ components:
           type: string
           title: Created Via
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
         cancellation_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Cancellation Reason
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
         business_timezone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Business Timezone
+          type: string
+          nullable: true
         slot_start_local:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Slot Start Local
+          type: string
+          format: date-time
+          nullable: true
         slot_end_local:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Slot End Local
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -6604,30 +6425,20 @@ components:
     AppointmentIntakeSummaryFields:
       properties:
         reason_for_visit:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Reason For Visit
+          type: string
+          nullable: true
         health_symptoms_or_conditions:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Health Symptoms Or Conditions
+          type: string
+          nullable: true
         customer_details_mentioned:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Details Mentioned
+          type: string
+          nullable: true
         staff_briefing:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Staff Briefing
+          type: string
+          nullable: true
         key_points:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Key Points
+          type: string
+          nullable: true
       type: object
       title: AppointmentIntakeSummaryFields
       description: Structured briefing for staff; excludes sentiment / satisfaction
@@ -6649,15 +6460,11 @@ components:
           type: string
           title: Customer Phone
         customer_email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Email
+          type: string
+          nullable: true
         appointment_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Appointment Reason
+          type: string
+          nullable: true
         duration_minutes:
           type: integer
           title: Duration Minutes
@@ -6665,11 +6472,9 @@ components:
           type: string
           title: Status
         reviewed_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Reviewed At
+          type: string
+          format: date-time
+          nullable: true
         generated_at:
           type: string
           format: date-time
@@ -6706,11 +6511,9 @@ components:
           format: uuid
           title: Tenant Id
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         customer_name:
           type: string
           title: Customer Name
@@ -6718,15 +6521,11 @@ components:
           type: string
           title: Customer Phone
         customer_email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Email
+          type: string
+          nullable: true
         appointment_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Appointment Reason
+          type: string
+          nullable: true
         slot_start:
           type: string
           format: date-time
@@ -6745,47 +6544,30 @@ components:
           type: string
           title: Created Via
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
         cancellation_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Cancellation Reason
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
         business_timezone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Business Timezone
-          description: IANA timezone from business hours (for slot_*_local). slot_start/slot_end
-            remain UTC.
+          type: string
+          nullable: true
         slot_start_local:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Slot Start Local
-          description: slot_start converted to business_timezone (same instant as
-            slot_start).
+          type: string
+          format: date-time
+          nullable: true
         slot_end_local:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Slot End Local
-          description: slot_end converted to business_timezone (same instant as slot_end).
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -6806,41 +6588,29 @@ components:
           format: date-time
           title: Slot Start
         duration_minutes:
-          anyOf:
-          - type: integer
-            maximum: 120.0
-            minimum: 15.0
-          - type: 'null'
-          title: Duration Minutes
+          type: integer
+          maximum: 120.0
+          minimum: 15.0
+          nullable: true
         customer_name:
-          anyOf:
-          - type: string
-            maxLength: 255
-            minLength: 1
-          - type: 'null'
-          title: Customer Name
+          type: string
+          maxLength: 255
+          minLength: 1
+          nullable: true
         customer_phone:
-          anyOf:
-          - type: string
-            maxLength: 50
-            minLength: 5
-          - type: 'null'
-          title: Customer Phone
+          type: string
+          maxLength: 50
+          minLength: 5
+          nullable: true
         customer_email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Email
+          type: string
+          nullable: true
         appointment_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Appointment Reason
+          type: string
+          nullable: true
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
       type: object
       required:
       - slot_start
@@ -6854,15 +6624,11 @@ components:
           pattern: ^(pending|confirmed|cancelled|completed|no_show)$
           title: Status
         cancellation_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Cancellation Reason
+          type: string
+          nullable: true
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
       type: object
       required:
       - status
@@ -6937,21 +6703,15 @@ components:
           type: string
           title: Phone Number
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         agent_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Name
+          type: string
+          nullable: true
         agent_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Status
+          type: string
+          nullable: true
         message:
           type: string
           title: Message
@@ -7061,9 +6821,9 @@ components:
           $ref: '#/components/schemas/ParseMode'
           default: hybrid
         match_mode:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/MatchMode'
-          - type: 'null'
+          nullable: true
       type: object
       required:
       - files
@@ -7097,15 +6857,11 @@ components:
           format: uuid
           title: Agent Id
         agent_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Name
+          type: string
+          nullable: true
         agent_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Status
+          type: string
+          nullable: true
         number_id:
           type: string
           format: uuid
@@ -7150,15 +6906,11 @@ components:
           title: Day Of Week
           description: 0=Sunday … 6=Saturday
         open_time:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Open Time
+          type: string
+          nullable: true
         close_time:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Close Time
+          type: string
+          nullable: true
         is_closed:
           type: boolean
           title: Is Closed
@@ -7186,17 +6938,11 @@ components:
           title: Day Of Week
           description: 0=Sunday … 6=Saturday
         open_time:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Open Time
-          description: HH:MM, e.g. '09:00'
+          type: string
+          nullable: true
         close_time:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Close Time
-          description: HH:MM, e.g. '17:00'
+          type: string
+          nullable: true
         is_closed:
           type: boolean
           title: Is Closed
@@ -7224,103 +6970,53 @@ components:
           title: Label
           description: Admin label to identify this record
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
-          description: If set, this record is scoped to a specific agent. Otherwise
-            it applies tenant-wide.
+          type: string
+          format: uuid
+          nullable: true
         business_name:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Business Name
+          type: string
+          maxLength: 255
+          nullable: true
         business_type:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Business Type
+          type: string
+          maxLength: 255
+          nullable: true
         business_description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Business Description
-          description: 'Store in natural spoken form — the agent will read this aloud
-            during calls. Avoid symbols, abbreviations, or special characters. Example
-            phone: ''one eight hundred five five five one two three four''. Example
-            website: ''our website is tee gee ess dot com''.'
+          type: string
+          nullable: true
         address:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Address
-          description: 'Store in natural spoken form — the agent will read this aloud
-            during calls. Avoid symbols, abbreviations, or special characters. Example
-            phone: ''one eight hundred five five five one two three four''. Example
-            website: ''our website is tee gee ess dot com''.'
+          type: string
+          nullable: true
         phone:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Phone
-          description: 'Store in natural spoken form — the agent will read this aloud
-            during calls. Avoid symbols, abbreviations, or special characters. Example
-            phone: ''one eight hundred five five five one two three four''. Example
-            website: ''our website is tee gee ess dot com''.'
+          type: string
+          maxLength: 255
+          nullable: true
         email:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Email
-          description: 'Store in natural spoken form — the agent will read this aloud
-            during calls. Avoid symbols, abbreviations, or special characters. Example
-            phone: ''one eight hundred five five five one two three four''. Example
-            website: ''our website is tee gee ess dot com''.'
+          type: string
+          maxLength: 255
+          nullable: true
         website_url:
-          anyOf:
-          - type: string
-            maxLength: 512
-          - type: 'null'
-          title: Website Url
-          description: 'Store in natural spoken form — the agent will read this aloud
-            during calls. Avoid symbols, abbreviations, or special characters. Example
-            phone: ''one eight hundred five five five one two three four''. Example
-            website: ''our website is tee gee ess dot com''.'
+          type: string
+          maxLength: 512
+          nullable: true
         primary_service:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Primary Service
+          type: string
+          nullable: true
         secondary_service:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Secondary Service
+          type: string
+          nullable: true
         service_areas:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Service Areas
+          type: string
+          nullable: true
         specializations:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Specializations
+          type: string
+          nullable: true
         pricing_information:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Pricing Information
+          type: string
+          nullable: true
         additional_information:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Additional Information
+          type: string
+          nullable: true
       type: object
       required:
       - label
@@ -7351,79 +7047,51 @@ components:
           format: uuid
           title: Tenant Id
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         label:
           type: string
           title: Label
         business_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Business Name
+          type: string
+          nullable: true
         business_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Business Type
+          type: string
+          nullable: true
         business_description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Business Description
+          type: string
+          nullable: true
         address:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Address
+          type: string
+          nullable: true
         phone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Phone
+          type: string
+          nullable: true
         email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Email
+          type: string
+          nullable: true
         website_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Website Url
+          type: string
+          nullable: true
         primary_service:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Primary Service
+          type: string
+          nullable: true
         secondary_service:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Secondary Service
+          type: string
+          nullable: true
         service_areas:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Service Areas
+          type: string
+          nullable: true
         specializations:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Specializations
+          type: string
+          nullable: true
         pricing_information:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Pricing Information
+          type: string
+          nullable: true
         additional_information:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Additional Information
+          type: string
+          nullable: true
         is_active:
           type: boolean
           title: Is Active
@@ -7432,11 +7100,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -7448,87 +7114,57 @@ components:
     BusinessKnowledgeUpdate:
       properties:
         label:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Label
+          type: string
+          maxLength: 255
+          nullable: true
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         business_name:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Business Name
+          type: string
+          maxLength: 255
+          nullable: true
         business_type:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Business Type
+          type: string
+          maxLength: 255
+          nullable: true
         business_description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Business Description
+          type: string
+          nullable: true
         address:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Address
+          type: string
+          nullable: true
         phone:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Phone
+          type: string
+          maxLength: 255
+          nullable: true
         email:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Email
+          type: string
+          maxLength: 255
+          nullable: true
         website_url:
-          anyOf:
-          - type: string
-            maxLength: 512
-          - type: 'null'
-          title: Website Url
+          type: string
+          maxLength: 512
+          nullable: true
         primary_service:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Primary Service
+          type: string
+          nullable: true
         secondary_service:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Secondary Service
+          type: string
+          nullable: true
         service_areas:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Service Areas
+          type: string
+          nullable: true
         specializations:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Specializations
+          type: string
+          nullable: true
         pricing_information:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Pricing Information
+          type: string
+          nullable: true
         additional_information:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Additional Information
+          type: string
+          nullable: true
       type: object
       title: BusinessKnowledgeUpdate
     CRMConfigCreate:
@@ -7537,26 +7173,18 @@ components:
           type: string
           title: Crm Type
         api_key:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Api Key
+          type: string
+          nullable: true
         container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Id
+          type: string
+          nullable: true
         container_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Url
+          type: string
+          nullable: true
         additional_config:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Additional Config
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       required:
       - crm_type
@@ -7574,15 +7202,11 @@ components:
           type: string
           title: Crm Type Display
         container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Id
+          type: string
+          nullable: true
         container_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Url
+          type: string
+          nullable: true
         created_at:
           type: string
           title: Created At
@@ -7619,29 +7243,21 @@ components:
           type: string
           title: Crm Type
         container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Id
+          type: string
+          nullable: true
         container_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Url
+          type: string
+          nullable: true
         additional_config:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Additional Config
+          additionalProperties: true
+          type: object
+          nullable: true
         created_at:
           type: string
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Updated At
+          type: string
+          nullable: true
       type: object
       required:
       - id
@@ -7656,26 +7272,18 @@ components:
     CRMConfigUpdate:
       properties:
         api_key:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Api Key
+          type: string
+          nullable: true
         container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Id
+          type: string
+          nullable: true
         container_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Url
+          type: string
+          nullable: true
         additional_config:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Additional Config
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       title: CRMConfigUpdate
       description: Schema for updating CRM configuration
@@ -7727,34 +7335,26 @@ components:
           format: uuid
           title: Agentid
         welcomeMessageType:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/WelcomeMessageTypeEnum'
-          - type: 'null'
+          nullable: true
         customWelcomeMessage:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customwelcomemessage
+          type: string
+          nullable: true
         prompt:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Prompt
+          type: string
+          nullable: true
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
         flowData:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/FlowDataSchema'
-          - type: 'null'
+          nullable: true
         settings:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Settings
+          additionalProperties: true
+          type: object
+          nullable: true
       additionalProperties: false
       type: object
       required:
@@ -7765,57 +7365,43 @@ components:
     CallFlowUpdate:
       properties:
         name:
-          anyOf:
-          - type: string
-            maxLength: 255
-            minLength: 1
-          - type: 'null'
-          title: Name
+          type: string
+          maxLength: 255
+          minLength: 1
+          nullable: true
         direction:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/DirectionEnum'
-          - type: 'null'
+          nullable: true
         agentId:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agentid
+          type: string
+          format: uuid
+          nullable: true
         welcomeMessageType:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/WelcomeMessageTypeEnum'
-          - type: 'null'
+          nullable: true
         customWelcomeMessage:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customwelcomemessage
+          type: string
+          nullable: true
         prompt:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Prompt
+          type: string
+          nullable: true
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
         currentPromptId:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Currentpromptid
+          type: string
+          format: uuid
+          nullable: true
         flowData:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/FlowDataSchema'
-          - type: 'null'
+          nullable: true
         settings:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Settings
+          additionalProperties: true
+          type: object
+          nullable: true
       additionalProperties: false
       type: object
       title: CallFlowUpdate
@@ -7828,86 +7414,54 @@ components:
           type: string
           title: Userphonenumber
         phone_number_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Phone Number Id
+          type: string
+          nullable: true
         jd_context:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Jd Context
+          additionalProperties: true
+          type: object
+          nullable: true
         jd_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Jd Id
+          type: string
+          nullable: true
         resume_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Resume Id
+          type: string
+          nullable: true
         appointment_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Appointment Id
+          type: string
+          nullable: true
         tenant_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Tenant Id
+          type: string
+          nullable: true
         user_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: User Id
+          type: string
+          nullable: true
         board_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Board Id
+          type: string
+          nullable: true
         monday_item_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Monday Item Id
+          type: string
+          nullable: true
         status_column_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Status Column Id
+          type: string
+          nullable: true
         call_session_id_column_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Id Column Id
+          type: string
+          nullable: true
         crm_container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Container Id
+          type: string
+          nullable: true
         crm_item_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Item Id
+          type: string
+          nullable: true
         status_field_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Status Field Id
+          type: string
+          nullable: true
         call_session_id_field_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Id Field Id
+          type: string
+          nullable: true
         crm_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Type
+          type: string
+          nullable: true
       type: object
       required:
       - agentId
@@ -7928,50 +7482,32 @@ components:
           type: string
           title: Status
         board_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Board Id
+          type: string
+          nullable: true
         monday_item_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Monday Item Id
+          type: string
+          nullable: true
         status_column_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Status Column Id
+          type: string
+          nullable: true
         call_session_id_column_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Id Column Id
+          type: string
+          nullable: true
         crm_container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Container Id
+          type: string
+          nullable: true
         crm_item_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Item Id
+          type: string
+          nullable: true
         status_field_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Status Field Id
+          type: string
+          nullable: true
         call_session_id_field_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Id Field Id
+          type: string
+          nullable: true
         crm_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Type
+          type: string
+          nullable: true
       type: object
       required:
       - callId
@@ -7992,13 +7528,8 @@ components:
           title: Target Email
           description: Recipient email address.
         transform_prompt:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Transform Prompt
-          description: Optional custom instruction for AI. If provided, the model
-            will use the call analysis and this prompt to generate the email body.
-            If omitted, the analysis text itself will be sent as the email.
+          type: string
+          nullable: true
       type: object
       required:
       - call_session_id
@@ -8028,47 +7559,31 @@ components:
           title: Assistant Name
           description: Name of the assistant
         assistant_phone_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Assistant Phone Number
+          type: string
+          nullable: true
         customer_phone_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Phone Number
+          type: string
+          nullable: true
         call_type:
           type: string
           title: Call Type
           description: inbound, outbound, web
         ended_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Ended Reason
+          type: string
+          nullable: true
         success_evaluation:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Success Evaluation
+          type: string
+          nullable: true
         start_time:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Start Time
+          type: string
+          format: date-time
+          nullable: true
         duration:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Duration
-          description: Duration in seconds
+          type: integer
+          nullable: true
         cost:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Cost
-          description: Cost in USD
+          type: number
+          nullable: true
         transferred:
           type: boolean
           title: Transferred
@@ -8130,84 +7645,54 @@ components:
           title: Call Id
           description: Shortened call ID for display
         external_call_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: External Call Id
+          type: string
+          nullable: true
         call_type:
           type: string
           title: Call Type
           description: inbound, outbound, web
           default: inbound
         success_evaluation:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Success Evaluation
-          description: success, fail, null
+          type: string
+          nullable: true
         ended_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Ended Reason
+          type: string
+          nullable: true
         transferred:
           type: boolean
           title: Transferred
           description: Whether call was transferred
           default: false
         assistant_phone_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Assistant Phone Number
+          type: string
+          nullable: true
         customer_phone_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Phone Number
+          type: string
+          nullable: true
         cost:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Cost
-          description: Cost in USD
-          default: 0.0
+          type: number
+          nullable: true
         cost_currency:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Cost Currency
-          description: Currency code
-          default: USD
+          type: string
+          nullable: true
         start_time:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Start Time
+          type: string
+          format: date-time
+          nullable: true
         end_time:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: End Time
+          type: string
+          format: date-time
+          nullable: true
         duration:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Duration
-          description: Duration in seconds
+          type: integer
+          nullable: true
         call_metadata:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Call Metadata
+          additionalProperties: true
+          type: object
+          nullable: true
         notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Notes
+          type: string
+          nullable: true
         id:
           type: string
           format: uuid
@@ -8217,11 +7702,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - call_session_id
@@ -8249,10 +7732,8 @@ components:
           type: number
           title: Total Cost
         average_duration:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Average Duration
+          type: number
+          nullable: true
         calls_by_type:
           additionalProperties:
             type: integer
@@ -8315,66 +7796,41 @@ components:
           description: inbound, outbound, web
           default: inbound
         success_evaluation:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Success Evaluation
-          description: success, fail, null
+          type: string
+          nullable: true
         ended_reason:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Ended Reason
+          type: string
+          nullable: true
         cost:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Cost
-          description: Cost in USD
-          default: 0.0
+          type: number
+          nullable: true
         cost_currency:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Cost Currency
-          description: Currency code
-          default: USD
+          type: string
+          nullable: true
         transferred:
           type: boolean
           title: Transferred
           description: Whether call was transferred
           default: false
         twilio_call_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Call Sid
+          type: string
+          nullable: true
         from_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: From Number
+          type: string
+          nullable: true
         to_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: To Number
+          type: string
+          nullable: true
         assistant_phone_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Assistant Phone Number
+          type: string
+          nullable: true
         customer_phone_number:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Customer Phone Number
+          type: string
+          nullable: true
         call_metadata:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Call Metadata
+          additionalProperties: true
+          type: object
+          nullable: true
         id:
           type: string
           format: uuid
@@ -8384,42 +7840,32 @@ components:
           format: date-time
           title: Start Time
         end_time:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: End Time
+          type: string
+          format: date-time
+          nullable: true
         duration:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Duration
+          type: integer
+          nullable: true
         call_transcript:
-          anyOf:
-          - items:
-              additionalProperties: true
-              type: object
-            type: array
-          - type: 'null'
-          title: Call Transcript
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          nullable: true
         response_times:
-          anyOf:
-          - items:
-              additionalProperties: true
-              type: object
-            type: array
-          - type: 'null'
-          title: Response Times
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          nullable: true
         created_at:
           type: string
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - user_id
@@ -8439,20 +7885,14 @@ components:
           type: string
           title: Status
         duration:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Duration
+          type: integer
+          nullable: true
         start_time:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Start Time
+          type: string
+          nullable: true
         end_time:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: End Time
+          type: string
+          nullable: true
         total_messages:
           type: integer
           title: Total Messages
@@ -8463,10 +7903,8 @@ components:
           type: integer
           title: Assistant Messages
         average_response_time:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Average Response Time
+          type: number
+          nullable: true
         total_response_time_entries:
           type: integer
           title: Total Response Time Entries
@@ -8492,17 +7930,12 @@ components:
           type: string
           title: Phone Number
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
-          description: Optional agent to bind on create
+          type: string
+          format: uuid
+          nullable: true
       type: object
       required:
       - phone_number
@@ -8517,10 +7950,8 @@ components:
           type: string
           title: Phone Number
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         status:
           type: string
           title: Status
@@ -8675,10 +8106,8 @@ components:
           title: Phone Number
           description: E.164 phone number
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         twilio_account_sid:
           type: string
           title: Twilio Account Sid
@@ -8701,10 +8130,8 @@ components:
           type: string
           title: Phone Number
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         status:
           type: string
           title: Status
@@ -8798,30 +8225,22 @@ components:
           type: array
           title: Required Skills
         years_experience_min:
-          anyOf:
-          - type: integer
-            maximum: 60.0
-            minimum: 0.0
-          - type: 'null'
-          title: Years Experience Min
+          type: integer
+          maximum: 60.0
+          minimum: 0.0
+          nullable: true
         years_experience_max:
-          anyOf:
-          - type: integer
-            maximum: 60.0
-            minimum: 0.0
-          - type: 'null'
-          title: Years Experience Max
+          type: integer
+          maximum: 60.0
+          minimum: 0.0
+          nullable: true
         education_requirements:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Education Requirements
+          type: string
+          nullable: true
         location:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Location
+          type: string
+          maxLength: 255
+          nullable: true
         salary_min:
           anyOf:
           - type: number
@@ -8839,16 +8258,14 @@ components:
           - type: 'null'
           title: Salary Max
         currency:
-          anyOf:
-          - type: string
-            maxLength: 12
-            minLength: 3
-          - type: 'null'
-          title: Currency
+          type: string
+          maxLength: 12
+          minLength: 3
+          nullable: true
         employment_type:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/EmploymentTypeEnum'
-          - type: 'null'
+          nullable: true
         key_responsibilities:
           items:
             type: string
@@ -8868,10 +8285,8 @@ components:
             to pass this job.
           default: 50.0
         raw_text:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Raw Text
+          type: string
+          nullable: true
       type: object
       required:
       - job_title
@@ -8891,46 +8306,32 @@ components:
           type: array
           title: Required Skills
         years_experience_min:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Years Experience Min
+          type: integer
+          nullable: true
         years_experience_max:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Years Experience Max
+          type: integer
+          nullable: true
         education_requirements:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Education Requirements
+          type: string
+          nullable: true
         location:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Location
+          type: string
+          nullable: true
         salary_min:
-          anyOf:
-          - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
-          - type: 'null'
-          title: Salary Min
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
         salary_max:
-          anyOf:
-          - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
-          - type: 'null'
-          title: Salary Max
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
         currency:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Currency
+          type: string
+          nullable: true
         employment_type:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/EmploymentTypeEnum'
-          - type: 'null'
+          nullable: true
         key_responsibilities:
           items:
             type: string
@@ -8946,10 +8347,8 @@ components:
           type: object
           title: Matching Criteria
         raw_text:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Raw Text
+          type: string
+          nullable: true
         pass_match_threshold:
           type: number
           title: Pass Match Threshold
@@ -8977,53 +8376,39 @@ components:
           type: array
           title: Required Skills
         years_experience_min:
-          anyOf:
-          - type: integer
-            maximum: 60.0
-            minimum: 0.0
-          - type: 'null'
-          title: Years Experience Min
+          type: integer
+          maximum: 60.0
+          minimum: 0.0
+          nullable: true
         years_experience_max:
-          anyOf:
-          - type: integer
-            maximum: 60.0
-            minimum: 0.0
-          - type: 'null'
-          title: Years Experience Max
+          type: integer
+          maximum: 60.0
+          minimum: 0.0
+          nullable: true
         education_requirements:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Education Requirements
+          type: string
+          nullable: true
         location:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Location
+          type: string
+          maxLength: 255
+          nullable: true
         salary_min:
-          anyOf:
-          - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
-          - type: 'null'
-          title: Salary Min
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
         salary_max:
-          anyOf:
-          - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
-          - type: 'null'
-          title: Salary Max
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
         currency:
-          anyOf:
-          - type: string
-            maxLength: 12
-            minLength: 3
-          - type: 'null'
-          title: Currency
+          type: string
+          maxLength: 12
+          minLength: 3
+          nullable: true
         employment_type:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/EmploymentTypeEnum'
-          - type: 'null'
+          nullable: true
         key_responsibilities:
           items:
             type: string
@@ -9051,10 +8436,8 @@ components:
           format: uuid
           title: Tenant Id
         raw_text:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Raw Text
+          type: string
+          nullable: true
         extracted_skills:
           items:
             $ref: '#/components/schemas/ExtractedSkill'
@@ -9084,11 +8467,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
         created_by:
           type: string
           format: uuid
@@ -9111,44 +8492,32 @@ components:
     JobDescriptionUpdate:
       properties:
         job_title:
-          anyOf:
-          - type: string
-            maxLength: 255
-            minLength: 1
-          - type: 'null'
-          title: Job Title
+          type: string
+          maxLength: 255
+          minLength: 1
+          nullable: true
         required_skills:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Required Skills
+          items:
+            type: string
+          type: array
+          nullable: true
         years_experience_min:
-          anyOf:
-          - type: integer
-            maximum: 60.0
-            minimum: 0.0
-          - type: 'null'
-          title: Years Experience Min
+          type: integer
+          maximum: 60.0
+          minimum: 0.0
+          nullable: true
         years_experience_max:
-          anyOf:
-          - type: integer
-            maximum: 60.0
-            minimum: 0.0
-          - type: 'null'
-          title: Years Experience Max
+          type: integer
+          maximum: 60.0
+          minimum: 0.0
+          nullable: true
         education_requirements:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Education Requirements
+          type: string
+          nullable: true
         location:
-          anyOf:
-          - type: string
-            maxLength: 255
-          - type: 'null'
-          title: Location
+          type: string
+          maxLength: 255
+          nullable: true
         salary_min:
           anyOf:
           - type: number
@@ -9166,75 +8535,55 @@ components:
           - type: 'null'
           title: Salary Max
         currency:
-          anyOf:
-          - type: string
-            maxLength: 12
-            minLength: 3
-          - type: 'null'
-          title: Currency
+          type: string
+          maxLength: 12
+          minLength: 3
+          nullable: true
         employment_type:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/EmploymentTypeEnum'
-          - type: 'null'
+          nullable: true
         key_responsibilities:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Key Responsibilities
+          items:
+            type: string
+          type: array
+          nullable: true
         required_certifications:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Required Certifications
+          items:
+            type: string
+          type: array
+          nullable: true
         raw_text:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Raw Text
+          type: string
+          nullable: true
         extracted_skills:
-          anyOf:
-          - items:
-              $ref: '#/components/schemas/ExtractedSkill'
-            type: array
-          - type: 'null'
-          title: Extracted Skills
+          items:
+            $ref: '#/components/schemas/ExtractedSkill'
+          type: array
+          nullable: true
         keywords:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          title: Keywords
+          items:
+            type: string
+          type: array
+          nullable: true
         skill_weight_matrix:
-          anyOf:
-          - additionalProperties:
-              type: number
-            type: object
-          - type: 'null'
-          title: Skill Weight Matrix
+          additionalProperties:
+            type: number
+          type: object
+          nullable: true
         matching_criteria:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Matching Criteria
+          additionalProperties: true
+          type: object
+          nullable: true
         processing_status:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/ProcessingStatusEnum'
-          - type: 'null'
+          nullable: true
         pass_match_threshold:
-          anyOf:
-          - type: number
-            maximum: 100.0
-            minimum: 1.0
-          - type: 'null'
-          title: Pass Match Threshold
-          description: Minimum overall match percentage (1-100) required for a resume
-            to pass this job.
+          type: number
+          maximum: 100.0
+          minimum: 1.0
+          nullable: true
       type: object
       title: JobDescriptionUpdate
     KnowledgeBaseDocumentList:
@@ -9263,11 +8612,9 @@ components:
           format: uuid
           title: Tenant Id
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         title:
           type: string
           title: Title
@@ -9288,11 +8635,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -9328,12 +8673,9 @@ components:
           description: Version label for this document ingest
           default: v1
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
-          description: If provided, document is scoped to an agent
+          type: string
+          format: uuid
+          nullable: true
         chunk_max_chars:
           type: integer
           maximum: 10000.0
@@ -9369,11 +8711,9 @@ components:
           type: string
           title: User Text
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         top_k:
           type: integer
           maximum: 25.0
@@ -9405,20 +8745,14 @@ components:
           type: integer
           title: Chunk N
         score:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Score
+          type: number
+          nullable: true
         source_title:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Source Title
+          type: string
+          nullable: true
         source_ref:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Source Ref
+          type: string
+          nullable: true
       type: object
       required:
       - chunk_n
@@ -9462,41 +8796,25 @@ components:
           title: Model Name
           description: Name of the AI model
         api_key:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Api Key
-          description: Model-specific API key
+          type: string
+          maxLength: 500
+          nullable: true
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-          description: Model description including free tokens, efficiency, pricing
-            details
+          type: string
+          nullable: true
         system_prompt:
-          anyOf:
-          - type: string
-            maxLength: 1000
-          - type: 'null'
-          title: System Prompt
-          description: Default system prompt for the model
+          type: string
+          maxLength: 1000
+          nullable: true
         temperature:
-          anyOf:
-          - type: integer
-            maximum: 100.0
-            minimum: 0.0
-          - type: 'null'
-          title: Temperature
-          description: Temperature setting (0-100)
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          nullable: true
         max_tokens:
-          anyOf:
-          - type: integer
-            exclusiveMinimum: 0.0
-          - type: 'null'
-          title: Max Tokens
-          description: Maximum tokens for responses
+          type: integer
+          exclusiveMinimum: 0.0
+          nullable: true
         archive:
           type: boolean
           title: Archive
@@ -9553,34 +8871,21 @@ components:
           title: Model Name
           description: Name of the AI model
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
-          description: Model description including free tokens, efficiency, pricing
-            details
+          type: string
+          nullable: true
         system_prompt:
-          anyOf:
-          - type: string
-            maxLength: 1000
-          - type: 'null'
-          title: System Prompt
-          description: Default system prompt for the model
+          type: string
+          maxLength: 1000
+          nullable: true
         temperature:
-          anyOf:
-          - type: integer
-            maximum: 100.0
-            minimum: 0.0
-          - type: 'null'
-          title: Temperature
-          description: Temperature setting (0-100)
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          nullable: true
         max_tokens:
-          anyOf:
-          - type: integer
-            exclusiveMinimum: 0.0
-          - type: 'null'
-          title: Max Tokens
-          description: Maximum tokens for responses
+          type: integer
+          exclusiveMinimum: 0.0
+          nullable: true
         archive:
           type: boolean
           title: Archive
@@ -9591,18 +8896,13 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
         pricing:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Pricing
-          description: Dynamic pricing details for the model
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       required:
       - id
@@ -9614,46 +8914,32 @@ components:
     ModelUpdate:
       properties:
         model_name:
-          anyOf:
-          - type: string
-            maxLength: 100
-          - type: 'null'
-          title: Model Name
+          type: string
+          maxLength: 100
+          nullable: true
         api_key:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Api Key
+          type: string
+          maxLength: 500
+          nullable: true
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
         system_prompt:
-          anyOf:
-          - type: string
-            maxLength: 1000
-          - type: 'null'
-          title: System Prompt
+          type: string
+          maxLength: 1000
+          nullable: true
         temperature:
-          anyOf:
-          - type: integer
-            maximum: 100.0
-            minimum: 0.0
-          - type: 'null'
-          title: Temperature
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          nullable: true
         max_tokens:
-          anyOf:
-          - type: integer
-            exclusiveMinimum: 0.0
-          - type: 'null'
-          title: Max Tokens
+          type: integer
+          exclusiveMinimum: 0.0
+          nullable: true
         archive:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Archive
+          type: boolean
+          nullable: true
       type: object
       title: ModelUpdate
       description: Schema for updating a model
@@ -9678,10 +8964,8 @@ components:
           type: string
           title: Crm Type
         crm_config_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Config Id
+          type: string
+          nullable: true
         pending_count:
           type: integer
           title: Pending Count
@@ -9729,10 +9013,8 @@ components:
           title: Phone Number
           description: Phone number in E.164 format
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         status:
           type: string
           title: Status
@@ -9750,32 +9032,23 @@ components:
           title: Provider
           default: twilio
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
-          description: Bound agent id (maps from DB column assistant_id)
+          type: string
+          format: uuid
+          nullable: true
         twilio_phone_number_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Phone Number Sid
+          type: string
+          nullable: true
         twilio_account_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Account Sid
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - phone_number
@@ -9806,20 +9079,14 @@ components:
           type: string
           title: Phone Number
         friendly_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Friendly Name
+          type: string
+          nullable: true
         locality:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Locality
+          type: string
+          nullable: true
         region:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Region
+          type: string
+          nullable: true
         country:
           type: string
           title: Country
@@ -9841,22 +9108,15 @@ components:
     PhoneNumberUpdate:
       properties:
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Status
+          type: string
+          nullable: true
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
-          description: Agent to bind (stored as assistant_id in DB)
+          type: string
+          format: uuid
+          nullable: true
       type: object
       title: PhoneNumberUpdate
     PhoneNumberWithBinding:
@@ -9872,10 +9132,8 @@ components:
           type: string
           title: Provider
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         status:
           type: string
           title: Status
@@ -9884,29 +9142,21 @@ components:
           format: uuid
           title: Workspace Id
         twilio_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Sid
+          type: string
+          nullable: true
         binding_status:
           type: string
           title: Binding Status
         agent_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Agent Id
+          type: string
+          format: uuid
+          nullable: true
         agent_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Name
+          type: string
+          nullable: true
         agent_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Status
+          type: string
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -9954,25 +9204,17 @@ components:
           minLength: 1
           title: Display Name
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
         price_monthly:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Price Monthly
+          type: integer
+          nullable: true
         stripe_price_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Stripe Price Id
+          type: string
+          nullable: true
         crm_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Type
+          type: string
+          nullable: true
         is_active:
           type: boolean
           title: Is Active
@@ -9999,25 +9241,17 @@ components:
           minLength: 1
           title: Display Name
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
         price_monthly:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Price Monthly
+          type: integer
+          nullable: true
         stripe_price_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Stripe Price Id
+          type: string
+          nullable: true
         crm_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Type
+          type: string
+          nullable: true
         is_active:
           type: boolean
           title: Is Active
@@ -10035,11 +9269,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - name
@@ -10058,12 +9290,8 @@ components:
     PromptEngineerMeta:
       properties:
         reasoning_notes:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Reasoning Notes
-          description: Short internal explanation of assumptions and decisions made
-            while designing the prompt.
+          type: string
+          nullable: true
       type: object
       title: PromptEngineerMeta
       description: Auxiliary metadata returned by the prompt engineer model.
@@ -10076,25 +9304,14 @@ components:
           title: Requirement
           description: User's natural-language requirement for the agent (any language).
         language_hint:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Language Hint
-          description: Optional language hint such as 'auto', 'en', 'ur', etc. If
-            omitted, language is auto-detected.
+          type: string
+          nullable: true
         tone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Tone
-          description: Desired tone for the final calling agent, e.g. 'friendly',
-            'formal', 'salesy'.
+          type: string
+          nullable: true
         complexity_level:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Complexity Level
-          description: Audience sophistication, e.g. 'beginner', 'intermediate', 'expert'.
+          type: string
+          nullable: true
       type: object
       required:
       - requirement
@@ -10118,12 +9335,8 @@ components:
           description: Follow-up questions when requirement is incomplete. Empty when
             status == 'ready'.
         final_prompt:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Final Prompt
-          description: The production-ready system prompt for the agent. Null when
-            status == 'need_clarification'.
+          type: string
+          nullable: true
         language:
           type: string
           title: Language
@@ -10150,12 +9363,9 @@ components:
           title: Name
           description: Name of the AI provider (e.g., OpenAI, Google, Anthropic)
         api_key:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Api Key
-          description: API key for the provider (encrypted)
+          type: string
+          maxLength: 500
+          nullable: true
         is_active:
           type: boolean
           title: Is Active
@@ -10198,12 +9408,9 @@ components:
           title: Name
           description: Name of the AI provider (e.g., OpenAI, Google, Anthropic)
         api_key:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Api Key
-          description: API key for the provider (encrypted)
+          type: string
+          maxLength: 500
+          nullable: true
         is_active:
           type: boolean
           title: Is Active
@@ -10218,11 +9425,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - name
@@ -10233,22 +9438,16 @@ components:
     ProviderUpdate:
       properties:
         name:
-          anyOf:
-          - type: string
-            maxLength: 100
-          - type: 'null'
-          title: Name
+          type: string
+          maxLength: 100
+          nullable: true
         api_key:
-          anyOf:
-          - type: string
-            maxLength: 500
-          - type: 'null'
-          title: Api Key
+          type: string
+          maxLength: 500
+          nullable: true
         is_active:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Is Active
+          type: boolean
+          nullable: true
       type: object
       title: ProviderUpdate
       description: Schema for updating a provider
@@ -10259,10 +9458,8 @@ components:
           title: Phone Number
           description: E.164 number to purchase e.g. +61412345678
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
       type: object
       required:
       - phone_number
@@ -10281,10 +9478,8 @@ components:
           type: string
           title: Provider
         twilio_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Sid
+          type: string
+          nullable: true
         status:
           type: string
           title: Status
@@ -10366,18 +9561,14 @@ components:
           type: integer
           title: Open Positions
         open_positions_subtitle:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Open Positions Subtitle
+          type: string
+          nullable: true
         total_candidates:
           type: integer
           title: Total Candidates
         total_candidates_subtitle:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Total Candidates Subtitle
+          type: string
+          nullable: true
         interviews_scheduled:
           type: integer
           title: Interviews Scheduled
@@ -10385,10 +9576,8 @@ components:
           type: integer
           title: Interviews Today
         interviews_scheduled_subtitle:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Interviews Scheduled Subtitle
+          type: string
+          nullable: true
         offers_sent:
           type: integer
           title: Offers Sent
@@ -10396,10 +9585,8 @@ components:
           type: integer
           title: Offers Awaiting Feedback
         offers_subtitle:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Offers Subtitle
+          type: string
+          nullable: true
       type: object
       required:
       - open_positions
@@ -10415,10 +9602,8 @@ components:
           type: string
           title: Refresh Token
         access_token:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Access Token
+          type: string
+          nullable: true
       type: object
       required:
       - refresh_token
@@ -10430,10 +9615,8 @@ components:
           title: Phone Number
           description: E.164 number e.g. +61412345678
         label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Label
+          type: string
+          nullable: true
         sip_username:
           type: string
           title: Sip Username
@@ -10576,14 +9759,12 @@ components:
           type: boolean
           title: Success
         interview:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/ResumeInterviewItem'
-          - type: 'null'
+          nullable: true
         error:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Error
+          type: string
+          nullable: true
       type: object
       required:
       - resume_id
@@ -10617,31 +9798,19 @@ components:
           type: string
           title: Candidate Phone
         candidate_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Candidate Name
-          description: Candidate full name from resume parsed_json.profile.name when
-            available.
+          type: string
+          nullable: true
         candidate_email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Candidate Email
-          description: Candidate email from resume parsed_json.profile.email when
-            available.
+          type: string
+          nullable: true
         job_description_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Job Description Id
+          type: string
+          format: uuid
+          nullable: true
         call_session_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Call Session Id
+          type: string
+          format: uuid
+          nullable: true
         transcript:
           items:
             additionalProperties: true
@@ -10674,22 +9843,14 @@ components:
           format: uuid
           title: Call Session Id
         recording_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Recording Url
-          description: Voice recording URL on the linked CallSession when the provider
-            stored one.
+          type: string
+          nullable: true
         twilio_call_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Call Sid
+          type: string
+          nullable: true
         call_session_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Status
+          type: string
+          nullable: true
         transcript:
           items:
             additionalProperties: true
@@ -10726,21 +9887,17 @@ components:
           format: uuid
           title: Resume Id
         job_description_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Job Description Id
+          type: string
+          format: uuid
+          nullable: true
         agent_id:
           type: string
           format: uuid
           title: Agent Id
         call_session_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Call Session Id
+          type: string
+          format: uuid
+          nullable: true
         candidate_phone:
           type: string
           title: Candidate Phone
@@ -10752,55 +9909,39 @@ components:
           type: string
           title: Status
         crm_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Type
+          type: string
+          nullable: true
         crm_item_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Item Id
+          type: string
+          nullable: true
         crm_batch_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Batch Id
+          type: string
+          nullable: true
         phone_number_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Phone Number Id
+          type: string
+          format: uuid
+          nullable: true
         twilio_call_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Call Sid
+          type: string
+          nullable: true
         attempt_count:
           type: integer
           title: Attempt Count
         last_error:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Last Error
+          type: string
+          nullable: true
         metadata_json:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Metadata Json
+          additionalProperties: true
+          type: object
+          nullable: true
         created_at:
           type: string
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -10828,11 +9969,8 @@ components:
           format: uuid
           title: Call Session Id
         recording_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Recording Url
-          description: Voice recording URL on the linked CallSession.
+          type: string
+          nullable: true
       type: object
       required:
       - resume_id
@@ -10847,13 +9985,9 @@ components:
           format: uuid
           title: Resume Id
         crm_config_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Crm Config Id
-          description: 'Optional CRM config ID. If omitted, backend auto-selects user''s
-            Trello-linked CRM (fallback: first linked CRM).'
+          type: string
+          format: uuid
+          nullable: true
         agent_id:
           type: string
           format: uuid
@@ -10867,23 +10001,17 @@ components:
           title: Call Time Utc
           description: Scheduled UTC datetime string
         job_description_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Job Description Id
+          type: string
+          format: uuid
+          nullable: true
         phone_number_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Phone Number Id
+          type: string
+          format: uuid
+          nullable: true
         metadata:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Metadata
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       required:
       - resume_id
@@ -10901,48 +10029,32 @@ components:
           type: string
           title: Resume Filename
         interview_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Interview Id
+          type: string
+          format: uuid
+          nullable: true
         interview_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Interview Status
+          type: string
+          nullable: true
         scheduled_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Scheduled At
+          type: string
+          format: date-time
+          nullable: true
         call_session_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Call Session Id
+          type: string
+          format: uuid
+          nullable: true
         call_session_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Status
+          type: string
+          nullable: true
         twilio_call_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Call Sid
+          type: string
+          nullable: true
         crm_item_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Item Id
+          type: string
+          nullable: true
         crm_batch_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Batch Id
+          type: string
+          nullable: true
       type: object
       required:
       - resume_id
@@ -10954,31 +10066,23 @@ components:
           type: string
           title: Status
         call_session_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Call Session Id
+          type: string
+          format: uuid
+          nullable: true
         twilio_call_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Call Sid
+          type: string
+          nullable: true
         last_error:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Last Error
+          type: string
+          nullable: true
         increment_attempt:
           type: boolean
           title: Increment Attempt
           default: false
         metadata_patch:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Metadata Patch
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       required:
       - status
@@ -10998,15 +10102,11 @@ components:
           format: uuid
           title: Call Session Id
         twilio_call_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Call Sid
+          type: string
+          nullable: true
         call_session_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Status
+          type: string
+          nullable: true
         transcript:
           items:
             additionalProperties: true
@@ -11044,20 +10144,14 @@ components:
           format: uuid
           title: Call Session Id
         recording_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Recording Url
+          type: string
+          nullable: true
         twilio_call_sid:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Twilio Call Sid
+          type: string
+          nullable: true
         call_session_status:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Call Session Status
+          type: string
+          nullable: true
         transcript:
           items:
             additionalProperties: true
@@ -11090,45 +10184,31 @@ components:
         status:
           $ref: '#/components/schemas/ParseStatusEnum'
         parse_confidence:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Parse Confidence
+          type: number
+          nullable: true
         location:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Location
+          type: string
+          nullable: true
         education:
           items:
             type: string
           type: array
           title: Education
         experience_years:
-          anyOf:
-          - type: number
-          - type: 'null'
-          title: Experience Years
+          type: number
+          nullable: true
         title:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Title
+          type: string
+          nullable: true
         summary:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Summary
+          type: string
+          nullable: true
         phone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Phone
+          type: string
+          nullable: true
         email:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Email
+          type: string
+          nullable: true
         skills:
           items:
             type: string
@@ -11155,64 +10235,40 @@ components:
           type: array
           title: Projects
         match_percent:
-          anyOf:
-          - type: integer
-            maximum: 100.0
-            minimum: 0.0
-          - type: 'null'
-          title: Match Percent
-          description: Resume vs job match as 0–100 (same scale as match endpoints).
-            Null if not scored.
+          type: integer
+          maximum: 100.0
+          minimum: 0.0
+          nullable: true
         overall_score:
-          anyOf:
-          - type: number
-            maximum: 1.0
-            minimum: 0.0
-          - type: 'null'
-          title: Overall Score
-          description: Raw match strength 0–1 when scored.
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          nullable: true
         overall_match_score:
-          anyOf:
-          - type: number
-            maximum: 1.0
-            minimum: 0.0
-          - type: 'null'
-          title: Overall Match Score
-          description: Alias of overall_score for client compatibility.
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          nullable: true
         fit_label:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Fit Label
-          description: Exactly "Relevant" or "Irrelevant" when scored (server threshold
-            on overall score).
+          type: string
+          nullable: true
         candidate_status:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/CandidateStatusEnum'
-          - type: 'null'
-          description: 'Manual reviewer decision: "qualified", "partially qualified",
-            or "rejected".'
+          nullable: true
         is_relevant:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Is Relevant
-          description: True = relevant to this job, False = irrelevant, null = not
-            scored.
+          type: boolean
+          nullable: true
         created_at:
           title: Created At
         batch_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Batch Id
+          type: string
+          format: uuid
+          nullable: true
         job_description_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Job Description Id
+          type: string
+          format: uuid
+          nullable: true
         resume_interviews:
           items:
             type: string
@@ -11232,10 +10288,8 @@ components:
           type: string
           title: Name
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
       type: object
       required:
       - name
@@ -11246,10 +10300,8 @@ components:
           type: string
           title: Name
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
         id:
           type: string
           format: uuid
@@ -11271,12 +10323,8 @@ components:
           title: Call Session Id
           description: Call session ID (UUID) whose transcript/metadata will be used
         agent_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Agent Id
-          description: Optional agent ID to use for the scheduled call; if omitted,
-            session's agent is used
+          type: string
+          nullable: true
       type: object
       required:
       - call_session_id
@@ -12395,9 +11443,9 @@ components:
     SuccessResponse_Union_TenantInboundCRMConfigPublic__NoneType__:
       properties:
         data:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/TenantInboundCRMConfigPublic'
-          - type: 'null'
+          nullable: true
         message:
           type: string
           title: Message
@@ -12741,11 +11789,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -12773,49 +11819,35 @@ components:
           minLength: 1
           title: Display Name
         language_code:
-          anyOf:
-          - type: string
-            maxLength: 20
-          - type: 'null'
-          title: Language Code
+          type: string
+          maxLength: 20
+          nullable: true
         gender:
-          anyOf:
-          - type: string
-            maxLength: 32
-          - type: 'null'
-          title: Gender
+          type: string
+          maxLength: 32
+          nullable: true
         accent:
-          anyOf:
-          - type: string
-            maxLength: 64
-          - type: 'null'
-          title: Accent
+          type: string
+          maxLength: 64
+          nullable: true
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
         preview_audio_url:
-          anyOf:
-          - type: string
-            maxLength: 1000
-          - type: 'null'
-          title: Preview Audio Url
+          type: string
+          maxLength: 1000
+          nullable: true
         sample_rate_hz:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Sample Rate Hz
+          type: integer
+          nullable: true
         is_active:
           type: boolean
           title: Is Active
           default: true
         metadata_json:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Metadata Json
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       required:
       - provider_id
@@ -12850,54 +11882,38 @@ components:
           type: string
           title: Display Name
         language_code:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Language Code
+          type: string
+          nullable: true
         gender:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Gender
+          type: string
+          nullable: true
         accent:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Accent
+          type: string
+          nullable: true
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
         preview_audio_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Preview Audio Url
+          type: string
+          nullable: true
         sample_rate_hz:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Sample Rate Hz
+          type: integer
+          nullable: true
         is_active:
           type: boolean
           title: Is Active
         metadata_json:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Metadata Json
+          additionalProperties: true
+          type: object
+          nullable: true
         created_at:
           type: string
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       type: object
       required:
       - id
@@ -12935,15 +11951,11 @@ components:
           type: string
           title: Connection Type
         container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Id
+          type: string
+          nullable: true
         container_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Url
+          type: string
+          nullable: true
         is_enabled:
           type: boolean
           title: Is Enabled
@@ -12973,35 +11985,25 @@ components:
           title: Connection Type
           default: byo_credentials
         api_key:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Api Key
+          type: string
+          nullable: true
         api_token:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Api Token
+          type: string
+          nullable: true
         container_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Container Id
+          type: string
+          nullable: true
         board_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Board Url
+          type: string
+          nullable: true
         is_enabled:
           type: boolean
           title: Is Enabled
           default: true
         extra_config:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: Extra Config
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       title: TenantInboundCRMConfigUpsert
       description: 'Owner-only: BYO Trello or enable platform board.'
@@ -13015,10 +12017,8 @@ components:
           type: string
           title: Name
         description:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Description
+          type: string
+          nullable: true
       type: object
       required:
       - id
@@ -13040,9 +12040,9 @@ components:
           type: string
           title: Email
         role:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/RoleInfo'
-          - type: 'null'
+          nullable: true
         join_date:
           type: string
           format: date-time
@@ -13077,26 +12077,20 @@ components:
           type: string
           title: Email
         tenant_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Tenant Id
+          type: string
+          format: uuid
+          nullable: true
         product_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Product Id
+          type: string
+          format: uuid
+          nullable: true
         role:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/RoleInfo'
-          - type: 'null'
+          nullable: true
         refresh_token:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Refresh Token
+          type: string
+          nullable: true
       type: object
       required:
       - access_token
@@ -13173,11 +12167,9 @@ components:
           format: date-time
           title: Created At
         updated_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Updated At
+          type: string
+          format: date-time
+          nullable: true
       additionalProperties: false
       type: object
       required:
@@ -13190,23 +12182,19 @@ components:
     TransferRouteUpdate:
       properties:
         friendly_name:
-          anyOf:
-          - type: string
-            maxLength: 255
-            minLength: 1
-          - type: 'null'
-          title: Friendly Name
+          type: string
+          maxLength: 255
+          minLength: 1
+          nullable: true
         phone_number:
-          anyOf:
-          - type: string
-            maxLength: 20
-            minLength: 8
-          - type: 'null'
-          title: Phone Number
+          type: string
+          maxLength: 20
+          minLength: 8
+          nullable: true
         transfer_type:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/TransferTypeEnum'
-          - type: 'null'
+          nullable: true
       additionalProperties: false
       type: object
       title: TransferRouteUpdate
@@ -13297,10 +12285,8 @@ components:
           type: string
           title: Candidate Initials
         job_title:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Job Title
+          type: string
+          nullable: true
         scheduled_at:
           type: string
           format: date-time
@@ -13344,10 +12330,8 @@ components:
           title: Email
           description: Valid email address is required
         phone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Phone
+          type: string
+          nullable: true
         password:
           type: string
           minLength: 6
@@ -13378,20 +12362,16 @@ components:
           title: Email
           description: Valid email address is required
         phone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Phone
+          type: string
+          nullable: true
         id:
           type: string
           format: uuid
           title: Id
         role_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Role Id
+          type: string
+          format: uuid
+          nullable: true
         join_date:
           type: string
           format: date-time
@@ -13427,26 +12407,20 @@ components:
           title: Email
           description: Valid email address is required
         phone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Phone
+          type: string
+          nullable: true
         id:
           type: string
           format: uuid
           title: Id
         role_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Role Id
+          type: string
+          format: uuid
+          nullable: true
         current_tenant_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Current Tenant Id
+          type: string
+          format: uuid
+          nullable: true
         join_date:
           type: string
           format: date-time
@@ -13456,13 +12430,13 @@ components:
           format: date-time
           title: Created At
         role:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/RoleInfo'
-          - type: 'null'
+          nullable: true
         current_tenant:
-          anyOf:
+          allOf:
           - $ref: '#/components/schemas/TenantInfo'
-          - type: 'null'
+          nullable: true
         tenants:
           items:
             $ref: '#/components/schemas/TenantInfo'
@@ -13484,22 +12458,16 @@ components:
           type: string
           title: Status
         current_period_start:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Current Period Start
+          type: string
+          format: date-time
+          nullable: true
         current_period_end:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Current Period End
+          type: string
+          format: date-time
+          nullable: true
         crm_type:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Crm Type
+          type: string
+          nullable: true
       type: object
       required:
       - status
@@ -13509,32 +12477,20 @@ components:
     UserUpdate:
       properties:
         first_name:
-          anyOf:
-          - type: string
-            minLength: 1
-          - type: 'null'
-          title: First Name
-          description: First name
+          type: string
+          minLength: 1
+          nullable: true
         last_name:
-          anyOf:
-          - type: string
-            minLength: 1
-          - type: 'null'
-          title: Last Name
-          description: Last name
+          type: string
+          minLength: 1
+          nullable: true
         email:
-          anyOf:
-          - type: string
-            format: email
-          - type: 'null'
-          title: Email
-          description: Valid email address
+          type: string
+          format: email
+          nullable: true
         phone:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Phone
-          description: Phone number
+          type: string
+          nullable: true
       type: object
       title: UserUpdate
     ValidationError:

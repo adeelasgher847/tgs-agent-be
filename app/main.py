@@ -48,6 +48,18 @@ async def lifespan(app: FastAPI):
         logger.error("Rime TTS misconfigured: %s", exc)
         raise
 
+    if settings.API_DOCS_ENABLED:
+        if settings.API_DOCS_USERNAME and settings.API_DOCS_PASSWORD:
+            logger.info(
+                "API docs enabled at /api/docs (HTTP Basic user=%s)",
+                settings.API_DOCS_USERNAME,
+            )
+        else:
+            logger.warning(
+                "API docs enabled but API_DOCS_USERNAME/API_DOCS_PASSWORD are empty — "
+                "/api/docs will return 503 until set; restart server after updating .env"
+            )
+
     yield
 
     # ---- shutdown (SIGTERM / reload) — drain connections via uvicorn, then cleanup. ----
@@ -57,7 +69,13 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+# Built-in /docs, /redoc, and /openapi.json are disabled (public spec is served at
+# GET /api/docs with HTTP Basic). openapi_url=None removes only those HTTP routes;
+# programmatic schema generation still works via custom_openapi() / app.openapi()
+# (contract tests, scripts/export_openapi.py).
 app = FastAPI(
+    title="Happy Assist Ai",
+    description="Multi-tenant SaaS Voice Agent Backend",
     openapi_version="3.0.3",
     version=settings.APP_VERSION,
     lifespan=lifespan,

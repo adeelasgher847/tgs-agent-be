@@ -174,12 +174,30 @@ class TestHiddenRoutes:
 # Committed spec + GET /api/docs
 # ---------------------------------------------------------------------------
 
+_DOCS_AUTH = ("docs-viewer", "test-docs-password")
+
+
+@pytest.fixture
+def api_docs_credentials(monkeypatch):
+    """Fixed HTTP Basic credentials for /api/docs tests."""
+    monkeypatch.setattr("app.core.config.settings.API_DOCS_ENABLED", True)
+    monkeypatch.setattr("app.core.config.settings.API_DOCS_USERNAME", _DOCS_AUTH[0])
+    monkeypatch.setattr("app.core.config.settings.API_DOCS_PASSWORD", _DOCS_AUTH[1])
+
+
 class TestApiDocsRoute:
     def test_default_docs_routes_disabled(self):
         with TestClient(app, raise_server_exceptions=True) as client:
             assert client.get("/docs").status_code == 404
             assert client.get("/redoc").status_code == 404
             assert client.get("/openapi.json").status_code == 404
+
+    def test_programmatic_openapi_when_json_route_disabled(self, spec):
+        """openapi_url=None disables the HTTP route only; app.openapi() must still build a spec."""
+        with TestClient(app, raise_server_exceptions=True) as client:
+            assert client.get("/openapi.json").status_code == 404
+        assert spec.get("openapi") == "3.0.3"
+        assert spec.get("paths"), "app.openapi() returned empty paths — schema generation is broken"
 
     def test_openapi_version_is_3_0_3(self, spec):
         assert spec.get("openapi") == "3.0.3"
@@ -190,14 +208,31 @@ class TestApiDocsRoute:
             committed = yaml.safe_load(fh)
         assert committed.get("openapi") == "3.0.3"
 
-    def test_get_api_docs_returns_swagger_ui(self):
+    def test_get_api_docs_requires_auth(self, api_docs_credentials):
         with TestClient(app, raise_server_exceptions=True) as client:
             resp = client.get("/api/docs")
+            assert resp.status_code == 401
+            assert resp.headers.get("www-authenticate", "").lower().startswith("basic")
+            assert client.get("/api/docs/openapi.yaml").status_code == 401
+
+    def test_get_api_docs_rejects_wrong_password(self, api_docs_credentials):
+        with TestClient(app, raise_server_exceptions=True) as client:
+            resp = client.get("/api/docs", auth=(_DOCS_AUTH[0], "wrong-password"))
+        assert resp.status_code == 401
+
+    def test_get_api_docs_returns_swagger_ui(self, api_docs_credentials):
+        with TestClient(app, raise_server_exceptions=True) as client:
+            resp = client.get("/api/docs", auth=_DOCS_AUTH)
         assert resp.status_code == 200
         assert "swagger" in resp.text.lower()
 
-    def test_get_api_docs_openapi_yaml(self):
+    def test_get_api_docs_openapi_yaml(self, api_docs_credentials):
         with TestClient(app, raise_server_exceptions=True) as client:
-            resp = client.get("/api/docs/openapi.yaml")
+            resp = client.get("/api/docs/openapi.yaml", auth=_DOCS_AUTH)
         assert resp.status_code == 200
         assert "openapi:" in resp.text
+
+    def test_get_api_docs_disabled_returns_404(self, api_docs_credentials, monkeypatch):
+        monkeypatch.setattr("app.core.config.settings.API_DOCS_ENABLED", False)
+        with TestClient(app, raise_server_exceptions=True) as client:
+            assert client.get("/api/docs", auth=_DOCS_AUTH).status_code == 404
