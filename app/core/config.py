@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     APP_VERSION: str = "1.0.0"
 
+    # Swagger / committed OpenAPI at GET /api/docs (HTTP Basic — not dashboard JWT).
+    API_DOCS_ENABLED: bool = True
+    API_DOCS_USERNAME: str = ""
+    API_DOCS_PASSWORD: str = ""
+
     # CORS — comma-separated list of allowed origins.
     # Example: "https://app.example.com,https://admin.example.com"
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

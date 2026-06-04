@@ -1,3 +1,4 @@
+import contextvars
 import os
 import sys
 import sqlite3
@@ -81,8 +82,10 @@ def compile_jsonb_sqlite(type_, compiler, **kw):
 # Single shared raw connection — thread-safe because check_same_thread=False.
 _shared_sqlite_conn = sqlite3.connect(":memory:", check_same_thread=False)
 
-# Module-scoped test session wired into override_get_db for cross-thread visibility.
-_active_test_session = None
+# Per-context test session for override_get_db (safe with pytest-xdist / AnyIO threads).
+_active_test_session_var: contextvars.ContextVar = contextvars.ContextVar(
+    "_active_test_session", default=None
+)
 
 engine = create_engine(
     "sqlite://",
@@ -95,8 +98,9 @@ Base.metadata.create_all(bind=engine)
 
 
 def override_get_db():
-    if _active_test_session is not None:
-        yield _active_test_session
+    session = _active_test_session_var.get()
+    if session is not None:
+        yield session
         return
     db = TestingSessionLocal()
     try:
@@ -112,14 +116,12 @@ app.dependency_overrides[get_db] = override_get_db
 @pytest.fixture(scope="module")
 def db():
     """Fresh SQLite database for the entire test module."""
-    global _active_test_session
-    _active_test_session = None
     _shared_sqlite_conn.rollback()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
     db = TestingSessionLocal()
-    _active_test_session = db
+    session_token = _active_test_session_var.set(db)
     try:
         admin_role = Role(name="admin", description="Administrator role")
         db.add(admin_role)
@@ -152,7 +154,7 @@ def db():
 
         yield db
     finally:
-        _active_test_session = None
+        _active_test_session_var.reset(session_token)
         db.close()
 
 

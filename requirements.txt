@@ -40,3 +40,4 @@ tzdata
 python-docx
 nanoid
 PyYAML
+openapi-spec-validator>=0.7.1
