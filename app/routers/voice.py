@@ -42,7 +42,6 @@ from app.routers.general_websocket import (
 )
 from app.services.model_service import ModelService
 from app.services.transcript_service import transcript_service
-from app.services.gemini_service import gemini_service
 from app.services.credit_service import credit_service
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml

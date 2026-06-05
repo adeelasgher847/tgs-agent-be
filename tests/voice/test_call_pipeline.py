@@ -65,6 +65,8 @@ def _base_handler() -> Handler:
     h._barge_in_min_words = 2
     h._barge_in_rejected_while_playing = 0
     h._tts_cancel = asyncio.Event()
+    h._tts_play_start_ts = 0.0       # dead-zone: set when first audio frame sends
+    h._barge_in_dead_zone_ms = 600.0  # suppress stale interims on TTS start
 
     # TTS
     h._tts_lock = asyncio.Lock()

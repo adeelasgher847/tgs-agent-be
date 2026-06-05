@@ -79,8 +79,16 @@ class Settings(BaseSettings):
     ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
     
     # Google Cloud Speech-to-Text Configuration
-    GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file
+    GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file for Vertex AI + STT
     GOOGLE_CLOUD_PROJECT_ID: str = ""
+    # Vertex AI — used by VertexGeminiService for voice LLM calls (ADC, no api_key needed)
+    VERTEX_AI_LOCATION: str = "us-central1"
+    # History pruning for Vertex Gemini voice path (1 turn = 1 user + 1 model message)
+    VOICE_LLM_HISTORY_MAX_TURNS: int = 20
+    # Default temperature for Vertex Gemini voice path (0–1 scale)
+    VOICE_LLM_DEFAULT_TEMPERATURE: float = 0.3
+    # Canned fallback spoken when the Vertex LLM errors (quota, timeout, filter)
+    VOICE_LLM_FALLBACK_MESSAGE: str = "I am sorry, I did not catch that"
     GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
     # Deprecated fallback; prefer STT_SAMPLE_RATE for provider-neutral STT settings.
     GOOGLE_STT_SAMPLE_RATE: int = 8000

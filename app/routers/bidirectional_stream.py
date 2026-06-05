@@ -119,9 +119,10 @@ from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.models.appointment import Appointment
 from app.services.transcript_service import transcript_service
-from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
+from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
+from app.core.agent_runtime import resolve_llm_runtime, llm_service_for_provider
 from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
@@ -181,6 +182,7 @@ from app.utils.eleven_tts_text import (
 from app.voice.booking_mixin import BookingMixin
 from app.voice.tts_stream_mixin import TtsStreamMixin
 from app.voice.call_control_mixin import CallControlMixin
+from app.voice.pipeline_session import PipelineSession
 
 router = APIRouter()
 
@@ -364,6 +366,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         )
         self._barge_in_min_words = max(1, min(4, self._barge_in_min_words))
         self._barge_in_rejected_while_playing: int = 0
+        # Dead-zone: suppress interim-triggered barge-in for N ms after TTS audio
+        # starts playing.  Prevents Deepgram's stale interims (from the user's
+        # original speech still being processed) from immediately cutting the
+        # agent's response before the user has heard anything.
+        self._tts_play_start_ts: float = 0.0
+        self._barge_in_dead_zone_ms: float = float(
+            getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 600) or 600
+        )
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -488,6 +498,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         # These are agent-level and don't change per-turn; caching them here
         # eliminates the 50-200ms parallel executor cost on every slow-path turn.
         asyncio.create_task(self._prefetch_kb_blocks_at_call_start())
+
+        # ── PipelineSession — per-call voice state container ─────────────────
+        # Holds references to the same objects as the existing handler attributes
+        # so both access paths stay in sync with no behaviour change.
+        self._pipeline_session = PipelineSession(
+            llm_cancel=self._tts_cancel,          # barge-in cancel event (shared ref)
+            history=self._conversation_history_cache,  # shared list ref
+        )
 
         # ── Voice Orchestration Layer ─────────────────────────────────────────
         # VoiceOrchestrator owns SttPipeline + TtsPipeline lifecycle and
@@ -860,8 +878,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 else:
                     # Interim LLM already running with the correct transcript —
                     # let it finish without a second generation.
-                    pass
-                return
+                    return
             else:
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
@@ -1096,7 +1113,19 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             # and filler rejection block phantom Deepgram hits on silence.
             is_barge_in = False
             if self._is_tts_playing:
-                if self._should_barge_in_on_stt(transcript, confidence):
+                # Dead-zone: ignore interims that arrive within N ms of TTS starting.
+                # Deepgram can send stale interims (from the user's original speech)
+                # at almost exactly the moment the first audio frame is sent to Twilio.
+                # Without this guard, barge-in fires instantly and the user hears nothing.
+                _in_dead_zone = (
+                    self._tts_play_start_ts > 0
+                    and (time.perf_counter() - self._tts_play_start_ts) * 1000
+                    < self._barge_in_dead_zone_ms
+                )
+                if _in_dead_zone:
+                    if (transcript or "").strip():
+                        self._log_barge_in_suppressed(transcript, confidence, "tts_dead_zone")
+                elif self._should_barge_in_on_stt(transcript, confidence):
                     is_barge_in = True
                 elif (transcript or "").strip():
                     if self._is_stt_filler_for_barge_in(transcript):
@@ -1381,6 +1410,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
             self._is_tts_playing = False        # Audio not yet streaming for this turn
+            self._tts_play_start_ts = 0.0     # Clear dead-zone anchor from previous utterance
 
             self._voice_metrics.start_generation()
             self._metric_gen_start_ts = time.perf_counter()
@@ -1402,6 +1432,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 and self.call_session.call_metadata
                 and self.call_session.call_metadata.get("appointment_id")
             )
+            _llm_runtime = resolve_llm_runtime(self.agent)
+            _use_vertex_llm = (_llm_runtime.provider_slug or "").lower() == "gemini"
+            _vertex_kb_context = ""
             low_latency_fastpath = self._should_use_latency_fastpath(
                 user_text, booking_intent_turn
             )
@@ -1606,6 +1639,12 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                     )
                 except Exception:
                     history_text = ""
+
+            if _use_vertex_llm:
+                history_text = (
+                    "(Prior conversation turns are provided separately — "
+                    "maintain continuity; do not re-ask answered questions.)"
+                )
             
             booking_memory_block = self._build_booking_memory_block()
             follow_up_appt_block = self._build_follow_up_appointment_block()
@@ -1678,6 +1717,21 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 "If the caller asks about the business, say that specific information is not "
                 "available to you right now and offer to help in another way."
             )
+
+            if _use_vertex_llm:
+                from app.voice.llm_prompt_builder import build_kb_context_for_vertex
+
+                _vertex_kb_context = build_kb_context_for_vertex(
+                    inbound_kb_docs_context_block,
+                    business_knowledge_block,
+                    empty_guard=_bk_block,
+                )
+                inbound_kb_docs_context_block = ""
+                _bk_block = (
+                    "# AUTHORITATIVE BUSINESS FACTS\n"
+                    "Business facts and inbound documents are attached as knowledge context "
+                    "with each user message — apply grounding rules using that context.\n"
+                )
 
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
@@ -1851,60 +1905,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 + system_prompt
             )
 
-            # Get agent's configured model and provider
-            llm_service = None
-            model_name = "gemini-1.5-flash"  # Default fallback
-            api_key = None
-            temperature = 0.15
-            max_tokens = 100
-            if self.agent and self.agent.model:
-                model_name = self.agent.model.model_name
-                
-                # Decrypt API key if available
-                if self.agent.model.api_key:
-                    try:
-                        from app.core.security import decrypt_api_key
-                        api_key = decrypt_api_key(self.agent.model.api_key)
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt agent API key: {e}")
-                        api_key = None  # Will fallback to settings.OPENAI_API_KEY or settings.GOOGLE_API_KEY
-                else:
-                    api_key = None  # Will use global key from .env
-                
-                # Use agent-specific config if available
-                if self.agent.agent_temperature is not None:
-                    temperature = self.agent.agent_temperature / 100.0  # Convert 0-100 to 0-1
-                elif self.agent.model.temperature is not None:
-                    temperature = self.agent.model.temperature / 100.0
-                
-                if self.agent.agent_max_tokens:
-                    max_tokens = self.agent.agent_max_tokens
-                elif self.agent.model.max_tokens:
-                    max_tokens = self.agent.model.max_tokens
+            # Model/provider/temperature resolved early for Vertex prompt shaping.
+            model_name = _llm_runtime.model_name
+            api_key = _llm_runtime.api_key
+            temperature = _llm_runtime.temperature
+            max_tokens = _llm_runtime.max_tokens
+            _provider_slug = _llm_runtime.provider_slug
 
-                # Booking / follow-up turns need enough completion budget for action tokens.
-                if booking_intent_turn or follow_up_active:
-                    max_tokens = max(max_tokens, 180)
-                elif low_latency_fastpath:
-                    max_tokens = min(max_tokens, 80)
-                
-                # Select service based on provider
-                if self.agent.provider:
-                    provider_name = self.agent.provider.name.lower()
-                    if "openai" in provider_name:
-                        llm_service = openai_service
-                    elif "gemini" in provider_name or "google" in provider_name:
-                        llm_service = gemini_service
-                    elif "groq" in provider_name:
-                        llm_service = groq_service
-                    else:
-                        # Default to Gemini
-                        llm_service = gemini_service
-                else:
-                    llm_service = gemini_service
-            else:
-                # Fallback to Gemini
-                llm_service = gemini_service
+            # Booking / follow-up turns need a larger completion budget for action tokens.
+            if booking_intent_turn or follow_up_active:
+                max_tokens = max(max_tokens, 180)
+            elif low_latency_fastpath:
+                max_tokens = min(max_tokens, 80)
+
+            llm_service = llm_service_for_provider(_provider_slug)
             
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
@@ -1999,14 +2013,26 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                 _first_token_marked = False
                 _first_token_recorded = False
-                async for chunk in service.stream_text(
+                _stream_kwargs: dict = dict(
                     prompt=user_text,
                     system_prompt=system_prompt,
                     model_name=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    api_key=api_key_override
-                ):
+                    api_key=api_key_override,
+                )
+                # Vertex Gemini: pass cancel_event + conversation_history for
+                # proper system_instruction handling and barge-in support.
+                from app.services.vertex_gemini_service import VertexGeminiService
+                if isinstance(service, VertexGeminiService):
+                    _stream_kwargs["cancel_event"] = self._tts_cancel
+                    _stream_kwargs["conversation_history"] = list(
+                        self._conversation_history_cache
+                    )
+                    if _vertex_kb_context:
+                        _stream_kwargs["kb_context"] = _vertex_kb_context
+
+                async for chunk in service.stream_text(**_stream_kwargs):
                     if not chunk:
                         continue
                     # If barge-in requested, stop generating
@@ -2160,62 +2186,94 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 return response_accum.strip()
 
             final_text = None
+            _is_gemini_agent = (_provider_slug or "").lower() == "gemini"
+            _fallback_msg = getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", "I am sorry, I did not catch that")
             try:
-                # Use agent's configured model and service
                 final_text = await try_stream(llm_service, model_name, api_key)
+            except VertexLlmError as vertex_err:
+                # Vertex-specific errors (quota, timeout, content filter) — canned fallback only.
+                # Do NOT fall through to OpenAI/Gemini AI Studio for gemini-configured agents.
+                logger.warning(
+                    "⚠️ Vertex LLM error type=%s model=%s — using fallback TTS",
+                    vertex_err.error_type,
+                    model_name,
+                )
+                final_text = _fallback_msg
+                chunk_counter += 1
+                if self._tts_pipeline and not self._tts_cancel.is_set():
+                    await self._tts_pipeline.queue_tts({
+                        "text": _fallback_msg,
+                        "chunk_id": chunk_counter,
+                        "use_ssml": False,
+                        "is_final": True,
+                    })
+                    asyncio.create_task(
+                        self._deferred_conversation_memory_update(turn_context, user_text)
+                    )
             except Exception as e:
                 logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
-                # Fallback: try alternate service
-                try:
-                    if llm_service == openai_service:
-                        # Fallback to Gemini
-                        final_text = await try_stream(gemini_service, "gemini-1.5-flash", None)
-                    else:
-                        # Fallback to OpenAI
-                        final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
-                except Exception as e:
-                    logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
-                    # Last fallback: non-streaming fast response via VoiceLoggingService
-                    try:
-                        final_text = await VoiceLoggingService.generate_agent_response(
-                            speech_text=user_text,
-                            confidence=confidence,
-                            agent=self.agent,
-                            db=self.db,
-                            call_session_id=self.call_session.id if self.call_session else None
+                if _is_gemini_agent:
+                    # Gemini agents: canned fallback only, no cross-provider attempt
+                    logger.warning("⚠️ Gemini agent LLM error — using canned fallback (no AI Studio retry)")
+                    final_text = _fallback_msg
+                    chunk_counter += 1
+                    if self._tts_pipeline and not self._tts_cancel.is_set():
+                        await self._tts_pipeline.queue_tts({
+                            "text": _fallback_msg,
+                            "chunk_id": chunk_counter,
+                            "use_ssml": False,
+                            "is_final": True,
+                        })
+                        asyncio.create_task(
+                            self._deferred_conversation_memory_update(turn_context, user_text)
                         )
-                        # Queue fallback response
-                        if final_text and not self._tts_cancel.is_set():
-                            safe_tts_text = self._prepare_tts_text(final_text)
-                            out_text = tone_adapter(safe_tts_text.strip(), turn_context, self._use_ssml)
-                            if not out_text:
-                                out_text = "One moment please."
+                else:
+                    # Non-gemini agents: try alternate service
+                    try:
+                        if llm_service == openai_service:
+                            final_text = await try_stream(vertex_gemini_service, "gemini-2.5-flash", None)
+                        else:
+                            final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
+                        try:
+                            final_text = await VoiceLoggingService.generate_agent_response(
+                                speech_text=user_text,
+                                confidence=confidence,
+                                agent=self.agent,
+                                db=self.db,
+                                call_session_id=self.call_session.id if self.call_session else None
+                            )
+                            if final_text and not self._tts_cancel.is_set():
+                                safe_tts_text = self._prepare_tts_text(final_text)
+                                out_text = tone_adapter(safe_tts_text.strip(), turn_context, self._use_ssml)
+                                if not out_text:
+                                    out_text = "One moment please."
+                                chunk_counter += 1
+                                if self._tts_pipeline and out_text:
+                                    await self._tts_pipeline.queue_tts({
+                                        "text": out_text,
+                                        "use_ssml": self._use_ssml,
+                                        "is_final": True,
+                                    })
+                                    asyncio.create_task(
+                                        self._deferred_conversation_memory_update(turn_context, user_text)
+                                    )
+                        except Exception as e:
+                            logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
+                            final_text = _fallback_msg
+                            utt = tone_adapter(final_text, turn_context, self._use_ssml)
                             chunk_counter += 1
-                            if self._tts_pipeline and out_text:
+                            if self._tts_pipeline:
                                 await self._tts_pipeline.queue_tts({
-                                    "text": out_text,
+                                    "text": utt,
+                                    "chunk_id": chunk_counter,
                                     "use_ssml": self._use_ssml,
-                                    "is_final": True,
+                                    "is_final": True
                                 })
                                 asyncio.create_task(
                                     self._deferred_conversation_memory_update(turn_context, user_text)
                                 )
-                    except Exception as e:
-                        logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
-                        # Ultimate fallback response
-                        final_text = "I apologize, I'm having trouble responding right now. Could you please repeat that?"
-                        utt = tone_adapter(final_text, turn_context, self._use_ssml)
-                        chunk_counter += 1
-                        if self._tts_pipeline:
-                            await self._tts_pipeline.queue_tts({
-                                "text": utt,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": True
-                            })
-                            asyncio.create_task(
-                                self._deferred_conversation_memory_update(turn_context, user_text)
-                            )
 
             if final_text:
                 # Strip control tokens from transcript (never saved to history)

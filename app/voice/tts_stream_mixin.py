@@ -194,6 +194,8 @@ class TtsStreamMixin:
                                     self._is_tts_playing = True
                                     _first_audio_ts = time.perf_counter()
                                     self._metric_first_audio_ts = _first_audio_ts
+                                    # Record for barge-in dead zone (see _maybe_process_interim)
+                                    self._tts_play_start_ts = _first_audio_ts
                                     _first_token_ts = getattr(self, "_metric_first_token_ts", 0.0)
                                     if _first_token_ts > 0:
                                         _ttfa_ms = (_first_audio_ts - _first_token_ts) * 1000
