@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
-from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
 from app.utils.eleven_tts_text import (

@@ -28,6 +28,15 @@ from app.utils.response import create_success_response
 
 router = APIRouter()
 
+_COMMON_ERROR_RESPONSES: dict = {
+    400: {"description": "Validation error — name too short/long or invalid JSON"},
+    401: {"description": "Missing or invalid x-api-key / x-workspace-id header"},
+    403: {"description": "Workspace mismatch or JWT used on an API-key-only route"},
+    404: {"description": "Workspace not found"},
+    409: {"description": "Workspace name already taken"},
+    429: {"description": "Rate limit exceeded (60 req / 60 s per API key)"},
+}
+
 
 def _repository(db: Session = Depends(get_db)) -> WorkspaceRepository:
     return WorkspaceRepository(db)
@@ -90,6 +99,7 @@ async def _parse_update_name_body(request: Request) -> WorkspaceUpdateName:
     response_model_by_alias=True,
     status_code=status.HTTP_201_CREATED,
     summary="Create a new workspace",
+    responses={**_COMMON_ERROR_RESPONSES, 201: {"description": "Workspace created — flat body: {id, name, createdAt}"}},
 )
 def create_workspace(
     payload: WorkspaceCreate = Depends(_parse_create_body),
@@ -124,6 +134,7 @@ def create_workspace(
     response_model=SuccessResponse[WorkspaceOut],
     response_model_by_alias=True,
     summary="Get a workspace by id",
+    responses=_COMMON_ERROR_RESPONSES,
 )
 def get_workspace_by_id(
     workspace_id: uuid.UUID,
@@ -155,6 +166,7 @@ def get_workspace_by_id(
     response_model=SuccessResponse[WorkspaceOut],
     response_model_by_alias=True,
     summary="Update the authenticated workspace's name",
+    responses=_COMMON_ERROR_RESPONSES,
 )
 def update_workspace_name(
     payload: WorkspaceUpdateName = Depends(_parse_update_name_body),
@@ -201,6 +213,7 @@ def update_workspace_name(
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
     summary="Soft delete a workspace",
+    responses={**_COMMON_ERROR_RESPONSES, 204: {"description": "Workspace soft-deleted, no body"}},
 )
 def soft_delete_workspace(
     workspace_id: uuid.UUID,

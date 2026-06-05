@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class WorkspaceCreate(BaseModel):
     """Request body for ``POST /api/v1/workspace``."""
 
-    name: str = Field(..., min_length=3, max_length=50)
+    name: str = Field(..., min_length=3, max_length=50, examples=["Acme Corp"])
 
     model_config = ConfigDict(extra="forbid")
 
@@ -30,9 +30,9 @@ class WorkspaceUpdateName(WorkspaceCreate):
 
 
 class _WorkspaceBase(BaseModel):
-    id: uuid.UUID
-    name: str
-    created_at: datetime = Field(serialization_alias="createdAt")
+    id: uuid.UUID = Field(examples=["3fa85f64-5717-4562-b3fc-2c963f66afa6"])
+    name: str = Field(examples=["Acme Corp"])
+    created_at: datetime = Field(serialization_alias="createdAt", examples=["2025-01-15T10:30:00Z"])
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

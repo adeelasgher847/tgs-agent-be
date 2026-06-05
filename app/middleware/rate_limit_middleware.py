@@ -28,11 +28,10 @@ from app.core.logger import logger
 from app.core.request_auth import AUTH_METHOD_API_KEY, AUTH_METHOD_JWT
 from app.middleware.request_id_middleware import get_request_id
 
+# Built-in /docs, /redoc, /openapi.json disabled in app factory; rate limit applies only to /api/v1/*.
+# Custom docs at /api/docs are outside that scope (see app/routers/api_docs.py).
 _SKIP_EXACT = {
     "/",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
     "/health",
     "/api/v1/health",
     "/api/v1/tenants/create",
@@ -47,8 +46,6 @@ _SKIP_PREFIXES = (
     "/api/v1/billing/webhook",
     "/api/v1/voice/",
     "/api/v1/stream/",
-    "/docs/",
-    "/redoc/",
 )
 
 # Unauthenticated POST endpoints targeted by bots (per-path, per-IP stricter limit).
