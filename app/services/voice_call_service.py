@@ -7,12 +7,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.error_responses import build_call_initiate_error_payload
+from app.middleware.request_id_middleware import get_request_id
 from app.core.logger import logger
 from app.models.user import User
 from app.schemas.twilio import (
     CallInitiateRequest,
     CallInitiateResponse,
-    CallInitiateErrorResponse,
 )
 from app.schemas.base import SuccessResponse
 from app.services.agent_service import agent_service
@@ -126,93 +127,67 @@ async def initiate_call(
             model_name,
         )
 
-        # Get phone number and credentials - Priority: User Selected > Agent Assigned > Env
+        # Outbound requires an active phone number bound to this agent (telephony bind).
         from app.models.phone_number import PhoneNumber
 
-        phone_number_obj = None
-        from_number: Optional[str] = None
-        use_custom_credentials = False
-        account_sid: Optional[str] = None
-        auth_token: Optional[str] = None
+        phone_number_obj = (
+            db.query(PhoneNumber)
+            .filter(
+                PhoneNumber.assistant_id == agent.id,
+                PhoneNumber.tenant_id == tenant_id_filter,
+                PhoneNumber.status == "active",
+            )
+            .first()
+        )
+        if not phone_number_obj:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "This agent is not bound to an active phone number. "
+                    "Bind via POST /api/v1/telephony/bind before placing outbound calls."
+                ),
+            )
 
-        # Priority 1: Check if user explicitly selected a phone number (VAPI style)
         if call_request.phone_number_id:
             try:
-                phone_number_uuid = uuid.UUID(call_request.phone_number_id)
-                phone_number_obj = phone_number_service.get_phone_number_by_id(
-                    db=db,
-                    phone_number_id=phone_number_uuid,
-                    tenant_id=tenant_id_filter,
-                )
-                if phone_number_obj and phone_number_obj.status == "active":
-                    logger.info(
-                        "✅ Using user selected phone number: %s (ID: %s)",
-                        phone_number_obj.phone_number,
-                        phone_number_uuid,
-                    )
-                elif phone_number_obj and phone_number_obj.status != "active":
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            f"Phone number {call_request.phone_number_id} "
-                            "is not active."
-                        ),
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=(
-                            f"Phone number {call_request.phone_number_id} "
-                            "not found in your account."
-                        ),
-                    )
-            except HTTPException:
-                raise
-            except (ValueError, Exception) as e:
+                requested_id = uuid.UUID(call_request.phone_number_id)
+            except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid phone_number_id format: {str(e)}",
                 )
-
-        # Priority 2: Check if agent has assigned phone number in DB
-        if not phone_number_obj and agent.id:
-            phone_number_obj = (
-                db.query(PhoneNumber)
-                .filter(
-                    PhoneNumber.assistant_id == agent.id,
-                    PhoneNumber.tenant_id == tenant_id_filter,
-                    PhoneNumber.status == "active",
-                )
-                .first()
-            )
-            if phone_number_obj:
-                logger.info(
-                    "✅ Using agent's assigned phone number: %s",
-                    phone_number_obj.phone_number,
+            if requested_id != phone_number_obj.id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "phone_number_id must be the phone number bound to this agent "
+                        f"(bound id: {phone_number_obj.id})."
+                    ),
                 )
 
-        # Use selected phone number with credentials if available
-        if (
-            phone_number_obj
-            and phone_number_obj.twilio_account_sid
-            and phone_number_obj.twilio_auth_token
-        ):
-            from_number = phone_number_obj.phone_number
+        from_number = phone_number_obj.phone_number
+        use_custom_credentials = False
+        account_sid: Optional[str] = None
+        auth_token: Optional[str] = None
+
+        if phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
             from app.core.security import decrypt_api_key
 
             account_sid = decrypt_api_key(phone_number_obj.twilio_account_sid)
             auth_token = decrypt_api_key(phone_number_obj.twilio_auth_token)
             use_custom_credentials = True
             logger.info(
-                "✅ Using DB phone number: %s with custom credentials", from_number
+                "Using bound number %s with per-number Twilio credentials",
+                from_number,
             )
         else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "No phone number found. Please create and assign a phone number "
-                    "in your account before making calls."
-                ),
+            from app.core.secret_manager import get_twilio_credentials
+
+            account_sid, auth_token = get_twilio_credentials()
+            use_custom_credentials = True
+            logger.info(
+                "Using bound number %s with platform Twilio credentials",
+                from_number,
             )
 
         # Get base URL for webhooks
@@ -392,53 +367,23 @@ async def initiate_call(
         )
 
     except HTTPException as e:
-        crm_container_id = call_request.crm_container_id or call_request.board_id
-        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
-        status_field_id = call_request.status_field_id or call_request.status_column_id
-        call_session_id_field_id = (
-            call_request.call_session_id_field_id
-            or call_request.call_session_id_column_id
-        )
-
-        error_response = CallInitiateErrorResponse(
-            detail=e.detail,
-            board_id=call_request.board_id,
-            monday_item_id=call_request.monday_item_id,
-            status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id,
-            crm_container_id=crm_container_id,
-            crm_item_id=crm_item_id,
-            status_field_id=status_field_id,
-            call_session_id_field_id=call_session_id_field_id,
-            crm_type=call_request.crm_type,
-        )
+        request_id = get_request_id(http_request)
+        logger.warning("Call initiate HTTP error: %s", e.detail)
         return JSONResponse(
             status_code=e.status_code,
-            content=error_response.dict(exclude_none=True),
+            content=build_call_initiate_error_payload(
+                e.status_code, e.detail, call_request, request_id=request_id
+            ),
+            headers={"X-Request-ID": request_id},
         )
     except Exception as e:  # pragma: no cover - defensive
-        crm_container_id = call_request.crm_container_id or call_request.board_id
-        crm_item_id = call_request.crm_item_id or call_request.monday_item_id
-        status_field_id = call_request.status_field_id or call_request.status_column_id
-        call_session_id_field_id = (
-            call_request.call_session_id_field_id
-            or call_request.call_session_id_column_id
-        )
-
-        error_response = CallInitiateErrorResponse(
-            detail=str(e),
-            board_id=call_request.board_id,
-            monday_item_id=call_request.monday_item_id,
-            status_column_id=call_request.status_column_id,
-            call_session_id_column_id=call_request.call_session_id_column_id,
-            crm_container_id=crm_container_id,
-            crm_item_id=crm_item_id,
-            status_field_id=status_field_id,
-            call_session_id_field_id=call_session_id_field_id,
-            crm_type=call_request.crm_type,
-        )
+        request_id = get_request_id(http_request)
+        logger.error("Call initiate failed: %s", e, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content=error_response.dict(exclude_none=True),
+            content=build_call_initiate_error_payload(
+                500, None, call_request, request_id=request_id
+            ),
+            headers={"X-Request-ID": request_id},
         )
 

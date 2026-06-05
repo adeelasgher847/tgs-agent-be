@@ -136,6 +136,9 @@ class VoiceOrchestrator:
         self._tts_pipeline = TtsPipeline(handler)
         handler._tts_pipeline = self._tts_pipeline
         handler._tts_worker_task = self._tts_pipeline._worker_task
+        ps = getattr(handler, "_pipeline_session", None)
+        if ps is not None:
+            ps.tts_pipeline = self._tts_pipeline
 
         # Final STT callbacks are scheduled as tasks so the Deepgram reader never blocks
         # on full LLM+TTS work (parallel with continued STT ingestion).
@@ -249,6 +252,9 @@ class VoiceOrchestrator:
                     agent_id=h.agent_id,
                     endpointing_ms=initial_endpointing,
                 )
+                ps = getattr(h, "_pipeline_session", None)
+                if ps is not None:
+                    ps.stt_emitter = self._stt_pipeline
                 logger.debug(
                     "[VoiceOrchestrator] SttPipeline created (endpointing_ms=%s)",
                     initial_endpointing,

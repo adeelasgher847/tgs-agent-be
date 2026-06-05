@@ -44,10 +44,13 @@ class CallSession(Base):
     call_metadata = Column(JSONB, nullable=True)  # Store additional call metadata
     transferred = Column(Boolean, nullable=False, server_default="false")  # Whether call was transferred
     
+    # Optional link to the call flow that triggered this session
+    call_flow_id = Column(UUID(as_uuid=True), ForeignKey("callflow.id"), nullable=True, index=True)
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     # Relationships
     user = relationship("User", back_populates="call_sessions")
     agent = relationship("Agent", back_populates="call_sessions")
@@ -55,6 +58,7 @@ class CallSession(Base):
     call_logs = relationship("CallLog", back_populates="call_session", cascade="all, delete-orphan")
     transcript_messages = relationship("TranscriptMessage", back_populates="call_session", cascade="all, delete-orphan")
     slot_reservations = relationship("SlotReservation", back_populates="call_session", cascade="all, delete-orphan")
+    call_flow = relationship("CallFlow", back_populates="call_sessions")
     
     def __repr__(self):
         return f"<CallSession(id={self.id}, status={self.status})>"

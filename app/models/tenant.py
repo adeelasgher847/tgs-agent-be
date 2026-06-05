@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Integer, Numeric
+from sqlalchemy import Column, String, DateTime, Numeric, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -13,6 +13,8 @@ class Tenant(Base):
     stripe_customer_id = Column(String, nullable=True, index=True)
     stripe_subscription_id = Column(String, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
     credits = Column(Numeric(10, 4), default=0, nullable=False)  # Float credits with 4 decimal precision
     
     # Relationships
@@ -25,3 +27,14 @@ class Tenant(Base):
     blocked_slots = relationship("BlockedSlot", back_populates="tenant")
     appointments = relationship("Appointment", back_populates="tenant")
     transfer_routes = relationship("TransferRoute", back_populates="tenant")
+    api_keys = relationship("Apikey", back_populates="tenant", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index(
+            "uq_tenant_name_active",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )

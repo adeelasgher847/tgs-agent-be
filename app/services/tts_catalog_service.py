@@ -5,12 +5,18 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from app.core.secret_manager import get_rime_api_key
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
 from app.utils.tts_adapter import get_tts_adapter_for_provider
 
 
 class TTSCatalogService:
+    @staticmethod
+    def verify_rime_api_key_configured() -> None:
+        """Fail fast when Rime is enabled but RIME_API_KEY is missing or invalid."""
+        get_rime_api_key()
+
     def ensure_default_provider(self, db: Session) -> TTSProvider:
         providers_to_seed = [
             {
@@ -26,6 +32,13 @@ class TTSCatalogService:
                 "is_active": True,
                 "supports_streaming": True,
                 "supports_ssml": True,
+            },
+            {
+                "slug": "rime",
+                "display_name": "Rime Labs",
+                "is_active": True,
+                "supports_streaming": True,
+                "supports_ssml": False,
             },
         ]
 
@@ -47,6 +60,9 @@ class TTSCatalogService:
 
         if selected is None:
             selected = db.query(TTSProvider).filter(TTSProvider.slug == "elevenlabs").first()
+
+        # Rime is always seeded as active — catch misconfiguration before the first call.
+        self.verify_rime_api_key_configured()
         return selected
 
     def list_providers(self, db: Session, active_only: bool = True) -> list[TTSProvider]:

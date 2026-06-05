@@ -53,15 +53,22 @@ async def handle_call_events_webhook(
     logger.info("🔥🔥🔥 WEBHOOK CALLED! 🔥🔥🔥")
     logger.info("=== Call Events Webhook Started ===")
     logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
-    logger.info(f"Request method: {request.method}")
-    logger.info(f"Request URL: {request.url}")
-    logger.info(f"Request headers: {dict(request.headers)}")
+    from app.core.pii_redactor import prepare_request_log_context
+
     logger.info(
-        f"Query params: agentId={agentId}, userId={userId}, callSessionId={callSessionId}"
+        "Call events webhook started %s",
+        prepare_request_log_context(
+            request.method,
+            request.url.path,
+            request.headers,
+            query_params={
+                "agentId": agentId or "",
+                "userId": userId or "",
+                "callSessionId": callSessionId or "",
+            },
+            body_length=len(body) if body else 0,
+        ),
     )
-    logger.info(f"Request body length: {len(body) if body else 0}")
-    logger.debug(f"Request body preview: {body[:200] if body else 'None'}...")
-    logger.debug(f"Database session: {db}")
 
     try:
         try:

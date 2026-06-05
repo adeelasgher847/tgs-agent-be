@@ -6,21 +6,45 @@ class Settings(BaseSettings):
     ADMIN_ROLE: str = "admin"
     
     DATABASE_URL: str = "postgresql+psycopg2://postgres:admin@localhost:5432/voiceagent"
-    SECRET_KEY: str = "supersecretkey"
+    SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
+    # Environment — controls which Twilio credentials are used and Secret Manager behaviour.
+    # Values: "development" | "staging" | "production"
+    ENVIRONMENT: str = "development"
+
     # Twilio Configuration
+    # In production/staging these should come from Secret Manager (see app/core/secret_manager.py).
+    # They are kept here as fallbacks for local development only.
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_PHONE_NUMBER: str = "+13466602410"  # TODO: Replace with your actual Twilio phone number from Twilio Console
+    TWILIO_PHONE_NUMBER: str = "+13466602410"
     ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
+
+    # Twilio test credentials — used automatically when ENVIRONMENT="staging".
+    # Set via Secret Manager or .env.staging; never commit real values.
+    TWILIO_TEST_ACCOUNT_SID: str = ""
+    TWILIO_TEST_AUTH_TOKEN: str = ""
+
+    # GCP Secret Manager project ID (required in staging/production).
+    GCP_PROJECT_ID: str = ""
     
     # Server Configuration
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    DEBUG: bool = True
+    DEBUG: bool = False
+    APP_VERSION: str = "1.0.0"
+
+    # Swagger / committed OpenAPI at GET /api/docs (HTTP Basic — not dashboard JWT).
+    API_DOCS_ENABLED: bool = True
+    API_DOCS_USERNAME: str = ""
+    API_DOCS_PASSWORD: str = ""
+
+    # CORS — comma-separated list of allowed origins.
+    # Example: "https://app.example.com,https://admin.example.com"
+    ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
     
     # Webhook Configuration
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
@@ -36,18 +60,35 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
     
     GEMINI_API_KEY: str = ""
+    # Default LLM when an agent has no ticket llm_model or legacy model relation.
+    DEFAULT_LLM_MODEL: str = "gemini-1.5-flash"
+    DEFAULT_LLM_PROVIDER: str = "gemini"
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
     
+    # Rime Labs TTS Configuration
+    RIME_API_KEY: str = ""
+
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
+    # Symmetric encryption key for agent.encrypted_elevenlabs_api_key (pgp_sym_encrypt).
+    # In production/staging load from Secret Manager; never commit a real value.
+    ELEVENLABS_ENCRYPTION_KEY: str = ""
     # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
     # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
     ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
     
     # Google Cloud Speech-to-Text Configuration
-    GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file
+    GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file for Vertex AI + STT
     GOOGLE_CLOUD_PROJECT_ID: str = ""
+    # Vertex AI — used by VertexGeminiService for voice LLM calls (ADC, no api_key needed)
+    VERTEX_AI_LOCATION: str = "us-central1"
+    # History pruning for Vertex Gemini voice path (1 turn = 1 user + 1 model message)
+    VOICE_LLM_HISTORY_MAX_TURNS: int = 20
+    # Default temperature for Vertex Gemini voice path (0–1 scale)
+    VOICE_LLM_DEFAULT_TEMPERATURE: float = 0.3
+    # Canned fallback spoken when the Vertex LLM errors (quota, timeout, filter)
+    VOICE_LLM_FALLBACK_MESSAGE: str = "I am sorry, I did not catch that"
     GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
     # Deprecated fallback; prefer STT_SAMPLE_RATE for provider-neutral STT settings.
     GOOGLE_STT_SAMPLE_RATE: int = 8000
@@ -106,11 +147,13 @@ class Settings(BaseSettings):
     VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK: bool = True
     VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.12
     VOICE_STT_SOFT_MIN_WORDS: int = 2
-    # Barge-in (user talks over agent): min STT confidence for 2+ word interrupt path.
-    # Slightly below old 0.30 so a softer "wait" / "hold on" still cancels TTS.
-    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.18
-    # One-word barge-in ("stop", "no") still needs strong confidence to avoid false cancels.
-    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.20
+    # Barge-in (user talks over agent): require at least this many STT words while TTS plays.
+    # Default 2 filters phantom 1-word Deepgram hits ("uh", noise artefacts) on silence.
+    VOICE_BARGE_IN_MIN_WORDS: int = 2
+    # Min STT confidence when word count >= VOICE_BARGE_IN_MIN_WORDS.
+    VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.26
+    # Only used when VOICE_BARGE_IN_MIN_WORDS == 1 (one-word interrupts like "stop").
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.52
     VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
@@ -130,6 +173,12 @@ class Settings(BaseSettings):
     # Allow RAG prefetch to start earlier than interim-LLM gates.
     VOICE_RAG_PREFETCH_MIN_WORDS: int = 1
     VOICE_RAG_PREFETCH_MIN_CONFIDENCE: float = 0.05
+    # TTS speed/volume bounds — shared by API schema (TtsSettingsJsonSchema) and
+    # runtime clamping (resolve_tts_runtime). Tune per deploy without code changes.
+    TTS_SPEED_MIN: float = 0.25
+    TTS_SPEED_MAX: float = 2.0
+    TTS_VOLUME_MIN: float = 0.0
+    TTS_VOLUME_MAX: float = 2.0
     # Start TTS streaming sooner for short first chunks.
     VOICE_TTS_STREAM_MIN_WORDS: int = 2
     # Twilio jitter buffer priming frames (20ms each) for low-latency voice output.
@@ -180,16 +229,16 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True
     
-    # Login rate limiting (requests per minute)
-    LOGIN_RATE_LIMIT: int = 5
+    # Login rate limiting — per-IP, stricter than global API limit (enforce_login_rate_limit)
+    LOGIN_RATE_LIMIT: int = 10
     LOGIN_RATE_WINDOW: int = 60  # seconds
     
     # Webhook rate limiting (requests per minute)
     WEBHOOK_RATE_LIMIT: int = 100
     WEBHOOK_RATE_WINDOW: int = 60  # seconds
     
-    # General API rate limiting (requests per minute)
-    API_RATE_LIMIT: int = 1000
+    # General API rate limiting — global sliding-window middleware
+    API_RATE_LIMIT: int = 60   # requests per window per identity
     API_RATE_WINDOW: int = 60  # seconds
 
     # Google OAuth

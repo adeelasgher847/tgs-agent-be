@@ -11,13 +11,19 @@ from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
-from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security, issue_tokens_for_user, is_session_already_credited, mark_session_credited
+from app.api.deps import (
+    get_db,
+    get_active_user_by_id,
+    get_current_user_jwt,
+    require_member_or_admin,
+    security,
+    issue_tokens_for_user,
+)
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
 from app.core.security import create_refresh_token_value, refresh_token_expires_at
 from app.core.security import is_token_expired, verify_token
 from app.services.email_service import email_service
 from app.utils.response import create_success_response
-from app.utils.rate_limiter import login_rate_limit
 from datetime import datetime, timezone
 from app.services.role_service import get_user_role_in_tenant
 import secrets
@@ -29,6 +35,7 @@ from typing import Optional
 import re
 from app.core.logger import logger
 from app.services.role_service import get_default_product_id
+from app.utils.rate_limiter import enforce_login_rate_limit
 
 router = APIRouter()
 
@@ -108,8 +115,11 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=SuccessResponse[TokenResponse])
-@login_rate_limit()
-def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+def login(
+    login_data: LoginRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(enforce_login_rate_limit),
+):
     """
     User login endpoint that returns JWT token with role information as object.
     Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
@@ -117,8 +127,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     # Convert email to lowercase
     login_data.email = login_data.email.lower()
-    # Find user by email
-    user = db.query(User).filter(User.email == login_data.email).first()
+    # Find active (non-deleted) user by email
+    user = db.query(User).filter(
+        User.email == login_data.email,
+        User.deleted_at.is_(None),
+    ).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -213,7 +226,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login/google", response_model=SuccessResponse[TokenResponse])
-def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
+def google_login(
+    req: GoogleLoginRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(enforce_login_rate_limit),
+):
     try:
         logger.debug(f'Google token received: {req.google_token}')
         idinfo = google_id_token.verify_oauth2_token(
@@ -243,15 +260,19 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
             detail="Invalid Google token"
         )
 
-    # Prefer matching by provider_user_id for stability
+    # Prefer matching by provider_user_id for stability; exclude soft-deleted accounts
     user = db.query(User).filter(
         User.provider == "google",
-        User.provider_user_id == sub
+        User.provider_user_id == sub,
+        User.deleted_at.is_(None),
     ).first()
 
     # If not found, try link by email (first-time social login)
     if not user:
-        user = db.query(User).filter(User.email == email).first()
+        user = db.query(User).filter(
+            User.email == email,
+            User.deleted_at.is_(None),
+        ).first()
 
     if not user:
         # Create new user
@@ -386,10 +407,21 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     3) If refresh_token invalid/expired -> return 401
     """
 
-    # 1) If access token is still valid
+    # 1) If access token is still valid (and user is not soft-deleted)
     if req.access_token:
         payload = verify_token(req.access_token)
         if payload and not is_token_expired(req.access_token):
+            user_id_str = payload.get("user_id")
+            if user_id_str:
+                try:
+                    user_id = uuid.UUID(user_id_str)
+                except ValueError:
+                    user_id = None
+                if user_id and not get_active_user_by_id(db, user_id):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User not found or account has been deactivated",
+                    )
             return {
                 "status_code": 200,
                 "message": "Access token still valid"
@@ -404,9 +436,12 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
             detail="Invalid or expired refresh token"
         )
 
-    user = db.query(User).filter(User.id == rt.user_id).first()
+    user = get_active_user_by_id(db, rt.user_id)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account has been deactivated",
+        )
 
     tenant_ids = [t.id for t in user.tenants]
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
@@ -582,9 +617,12 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     """
     Send password reset email to user
     """
-    # Find user by email
-    user = db.query(User).filter(User.email == request.email).first()
-    
+    # Find active user by email (soft-deleted accounts cannot reset password)
+    user = db.query(User).filter(
+        User.email == request.email,
+        User.deleted_at.is_(None),
+    ).first()
+
     # Check if user exists
     if not user:
         raise HTTPException(
@@ -667,13 +705,12 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
             }
         )
     
-    # Get user
-    user = db.query(User).filter(User.id == reset_token.user_id).first()
+    user = get_active_user_by_id(db, reset_token.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "message": "User not found.",
+                "message": "User not found or account has been deactivated.",
                 "error_type": "user_not_found"
             }
         )
@@ -711,13 +748,11 @@ def get_user_profile(
     Get complete user profile information including role and tenant details.
     Requires JWT Bearer token authentication.
     """
-    # Fetch user with all related data
-    user = db.query(User).filter(User.id == current_user.id).first()
-    
+    user = get_active_user_by_id(db, current_user.id)
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account has been deactivated",
         )
     
     # Stripe credits are now processed via webhook; no crediting logic here.

@@ -163,42 +163,42 @@ class VoiceLoggingService:
         try:
             logger.info(f"🤖 Generating AI response for: '{speech_text}'")
             
-            # If no agent or no model_id, fall back to simple responses
-            if not agent or not agent.model_id:
-                logger.warning("⚠️ No agent or model_id found, using fallback response")
+            if not agent:
+                logger.warning("⚠️ No agent found, using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
-            
+
+            if not agent.model_id and not agent.llm_model:
+                logger.warning("⚠️ No agent model configured, using fallback response")
+                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
+
             # Import here to avoid circular imports
-            from app.services.gemini_service import gemini_service
+            from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
             from app.services.openai_service import openai_service
             from app.services.groq_service import groq_service
-            from app.services.model_service import model_service
             from app.core.security import decrypt_api_key
+
+            llm_runtime = resolve_llm_runtime(agent)
             
             # Get the model from database with provider relationship
             from sqlalchemy.orm import joinedload
             from app.models.model import Model as ModelClass
             
-            model = db.query(ModelClass).options(joinedload(ModelClass.provider)).filter(
-                ModelClass.id == agent.model_id
-            ).first()
-            
-            if not model:
-                logger.warning("⚠️ Model not found, using fallback response")
-                return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
-            
-            # Check if model is active
-            if model.archive:
+            model = None
+            if agent.model_id:
+                model = db.query(ModelClass).options(joinedload(ModelClass.provider)).filter(
+                    ModelClass.id == agent.model_id
+                ).first()
+
+            if model and model.archive:
                 logger.warning("⚠️ Model is archived, using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
-            
-            # Check if provider exists
-            if not model.provider:
+
+            if model and not model.provider:
                 logger.warning("⚠️ Model has no provider, using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
-            
-            # Get model details with agent-specific overrides
-            model_name = model.model_name
+
+            model_name = llm_runtime.model_name
+            provider_slug = llm_runtime.provider_slug
             
             # Create personalized system prompt with agent information
             agent_name = agent.name if agent.name else "AI Assistant"
@@ -293,7 +293,7 @@ Guidelines for phone conversations:
 - IMPORTANT: Use the conversation history below to remember what was discussed and avoid repeating questions or information
 
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
-            elif model.system_prompt:
+            elif model and model.system_prompt:
                 system_prompt = f"""You are {agent_name}, a real person taking phone calls.
 
 Your identity:
@@ -323,51 +323,43 @@ Guidelines for phone conversations:
 Always respond as {agent_name}, a real person having a conversation, not as any kind of system or tool.{conversation_context}"""
             else:
                 system_prompt = personalized_system_prompt
-            # Use agent-specific temperature if set, otherwise fall back to model default (reduced for faster response)
-            temperature = (
-                (agent.agent_temperature / 100.0) if agent.agent_temperature is not None 
-                else (model.temperature / 100.0) if model.temperature 
-                else 0.6
-            )
-            # Use agent-specific max tokens if set, otherwise fall back to model default
-            # VOICE OPTIMIZATION: Cap at 100 tokens max for ULTRA-FAST responses (1-2 sentences, Vapi-style)
-            requested_max_tokens = agent.agent_max_tokens if agent.agent_max_tokens is not None else (model.max_tokens or 100)
-            max_tokens = min(requested_max_tokens, 100)  # Force cap at 100 for voice calls (Vapi-style speed!)
-            
+            temperature = llm_runtime.temperature
+            requested_max_tokens = llm_runtime.max_tokens
+            max_tokens = min(requested_max_tokens, 100)
+
             if requested_max_tokens > 100:
-                logger.info(f"⚡ Voice optimization: Capped max_tokens from {requested_max_tokens} to 100 for ultra-fast response")
-            
-            # Use model-specific API key if available
-            api_key = None
-            if model.api_key:
+                logger.info(
+                    "⚡ Voice optimization: Capped max_tokens from %s to 100",
+                    requested_max_tokens,
+                )
+
+            api_key = llm_runtime.api_key
+            if api_key is None and model and model.api_key and provider_slug != "gemini":
                 try:
                     api_key = decrypt_api_key(model.api_key)
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to decrypt model API key: {e}")
-                    # Continue with global key
-            
-            # Detect which AI service to use based on provider name
-            provider_name = model.provider.name.lower()
-            is_gemini = 'gemini' in provider_name or 'google' in provider_name
-            is_openai = 'openai' in provider_name
-            is_groq = 'groq' in provider_name
-            
-            if not is_gemini and not is_openai and not is_groq:
-                logger.warning(f"⚠️ Provider {provider_name} is not supported (not Gemini, OpenAI, or Groq), using fallback response")
+
+            slug = (provider_slug or "").lower()
+            if slug not in ("gemini", "openai", "groq"):
+                logger.warning(
+                    "⚠️ Provider %s is not supported, using fallback response", slug
+                )
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
-            
-            # Determine which service to use
-            if is_gemini:
-                ai_service_name = "Gemini"
-                ai_service = gemini_service
-            elif is_groq:
-                ai_service_name = "Groq"
-                ai_service = groq_service
-            else:
-                ai_service_name = "OpenAI"
-                ai_service = openai_service
-            
-            logger.info(f"🎯 Using {ai_service_name} service based on provider: {provider_name}")
+
+            ai_service = llm_service_for_provider(slug)
+            ai_service_name = {
+                "gemini": "Vertex Gemini",
+                "openai": "OpenAI",
+                "groq": "Groq",
+            }.get(slug, slug)
+
+            logger.info(
+                "🎯 Using %s service (provider=%s, model=%s)",
+                ai_service_name,
+                slug,
+                model_name,
+            )
             
             # Check if all system prompt objectives have been completed
             conversation_complete = VoiceLoggingService._check_conversation_completion(
@@ -380,7 +372,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             
             # Generate response using selected AI service
             logger.info(f"🔧 {ai_service_name} Config: model={model_name}, temp={temperature}, max_tokens={max_tokens} | Agent: {agent_name} ({agent_language})")
-            logger.debug(f"🔧 System Prompt: {system_prompt[:200]}...")
+            logger.debug("System prompt length: %s chars", len(system_prompt or ""))
             logger.debug(f"🔧 User Prompt: {speech_text}")
             logger.debug(f"🧠 Conversation Context Length: {len(conversation_context)} chars")
             if conversation_context:
