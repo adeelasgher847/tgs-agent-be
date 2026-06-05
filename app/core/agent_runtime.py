@@ -13,7 +13,7 @@ from uuid import UUID
 
 from typing import TYPE_CHECKING
 
-from app.core.config import settings
+from app.core.config import settings as app_settings
 from app.core.llm_models import infer_llm_provider
 from app.core.logger import logger
 from app.core.security import decrypt_api_key
@@ -29,13 +29,6 @@ _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
     # "rime" now has its own adapter — no longer falls back to google.
     "rime": "rime",
 }
-
-# Re-export config bounds for call sites/tests (source of truth: settings / .env).
-TTS_SPEED_MIN: float = settings.TTS_SPEED_MIN
-TTS_SPEED_MAX: float = settings.TTS_SPEED_MAX
-TTS_VOLUME_MIN: float = settings.TTS_VOLUME_MIN
-TTS_VOLUME_MAX: float = settings.TTS_VOLUME_MAX
-
 
 def _coerce_float(value: Any, default: float) -> float:
     try:
@@ -122,10 +115,12 @@ def _is_gemini_provider(provider_slug: str) -> bool:
 
 def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
     """Pick LLM model + provider for conversation / scheduling paths."""
-    _default_temperature = float(getattr(settings, "VOICE_LLM_DEFAULT_TEMPERATURE", 0.3))
+    _default_temperature = float(
+        getattr(app_settings, "VOICE_LLM_DEFAULT_TEMPERATURE", 0.3)
+    )
     default = ResolvedLlmRuntime(
-        model_name=settings.DEFAULT_LLM_MODEL,
-        provider_slug=settings.DEFAULT_LLM_PROVIDER,
+        model_name=app_settings.DEFAULT_LLM_MODEL,
+        provider_slug=app_settings.DEFAULT_LLM_PROVIDER,
         api_key=None,
         temperature=_default_temperature,
         max_tokens=100,
@@ -166,7 +161,7 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
         )
 
     if agent.model:
-        provider_slug = settings.DEFAULT_LLM_PROVIDER
+        provider_slug = app_settings.DEFAULT_LLM_PROVIDER
         if agent.provider:
             pname = (agent.provider.name or "").lower()
             if "openai" in pname:
@@ -232,6 +227,12 @@ def resolve_tts_runtime(
     pgcrypto encryption.  Pass the caller's existing session when available;
     if omitted and needed a short-lived session is opened automatically.
     """
+    # Read bounds at call time (not import) — defaults live in Settings (config.py).
+    tts_speed_min = app_settings.TTS_SPEED_MIN
+    tts_speed_max = app_settings.TTS_SPEED_MAX
+    tts_volume_min = app_settings.TTS_VOLUME_MIN
+    tts_volume_max = app_settings.TTS_VOLUME_MAX
+
     language = "en"
     settings: dict[str, Any] = {}
 
@@ -252,8 +253,12 @@ def resolve_tts_runtime(
     # rely on safe ranges. Uniform semantics across all providers:
     #   speed: 1.0 = normal, 0.8 = slower, 1.2 = faster
     #   volume: 1.0 = normal, 0.0 = silence, 2.0 = max louder
-    speed = _clamp(_coerce_float(settings.get("speed", 1.0), 1.0), TTS_SPEED_MIN, TTS_SPEED_MAX)
-    volume = _clamp(_coerce_float(settings.get("volume", 1.0), 1.0), TTS_VOLUME_MIN, TTS_VOLUME_MAX)
+    speed = _clamp(
+        _coerce_float(settings.get("speed", 1.0), 1.0), tts_speed_min, tts_speed_max
+    )
+    volume = _clamp(
+        _coerce_float(settings.get("volume", 1.0), 1.0), tts_volume_min, tts_volume_max
+    )
     settings["speed"] = speed
     settings["volume"] = volume
 

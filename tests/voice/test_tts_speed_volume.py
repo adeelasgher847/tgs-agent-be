@@ -128,18 +128,20 @@ class TestResolveTtsRuntimeMerge:
         assert runtime.settings_json["volume"] == 1.0
 
     def test_speed_above_max_is_clamped(self):
-        from app.core.agent_runtime import TTS_SPEED_MAX, resolve_tts_runtime
+        from app.core.agent_runtime import resolve_tts_runtime
+        from app.core.config import settings
 
         agent = _rime_agent({"speed": 50.0})
         runtime = resolve_tts_runtime(agent)
-        assert runtime.settings_json["speed"] == TTS_SPEED_MAX
+        assert runtime.settings_json["speed"] == settings.TTS_SPEED_MAX
 
     def test_volume_above_max_is_clamped(self):
-        from app.core.agent_runtime import TTS_VOLUME_MAX, resolve_tts_runtime
+        from app.core.agent_runtime import resolve_tts_runtime
+        from app.core.config import settings
 
         agent = _rime_agent({"volume": 99.0})
         runtime = resolve_tts_runtime(agent)
-        assert runtime.settings_json["volume"] == TTS_VOLUME_MAX
+        assert runtime.settings_json["volume"] == settings.TTS_VOLUME_MAX
 
     def test_negative_volume_is_clamped_to_zero(self):
         from app.core.agent_runtime import resolve_tts_runtime

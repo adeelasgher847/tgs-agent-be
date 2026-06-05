@@ -7,8 +7,8 @@ Single source of truth for the ``llm_model`` field on agents. Read by the
 
 Add/remove a model by editing :data:`ALLOWED_LLM_MODELS` only — do not
 hardcode model identifiers anywhere else.  The Alembic migration
-``20260602_schema_v2_completion`` builds ``ck_agent_llm_model`` from this tuple
-via ``_llm_check_sql()`` in that revision file.
+``20260602_schema_v2_completion`` snapshots the allow-list at revision time;
+add a new migration when the DB CHECK must widen to match this tuple.
 """
 from __future__ import annotations
 

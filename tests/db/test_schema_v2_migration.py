@@ -468,12 +468,10 @@ class TestV2MigrationFile:
         mod = _load_migration("20260602_schema_v2_completion.py")
         assert mod.revision == "20260602_schema_v2"
 
-    def test_llm_check_sql_uses_allowed_llm_models(self):
-        from app.core.llm_models import ALLOWED_LLM_MODELS
-
+    def test_llm_check_sql_uses_revision_snapshot(self):
         mod = _load_migration("20260602_schema_v2_completion.py")
         sql = mod._llm_check_sql()
-        for model in ALLOWED_LLM_MODELS:
+        for model in mod._ALLOWED_LLM_MODELS_AT_REVISION:
             assert f"'{model}'" in sql
 
     def test_remigrate_fails_without_key_when_jwt_rows_exist(self):

@@ -17,8 +17,8 @@ agent table
     keep whatever value they already have — no UPDATE issued)
   • ck_agent_status_v2 : widened CHECK that accepts both legacy values
     ('active','inactive','draft') and ticket values ('pending','ready','error')
-  • ck_agent_llm_model : nullable-safe CHECK from app.core.llm_models.ALLOWED_LLM_MODELS
-    (via _llm_check_sql() — single source of truth, no duplicate list in this file)
+  • ck_agent_llm_model : nullable-safe CHECK from _ALLOWED_LLM_MODELS_AT_REVISION
+    (snapshot at migration authoring time — update via a new migration when models change)
 
 callflow table
   • ix_callflow_agent_id : BTree index on agent_id
@@ -87,13 +87,30 @@ depends_on: Union[str, Sequence[str], None] = None
 
 _log = logging.getLogger(__name__)
 
+# Snapshot of allow-listed llm_model values when this revision was authored.
+# Self-contained — do not import app.core.llm_models (CI / renames must not break upgrade).
+_ALLOWED_LLM_MODELS_AT_REVISION: tuple[str, ...] = (
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4-turbo",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash-001",
+    "gemini-2.0-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+    "claude-3-5-sonnet",
+    "claude-3-haiku",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+)
+
 
 def _llm_check_sql() -> str:
-    """Build ck_agent_llm_model CHECK from app.core.llm_models (single source of truth)."""
-    from app.core.llm_models import ALLOWED_LLM_MODELS
-
+    """Build ck_agent_llm_model CHECK from the revision-time model snapshot."""
     return "llm_model IS NULL OR llm_model IN (%s)" % ", ".join(
-        f"'{m}'" for m in ALLOWED_LLM_MODELS
+        f"'{m}'" for m in _ALLOWED_LLM_MODELS_AT_REVISION
     )
 
 
@@ -253,6 +270,7 @@ def _remigrate_elevenlabs_keys(conn) -> None:
         return
 
     migrated = failed = 0
+    skipped = len(rows) - len(jwt_rows)
     # Iterate only the pre-filtered jwt_rows — avoids re-checking is_legacy_jwt_ciphertext
     # and makes clear exactly which rows are being mutated.
     for row_id, ciphertext in jwt_rows:
