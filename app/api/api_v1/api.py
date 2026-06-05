@@ -5,7 +5,6 @@ from app.api.api_v1.endpoints import (
     api_keys,
     billing,
     gemini,
-    invite,
     model,
     openai,
     plan,
@@ -14,8 +13,11 @@ from app.api.api_v1.endpoints import (
     tenant,
     user,
     workspace,
+    workspace_invites,
 )
 from app.routers.agents import router as agent_router
+from app.routers.call_flows import router as call_flows_router
+from app.routers.folders import router as folders_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
 from app.routers.call_logs import router as call_logs_router
 from app.routers.call_sessions import router as call_sessions_router
@@ -24,6 +26,7 @@ from app.routers.crm_config import router as crm_config_router
 from app.routers.job_description import router as job_description_router
 from app.routers.knowledge_base import router as knowledge_base_router
 from app.routers.phone_numbers import router as phone_numbers_router
+from app.routers.telephony import router as telephony_router
 from app.routers.transfer_routes import router as transfer_routes_router
 from app.routers.recruitment_dashboard import router as recruitment_dashboard_router
 from app.routers.resumes import router as resume_router
@@ -44,9 +47,14 @@ api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
+# Invite sub-routes must be registered BEFORE workspace.router so that
+# /workspace/invite and /workspace/invitations take priority over /workspace/{workspace_id}.
+api_router.include_router(workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"])
 api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
+api_router.include_router(call_flows_router, prefix="/call-flows", tags=["Call Flows"])
+api_router.include_router(folders_router, prefix="/folders", tags=["Folders"])
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Calls"])
 api_router.include_router(
     voice_gather_router,
@@ -61,6 +69,7 @@ api_router.include_router(
     include_in_schema=False,
 )
 api_router.include_router(phone_numbers_router, prefix="/phone-numbers", tags=["Phone Numbers"])
+api_router.include_router(telephony_router, prefix="/telephony", tags=["Telephony"])
 api_router.include_router(
     transfer_routes_router,
     prefix="/transfer-routes",
@@ -69,7 +78,6 @@ api_router.include_router(
 api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"])
 api_router.include_router(call_logs_router, prefix="/call-logs", tags=["Call Logs"])
 api_router.include_router(general_websocket_router, prefix="/general", tags=["General WebSocket"])
-api_router.include_router(invite.router, prefix="/invites", tags=["invites"])
 api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 api_router.include_router(plan.router, prefix="/plans", tags=["plans"])

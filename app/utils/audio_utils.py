@@ -133,32 +133,42 @@ def mix_audio_with_background(
         return tts_audio
 
 
+_VOLUME_MAX_GAIN = 2.0
+
+
 def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:
     """
-    Apply volume level to MULAW audio bytes.
-    
+    Apply a linear gain to MULAW audio bytes.
+
     Args:
-        audio_bytes: MULAW audio bytes
-        volume: Volume level (0.0-1.0, where 1.0 = 100%)
-    
+        audio_bytes: MULAW audio bytes (G.711 μ-law, 8 kHz).
+        volume: Linear gain. 1.0 = unchanged, 0.0 = silence, >1.0 = louder.
+            Values are clamped to [0.0, _VOLUME_MAX_GAIN] to avoid runaway
+            clipping. Samples are clipped to int16 range to prevent overflow
+            artifacts on phone calls.
+
     Returns:
-        Volume-adjusted MULAW audio bytes
+        Volume-adjusted MULAW audio bytes. On any unexpected error the
+        original audio is returned untouched so live calls never lose voice.
     """
-    if not audio_bytes or len(audio_bytes) == 0:
+    if not audio_bytes:
         return audio_bytes
-    
+
     if volume <= 0.0:
-        # Silence (return mu-law silence)
         return bytes([0xFF]) * len(audio_bytes)
-    
-    if volume >= 1.0:
-        # No change
+
+    if volume == 1.0:
         return audio_bytes
-    
+
+    if volume > _VOLUME_MAX_GAIN:
+        volume = _VOLUME_MAX_GAIN
+
     try:
         linear_samples = [ulaw_to_linear_sample(b) for b in audio_bytes]
-        adjusted_samples = [max(-32768, min(32767, int(s * volume))) for s in linear_samples]
-        return bytes([linear_to_ulaw_sample(s) for s in adjusted_samples])
+        adjusted_samples = [
+            max(-32768, min(32767, int(s * volume))) for s in linear_samples
+        ]
+        return bytes(linear_to_ulaw_sample(s) for s in adjusted_samples)
     except Exception as e:
         logger.warning(f"⚠️ Volume adjustment failed: {e}")
         return audio_bytes

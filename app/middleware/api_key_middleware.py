@@ -31,9 +31,11 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.auth_tokens import extract_bearer_token, resolve_jwt_auth
 from app.core.config import settings
+from app.core.error_responses import build_api_error_payload
 from app.core.logger import logger
 from app.core.request_auth import AUTH_METHOD_API_KEY, AUTH_METHOD_JWT
 from app.core.workspace import Workspace
+from app.middleware.request_id_middleware import get_request_id
 from app.models.api_key import Apikey
 from app.models.tenant import Tenant
 
@@ -46,9 +48,6 @@ _AsyncSessionLocal: Optional[sessionmaker] = None
 
 _SKIP_EXACT = {
     "/",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
     "/api/v1/tenants/create",
 }
 
@@ -63,17 +62,7 @@ _SKIP_PREFIXES = (
     "/api/v1/voice/",
     "/api/v1/stream/",
     "/health",
-    "/docs/",
-    "/redoc/",
 )
-
-_UNAUTHORIZED_BODY = {
-    "error": {
-        "code": "unauthorized",
-        "message": "Invalid or missing API key",
-    }
-}
-
 
 def _get_redis() -> Optional[aioredis.Redis]:
     global _redis
@@ -83,6 +72,26 @@ def _get_redis() -> Optional[aioredis.Redis]:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Auth middleware: Redis unavailable (%s) — cache disabled", exc)
     return _redis
+
+
+async def close_auth_middleware_resources() -> None:
+    """Release Redis and async SQLAlchemy engine created for auth lookups."""
+    global _redis, _async_engine, _AsyncSessionLocal
+
+    if _redis is not None:
+        try:
+            await _redis.aclose()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auth middleware Redis close failed: %s", exc)
+        _redis = None
+
+    if _async_engine is not None:
+        try:
+            await _async_engine.dispose()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auth middleware engine dispose failed: %s", exc)
+        _async_engine = None
+        _AsyncSessionLocal = None
 
 
 def _get_async_session() -> AsyncSession:
@@ -115,7 +124,12 @@ def _sha256(raw: str) -> str:
 def _unauthorized(request_id: str) -> JSONResponse:
     return JSONResponse(
         status_code=401,
-        content=_UNAUTHORIZED_BODY,
+        content=build_api_error_payload(
+            401,
+            "Invalid or missing API key",
+            error_code="unauthorized",
+            request_id=request_id,
+        ),
         headers={"X-Request-ID": request_id},
     )
 
@@ -376,25 +390,19 @@ class ApiKeyMiddleware:
             return
 
         request = Request(scope, receive)
-        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
-        scope["_request_id"] = request_id
+        request_id = get_request_id(request)
+
+        # Browser CORS preflight — no auth headers; must reach CORSMiddleware.
+        if request.method == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
 
         if not request.url.path.startswith("/api/v1/") or _should_skip(request.url.path):
-            await self._call_with_request_id(scope, receive, send, request_id)
+            await self.app(scope, receive, send)
             return
 
         if await _try_api_key_auth(request) or await _try_jwt_auth(request):
-            await self._call_with_request_id(scope, receive, send, request_id)
+            await self.app(scope, receive, send)
             return
 
         await _unauthorized(request_id)(scope, receive, send)
-
-    async def _call_with_request_id(self, scope, receive, send, request_id: str):
-        async def send_with_header(message):
-            if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                headers.append((b"x-request-id", request_id.encode()))
-                message = {**message, "headers": headers}
-            await send(message)
-
-        await self.app(scope, receive, send_with_header)

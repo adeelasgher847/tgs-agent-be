@@ -8,7 +8,7 @@ from app.models.password_reset import PasswordResetToken
 from app.models.call_session import CallSession
 from app.models.call_log import CallLog
 from app.models.transcript_message import TranscriptMessage
-from app.models.phone_number import PhoneNumber
+from app.models.phone_number import PhoneNumber, NumberConfiguration
 from app.models.refresh_token import RefreshToken
 from app.models.invite import Invite
 from app.models.plan import Plan
@@ -37,6 +37,12 @@ from app.models.job_description import JobDescription
 
 # Business knowledge base
 from app.models.business_knowledge import BusinessKnowledge
+
+# Call flows and versioning
+from app.models.call_flow import CallFlow
+from app.models.prompt_version import PromptVersion
+from app.models.folder import Folder
+from app.models.folder_flow import FolderFlow
 
 # Recruiting / resumes
 from app.models.resume import Resume

@@ -509,7 +509,6 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                 # Load model configuration with provider
                 from sqlalchemy.orm import joinedload
                 from app.models.model import Model
-                from app.services.gemini_service import gemini_service
                 from app.core.security import decrypt_api_key
                 
                 try:
@@ -546,18 +545,19 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                         
                         # Route to appropriate service
                         if 'gemini' in provider_name or 'google' in provider_name:
-                            # Use Gemini service
-                            gemini_response = gemini_service.generate_text(
+                            from app.core.agent_runtime import llm_service_for_provider
+                            vertex_svc = llm_service_for_provider("gemini")
+                            gemini_response = vertex_svc.generate_text(
                                 prompt=user_input,
                                 system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
                                 model_name=model_name,
                                 temperature=temperature,
                                 max_tokens=max_tokens,
-                                api_key=api_key
+                                api_key=None,
                             )
                             ai_response_text = gemini_response["content"]
                             response_time = gemini_response["response_time"]
-                            logger.info(f"✅ Live voice: Used Gemini model {model_name} (provider: {provider_name})")
+                            logger.info(f"✅ Live voice: Used Vertex Gemini model {model_name} (provider: {provider_name})")
                         
                         elif 'openai' in provider_name:
                             # Use OpenAI service

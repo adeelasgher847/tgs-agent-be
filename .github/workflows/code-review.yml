@@ -41,10 +41,21 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           python agents/github_review_agent.py \
             --base "origin/${{ github.event.pull_request.base.ref }}" \
-            > review_output.txt
+            > review_output.txt 2>review_error.txt || {
+            EXIT_CODE=$?
+            ERROR_BODY=$(cat review_error.txt 2>/dev/null | tail -5)
+            if echo "$ERROR_BODY" | grep -q "credit balance is too low"; then
+              echo "⚠️ **AI review skipped** — Anthropic API credit balance is too low. Please top up credits at https://console.anthropic.com/settings/billing and re-run this workflow." > review_output.txt
+            elif echo "$ERROR_BODY" | grep -q "ANTHROPIC_API_KEY"; then
+              echo "⚠️ **AI review skipped** — \`ANTHROPIC_API_KEY\` is not set or invalid in the \`ai-review\` GitHub environment." > review_output.txt
+            else
+              echo "⚠️ **AI review agent crashed** (exit code $EXIT_CODE). Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." > review_output.txt
+            fi
+            exit 0
+          }
 
       - name: Post review as PR comment
         if: always()

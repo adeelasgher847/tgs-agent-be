@@ -95,8 +95,9 @@ This is a boilerplate for a multi-tenant SaaS application backend built with Pyt
 
 -   **Health Check**: `GET /health`
     -   Returns a status message to indicate the service is running.
--   **API v1 Docs**: `http://localhost:8000/api/v1/docs`
-    -   Swagger UI for the v1 API.
+-   **API Docs**: `http://localhost:8000/api/docs` (HTTP Basic — fixed credentials from env)
+    -   Set `API_DOCS_USERNAME` and `API_DOCS_PASSWORD` in `.env` (browser sign-in dialog).
+    -   Set `API_DOCS_ENABLED=false` to disable. Swagger UI spec: `/api/docs/openapi.yaml`.
 
 ## Code Quality
 

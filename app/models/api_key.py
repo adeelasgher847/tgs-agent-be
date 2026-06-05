@@ -17,6 +17,7 @@ class Apikey(Base):
     key_hash = Column(String(64), nullable=False, unique=True)  # SHA-256 hex digest
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
 
     tenant = relationship("Tenant", back_populates="api_keys")
