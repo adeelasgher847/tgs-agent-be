@@ -252,15 +252,14 @@ def _remigrate_elevenlabs_keys(conn) -> None:
         _log.info("schema_v2 key re-encryption: no legacy JWT rows — skipped")
         return
 
-    migrated = failed = skipped = 0
-    for row_id, ciphertext in rows:
-        if not ciphertext or not is_legacy_jwt_ciphertext(ciphertext):
-            skipped += 1
-            continue
+    migrated = failed = 0
+    # Iterate only the pre-filtered jwt_rows — avoids re-checking is_legacy_jwt_ciphertext
+    # and makes clear exactly which rows are being mutated.
+    for row_id, ciphertext in jwt_rows:
         try:
             plaintext = _jwt_decrypt(ciphertext)
             if not plaintext:
-                skipped += 1
+                _log.warning("schema_v2: agent %s JWT decrypt returned empty — skipping", row_id)
                 continue
             conn.execute(
                 sa.text(
@@ -273,8 +272,13 @@ def _remigrate_elevenlabs_keys(conn) -> None:
             )
             migrated += 1
         except Exception as exc:
+            # Log the specific agent ID so ops can identify rows needing manual re-entry.
             _log.warning(
-                "schema_v2: could not re-encrypt agent %s elevenlabs key: %s", row_id, exc
+                "schema_v2: agent %s key re-encryption failed (%s: %s) — "
+                "row left in legacy JWT format; re-enter API key manually.",
+                row_id,
+                type(exc).__name__,
+                exc,
             )
             failed += 1
 
