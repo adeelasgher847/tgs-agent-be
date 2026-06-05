@@ -1,6 +1,5 @@
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-import uuid
 
 
 # Phone number management schemas
@@ -84,6 +83,7 @@ class CallInitiateRequest(BaseModel):
     status_field_id: Optional[str] = None  # Generic: status column/field ID from n8n workflow
     call_session_id_field_id: Optional[str] = None  # Generic: call_session_id field ID from n8n workflow
     crm_type: Optional[str] = None  # "monday" | "clickup" | "jira" | "trello" from n8n workflow
+    callFlowId: Optional[str] = None  # Optional UUID — binds this call session to a CallFlow
 
 
 class CallInitiateResponse(BaseModel):

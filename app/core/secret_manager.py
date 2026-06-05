@@ -97,6 +97,54 @@ def is_staging() -> bool:
 
 
 @lru_cache(maxsize=1)
+def _load_livekit_production_credentials() -> tuple[str, str, str]:
+    """Fetch LiveKit credentials from Secret Manager (cached after first call)."""
+    url = _fetch_from_secret_manager("LIVEKIT_URL") or settings.LIVEKIT_URL
+    api_key = _fetch_from_secret_manager("LIVEKIT_API_KEY") or settings.LIVEKIT_API_KEY
+    api_secret = _fetch_from_secret_manager("LIVEKIT_API_SECRET") or settings.LIVEKIT_API_SECRET
+    if not url or not api_key or not api_secret:
+        raise RuntimeError(
+            "LiveKit credentials unavailable. Set GCP_PROJECT_ID and Secret Manager secrets "
+            "(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET) or the equivalent env vars."
+        )
+    return url, api_key, api_secret
+
+
+def get_livekit_credentials() -> tuple[str, str, str]:
+    """
+    Return (url, api_key, api_secret) appropriate for the current environment.
+
+    - production/staging → GCP Secret Manager with env-var fallback
+      (secrets injected as env vars in both LiveKit GKE Deployment and API server Deployment)
+    - development        → env-var / .env values
+
+    Raises RuntimeError in staging/production when credentials are absent.
+    Raises ValueError in development when credentials are absent.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        url, api_key, api_secret = _load_livekit_production_credentials()
+        if not url or not api_key or not api_secret:
+            raise RuntimeError(
+                f"LiveKit credentials unavailable in {env}. "
+                "Set LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET via Secret Manager or env vars."
+            )
+        return url, api_key, api_secret
+
+    # development — plain env vars / .env
+    url = settings.LIVEKIT_URL
+    api_key = settings.LIVEKIT_API_KEY
+    api_secret = settings.LIVEKIT_API_SECRET
+    if not url or not api_key or not api_secret:
+        raise ValueError(
+            "LiveKit credentials not configured. Add LIVEKIT_URL, LIVEKIT_API_KEY, "
+            "and LIVEKIT_API_SECRET to your .env file for local development."
+        )
+    return url, api_key, api_secret
+
+
+@lru_cache(maxsize=1)
 def get_rime_api_key() -> str:
     """
     Return the Rime TTS API key appropriate for the current environment.

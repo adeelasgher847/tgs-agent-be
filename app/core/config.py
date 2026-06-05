@@ -320,6 +320,15 @@ class Settings(BaseSettings):
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
     MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
 
+    # LiveKit — self-hosted real-time audio transport (GKE internal, port 7880)
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    LIVEKIT_TOKEN_TTL: int = 3600           # seconds; 1 hour
+    LIVEKIT_ROOM_EMPTY_TIMEOUT: int = 30    # seconds before auto-close when empty
+    LIVEKIT_MAX_PARTICIPANTS: int = 2       # enforced at SDK CreateRoomRequest level
+    LIVEKIT_ENABLED: bool = True
+
     # Resume ↔ job matching (recruiting): LLM + rules
     # hybrid = blend (recommended); rules = heuristics only; ai = LLM scores (rules if LLM fails)
     RECRUIT_MATCH_MODE: str = "hybrid"

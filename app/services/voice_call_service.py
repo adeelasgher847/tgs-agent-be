@@ -19,7 +19,6 @@ from app.schemas.base import SuccessResponse
 from app.services.agent_service import agent_service
 from app.services.call_session_service import call_session_service
 from app.services.credit_service import credit_service
-from app.services.phone_number_service import phone_number_service
 from app.services.twilio_service import twilio_service
 from app.services.voice_interview_context_service import (
     build_voice_interview_enrichment,
@@ -213,6 +212,18 @@ async def initiate_call(
             db.commit()
             db.refresh(call_session)
 
+        if call_request.callFlowId:
+            try:
+                flow_uuid = uuid.UUID(call_request.callFlowId)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid callFlowId format: must be a valid UUID",
+                )
+            call_session.call_flow_id = flow_uuid
+            db.commit()
+            db.refresh(call_session)
+
         # Optional: enrich from jd_id + resume_id (or jd_context only) without breaking n8n callers
         _ctx = call_request.jd_context or {}
         _jd = parse_optional_uuid(
@@ -270,6 +281,51 @@ async def initiate_call(
 
         logger.info("Making call with webhook_url: %s", webhook_url)
         logger.info("Making call with status_callback_url: %s", status_callback_url)
+
+        # Create LiveKit room BEFORE Twilio call so the agent is already
+        # listening on the media room when the caller connects.
+        if settings.LIVEKIT_ENABLED:
+            from app.services.livekit_service import livekit_service
+
+            try:
+                room = await livekit_service.create_room(
+                    call_id=call_session.id,
+                    agent_id=agent.id,
+                    flow_id=call_session.call_flow_id,
+                )
+                room_name = f"room_{call_session.id}"
+                agent_token = livekit_service.generate_agent_token(room_name)
+                lk_meta: dict = {
+                    "room_name": room_name,
+                    "room_sid": room.sid,
+                    "agent_token": agent_token,  # secret — never log
+                    "flow_id": str(call_session.call_flow_id) if call_session.call_flow_id else None,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+                call_session.call_metadata = {
+                    **(call_session.call_metadata or {}),
+                    "livekit": lk_meta,
+                }
+                db.commit()
+                logger.info(
+                    "LiveKit room provisioned for call session %s: %s",
+                    call_session.id,
+                    room_name,
+                )
+            except Exception as exc:
+                logger.error(
+                    "LiveKit room creation failed for call session %s: %s",
+                    call_session.id,
+                    exc,
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "LiveKit room creation failed. "
+                        "Cannot initiate call without media transport."
+                    ),
+                )
 
         # Optional WebSocket broadcast
         try:
