@@ -1410,6 +1410,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
             self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
             self._is_tts_playing = False        # Audio not yet streaming for this turn
+            self._tts_play_start_ts = 0.0     # Clear dead-zone anchor from previous utterance
 
             self._voice_metrics.start_generation()
             self._metric_gen_start_ts = time.perf_counter()

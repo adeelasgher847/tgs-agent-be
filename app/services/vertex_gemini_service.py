@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import threading
 import time
 from typing import Any, AsyncIterator
 
@@ -17,6 +18,7 @@ from app.core.logger import logger
 from app.voice.llm_prompt_builder import build_vertex_contents
 
 # Lazily imported so tests can patch before import resolution.
+_vertex_init_lock = threading.Lock()
 _vertexai_initialized = False
 
 
@@ -24,16 +26,19 @@ def _ensure_vertex_init() -> None:
     global _vertexai_initialized
     if _vertexai_initialized:
         return
-    import vertexai
+    with _vertex_init_lock:
+        if _vertexai_initialized:
+            return
+        import vertexai
 
-    project = settings.GOOGLE_CLOUD_PROJECT_ID or settings.GCP_PROJECT_ID
-    location = settings.VERTEX_AI_LOCATION
-    if not project:
-        raise RuntimeError(
-            "Vertex AI requires GOOGLE_CLOUD_PROJECT_ID or GCP_PROJECT_ID in config."
-        )
-    vertexai.init(project=project, location=location)
-    _vertexai_initialized = True
+        project = settings.GOOGLE_CLOUD_PROJECT_ID or settings.GCP_PROJECT_ID
+        location = settings.VERTEX_AI_LOCATION
+        if not project:
+            raise RuntimeError(
+                "Vertex AI requires GOOGLE_CLOUD_PROJECT_ID or GCP_PROJECT_ID in config."
+            )
+        vertexai.init(project=project, location=location)
+        _vertexai_initialized = True
 
 
 class VertexLlmErrorType(str, enum.Enum):
@@ -121,10 +126,8 @@ class VertexGeminiService:
         if system_prompt:
             model_kwargs["system_instruction"] = system_prompt
 
-        full_model_name = f"publishers/google/models/{model_name}"
-
         model = GenerativeModel(
-            model_name=full_model_name,
+            model_name=model_name,
             **model_kwargs,
         )
 
@@ -143,11 +146,12 @@ class VertexGeminiService:
         # entire HTTP round-trip inside asyncio.to_thread and only returns after
         # ALL tokens are buffered — effectively disabling streaming.
         try:
-            async for response in await model.generate_content_async(
+            response_stream = model.generate_content_async(
                 contents,
                 generation_config=generation_config,
                 stream=True,
-            ):
+            )
+            async for response in response_stream:
                 # Honour barge-in / interruption cancel
                 if cancel_event is not None and cancel_event.is_set():
                     logger.debug("[VertexGemini] cancel_event set — stopping stream")
@@ -214,7 +218,7 @@ class VertexGeminiService:
             model_kwargs["system_instruction"] = system_prompt
 
         model = GenerativeModel(
-            model_name=f"publishers/google/models/{model_name}",
+            model_name=model_name,
             **model_kwargs,
         )
         max_turns = getattr(settings, "VOICE_LLM_HISTORY_MAX_TURNS", 20)

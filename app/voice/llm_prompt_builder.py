@@ -5,6 +5,23 @@ No I/O, no DB, no side effects. Imported by bidirectional_stream and Vertex serv
 """
 from __future__ import annotations
 
+_Content = None
+_Part = None
+
+
+def _load_vertex_models():
+    global _Content, _Part
+    if _Content is None:
+        try:
+            from vertexai.generative_models import Content, Part
+        except ImportError as exc:
+            raise ImportError(
+                "google-cloud-aiplatform is required for build_vertex_contents. "
+                "Add it to requirements.txt."
+            ) from exc
+        _Content, _Part = Content, Part
+    return _Content, _Part
+
 
 def prune_history_to_turns(
     history: list[tuple[str, str]],
@@ -67,13 +84,7 @@ def build_vertex_contents(
 
     Returns a list of vertexai.generative_models.Content objects.
     """
-    try:
-        from vertexai.generative_models import Content, Part
-    except ImportError as exc:
-        raise ImportError(
-            "google-cloud-aiplatform is required for build_vertex_contents. "
-            "Add it to requirements.txt."
-        ) from exc
+    Content, Part = _load_vertex_models()
 
     pruned = prune_history_to_turns(list(conversation_history or []), max_turns)
     contents = []

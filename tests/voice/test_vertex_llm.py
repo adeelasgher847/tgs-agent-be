@@ -203,7 +203,7 @@ def test_vertex_stream_text_yields_chunks():
     import sys
 
     mock_model = MagicMock()
-    mock_model.generate_content_async = AsyncMock(
+    mock_model.generate_content_async = MagicMock(
         return_value=_async_fake_response_iter(chunks)
     )
 
@@ -236,6 +236,78 @@ def test_vertex_stream_text_yields_chunks():
     assert result == chunks
 
 
+def test_vertex_generative_model_uses_short_model_name():
+    """SDK expects short names (e.g. gemini-2.5-flash), not publishers/google/models/ prefix."""
+    import sys
+
+    mock_model = MagicMock()
+    mock_model.generate_content_async = MagicMock(
+        return_value=_async_fake_response_iter(["ok"])
+    )
+    mock_generative_model = MagicMock(return_value=mock_model)
+
+    sys.modules["vertexai"] = SimpleNamespace(init=lambda **k: None)
+    sys.modules["vertexai.generative_models"] = SimpleNamespace(
+        GenerativeModel=mock_generative_model,
+        GenerationConfig=MagicMock(),
+        Content=_FakeContent,
+        Part=_FakePart,
+    )
+
+    async def _run():
+        with (
+            patch("app.services.vertex_gemini_service._ensure_vertex_init"),
+            patch("app.services.vertex_gemini_service.build_vertex_contents", return_value=[]),
+        ):
+            svc = VertexGeminiService()
+            async for _ in svc.stream_text(prompt="hi", model_name="gemini-2.5-flash"):
+                pass
+
+    asyncio.run(_run())
+    mock_generative_model.assert_called_once()
+    assert mock_generative_model.call_args.kwargs["model_name"] == "gemini-2.5-flash"
+    assert "publishers/" not in mock_generative_model.call_args.kwargs["model_name"]
+
+
+def test_vertex_stream_text_async_generator_not_awaited():
+    """Regression: stream=True returns an async generator synchronously, not a coroutine."""
+    chunks = ["ok"]
+
+    def generate_content_async(*_args, **_kwargs):
+        gen = _async_fake_response_iter(chunks)
+        assert not asyncio.iscoroutine(gen), "SDK must return async generator, not coroutine"
+        return gen
+
+    import sys
+
+    mock_model = MagicMock()
+    mock_model.generate_content_async = generate_content_async
+
+    sys.modules["vertexai"] = SimpleNamespace(init=lambda **k: None)
+    sys.modules["vertexai.generative_models"] = SimpleNamespace(
+        GenerativeModel=MagicMock(return_value=mock_model),
+        GenerationConfig=MagicMock(),
+        Content=_FakeContent,
+        Part=_FakePart,
+    )
+
+    async def _run():
+        with (
+            patch("app.services.vertex_gemini_service._ensure_vertex_init"),
+            patch("app.services.vertex_gemini_service.build_vertex_contents", return_value=[]),
+        ):
+            svc = VertexGeminiService()
+            result = []
+            async for chunk in svc.stream_text(prompt="hi", model_name="gemini-2.5-flash"):
+                result.append(chunk)
+        return result
+
+    # Old `await model.generate_content_async(...)` would raise:
+    # TypeError: object async_generator can't be used in 'await' expression
+    result = asyncio.run(_run())
+    assert result == chunks
+
+
 def test_vertex_stream_cancelled_by_event():
     """cancel_event stops the stream mid-way via generate_content_async."""
     chunks = ["tok1", "tok2", "tok3", "tok4"]
@@ -259,7 +331,7 @@ def test_vertex_stream_cancelled_by_event():
     sys.modules.setdefault("vertexai", SimpleNamespace(init=lambda **k: None))
 
     mock_model = MagicMock()
-    mock_model.generate_content_async = AsyncMock(return_value=_cancelling_iter())
+    mock_model.generate_content_async = MagicMock(return_value=_cancelling_iter())
 
     sys.modules["vertexai.generative_models"] = SimpleNamespace(
         GenerativeModel=MagicMock(return_value=mock_model),
@@ -338,7 +410,7 @@ def test_vertex_stream_quota_error_raises_vertex_llm_error():
         sys.modules.setdefault("vertexai", SimpleNamespace(init=lambda **k: None))
 
         mock_model = MagicMock()
-        mock_model.generate_content_async = AsyncMock(
+        mock_model.generate_content_async = MagicMock(
             side_effect=RuntimeError("quota exceeded in stream")
         )
 
