@@ -41,6 +41,24 @@ class Agent(Base):
     # Smart callback flag — agent proactively calls back when a slot opens.
     smart_callback = Column(Boolean, default=False, nullable=False, server_default="false")
 
+    # ── STT model triad (mirrors TTS triad: provider_slug / external_id / language) ──
+    stt_provider_slug = Column(String(40), nullable=True)
+    stt_model_external_id = Column(String(255), nullable=True)
+    stt_language_code = Column(String(20), nullable=True)
+    stt_provider_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sttprovider.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    stt_model_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("sttmodel.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    stt_settings_json = Column(JSON, nullable=True)
+
     # Agent-specific model configuration (overrides model defaults)
     agent_temperature = Column(Integer, nullable=True)  # Agent-specific temperature (0-100)
     agent_max_tokens = Column(Integer, nullable=True)   # Agent-specific max tokens
@@ -74,6 +92,8 @@ class Agent(Base):
     provider = relationship("Provider")  # Provider relationship for filtering models
     tts_provider = relationship("TTSProvider", back_populates="agents")
     tts_voice = relationship("TTSVoice", back_populates="agents")
+    stt_provider = relationship("STTProvider", back_populates="agents", foreign_keys=[stt_provider_id])
+    stt_model = relationship("STTModel", back_populates="agents", foreign_keys=[stt_model_id])
     transfer_route = relationship("TransferRoute", back_populates="agents")
 
     __table_args__ = (

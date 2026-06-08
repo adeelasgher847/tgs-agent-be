@@ -31,10 +31,10 @@ def test_stt_pipeline_exits_reader_loop_on_done(monkeypatch):
 
     fake_session = FakeSession()
 
-    from app.voice import stt_pipeline as stt_pipeline_module
+    from app.services import deepgram_stt_service as dg_module
 
     monkeypatch.setattr(
-        stt_pipeline_module.deepgram_stt_service,
+        dg_module.deepgram_stt_service,
         "create_streaming_session",
         lambda **_: fake_session,
     )
@@ -73,6 +73,13 @@ def test_bidirectional_disconnect_triggers_finish_session(monkeypatch):
     class FakeHandler:
         def __init__(self, **kwargs):
             self._stt_pipeline = FakeSttPipeline()
+            self._stop_event = asyncio.Event()
+
+        async def _full_shutdown(self):
+            if self._stop_event.is_set():
+                return
+            self._stop_event.set()
+            self._stt_pipeline.finish_session()
 
     class FakeWebSocket:
         async def accept(self):

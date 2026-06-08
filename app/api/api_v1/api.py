@@ -41,6 +41,7 @@ from app.routers.general_websocket import router as general_websocket_router
 from app.routers.calendar import router as calendar_router
 from app.routers.inbound_crm import router as inbound_crm_router
 from app.routers.internal_tts import router as internal_tts_router
+from app.routers.internal_stt import router as internal_stt_router
 from app.routers.business_knowledge import router as business_knowledge_router
 
 api_router = APIRouter()
@@ -88,6 +89,7 @@ api_router.include_router(openai.router, prefix="/openai", tags=["openai"], incl
 api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
 api_router.include_router(tts_router, prefix="/tts", tags=["TTS"])
 api_router.include_router(internal_tts_router, prefix="/internal/tts", tags=["Internal TTS"])
+api_router.include_router(internal_stt_router, prefix="/internal/stt", tags=["Internal STT"])
 api_router.include_router(
     bidirectional_stream_router,
     prefix="/stream",

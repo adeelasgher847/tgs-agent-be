@@ -36,6 +36,7 @@ google-auth
 google-auth-oauthlib
 deepgram-sdk
 google-cloud-texttospeech
+google-cloud-speech>=2.27.0
 sendgrid
 geopy
 timezonefinder

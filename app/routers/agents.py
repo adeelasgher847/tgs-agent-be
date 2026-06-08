@@ -22,6 +22,7 @@ from app.models.user import User
 from app.schemas.agent import (
     AgentCreate,
     AgentListResponse,
+    AgentOut,
     AgentUpdate,
     LanguageEnum,
     VoiceTypeEnum,
@@ -83,7 +84,12 @@ def _serialize_out(agent) -> dict[str, Any]:
     return agent_to_out(agent).model_dump(by_alias=True, mode="json")
 
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AgentOut,
+    response_model_by_alias=True,
+)
 def create_agent(
     agent_in: AgentCreate,
     request: Request,
@@ -108,10 +114,14 @@ def create_agent(
                 extras={"allowedValues": agent_service.list_active_llm_model_names(db)},
             )
         raise
-    return JSONResponse(status_code=status.HTTP_201_CREATED, content=_serialize_out(agent))
+    return agent_to_out(agent)
 
 
-@router.get("/{agent_id}")
+@router.get(
+    "/{agent_id}",
+    response_model=AgentOut,
+    response_model_by_alias=True,
+)
 def get_agent(
     agent_id: uuid.UUID,
     principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
@@ -119,7 +129,7 @@ def get_agent(
 ):
     """Get agent by id (404 if missing or other workspace)."""
     agent = agent_service.get_agent_by_id(db, agent_id, _workspace_id(principal))
-    return _serialize_out(agent)
+    return agent_to_out(agent)
 
 
 @router.get("/", response_model=AgentListResponse, response_model_by_alias=True)
@@ -140,7 +150,11 @@ def list_agents(
     )
 
 
-@router.put("/{agent_id}")
+@router.put(
+    "/{agent_id}",
+    response_model=AgentOut,
+    response_model_by_alias=True,
+)
 def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
@@ -174,7 +188,7 @@ def update_agent(
                 extras={"fields": [{"path": "elevenLabsApiKey", "message": str(exc.detail)}]},
             )
         raise
-    return _serialize_out(agent)
+    return agent_to_out(agent)
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)

@@ -122,7 +122,7 @@ from app.services.transcript_service import transcript_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
 from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
-from app.core.agent_runtime import resolve_llm_runtime, llm_service_for_provider
+from app.core.agent_runtime import resolve_llm_runtime, resolve_stt_runtime, llm_service_for_provider
 from app.services.rag_service import rag_service
 from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
@@ -513,7 +513,57 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         # It writes _tts_pipeline and _tts_worker_task back onto this handler
         # so all existing methods that reference self._tts_pipeline keep working.
         self._voice_orchestrator = VoiceOrchestrator(self)
-    
+        self._wire_stt_runtime()
+
+    def _flow_stt_language_code(self) -> Optional[str]:
+        """Read optional STT language override from call flow settings JSON."""
+        if not self.call_session or not self.call_session.call_flow_id:
+            return None
+        try:
+            from app.models.call_flow import CallFlow
+
+            flow = (
+                self.db.query(CallFlow)
+                .filter(
+                    CallFlow.id == self.call_session.call_flow_id,
+                    CallFlow.is_deleted == False,  # noqa: E712
+                )
+                .first()
+            )
+            if not flow or not isinstance(flow.settings, dict):
+                return None
+            raw = flow.settings.get("sttLanguageCode") or flow.settings.get(
+                "stt_language_code"
+            )
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        except Exception as exc:
+            logger.debug("Could not load call flow STT language override: %s", exc)
+        return None
+
+    def _wire_stt_runtime(self) -> None:
+        """Resolve agent STT config and attach to VoiceOrchestrator."""
+        try:
+            flow_lang = self._flow_stt_language_code()
+            resolved = resolve_stt_runtime(
+                self.agent,
+                flow_language_code=flow_lang,
+                db=self.db,
+            )
+            self._voice_orchestrator.set_resolved_stt(resolved)
+            logger.info(
+                "[STT runtime] provider=%s model_id=%s language=%s sample_rate=%s encoding=%s",
+                resolved.provider_slug,
+                resolved.model_id,
+                resolved.language_code,
+                resolved.sample_rate_hz,
+                resolved.encoding,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[STT runtime] resolve failed — Deepgram fallback: %s", exc, exc_info=True
+            )
+
     def _load_session_data(self):
         """Load call session and agent data"""
         try:
@@ -1056,10 +1106,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                     await self._send_in_progress_status(transcript, confidence)
                     self._in_progress_sent = True
 
-                # Add to transcript (always)
+                # Persist redacted client speech for post-call analysis; LLM uses original below.
+                from app.core.pii_redactor import redact_pii
+
+                transcript_for_db = redact_pii(transcript)
                 await self._add_to_transcript(
                     "client",
-                    transcript,
+                    transcript_for_db if isinstance(transcript_for_db, str) else str(transcript_for_db),
                     "speech",
                     confidence,
                     defer_post_write=True,
@@ -2669,6 +2722,8 @@ async def _receive_or_stop(
             recv_task.cancel()
             return None
         return recv_task.result()
+    except WebSocketDisconnect:
+        raise
     except Exception:
         return None
 

@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
+    # Multi-provider STT silence threshold: ms of no audio before treating utterance as done.
+    # Applies to Google STT path; Deepgram uses its own endpointing above.
+    SILENCE_THRESHOLD_MS: int = 1500
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
