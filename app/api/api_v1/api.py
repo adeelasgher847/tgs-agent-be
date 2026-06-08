@@ -19,6 +19,7 @@ from app.routers.agents import router as agent_router
 from app.routers.call_flows import router as call_flows_router
 from app.routers.folders import router as folders_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
+from app.routers.livekit_bridge import router as livekit_bridge_router
 from app.routers.call_logs import router as call_logs_router
 from app.routers.call_sessions import router as call_sessions_router
 from app.routers.clickup_oauth import router as clickup_oauth_router
@@ -94,6 +95,12 @@ api_router.include_router(
     bidirectional_stream_router,
     prefix="/stream",
     tags=["Bidirectional Streaming"],
+    include_in_schema=False,
+)
+api_router.include_router(
+    livekit_bridge_router,
+    prefix="/livekit",
+    tags=["LiveKit Bridge"],
     include_in_schema=False,
 )
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])

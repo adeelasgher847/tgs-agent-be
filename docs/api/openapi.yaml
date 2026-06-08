@@ -1418,14 +1418,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/voice/call/initiate/send:
+    post:
+      tags:
+      - Voice Calls
+      summary: Initiate Call
+      description: 'Initiate an outbound voice call.
+
+        /call/initiate/send is an alias for backward compatibility and direct dispatch.'
+      operationId: initiate_call_api_v1_voice_call_initiate_send_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallInitiateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CallInitiateResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v1/voice/call/initiate:
     post:
       tags:
       - Voice Calls
       summary: Initiate Call
-      description: 'Endpoint to initiate a voice call using Twilio.
+      description: 'Initiate an outbound voice call.
 
-        Thin wrapper around `voice_call_service.initiate_call`.'
+        /call/initiate/send is an alias for backward compatibility and direct dispatch.'
       operationId: initiate_call_api_v1_voice_call_initiate_post
       requestBody:
         content:
@@ -3858,8 +3888,8 @@ paths:
         `Appointment ID: <uuid>` in the card description. Pass that value as `appointment_id`
         in the initiate
 
-        JSON body (with `agentId`, `userPhoneNumber`, `tenant_id`, `user_id`, and
-        CRM fields) so the outbound
+        JSON body (with `agentId`, `toNumber`, `tenant_id`, `user_id`, and CRM fields)
+        so the outbound
 
         call runs the follow-up confirmation flow.'
       operationId: create_single_scheduled_call_api_v1_schedule_single_call_post
@@ -7492,9 +7522,12 @@ components:
         agentId:
           type: string
           title: Agentid
-        userPhoneNumber:
+        toNumber:
           type: string
-          title: Userphonenumber
+          title: Tonumber
+        fromNumber:
+          type: string
+          nullable: true
         phone_number_id:
           type: string
           nullable: true
@@ -7550,7 +7583,7 @@ components:
       type: object
       required:
       - agentId
-      - userPhoneNumber
+      - toNumber
       title: CallInitiateRequest
     CallInitiateResponse:
       properties:

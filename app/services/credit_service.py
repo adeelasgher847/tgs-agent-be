@@ -311,7 +311,7 @@ class CreditService:
                     break
                 
                 # Only deduct for active call statuses
-                if call_session.status not in ["active", "in-progress", "answered"]:
+                if call_session.status not in ["active", "in-progress", "connected", "answered"]:
                     # Call ended - do final deduction for remaining time
                     await self._finalize_call_credits(
                         db, call_session_id, tenant_id, model_name, credits_per_minute, call_session

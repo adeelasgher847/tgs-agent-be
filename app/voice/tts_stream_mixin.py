@@ -867,19 +867,21 @@ class TtsStreamMixin:
                 return
             
             try:
-                if self.call_session.status != "in-progress":
-                    self.call_session.status = "in-progress"
-                    
+                # Outbound lifecycle uses "connected"; inbound/web keep "in-progress".
+                is_outbound = (self.call_session.call_type or "").lower() == "outbound"
+                live_status = "connected" if is_outbound else "in-progress"
+                if self.call_session.status != live_status:
+                    self.call_session.status = live_status
+
                     # Set start time when confident speech is detected
                     if not self.call_session.start_time:
                         self.call_session.start_time = datetime.now(timezone.utc)
-                    
+
                     self.db.commit()
-                
-                # Broadcast "in-progress" event (confident word detected)
+
                 await broadcast_call_status_update(
                     call_session_id=str(self.call_session.id),
-                    status="in-progress",
+                    status=live_status,
                     metadata={
                         "call_sid": self.call_sid,
                         "stream_sid": self.stream_sid,

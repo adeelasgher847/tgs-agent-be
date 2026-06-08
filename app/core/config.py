@@ -332,6 +332,11 @@ class Settings(BaseSettings):
     LIVEKIT_MAX_PARTICIPANTS: int = 2       # enforced at SDK CreateRoomRequest level
     LIVEKIT_ENABLED: bool = True
 
+    # Outbound call concurrency — max simultaneous outbound calls per workspace.
+    # Counts outbound sessions with status IN (initiated, ringing, connected, in-progress).
+    # Increase at the tenant level by changing this value (no per-tenant override yet).
+    OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE: int = 10
+
     # Resume ↔ job matching (recruiting): LLM + rules
     # hybrid = blend (recommended); rules = heuristics only; ai = LLM scores (rules if LLM fails)
     RECRUIT_MATCH_MODE: str = "hybrid"
