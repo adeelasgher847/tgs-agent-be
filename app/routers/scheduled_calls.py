@@ -449,7 +449,7 @@ async def create_single_scheduled_call(
 
     **n8n → `/voice/call/initiate`:** Trello cards created for **appointment follow-up** reminders include
     `Appointment ID: <uuid>` in the card description. Pass that value as `appointment_id` in the initiate
-    JSON body (with `agentId`, `userPhoneNumber`, `tenant_id`, `user_id`, and CRM fields) so the outbound
+    JSON body (with `agentId`, `toNumber`, `tenant_id`, `user_id`, and CRM fields) so the outbound
     call runs the follow-up confirmation flow.
     """
     try:

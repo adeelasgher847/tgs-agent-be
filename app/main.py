@@ -48,6 +48,24 @@ async def lifespan(app: FastAPI):
         logger.error("Rime TTS misconfigured: %s", exc)
         raise
 
+    if settings.LIVEKIT_ENABLED:
+        from app.core.secret_manager import get_livekit_credentials
+
+        try:
+            get_livekit_credentials()
+            logger.info("LiveKit credentials configured")
+        except (ValueError, RuntimeError) as exc:
+            env = settings.ENVIRONMENT.lower()
+            if env in ("staging", "production"):
+                logger.error("LiveKit credentials missing in %s: %s", env, exc)
+                raise
+            else:
+                logger.warning(
+                    "LiveKit credentials not configured: %s — set LIVEKIT_ENABLED=false "
+                    "or add LIVEKIT_URL/LIVEKIT_API_KEY/LIVEKIT_API_SECRET to .env",
+                    exc,
+                )
+
     if settings.API_DOCS_ENABLED:
         if settings.API_DOCS_USERNAME and settings.API_DOCS_PASSWORD:
             logger.info(

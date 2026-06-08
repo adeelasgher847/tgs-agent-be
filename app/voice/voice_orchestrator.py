@@ -30,10 +30,10 @@ from app.core.logger import logger
 from app.utils.audio_utils import ulaw_to_linear_sample
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
+from app.voice.stt_events import SttEventBus, SttFinalEvent, SttInterimEvent, SttErrorEvent
 
 if TYPE_CHECKING:
-    # Avoid circular import — handler is referenced only for type hints and callbacks.
-    pass
+    from app.core.agent_runtime import ResolvedSttRuntime
 
 
 def _resolve_initial_endpointing_ms() -> int:
@@ -87,10 +87,13 @@ class VoiceOrchestrator:
         # ── STT state ────────────────────────────────────────────────────────
         self._stt_pipeline: Optional[SttPipeline] = None
         self._stt_active: bool = True
-        # Deferred endpointing: stored here when the pipeline hasn't been created
-        # yet but the email-collection hook fires early (race at call start).
         self._stt_deferred_endpointing_ms: Optional[int] = None
         self._email_stt_endpointing_upgraded: bool = False
+        # Resolved STT config (set by caller before first audio arrives)
+        self._resolved_stt: Optional["ResolvedSttRuntime"] = None
+        self._stt_event_bus: SttEventBus = SttEventBus()
+        # LiveKit audio subscriber task (Google STT path only)
+        self._livekit_audio_task: Optional[asyncio.Task] = None
 
         # ── User-pickup detection ─────────────────────────────────────────────
         # We use a short RMS window to detect real pickup before forwarding audio.
@@ -160,10 +163,43 @@ class VoiceOrchestrator:
         # stream_sid lives on handler.stream_sid — nothing to do here for now.
         pass
 
+    def set_resolved_stt(self, resolved: "ResolvedSttRuntime") -> None:
+        """Configure STT runtime before first audio arrives (called by handler setup)."""
+        self._resolved_stt = resolved
+
+    @property
+    def stt_event_bus(self) -> SttEventBus:
+        return self._stt_event_bus
+
     def deactivate_stt(self) -> None:
         """Stop accepting audio.  Called as part of shutdown so Twilio silence
         frames arriving after call-end don't trigger a new Deepgram session."""
         self._stt_active = False
+
+    def _start_livekit_audio_subscriber(self, handler) -> None:
+        """Start the LiveKit audio subscriber task for Google STT path."""
+        call_session_id = getattr(handler, "call_session_id", None)
+        if not call_session_id:
+            logger.warning("[VoiceOrchestrator] No call_session_id for LiveKit subscriber")
+            return
+
+        room_name = f"room_{call_session_id}"
+        from app.voice.livekit_audio_subscriber import LiveKitAudioSubscriber
+
+        sample_rate = (
+            self._resolved_stt.sample_rate_hz if self._resolved_stt else 16000
+        )
+        subscriber = LiveKitAudioSubscriber(
+            room_name=room_name,
+            stt_pipeline=self._stt_pipeline,
+            output_sample_rate=sample_rate,
+        )
+        self._livekit_audio_task = asyncio.create_task(subscriber.run())
+        # Store subscriber for cleanup in shutdown
+        self._livekit_subscriber = subscriber
+        logger.info(
+            "[VoiceOrchestrator] LiveKit audio subscriber started room=%s", room_name
+        )
 
     async def on_audio_chunk(self, audio_data: bytes) -> None:
         """
@@ -236,7 +272,6 @@ class VoiceOrchestrator:
 
             # ── 4. STT feed ───────────────────────────────────────────────────
             if self._stt_pipeline is None:
-                language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
                 deferred_ep = self._stt_deferred_endpointing_ms
                 self._stt_deferred_endpointing_ms = None
                 initial_endpointing = (
@@ -244,23 +279,54 @@ class VoiceOrchestrator:
                     if deferred_ep is not None
                     else _resolve_initial_endpointing_ms()
                 )
-                self._stt_pipeline = SttPipeline(
-                    language_code=language_code,
-                    on_interim=self._on_interim,
-                    on_final=self._on_final,
-                    call_session_id=h.call_session_id,
-                    agent_id=h.agent_id,
-                    endpointing_ms=initial_endpointing,
-                )
+
+                if self._resolved_stt is not None:
+                    self._stt_pipeline = SttPipeline.from_runtime_config(
+                        resolved=self._resolved_stt,
+                        on_interim=self._on_interim,
+                        on_final=self._on_final,
+                        call_session_id=h.call_session_id,
+                        agent_id=h.agent_id,
+                        endpointing_ms=initial_endpointing,
+                        event_bus=self._stt_event_bus,
+                    )
+                    # Start LiveKit audio subscriber for Google STT path
+                    if (
+                        self._resolved_stt.provider_slug == "google"
+                        and settings.LIVEKIT_ENABLED
+                    ):
+                        self._start_livekit_audio_subscriber(h)
+                else:
+                    # Fallback: legacy Deepgram path (no resolved STT config)
+                    language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
+                    self._stt_pipeline = SttPipeline(
+                        language_code=language_code,
+                        on_interim=self._on_interim,
+                        on_final=self._on_final,
+                        call_session_id=h.call_session_id,
+                        agent_id=h.agent_id,
+                        endpointing_ms=initial_endpointing,
+                        event_bus=self._stt_event_bus,
+                    )
+
                 ps = getattr(h, "_pipeline_session", None)
                 if ps is not None:
                     ps.stt_emitter = self._stt_pipeline
+                provider = (
+                    self._resolved_stt.provider_slug if self._resolved_stt else "deepgram"
+                )
                 logger.debug(
-                    "[VoiceOrchestrator] SttPipeline created (endpointing_ms=%s)",
+                    "[VoiceOrchestrator] SttPipeline created provider=%s endpointing_ms=%s",
+                    provider,
                     initial_endpointing,
                 )
 
-            await self._stt_pipeline.feed_audio_chunk(audio_data)
+            # Only feed Twilio audio to non-Google paths (Google uses LiveKit)
+            provider_slug = (
+                self._resolved_stt.provider_slug if self._resolved_stt else "deepgram"
+            )
+            if provider_slug != "google":
+                await self._stt_pipeline.feed_audio_chunk(audio_data)
 
         except Exception as exc:
             logger.error("[VoiceOrchestrator] on_audio_chunk error: %s", exc, exc_info=True)
@@ -368,7 +434,23 @@ class VoiceOrchestrator:
         except Exception:
             pass
 
-        # Close Deepgram WebSocket (sends CloseStream, waits up to 5 s for reader)
+        # Stop LiveKit audio subscriber (Google STT path)
+        lk_subscriber = getattr(self, "_livekit_subscriber", None)
+        if lk_subscriber:
+            try:
+                await lk_subscriber.stop()
+            except Exception:
+                pass
+        lk_task = self._livekit_audio_task
+        if lk_task and not lk_task.done():
+            lk_task.cancel()
+            try:
+                await lk_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._livekit_audio_task = None
+
+        # Close STT session (Deepgram: sends CloseStream, waits up to 5s; Google: stops stream)
         try:
             if self._stt_pipeline:
                 await self._stt_pipeline.aclose()
@@ -394,10 +476,22 @@ class VoiceOrchestrator:
 
     async def _on_final(self, transcript: str, confidence: float) -> None:
         """
-        Deepgram final result callback.
-        Routed to the handler's _process_transcript which handles dedup,
-        goodbye detection, voicemail detection, and LLM trigger.
+        STT final result callback.
+        1. Log with PII redaction for audit trail.
+        2. Route to handler._process_transcript (dedup, goodbye, LLM trigger).
         """
+        try:
+            from app.core.pii_redactor import redact_pii
+            redacted = redact_pii(transcript)
+            logger.info(
+                "[STT final] transcript=%r confidence=%.2f call_session_id=%s",
+                redacted,
+                confidence,
+                self._h.call_session_id,
+            )
+        except Exception:
+            pass
+
         try:
             h = self._h
 

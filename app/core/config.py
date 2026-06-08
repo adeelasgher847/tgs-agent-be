@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
+    # Multi-provider STT silence threshold: ms of no audio before treating utterance as done.
+    # Applies to Google STT path; Deepgram uses its own endpointing above.
+    SILENCE_THRESHOLD_MS: int = 1500
 
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
@@ -319,6 +322,27 @@ class Settings(BaseSettings):
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
     MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
+
+    # LiveKit — self-hosted real-time audio transport (GKE internal, port 7880)
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+    LIVEKIT_TOKEN_TTL: int = 3600           # seconds; 1 hour
+    LIVEKIT_ROOM_EMPTY_TIMEOUT: int = 30    # seconds before auto-close when empty
+    LIVEKIT_MAX_PARTICIPANTS: int = 2       # enforced at SDK CreateRoomRequest level
+    LIVEKIT_ENABLED: bool = True
+
+    # GCS call recordings — Sprint 4
+    # Bucket must have a lifecycle rule: delete recordings/ prefix objects after 90 days.
+    # Infra: GCS lifecycle rule deletes recordings/ prefix objects after 90 days (set in bucket policy, not here).
+    GCS_RECORDINGS_BUCKET: str = ""
+    GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS: int = 3600
+    GCS_RECORDINGS_PREFIX: str = "recordings"
+
+    # Outbound call concurrency — max simultaneous outbound calls per workspace.
+    # Counts outbound sessions with status IN (initiated, ringing, connected, in-progress).
+    # Increase at the tenant level by changing this value (no per-tenant override yet).
+    OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE: int = 10
 
     # Resume ↔ job matching (recruiting): LLM + rules
     # hybrid = blend (recommended); rules = heuristics only; ai = LLM scores (rules if LLM fails)

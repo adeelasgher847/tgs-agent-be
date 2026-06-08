@@ -682,34 +682,55 @@ async def streaming_greeting_webhook(
         
         # ✅ User answered! Return streaming TwiML
         logger.info(f"✅ Call answered (status: '{call_status}') - Starting streaming!")
-        
-        # Build WebSocket URL for bidirectional streaming
-        ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
-        ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace("http://", "")
-        ws_url = f"{ws_protocol}://{ws_base}/api/v1/stream/ws/bidirectional/{callSessionId}/{agentId}"
-        
-        # Create TwiML response with bidirectional streaming
-        response = VoiceResponse()
-        
-        # Start bidirectional media stream
+
         from twilio.twiml.voice_response import Connect, Stream
-        
-        # DIRECT STREAM - User answered, connect now!
+
+        ws_url: str | None = None
+        if settings.LIVEKIT_ENABLED and callSessionId:
+            try:
+                session_uuid = uuid.UUID(callSessionId)
+                cs = call_session_service.get_call_session_by_id(db, session_uuid)
+                if cs and cs.call_metadata and "livekit" in cs.call_metadata:
+                    room_name = (cs.call_metadata["livekit"] or {}).get("room_name")
+                    if room_name:
+                        from app.voice.livekit_twilio_bridge import (
+                            build_livekit_stream_ws_url,
+                        )
+
+                        ws_url = build_livekit_stream_ws_url(room_name)
+                        logger.info(
+                            "LiveKit bridge TwiML for session %s → %s",
+                            callSessionId,
+                            ws_url,
+                        )
+            except Exception as lk_exc:
+                logger.warning(
+                    "LiveKit stream URL resolution failed (fallback to bidirectional): %s",
+                    lk_exc,
+                )
+
+        if not ws_url:
+            ws_protocol = "wss" if "https" in settings.WEBHOOK_BASE_URL else "ws"
+            ws_base = settings.WEBHOOK_BASE_URL.replace("https://", "").replace(
+                "http://", ""
+            )
+            ws_url = (
+                f"{ws_protocol}://{ws_base}/api/v1/stream/ws/bidirectional/"
+                f"{callSessionId}/{agentId}"
+            )
+
+        response = VoiceResponse()
         connect = Connect()
         stream = Stream(url=ws_url)
-        
-        # Add essential parameters only
         stream.parameter(name="callSid", value=call_sid)
         stream.parameter(name="agentId", value=agentId)
         stream.parameter(name="callSessionId", value=callSessionId)
-        
         connect.append(stream)
         response.append(connect)
-        
-        logger.info(f"⚡ Streaming TwiML returned - User answered, connecting WebSocket!")
-        logger.debug(f"🔗 WebSocket: {ws_url}")
-        
-        # RETURN STREAMING TWIML - User has answered!
+
+        logger.info("⚡ Streaming TwiML returned - User answered, connecting WebSocket!")
+        logger.debug("🔗 WebSocket: %s", ws_url)
+
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:

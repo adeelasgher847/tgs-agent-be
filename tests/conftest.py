@@ -11,26 +11,31 @@ os.environ.setdefault(
     "test-elevenlabs-encryption-key-for-pytest-only",
 )
 
-# Mock google submodules recursively to avoid ImportError
-# We must mock every level that is imported
-sys.modules["google"] = MagicMock()
-sys.modules["google.genai"] = MagicMock()
-sys.modules["google.oauth2"] = MagicMock()
-sys.modules["google.oauth2"].id_token = MagicMock()
-sys.modules["google.auth"] = MagicMock()
-sys.modules["google.auth"].transport = MagicMock()
-sys.modules["google.auth.transport"] = MagicMock()
-sys.modules["google.auth.transport"].requests = MagicMock()
-sys.modules["google.auth.transport.requests"] = MagicMock()
-sys.modules["google.cloud"] = MagicMock()
-sys.modules["google.cloud"].speech = MagicMock()
-sys.modules["google.cloud.speech_v1p1beta1"] = MagicMock()
-sys.modules["google.cloud.speech_v1p1beta1"].types = MagicMock()
-sys.modules["google.api_core"] = MagicMock()
-sys.modules["google.api_core"].exceptions = MagicMock()
-sys.modules["google.api_core.client_options"] = MagicMock()
-sys.modules["google.api_core.client_options"].ClientOptions = MagicMock()
-sys.modules["google.api_core.exceptions"] = MagicMock()
+# Mock google submodules recursively to avoid ImportError in unit tests.
+# Live Google STT integration tests set RUN_GOOGLE_STT_INTEGRATION=1 to skip mocks.
+_RUN_GOOGLE_STT_INTEGRATION = os.environ.get(
+    "RUN_GOOGLE_STT_INTEGRATION", ""
+).lower() in ("1", "true", "yes")
+
+if not _RUN_GOOGLE_STT_INTEGRATION:
+    sys.modules["google"] = MagicMock()
+    sys.modules["google.genai"] = MagicMock()
+    sys.modules["google.oauth2"] = MagicMock()
+    sys.modules["google.oauth2"].id_token = MagicMock()
+    sys.modules["google.auth"] = MagicMock()
+    sys.modules["google.auth"].transport = MagicMock()
+    sys.modules["google.auth.transport"] = MagicMock()
+    sys.modules["google.auth.transport"].requests = MagicMock()
+    sys.modules["google.auth.transport.requests"] = MagicMock()
+    sys.modules["google.cloud"] = MagicMock()
+    sys.modules["google.cloud"].speech = MagicMock()
+    sys.modules["google.cloud.speech_v1p1beta1"] = MagicMock()
+    sys.modules["google.cloud.speech_v1p1beta1"].types = MagicMock()
+    sys.modules["google.api_core"] = MagicMock()
+    sys.modules["google.api_core"].exceptions = MagicMock()
+    sys.modules["google.api_core.client_options"] = MagicMock()
+    sys.modules["google.api_core.client_options"].ClientOptions = MagicMock()
+    sys.modules["google.api_core.exceptions"] = MagicMock()
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -56,6 +61,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "integration: tests that require a live PostgreSQL database",
+    )
+    config.addinivalue_line(
+        "markers",
+        "google_stt_live: live Google Cloud STT tests (RUN_GOOGLE_STT_INTEGRATION=1)",
     )
 
 

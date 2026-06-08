@@ -10,6 +10,8 @@ from app.models.knowledge_base_document import KnowledgeBaseDocument
 from app.models.business_knowledge import BusinessKnowledge
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
+from app.models.stt_provider import STTProvider
+from app.models.stt_model import STTModel
 from app.schemas.agent import (
     AgentCreate,
     AgentUpdate,
@@ -17,6 +19,11 @@ from app.schemas.agent import (
     AgentStatusEnum,
     TtsModelSchema,
     TtsProviderEnum,
+    SttModelSchema,
+    SttProviderEnum,
+    _DEFAULT_STT_PROVIDER,
+    _DEFAULT_STT_MODEL_ID,
+    _DEFAULT_STT_LANGUAGE_CODE,
     agent_to_out,
     normalize_tts_provider_slug,
 )
@@ -118,6 +125,65 @@ class AgentService:
             "tts_voice_id": voice.id,
         }
 
+    def _resolve_stt_model(
+        self,
+        db: Session,
+        stt: Optional[SttModelSchema],
+    ) -> Dict[str, Any]:
+        """Validate and resolve STT provider + model to DB FK ids + slug triad.
+
+        Falls back to deepgram/nova-3/en when stt is None (backward compat).
+        modelId is the user-facing ID (e.g. 'nova-3', 'chirp-3'), never 'phone_call'.
+        """
+        if stt is None:
+            slug = _DEFAULT_STT_PROVIDER
+            model_id_str = _DEFAULT_STT_MODEL_ID
+            lang = _DEFAULT_STT_LANGUAGE_CODE
+        else:
+            slug = stt.provider.value
+            model_id_str = stt.model_id
+            lang = stt.language_code
+
+        provider = (
+            db.query(STTProvider)
+            .filter(
+                STTProvider.slug == slug,
+                STTProvider.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid sttModel.provider '{slug}'. Provider not found or inactive.",
+            )
+
+        model = (
+            db.query(STTModel)
+            .filter(
+                STTModel.provider_id == provider.id,
+                STTModel.external_model_id == model_id_str,
+                STTModel.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not model:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid sttModel.modelId '{model_id_str}' "
+                    f"for provider '{slug}'. Not found or inactive."
+                ),
+            )
+
+        return {
+            "stt_provider_slug": slug,
+            "stt_model_external_id": model_id_str,
+            "stt_language_code": lang,
+            "stt_provider_id": provider.id,
+            "stt_model_id": model.id,
+        }
+
     def _encrypt_byo_key(self, raw_key: str, db: Session) -> str:
         try:
             return encrypt_elevenlabs_key(raw_key, db)
@@ -131,16 +197,22 @@ class AgentService:
     def _ticket_payload_from_create(self, db: Session, agent_in: AgentCreate) -> Dict[str, Any]:
         model = self._resolve_llm_model(db, agent_in.llm_model)
         tts_fields = self._resolve_tts_model(db, agent_in.tts_model)
+        stt_fields = self._resolve_stt_model(db, agent_in.stt_model)
         encrypted_key: Optional[str] = None
         if agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo:
             encrypted_key = self._encrypt_byo_key(agent_in.eleven_labs_api_key or "", db)
+        stt_settings: Optional[Dict[str, Any]] = None
+        if agent_in.stt_settings is not None:
+            stt_settings = agent_in.stt_settings.model_dump(by_alias=False, exclude_none=True)
         return {
             "llm_model": model.model_name,
             "model_id": model.id,
             "provider_id": model.provider_id,
             "status": agent_in.status.value,
             "encrypted_elevenlabs_api_key": encrypted_key,
+            "stt_settings_json": stt_settings,
             **tts_fields,
+            **stt_fields,
         }
 
     def _apply_ticket_update(
@@ -161,6 +233,12 @@ class AgentService:
             update_dict.update(self._resolve_tts_model(db, agent_in.tts_model))
             if agent_in.tts_model.provider != TtsProviderEnum.elevenlabs_byo:
                 update_dict["encrypted_elevenlabs_api_key"] = None
+        if agent_in.stt_model is not None:
+            update_dict.update(self._resolve_stt_model(db, agent_in.stt_model))
+        if agent_in.stt_settings is not None:
+            update_dict["stt_settings_json"] = agent_in.stt_settings.model_dump(
+                by_alias=False, exclude_none=True
+            )
         if agent_in.eleven_labs_api_key is not None:
             update_dict["encrypted_elevenlabs_api_key"] = self._encrypt_byo_key(
                 agent_in.eleven_labs_api_key, db
@@ -439,7 +517,7 @@ class AgentService:
 
         # Sanitize string fields (exclude ticket-only nested objects)
         agent_data = agent_in.model_dump(
-            exclude={"tts_model", "eleven_labs_api_key", "llm_model", "status"}
+            exclude={"tts_model", "stt_model", "stt_settings", "eleven_labs_api_key", "llm_model", "status"}
         )
         agent_data.update(ticket_data)
         for field in ['name', 'system_prompt', 'fallback_response', 'greeting_message']:
@@ -568,7 +646,7 @@ class AgentService:
 
         update_dict = agent_update.model_dump(
             exclude_unset=True,
-            exclude={"tts_model", "eleven_labs_api_key", "llm_model", "status"},
+            exclude={"tts_model", "stt_model", "stt_settings", "eleven_labs_api_key", "llm_model", "status"},
         )
         self._apply_ticket_update(db, agent_update, agent, update_dict)
 
