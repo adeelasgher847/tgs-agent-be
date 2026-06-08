@@ -33,10 +33,11 @@ def build_livekit_stream_ws_url(room_name: str) -> str:
 
 
 class LiveKitTwilioPublisher:
-    """Publish Twilio inbound μ-law audio into a LiveKit room as the caller."""
+    """Publish μ-law audio into a LiveKit room (caller inbound or agent TTS mirror)."""
 
-    def __init__(self, room_name: str) -> None:
+    def __init__(self, room_name: str, *, role: str = "caller") -> None:
         self._room_name = room_name
+        self._role = role if role in ("caller", "agent") else "caller"
         self._room: Any = None
         self._source: Any = None
         self._connected = False
@@ -58,22 +59,25 @@ class LiveKitTwilioPublisher:
             livekit_service._validate_room_name(self._room_name)
             url, _, _ = livekit_service._get_credentials()
             ws_url = _http_to_ws_url(url)
-            token = livekit_service.generate_caller_token(self._room_name)
+            if self._role == "agent":
+                token = livekit_service.generate_agent_token(self._room_name)
+                track_name = "agent-audio"
+            else:
+                token = livekit_service.generate_caller_token(self._room_name)
+                track_name = "caller-audio"
 
             self._room = rtc.Room()
             await self._room.connect(ws_url, token)
 
             self._source = rtc.AudioSource(_TWILIO_SAMPLE_RATE, 1)
-            track = rtc.LocalAudioTrack.create_audio_track(
-                "caller-audio", self._source
-            )
+            track = rtc.LocalAudioTrack.create_audio_track(track_name, self._source)
             options = rtc.TrackPublishOptions()
             options.source = rtc.TrackSource.SOURCE_MICROPHONE
             await self._room.local_participant.publish_track(track, options)
 
             self._connected = True
             logger.info(
-                "[LiveKitBridge] caller track published room=%s", self._room_name
+                "[LiveKitBridge] %s track published room=%s", self._role, self._room_name
             )
             return True
         except Exception as exc:

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 import uuid
 from typing import Optional
@@ -342,6 +343,65 @@ async def initiate_call(
             }
             db.commit()
 
+        # LiveKit egress recording when enabled for this number (Twilio record stays off).
+        _livekit_recording_enabled = False
+        if settings.LIVEKIT_ENABLED and lk_meta:
+            try:
+                from app.models.phone_number import NumberConfiguration, PhoneNumber
+                from sqlalchemy import select as _select
+
+                _pn_stmt = _select(NumberConfiguration).join(
+                    PhoneNumber, NumberConfiguration.phone_number_id == PhoneNumber.id
+                ).where(
+                    PhoneNumber.phone_number == from_number,
+                    PhoneNumber.tenant_id == tenant_id_filter,
+                )
+                _nc = db.execute(_pn_stmt).scalar_one_or_none()
+                _livekit_recording_enabled = bool(_nc and _nc.recording_enabled)
+                if _livekit_recording_enabled:
+                    from app.services.gcs_recording_service import build_gcs_key
+                    from app.services.livekit_recording_service import livekit_recording_service
+
+                    _gcs_path = build_gcs_key(
+                        workspace_id=tenant_id_filter,
+                        call_id=session_id,
+                    )
+                    _session_id = session_id
+
+                    async def _start_rec() -> None:
+                        from app.db.session import SessionLocal
+
+                        egress_id = await livekit_recording_service.start_room_recording(
+                            call_id=_session_id,
+                            workspace_id=tenant_id_filter,
+                            gcs_path=_gcs_path,
+                        )
+                        if not egress_id:
+                            return
+                        _db = SessionLocal()
+                        try:
+                            _cs = _db.get(CallSession, _session_id)
+                            if _cs is None:
+                                return
+                            _meta = dict(_cs.call_metadata or {})
+                            _meta["recording"] = {
+                                "egress_id": egress_id,
+                                "gcs_path": _gcs_path,
+                            }
+                            _cs.call_metadata = _meta
+                            _db.commit()
+                            logger.info(
+                                "Outbound LiveKit recording started: session=%s egress_id=%s",
+                                _session_id,
+                                egress_id,
+                            )
+                        finally:
+                            _db.close()
+
+                    asyncio.create_task(_start_rec())
+            except Exception as _rec_exc:
+                logger.warning("Outbound recording setup failed: %s", _rec_exc)
+
         # Optional appointment_id
         appt_raw = (call_request.appointment_id or "").strip()
         if appt_raw:
@@ -429,6 +489,7 @@ async def initiate_call(
             logger.warning("⚠️ WebSocket broadcast failed (non-critical): %s", e)
 
         # ── 10. Initiate Twilio call ──────────────────────────────────────
+        _twilio_record = not _livekit_recording_enabled
         try:
             if use_custom_credentials:
                 call = twilio_service.make_call_with_credentials(
@@ -438,6 +499,7 @@ async def initiate_call(
                     status_callback_url=status_callback_url,
                     account_sid=account_sid,
                     auth_token=auth_token,
+                    record=_twilio_record,
                 )
             else:
                 call = twilio_service.make_call(
@@ -445,6 +507,7 @@ async def initiate_call(
                     from_number=from_number,
                     webhook_url=webhook_url,
                     status_callback_url=status_callback_url,
+                    record=_twilio_record,
                 )
         except Exception as exc:
             logger.error(

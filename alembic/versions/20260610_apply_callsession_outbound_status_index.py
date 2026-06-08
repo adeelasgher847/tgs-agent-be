@@ -1,11 +1,11 @@
-"""add_callsession_outbound_status_index
+"""apply_callsession_outbound_status_index
 
-Adds a composite index on callsession(tenant_id, call_type, status) to support
-efficient per-workspace concurrent outbound call count queries.
+Linear follow-up: the outbound status index branch was skipped when the
+recording merge ran against the duplicate a1b2c3d4e5f6 revision id.
 
-Revision ID: 20260608_outbound_status_idx
-Revises: f6b7c8d9e0f1
-Create Date: 2026-06-08
+Revision ID: 20260610_outbound_idx
+Revises: 20260609_call_recording
+Create Date: 2026-06-10
 """
 
 from typing import Sequence, Union
@@ -13,8 +13,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "20260608_outbound_status_idx"
-down_revision: Union[str, Sequence[str], None] = "f6b7c8d9e0f1"
+revision: str = "20260610_outbound_idx"
+down_revision: Union[str, Sequence[str], None] = "20260609_call_recording"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -41,4 +41,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_callsession_tenant_calltype_status", table_name="callsession")
+    conn = op.get_bind()
+    if _has_index(conn, "ix_callsession_tenant_calltype_status"):
+        op.drop_index("ix_callsession_tenant_calltype_status", table_name="callsession")

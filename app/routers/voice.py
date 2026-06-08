@@ -465,7 +465,14 @@ async def handle_call_events_webhook(
                 maybe_update_resume_status_on_call_completed(db, call_session.id)
             except Exception as mq_exc:
                 logger.warning("Resume screening qualify on completed webhook: %s", mq_exc, exc_info=True)
-            
+
+            # Schedule GCS recording upload (non-blocking; skipped if recording_enabled=false)
+            try:
+                from app.services.call_recording_upload_service import schedule_recording_upload
+                schedule_recording_upload(call_session.id)
+            except Exception as _ru_exc:
+                logger.warning("Recording upload schedule failed: %s", _ru_exc)
+
             logger.info(f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)

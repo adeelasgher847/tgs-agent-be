@@ -419,6 +419,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         self._llm_response_task: Optional[asyncio.Task] = None
         self._auto_greeting_sent = False
         self._recording_started = False
+        self._lk_caller_publisher = None
+        self._lk_agent_publisher = None
         self._screening_decline_handled = False
 
         # Deepgram can emit the same is_final twice within a short window — avoid triple LLM/transcript
@@ -801,6 +803,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 return
 
             audio_data = base64.b64decode(payload)
+            pub = self._lk_caller_publisher
+            if pub and pub.connected:
+                await pub.publish_mulaw(audio_data)
             await self._voice_orchestrator.on_audio_chunk(audio_data)
 
         except Exception as e:
@@ -2489,30 +2494,35 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             except Exception:
                 pass
 
-            # Inbound calls use Connect/Stream, so start recording explicitly here.
-            # This enables recording-status webhook -> call_session.recording_url persistence.
-            if (
-                self.call_sid
-                and self.call_session
-                and self.call_session.call_type == "inbound"
-                and not self._recording_started
-            ):
-                try:
-                    account_sid, auth_token = get_twilio_credentials_for_call(
-                        self.db, self.call_session
-                    )
-                    started = twilio_service.start_recording_with_credentials(
-                        self.call_sid, account_sid, auth_token
-                    )
-                    if started:
-                        self._recording_started = True
-                except Exception as rec_err:
-                    logger.warning(
-                        "Could not start inbound recording (call_sid=%s, session=%s): %s",
-                        self.call_sid,
-                        self.call_session.id if self.call_session else None,
-                        rec_err,
-                    )
+            # Recording: gate on recording_enabled for this call's number.
+            if self.call_sid and self.call_session and not self._recording_started:
+                from app.services.recording_config_service import get_recording_enabled_for_call
+
+                _rec_enabled = get_recording_enabled_for_call(self.db, self.call_session)
+                if _rec_enabled:
+                    if settings.LIVEKIT_ENABLED:
+                        if self.call_session.call_type == "inbound":
+                            asyncio.create_task(self._start_livekit_recording())
+                        elif (self.call_session.call_type or "").lower() == "outbound":
+                            asyncio.create_task(self._setup_livekit_agent_publisher())
+                    elif self.call_session.call_type == "inbound":
+                        # Fallback: legacy Twilio recording when LiveKit is disabled
+                        try:
+                            account_sid, auth_token = get_twilio_credentials_for_call(
+                                self.db, self.call_session
+                            )
+                            started = twilio_service.start_recording_with_credentials(
+                                self.call_sid, account_sid, auth_token
+                            )
+                            if started:
+                                self._recording_started = True
+                        except Exception as rec_err:
+                            logger.warning(
+                                "Could not start inbound Twilio recording (call_sid=%s, session=%s): %s",
+                                self.call_sid,
+                                self.call_session.id if self.call_session else None,
+                                rec_err,
+                            )
 
             # DO NOT start credit monitoring or greeting here!
             # Wait for first media packet (user actually picks up - VAPI-style)
@@ -2660,6 +2670,108 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if not self._post_call_orchestration_scheduled:
             self._post_call_orchestration_scheduled = True
             asyncio.create_task(self._post_call_appointment_workflow())
+
+        try:
+            await self._teardown_livekit_recording()
+        except Exception as rec_stop_err:
+            logger.debug("LiveKit recording teardown: %s", rec_stop_err)
+
+        # Schedule GCS recording upload (non-blocking; upload service checks recording_enabled)
+        if self.call_session:
+            from app.services.call_recording_upload_service import schedule_recording_upload
+            schedule_recording_upload(self.call_session.id)
+
+    async def _setup_livekit_agent_publisher(self) -> None:
+        """Outbound LiveKit bridge: mirror agent TTS into the existing room."""
+        if not self.call_session or self._lk_agent_publisher:
+            return
+        from app.services.recording_config_service import get_recording_enabled_for_call
+        from app.voice.livekit_twilio_bridge import LiveKitTwilioPublisher
+
+        if not get_recording_enabled_for_call(self.db, self.call_session):
+            return
+
+        room_name = f"room_{self.call_session.id}"
+        self._lk_agent_publisher = LiveKitTwilioPublisher(room_name, role="agent")
+        if await self._lk_agent_publisher.connect():
+            logger.info(
+                "LiveKit agent recording publisher ready: session=%s",
+                self.call_session.id,
+            )
+
+    async def _disconnect_livekit_recording_publishers(self) -> None:
+        for attr in ("_lk_caller_publisher", "_lk_agent_publisher"):
+            pub = getattr(self, attr, None)
+            if pub:
+                try:
+                    await pub.disconnect()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
+
+    async def _teardown_livekit_recording(self) -> None:
+        if not self.call_session:
+            return
+        recording_meta = (self.call_session.call_metadata or {}).get("recording")
+        if isinstance(recording_meta, dict) and recording_meta.get("egress_id"):
+            from app.services.livekit_recording_service import livekit_recording_service
+
+            await livekit_recording_service.stop_room_recording(recording_meta["egress_id"])
+        await self._disconnect_livekit_recording_publishers()
+
+    async def _start_livekit_recording(self) -> None:
+        """Inbound: create room, publish caller+agent audio, start egress."""
+        if not self.call_session or not self.agent:
+            return
+        try:
+            from app.services.gcs_recording_service import build_gcs_key
+            from app.services.livekit_recording_service import livekit_recording_service
+            from app.services.livekit_service import livekit_service
+            from app.voice.livekit_twilio_bridge import LiveKitTwilioPublisher
+
+            room_name = f"room_{self.call_session.id}"
+            await livekit_service.create_room(self.call_session.id, self.agent.id)
+
+            self._lk_caller_publisher = LiveKitTwilioPublisher(room_name, role="caller")
+            self._lk_agent_publisher = LiveKitTwilioPublisher(room_name, role="agent")
+            caller_ok = await self._lk_caller_publisher.connect()
+            agent_ok = await self._lk_agent_publisher.connect()
+            if not caller_ok or not agent_ok:
+                logger.warning(
+                    "LiveKit recording publishers failed for session %s",
+                    self.call_session.id,
+                )
+                await self._disconnect_livekit_recording_publishers()
+                return
+
+            gcs_path = build_gcs_key(
+                workspace_id=self.call_session.tenant_id,
+                call_id=self.call_session.id,
+                end_time=self.call_session.end_time,
+            )
+            egress_id = await livekit_recording_service.start_room_recording(
+                call_id=self.call_session.id,
+                workspace_id=self.call_session.tenant_id,
+                gcs_path=gcs_path,
+            )
+            if egress_id:
+                meta = dict(self.call_session.call_metadata or {})
+                meta["recording"] = {"egress_id": egress_id, "gcs_path": gcs_path}
+                self.call_session.call_metadata = meta
+                self.db.commit()
+                self._recording_started = True
+                logger.info(
+                    "LiveKit recording started: session=%s egress_id=%s",
+                    self.call_session.id,
+                    egress_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not start LiveKit recording for session %s: %s",
+                self.call_session.id if self.call_session else None,
+                exc,
+            )
+            await self._disconnect_livekit_recording_publishers()
 
     def _post_call_appointment_sync(self) -> None:
         from app.db.session import SessionLocal

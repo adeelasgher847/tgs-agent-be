@@ -332,6 +332,13 @@ class Settings(BaseSettings):
     LIVEKIT_MAX_PARTICIPANTS: int = 2       # enforced at SDK CreateRoomRequest level
     LIVEKIT_ENABLED: bool = True
 
+    # GCS call recordings — Sprint 4
+    # Bucket must have a lifecycle rule: delete recordings/ prefix objects after 90 days.
+    # Infra: GCS lifecycle rule deletes recordings/ prefix objects after 90 days (set in bucket policy, not here).
+    GCS_RECORDINGS_BUCKET: str = ""
+    GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS: int = 3600
+    GCS_RECORDINGS_PREFIX: str = "recordings"
+
     # Outbound call concurrency — max simultaneous outbound calls per workspace.
     # Counts outbound sessions with status IN (initiated, ringing, connected, in-progress).
     # Increase at the tenant level by changing this value (no per-tenant override yet).
