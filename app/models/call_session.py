@@ -31,7 +31,11 @@ class CallSession(Base):
     # Call content
     call_transcript = Column(JSONB, nullable=True)  # Store as JSON array of messages
     response_times = Column(JSONB, nullable=True)  # Store response times for each interaction
-    recording_url = Column(String(500), nullable=True)  # URL to the call recording
+    recording_url = Column(String(500), nullable=True)  # Legacy Twilio recording URL (kept for compat)
+
+    # GCS recording (Sprint 4 — replaces Twilio recording for LiveKit calls)
+    recording_gcs_path = Column(String(500), nullable=True)  # e.g. recordings/{workspaceId}/{callId}/{date}.opus
+    recording_error = Column(Boolean, nullable=False, server_default="false")
     
     # Phone numbers and external IDs
     twilio_call_sid = Column(String(255), nullable=True, index=True)
