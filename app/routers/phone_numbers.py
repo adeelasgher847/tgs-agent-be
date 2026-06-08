@@ -35,6 +35,8 @@ from app.schemas.phone_number import (
     PurchasePhoneNumberRequest,
     PurchasePhoneNumberResponse,
     PhoneNumberSearchResponse,
+    NumberConfigurationRequest,
+    NumberConfigurationResponse,
 )
 from app.services.phone_number_service import phone_number_service
 from app.services.twilio_service import twilio_service
@@ -359,3 +361,55 @@ async def delete_phone_number(
     if not ok:
         raise HTTPException(status_code=404, detail="Phone number not found")
     return create_success_response({"deleted": True}, "Phone number deleted")
+
+
+# ---------------------------------------------------------------------------
+# Number Configuration — /{phone_number_id}/configuration
+# PUT  upsert recording_enabled, max_duration_seconds, business_hours
+# GET  read current configuration
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/{phone_number_id}/configuration",
+    response_model=SuccessResponse[NumberConfigurationResponse],
+)
+async def upsert_number_configuration(
+    phone_number_id: uuid.UUID,
+    request: NumberConfigurationRequest,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+) -> SuccessResponse[NumberConfigurationResponse]:
+    """Update or create the per-number configuration (recording, duration, hours)."""
+    config = phone_number_service.upsert_number_configuration(
+        db=db,
+        phone_number_id=phone_number_id,
+        tenant_id=user.current_tenant_id,
+        recording_enabled=request.recording_enabled,
+        max_duration_seconds=request.max_duration_seconds,
+        business_hours=request.business_hours.model_dump() if request.business_hours else None,
+    )
+    return create_success_response(
+        NumberConfigurationResponse.model_validate(config),
+        "Number configuration updated",
+    )
+
+
+@router.get(
+    "/{phone_number_id}/configuration",
+    response_model=SuccessResponse[NumberConfigurationResponse],
+)
+async def get_number_configuration(
+    phone_number_id: uuid.UUID,
+    user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+) -> SuccessResponse[NumberConfigurationResponse]:
+    """Retrieve the per-number configuration."""
+    pn = phone_number_service._require_number(db, phone_number_id, user.current_tenant_id)
+    config = pn.configuration
+    if config is None:
+        raise HTTPException(status_code=404, detail="No configuration found for this number")
+    return create_success_response(
+        NumberConfigurationResponse.model_validate(config),
+        "Number configuration retrieved",
+    )

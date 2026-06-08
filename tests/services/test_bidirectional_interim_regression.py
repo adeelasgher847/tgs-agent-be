@@ -100,6 +100,8 @@ def _empty_handler() -> Handler:
     h._barge_in_min_conf_1w = 0.52
     h._barge_in_min_words = 2
     h._barge_in_rejected_while_playing = 0
+    h._tts_play_start_ts = 0.0
+    h._barge_in_dead_zone_ms = 0.0
     h._stt_min_final_confidence = 0.26
     h._enable_soft_final_fallback = True
     h._stt_soft_min_final_confidence = 0.16

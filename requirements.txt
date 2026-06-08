@@ -36,6 +36,7 @@ google-auth
 google-auth-oauthlib
 deepgram-sdk
 google-cloud-texttospeech
+google-cloud-speech>=2.27.0
 sendgrid
 geopy
 timezonefinder
@@ -46,3 +47,4 @@ PyYAML
 openapi-spec-validator>=0.7.1
 livekit-api==1.1.0
 livekit==1.1.2
+google-cloud-storage>=2.14.0

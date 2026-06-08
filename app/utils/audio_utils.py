@@ -11,7 +11,7 @@ import math
 import subprocess
 import tempfile
 import os
-from typing import Optional, Iterable
+from typing import Awaitable, Callable, Iterable, Optional
 
 from app.core.logger import logger
 from app.utils.audio_constants import BACKGROUND_AUDIO_BASE64
@@ -444,6 +444,7 @@ async def stream_mulaw_bytes_over_twilio(
     pace_20ms: bool = True,
     cancel: Optional[asyncio.Event] = None,
     prime_frames: int = 0,
+    mirror_mulaw: Optional[Callable[[bytes], Awaitable[None]]] = None,
 ):
     """
     Send mu-law audio to Twilio as 20ms 'media' frames.
@@ -473,6 +474,11 @@ async def stream_mulaw_bytes_over_twilio(
     for frame in iter_mulaw_20ms_frames(audio_bytes):
         if cancel and cancel.is_set():
             break
+        if mirror_mulaw:
+            try:
+                await mirror_mulaw(frame)
+            except Exception:
+                pass
         payload = base64.b64encode(frame).decode("utf-8")
         try:
             await websocket.send_json({

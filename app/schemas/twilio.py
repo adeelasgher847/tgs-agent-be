@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, Optional, Dict, Any
 
 
@@ -61,7 +61,9 @@ class AccountInfo(BaseModel):
 # Voice call initiation schemas
 class CallInitiateRequest(BaseModel):
     agentId: str
-    userPhoneNumber: str
+    toNumber: str
+    # Explicit caller ID — if provided, must match the agent's bound active phone number.
+    fromNumber: Optional[str] = None
     phone_number_id: Optional[str] = None  # Optional, user ka selected phone number ID (VAPI style)
     jd_context: Optional[Dict[str, Any]] = None  # Optional JD payload from scheduler/n8n
     # Optional: resolve resume + job from DB and enrich the agent prompt (same as jd_context.jd_id / resume_id)
@@ -70,13 +72,13 @@ class CallInitiateRequest(BaseModel):
     appointment_id: Optional[str] = None  # Follow-up reminder: n8n / Trello → initiate
     tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
     user_id: Optional[str] = None  # Optional, for n8n webhook calls
-    
+
     # Legacy Monday.com fields (for backward compatibility)
     board_id: Optional[str] = None  # Optional, Monday.com board ID from n8n workflow (legacy)
     monday_item_id: Optional[str] = None  # Optional, Monday.com item ID from n8n workflow (legacy)
     status_column_id: Optional[str] = None  # Optional, Monday.com status column ID from n8n workflow (legacy)
     call_session_id_column_id: Optional[str] = None  # Optional, Monday.com call_session_id column ID from n8n workflow (legacy)
-    
+
     # Generic CRM fields (for multi-CRM support)
     crm_container_id: Optional[str] = None  # Generic: board_id/list_id/project_id from n8n workflow
     crm_item_id: Optional[str] = None  # Generic: item_id/task_id/issue_id/card_id from n8n workflow
@@ -84,6 +86,32 @@ class CallInitiateRequest(BaseModel):
     call_session_id_field_id: Optional[str] = None  # Generic: call_session_id field ID from n8n workflow
     crm_type: Optional[str] = None  # "monday" | "clickup" | "jira" | "trello" from n8n workflow
     callFlowId: Optional[str] = None  # Optional UUID — binds this call session to a CallFlow
+
+    @field_validator("toNumber")
+    @classmethod
+    def validate_to_number(cls, v: str) -> str:
+        from app.schemas.phone_number import _validate_e164
+
+        try:
+            return _validate_e164(v.strip())
+        except ValueError:
+            raise ValueError(
+                f"Invalid destination phone number '{v}'. Must be E.164 format (e.g. +15551234567)"
+            )
+
+    @field_validator("fromNumber")
+    @classmethod
+    def validate_from_number(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        from app.schemas.phone_number import _validate_e164
+
+        try:
+            return _validate_e164(v.strip())
+        except ValueError:
+            raise ValueError(
+                f"Invalid fromNumber '{v}'. Must be E.164 format (e.g. +15550000000)"
+            )
 
 
 class CallInitiateResponse(BaseModel):

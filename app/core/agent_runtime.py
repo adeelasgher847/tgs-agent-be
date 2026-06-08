@@ -70,6 +70,19 @@ class ResolvedLlmRuntime:
 
 
 @dataclass(frozen=True)
+class ResolvedSttRuntime:
+    """Runtime STT config resolved from agent + optional flow settings override."""
+
+    provider_slug: str          # "deepgram" | "google" | "elevenlabs"
+    model_id: str               # user-facing modelId e.g. "nova-3", "chirp-3"
+    language_code: str          # BCP-47 e.g. "en-AU", "en"
+    sample_rate_hz: int         # from sttmodel catalog (e.g. 8000 or 16000)
+    encoding: str               # "MULAW" | "LINEAR16"
+    silence_threshold_ms: int   # from stt_settings_json or default 1500
+    api_config: dict[str, Any]  # provider-specific params from metadata_json
+
+
+@dataclass(frozen=True)
 class ResolvedTtsRuntime:
     adapter_slug: str
     voice_external_id: Optional[str]
@@ -331,3 +344,92 @@ def resolve_tts_adapter_slug(
 ) -> Optional[str]:
     """Convenience for call sites that only need the adapter slug string."""
     return resolve_tts_runtime(agent, db=db).adapter_slug
+
+
+_DEFAULT_STT_PROVIDER_SLUG = "deepgram"
+_DEFAULT_STT_MODEL_ID = "nova-3"
+_DEFAULT_STT_LANGUAGE_CODE = "en"
+_DEFAULT_STT_SAMPLE_RATE = 8000
+_DEFAULT_STT_ENCODING = "MULAW"
+_DEFAULT_SILENCE_THRESHOLD_MS = 1500
+
+
+def resolve_stt_runtime(
+    agent: Optional[Agent],
+    *,
+    flow_language_code: Optional[str] = None,
+    db: "Session | None" = None,
+) -> ResolvedSttRuntime:
+    """Resolve STT runtime config from agent + optional callflow language override.
+
+    Priority (high → low):
+      1. flow_language_code  (callflow.settings.sttLanguageCode)
+      2. agent.stt_language_code
+      3. sttmodel.language_code (catalog default)
+
+    metadata_json carries internal API params (e.g. google_model: "phone_call")
+    — never surfaced in API responses.
+    """
+    # Defaults when no agent or STT fields missing
+    provider_slug = _DEFAULT_STT_PROVIDER_SLUG
+    model_id = _DEFAULT_STT_MODEL_ID
+    language_code = _DEFAULT_STT_LANGUAGE_CODE
+    sample_rate_hz = _DEFAULT_STT_SAMPLE_RATE
+    encoding = _DEFAULT_STT_ENCODING
+    silence_threshold_ms = _DEFAULT_SILENCE_THRESHOLD_MS
+    api_config: dict[str, Any] = {}
+
+    if agent and agent.stt_provider_slug:
+        provider_slug = agent.stt_provider_slug
+    if agent and agent.stt_model_external_id:
+        model_id = agent.stt_model_external_id
+
+    # Language priority: flow override > agent column > catalog default
+    if flow_language_code and flow_language_code.strip():
+        language_code = flow_language_code.strip()
+    elif agent and agent.stt_language_code and agent.stt_language_code.strip():
+        language_code = agent.stt_language_code.strip()
+
+    # Load metadata from catalog model when DB session available
+    if db is not None and agent and agent.stt_model_id:
+        try:
+            from app.models.stt_model import STTModel
+            stt_model_row = db.query(STTModel).filter(STTModel.id == agent.stt_model_id).first()
+            if stt_model_row:
+                sample_rate_hz = stt_model_row.sample_rate_hz or sample_rate_hz
+                encoding = stt_model_row.encoding or encoding
+                # catalog default language (lowest priority)
+                if not flow_language_code and not (agent and agent.stt_language_code):
+                    language_code = stt_model_row.language_code or language_code
+                api_config = dict(stt_model_row.metadata_json or {})
+        except Exception as exc:
+            logger.warning("resolve_stt_runtime: failed to load catalog model: %s", exc)
+    elif provider_slug == "google":
+        # Google needs LINEAR16 @ 16kHz — set safe defaults even without DB
+        sample_rate_hz = 16000
+        encoding = "LINEAR16"
+
+    # Google chirp-3 → phone_call + enhanced (Google telephony best practice).
+    if provider_slug == "google" and model_id == "chirp-3":
+        api_config = dict(api_config or {})
+        api_config.setdefault("google_model", "phone_call")
+        api_config["use_enhanced"] = True
+
+    # Silence threshold from agent.stt_settings_json
+    if agent and agent.stt_settings_json:
+        raw = agent.stt_settings_json
+        if isinstance(raw, dict):
+            try:
+                silence_threshold_ms = int(raw.get("silence_threshold_ms", silence_threshold_ms))
+            except (TypeError, ValueError):
+                pass
+
+    return ResolvedSttRuntime(
+        provider_slug=provider_slug,
+        model_id=model_id,
+        language_code=language_code,
+        sample_rate_hz=sample_rate_hz,
+        encoding=encoding,
+        silence_threshold_ms=silence_threshold_ms,
+        api_config=api_config,
+    )

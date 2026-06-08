@@ -16,6 +16,10 @@ _TTS_SLUG_ALIASES: dict[str, str] = {
     "11labs_byo": "elevenlabs_byo",
 }
 
+_DEFAULT_STT_PROVIDER = "deepgram"
+_DEFAULT_STT_MODEL_ID = "nova-3"
+_DEFAULT_STT_LANGUAGE_CODE = "en"
+
 
 class LanguageEnum(str, Enum):
     en = "en"
@@ -56,6 +60,52 @@ def tts_slug_to_api_provider(slug: str) -> TtsProviderEnum:
     """Map stored slug to API enum (supports legacy rows)."""
     canonical = normalize_tts_provider_slug(slug)
     return TtsProviderEnum(canonical)
+
+
+class SttProviderEnum(str, Enum):
+    deepgram = "deepgram"
+    google = "google"
+    elevenlabs = "elevenlabs"
+
+
+class SttModelSchema(BaseModel):
+    """Ticket ``sttModel`` fragment — validated against STT catalog in service layer."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    provider: SttProviderEnum
+    model_id: str = Field(..., min_length=1, max_length=255, alias="modelId")
+    language_code: str = Field(..., min_length=2, max_length=20, alias="languageCode")
+
+    @field_validator("model_id")
+    @classmethod
+    def _strip_model_id(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be blank")
+        return cleaned
+
+    @field_validator("language_code")
+    @classmethod
+    def _strip_language_code(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be blank")
+        return cleaned
+
+
+class SttSettingsJsonSchema(BaseModel):
+    """Optional STT tuning stored on ``agent.stt_settings_json``."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    silence_threshold_ms: Optional[int] = Field(
+        default=1500,
+        ge=300,
+        le=5000,
+        alias="silenceThresholdMs",
+        description="Silence duration (ms) before isSilence=true is emitted.",
+    )
 
 
 class TtsSettingsJsonSchema(BaseModel):
@@ -116,6 +166,19 @@ class AgentCreate(BaseModel):
     name: str = Field(..., min_length=3, max_length=80)
     llm_model: str = Field(..., min_length=1, max_length=100, alias="llmModel")
     tts_model: TtsModelSchema = Field(..., alias="ttsModel")
+    stt_model: Optional[SttModelSchema] = Field(
+        default=None,
+        alias="sttModel",
+        description=(
+            "STT provider + model. Defaults to deepgram/nova-3/en when omitted. "
+            "Use provider='google', modelId='chirp-3', languageCode='en-AU' for Google STT."
+        ),
+    )
+    stt_settings: Optional[SttSettingsJsonSchema] = Field(
+        default=None,
+        alias="sttSettings",
+        description="Optional STT tuning (e.g. silenceThresholdMs).",
+    )
     status: AgentStatusEnum = AgentStatusEnum.pending
     eleven_labs_api_key: Optional[str] = Field(
         default=None,
@@ -179,6 +242,8 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=3, max_length=80)
     llm_model: Optional[str] = Field(None, min_length=1, max_length=100, alias="llmModel")
     tts_model: Optional[TtsModelSchema] = Field(None, alias="ttsModel")
+    stt_model: Optional[SttModelSchema] = Field(None, alias="sttModel")
+    stt_settings: Optional[SttSettingsJsonSchema] = Field(None, alias="sttSettings")
     status: Optional[AgentStatusEnum] = None
     eleven_labs_api_key: Optional[str] = Field(
         default=None,
@@ -247,6 +312,7 @@ class AgentOut(BaseModel):
     name: str
     llm_model: Optional[str] = Field(default=None, serialization_alias="llmModel")
     tts_model: Optional[TtsModelSchema] = Field(default=None, serialization_alias="ttsModel")
+    stt_model: Optional[SttModelSchema] = Field(default=None, serialization_alias="sttModel")
     status: AgentStatusEnum
     created_at: datetime = Field(..., serialization_alias="createdAt")
     updated_at: Optional[datetime] = Field(default=None, serialization_alias="updatedAt")
@@ -260,7 +326,7 @@ class AgentOut(BaseModel):
 
 
 def agent_to_out(agent: Agent) -> AgentOut:
-    """Map ORM row to response; omit ``encrypted_elevenlabs_api_key``."""
+    """Map ORM row to response; omit ``encrypted_elevenlabs_api_key`` and catalog UUIDs."""
     tts_model: Optional[TtsModelSchema] = None
     if agent.tts_provider_slug and agent.tts_voice_external_id and agent.tts_language:
         try:
@@ -272,6 +338,17 @@ def agent_to_out(agent: Agent) -> AgentOut:
         except ValueError:
             tts_model = None
 
+    stt_model: Optional[SttModelSchema] = None
+    if agent.stt_provider_slug and agent.stt_model_external_id and agent.stt_language_code:
+        try:
+            stt_model = SttModelSchema(
+                provider=SttProviderEnum(agent.stt_provider_slug),
+                model_id=agent.stt_model_external_id,
+                language_code=agent.stt_language_code,
+            )
+        except ValueError:
+            stt_model = None
+
     try:
         status = AgentStatusEnum(agent.status or "pending")
     except ValueError:
@@ -282,6 +359,7 @@ def agent_to_out(agent: Agent) -> AgentOut:
         name=agent.name,
         llm_model=agent.llm_model,
         tts_model=tts_model,
+        stt_model=stt_model,
         status=status,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
