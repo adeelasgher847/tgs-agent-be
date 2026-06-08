@@ -36,7 +36,7 @@ _FLOW_ID = uuid.UUID("eeeeeeee-0000-0000-0000-000000000005")
 def _call_request(**overrides):
     from app.schemas.twilio import CallInitiateRequest
 
-    defaults: dict = dict(agentId=str(_AGENT_ID), userPhoneNumber="+15555550001")
+    defaults: dict = dict(agentId=str(_AGENT_ID), toNumber="+15555550001")
     defaults.update(overrides)
     return CallInitiateRequest(**defaults)
 
@@ -45,6 +45,7 @@ def _agent():
     ag = MagicMock()
     ag.id = _AGENT_ID
     ag.name = "Test Agent"
+    ag.status = "ready"  # telephony bind sets this; required for outbound calls
     ag.model = MagicMock(model_name="gpt-4o")
     return ag
 
@@ -70,6 +71,8 @@ def _session(*, call_flow_id: uuid.UUID | None = None):
 def _db():
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = _phone_number()
+    # concurrent outbound count query returns 0 (below any limit)
+    db.query.return_value.filter.return_value.scalar.return_value = 0
     return db
 
 
@@ -77,6 +80,7 @@ def _mock_settings(*, livekit_enabled: bool = True):
     s = MagicMock()
     s.LIVEKIT_ENABLED = livekit_enabled
     s.WEBHOOK_BASE_URL = "http://test.local"
+    s.OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE = 10
     return s
 
 
@@ -199,10 +203,12 @@ class TestFlowIdPassThrough:
         )
 
     @pytest.mark.asyncio
-    async def test_flow_id_from_existing_session_when_no_request_flow_id(self):
+    async def test_flow_id_none_when_session_has_flow_id_but_request_does_not(self):
         """
-        If the session already has call_flow_id (set by DB / prior code path)
-        and callFlowId is not in the request, that value is forwarded.
+        Since LiveKit room is now created BEFORE the DB session (new order: LiveKit → DB),
+        the flow_id forwarded to create_room comes from the request only.
+        If callFlowId is absent from the request, create_room receives flow_id=None
+        even if the session mock already has call_flow_id set.
         """
         req = _call_request()  # no callFlowId in request
         existing_flow = uuid.uuid4()
@@ -212,7 +218,8 @@ class TestFlowIdPassThrough:
 
         mock.assert_awaited_once()
         _, kwargs = mock.await_args
-        assert kwargs["flow_id"] == existing_flow
+        # flow_id comes from request (None), not from the pre-built session mock
+        assert kwargs["flow_id"] is None
 
     @pytest.mark.asyncio
     async def test_create_room_not_called_when_livekit_disabled(self):

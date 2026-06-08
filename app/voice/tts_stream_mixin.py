@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 class TtsStreamMixin:
     """TTS streaming and audio delivery methods for BidirectionalStreamHandler."""
 
+    def _livekit_recording_mirror(self):
+        """Return agent TTS mirror callback when LiveKit egress recording is active."""
+        pub = getattr(self, "_lk_agent_publisher", None)
+        if pub and getattr(pub, "connected", False):
+            return pub.publish_mulaw
+        return None
+
     async def _start_background_audio_with_delay(self):
         """Start background loop after call stabilizes (dev-branch behavior)."""
         try:
@@ -545,6 +552,7 @@ class TtsStreamMixin:
                             pace_20ms=True,
                             cancel=self._tts_cancel,
                             prime_frames=prime_frames,
+                            mirror_mulaw=self._livekit_recording_mirror(),
                         )
                         self._twilio_buffer_primed = True
 
@@ -789,6 +797,7 @@ class TtsStreamMixin:
                             pace_20ms=True,
                             cancel=self._tts_cancel,
                             prime_frames=0 if self._twilio_buffer_primed else 3,
+                            mirror_mulaw=self._livekit_recording_mirror(),
                         )
                         self._twilio_buffer_primed = True
 
@@ -817,6 +826,7 @@ class TtsStreamMixin:
                                     pace_20ms=True,
                                     cancel=self._tts_cancel,
                                     prime_frames=0,
+                                    mirror_mulaw=self._livekit_recording_mirror(),
                                 )
                             else:
                                 # No suffix - flush held tail
@@ -828,6 +838,7 @@ class TtsStreamMixin:
                                         pace_20ms=True,
                                         cancel=self._tts_cancel,
                                         prime_frames=0,
+                                        mirror_mulaw=self._livekit_recording_mirror(),
                                     )
                 finally:
                     self.is_speaking = False
@@ -855,6 +866,7 @@ class TtsStreamMixin:
                 stream_sid=self.stream_sid,
                 audio_bytes=audio_data,
                 pace_20ms=True,
+                mirror_mulaw=self._livekit_recording_mirror(),
             )
         
         except Exception as e:
@@ -867,19 +879,21 @@ class TtsStreamMixin:
                 return
             
             try:
-                if self.call_session.status != "in-progress":
-                    self.call_session.status = "in-progress"
-                    
+                # Outbound lifecycle uses "connected"; inbound/web keep "in-progress".
+                is_outbound = (self.call_session.call_type or "").lower() == "outbound"
+                live_status = "connected" if is_outbound else "in-progress"
+                if self.call_session.status != live_status:
+                    self.call_session.status = live_status
+
                     # Set start time when confident speech is detected
                     if not self.call_session.start_time:
                         self.call_session.start_time = datetime.now(timezone.utc)
-                    
+
                     self.db.commit()
-                
-                # Broadcast "in-progress" event (confident word detected)
+
                 await broadcast_call_status_update(
                     call_session_id=str(self.call_session.id),
-                    status="in-progress",
+                    status=live_status,
                     metadata={
                         "call_sid": self.call_sid,
                         "stream_sid": self.stream_sid,

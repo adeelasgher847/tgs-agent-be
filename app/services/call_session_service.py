@@ -22,11 +22,13 @@ from app.services.inbound_call_crm_sync_service import (
 class CallSessionService:
     """Service class for handling call session operations"""
     
-    def create_call_session(self, db: Session, user_id: uuid.UUID, agent_id: uuid.UUID, 
+    def create_call_session(self, db: Session, user_id: uuid.UUID, agent_id: uuid.UUID,
                            tenant_id: uuid.UUID, twilio_call_sid: str = None,
                            from_number: str = None, to_number: str = None,
                            call_type: str = "inbound", assistant_phone_number: str = None,
-                           customer_phone_number: str = None) -> CallSession:
+                           customer_phone_number: str = None,
+                           session_id: Optional[uuid.UUID] = None,
+                           status: str = "active") -> CallSession:
         """
         Create a new call session and associated call log
         
@@ -47,11 +49,12 @@ class CallSessionService:
         """
         
         call_session = CallSession(
+            id=session_id if session_id is not None else uuid.uuid4(),
             user_id=user_id,
             agent_id=agent_id,
             tenant_id=tenant_id,
             start_time=datetime.utcnow(),
-            status="active",
+            status=status,
             call_type=call_type,
             twilio_call_sid=twilio_call_sid,
             from_number=from_number,
@@ -195,7 +198,7 @@ class CallSessionService:
                 if transferred is not None:
                     call_session.transferred = transferred
                 
-                if status in ["completed", "failed", "busy"]:
+                if status in ["completed", "failed", "busy", "no_answer"]:
                     call_session.end_time = datetime.now(timezone.utc)
                     if call_session.start_time:
                         duration = (call_session.end_time - call_session.start_time).total_seconds()
