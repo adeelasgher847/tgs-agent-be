@@ -1954,6 +1954,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/phone-numbers/{phone_number_id}/configuration:
+    put:
+      tags:
+      - Phone Numbers
+      summary: Upsert Number Configuration
+      description: Update or create the per-number configuration (recording, duration,
+        hours).
+      operationId: upsert_number_configuration_api_v1_phone_numbers__phone_number_id__configuration_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: phone_number_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Phone Number Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NumberConfigurationRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_NumberConfigurationResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Phone Numbers
+      summary: Get Number Configuration
+      description: Retrieve the per-number configuration.
+      operationId: get_number_configuration_api_v1_phone_numbers__phone_number_id__configuration_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: phone_number_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Phone Number Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_NumberConfigurationResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/telephony/bindings:
     get:
       tags:
@@ -6008,6 +6074,40 @@ paths:
                 $ref: '#/components/schemas/SuccessResponse_RecruitmentDashboardData_'
       security:
       - HTTPBearer: []
+  /api/v1/recordings/{call_id}:
+    get:
+      tags:
+      - Call Recordings
+      summary: Get Recording
+      description: 'Return a signed GCS URL for the call recording.
+
+
+        URL expires in {GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS} seconds (default
+        3600).'
+      operationId: get_recording_api_v1_recordings__call_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: call_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Call Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_RecordingResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /health:
     get:
       summary: Health Check
@@ -7041,6 +7141,22 @@ components:
       - timezone
       - slot_duration_minutes
       title: BusinessHoursOut
+    BusinessHoursSchema:
+      properties:
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone e.g. Australia/Sydney
+        schedule:
+          items:
+            $ref: '#/components/schemas/ScheduleEntry'
+          type: array
+          title: Schedule
+      type: object
+      required:
+      - timezone
+      - schedule
+      title: BusinessHoursSchema
     BusinessHoursUpsert:
       properties:
         day_of_week:
@@ -9061,6 +9177,60 @@ components:
       type: object
       title: ModelUpdate
       description: Schema for updating a model
+    NumberConfigurationRequest:
+      properties:
+        recording_enabled:
+          type: boolean
+          title: Recording Enabled
+          default: false
+        max_duration_seconds:
+          type: integer
+          maximum: 86400.0
+          minimum: 60.0
+          title: Max Duration Seconds
+          default: 3600
+        business_hours:
+          allOf:
+          - $ref: '#/components/schemas/BusinessHoursSchema'
+          nullable: true
+      type: object
+      title: NumberConfigurationRequest
+    NumberConfigurationResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        phone_number_id:
+          type: string
+          format: uuid
+          title: Phone Number Id
+        recording_enabled:
+          type: boolean
+          title: Recording Enabled
+        max_duration_seconds:
+          type: integer
+          title: Max Duration Seconds
+        business_hours:
+          additionalProperties: true
+          type: object
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - id
+      - phone_number_id
+      - recording_enabled
+      - max_duration_seconds
+      - created_at
+      title: NumberConfigurationResponse
     ParseMode:
       type: string
       enum:
@@ -9623,6 +9793,23 @@ components:
       - created_at
       - message
       title: PurchasePhoneNumberResponse
+    RecordingResponse:
+      properties:
+        url:
+          type: string
+          title: Url
+          description: GCS signed URL (expires in 1 hour)
+        duration:
+          type: integer
+          nullable: true
+        size:
+          type: integer
+          nullable: true
+      type: object
+      required:
+      - url
+      title: RecordingResponse
+      description: Response for GET /api/v1/recordings/{call_id}.
     RecruitmentDashboardData:
       properties:
         summary:
@@ -10501,6 +10688,28 @@ components:
       - is_active
       - supports_streaming
       title: STTProviderOut
+    ScheduleEntry:
+      properties:
+        day:
+          type: integer
+          maximum: 6.0
+          minimum: 0.0
+          title: Day
+          description: 0=Monday … 6=Sunday
+        open:
+          type: string
+          title: Open
+          description: HH:mm open time
+        close:
+          type: string
+          title: Close
+          description: HH:mm close time
+      type: object
+      required:
+      - day
+      - open
+      - close
+      title: ScheduleEntry
     ScheduleFromCallSessionRequest:
       properties:
         call_session_id:
@@ -11186,6 +11395,22 @@ components:
       required:
       - data
       title: SuccessResponse[ModelResponse]
+    SuccessResponse_NumberConfigurationResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/NumberConfigurationResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[NumberConfigurationResponse]
     SuccessResponse_PendingCountResponse_:
       properties:
         data:
@@ -11330,6 +11555,22 @@ components:
       required:
       - data
       title: SuccessResponse[PurchasePhoneNumberResponse]
+    SuccessResponse_RecordingResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/RecordingResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[RecordingResponse]
     SuccessResponse_RecruitmentDashboardData_:
       properties:
         data:
