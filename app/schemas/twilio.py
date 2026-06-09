@@ -86,6 +86,9 @@ class CallInitiateRequest(BaseModel):
     call_session_id_field_id: Optional[str] = None  # Generic: call_session_id field ID from n8n workflow
     crm_type: Optional[str] = None  # "monday" | "clickup" | "jira" | "trello" from n8n workflow
     callFlowId: Optional[str] = None  # Optional UUID — binds this call session to a CallFlow
+    # Batch outbound calls — worker passes substituted prompt + record link
+    batch_call_record_id: Optional[str] = None
+    batch_prompt_override: Optional[str] = None
 
     @field_validator("toNumber")
     @classmethod

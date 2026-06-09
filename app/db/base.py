@@ -53,3 +53,7 @@ from app.models.stripe_checkout_fulfillment import StripeCheckoutFulfillment
 # STT catalog
 from app.models.stt_provider import STTProvider
 from app.models.stt_model import STTModel
+
+# Batch outbound calls
+from app.models.batch_job import BatchJob
+from app.models.batch_call_record import BatchCallRecord
