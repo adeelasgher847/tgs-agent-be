@@ -1,5 +1,5 @@
 """
-Dual authentication middleware for /api/v1/* routes.
+Dual authentication middleware for /api/v1/* and /api/v2/* routes.
 
 Auth resolution order (first match wins):
   1. Public / skip paths → pass through (no auth required)
@@ -62,6 +62,10 @@ _SKIP_PREFIXES = (
     "/api/v1/voice/",
     "/api/v1/stream/",
     "/health",
+    # v2 public endpoints — no auth required
+    "/api/v2/health",
+    "/api/v2/docs",
+    "/api/v2/openapi.json",
 )
 
 def _get_redis() -> Optional[aioredis.Redis]:
@@ -379,7 +383,7 @@ async def _try_jwt_auth(request: Request) -> bool:
 
 
 class ApiKeyMiddleware:
-    """Enforces API-key OR JWT auth on protected /api/v1 routes."""
+    """Enforces API-key OR JWT auth on protected /api/v1 and /api/v2 routes."""
 
     def __init__(self, app):
         self.app = app
@@ -397,7 +401,9 @@ class ApiKeyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if not request.url.path.startswith("/api/v1/") or _should_skip(request.url.path):
+        path = request.url.path
+        is_protected_api = path.startswith("/api/v1/") or path.startswith("/api/v2/")
+        if not is_protected_api or _should_skip(path):
             await self.app(scope, receive, send)
             return
 
