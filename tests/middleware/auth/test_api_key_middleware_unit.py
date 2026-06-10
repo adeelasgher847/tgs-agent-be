@@ -90,6 +90,19 @@ def _app() -> FastAPI:
     def health():
         return {"ok": True}
 
+    @mini.get("/api/v2/protected")
+    def v2_protected(request: Request):
+        ws = request.state.workspace
+        return {
+            "ok": True,
+            "workspace_id": str(ws.id),
+            "auth_method": request.state.auth_method,
+        }
+
+    @mini.get("/api/v2/health")
+    def v2_health():
+        return {"status": "ok"}
+
     return mini
 
 
@@ -162,6 +175,10 @@ class TestSkipPaths:
 
     def test_health_no_auth(self, client):
         resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_v2_health_no_auth(self, client):
+        resp = client.get("/api/v2/health")
         assert resp.status_code == 200
 
     def test_clickup_oauth_no_auth(self, client):
@@ -413,6 +430,23 @@ class TestJwtAuth:
         body = resp.json()
         assert body["workspace_id"] == str(tenant_id)
         assert body["auth_method"] == "jwt"
+
+    def test_valid_jwt_on_v2_protected_route(self, client):
+        tenant_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        token = _bearer_token(user_id, tenant_id)
+        workspace = Workspace.from_mapping(_workspace_dict(tenant_id))
+
+        async def _load(wid):
+            return workspace
+
+        with patch("app.middleware.api_key_middleware._load_workspace", side_effect=_load):
+            resp = client.get(
+                "/api/v2/protected",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["auth_method"] == "jwt"
 
     def test_invalid_api_key_headers_with_valid_jwt(self, client):
         """Invalid API key attempt must fall through to JWT."""

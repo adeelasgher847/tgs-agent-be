@@ -6121,6 +6121,21 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Health Check Health Get
+  /api/v2/health:
+    get:
+      tags:
+      - v2
+      summary: Health Check
+      operationId: health_check_api_v2_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Check Api V2 Health Get
 components:
   schemas:
     AccountSnapshot:

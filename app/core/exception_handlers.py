@@ -33,9 +33,24 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
                 "X-Request-ID": request_id,
             },
         )
+    if (
+        isinstance(exc.detail, dict)
+        and "code" in exc.detail
+        and "message" in exc.detail
+    ):
+        payload = build_api_error_payload(
+            exc.status_code,
+            exc.detail["message"],
+            error_code=exc.detail["code"],
+            request_id=request_id,
+        )
+    else:
+        payload = build_api_error_payload(
+            exc.status_code, exc.detail, request_id=request_id
+        )
     return JSONResponse(
         status_code=exc.status_code,
-        content=build_api_error_payload(exc.status_code, exc.detail, request_id=request_id),
+        content=payload,
         headers={
             **(getattr(exc, "headers", None) or {}),
             "X-Request-ID": request_id,

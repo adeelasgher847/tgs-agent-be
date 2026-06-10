@@ -1,9 +1,13 @@
+import hashlib
+
 from app.db.session import SessionLocal
 from typing import Generator, Optional, Union
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import InterfaceError
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.user import User, user_tenant_association
 from app.models.tenant import Tenant
 from app.core.security import verify_token,create_user_token, create_refresh_token_value, refresh_token_expires_at
@@ -15,6 +19,8 @@ from app.core.request_auth import (
     get_workspace_from_request,
 )
 from app.core.workspace import Workspace
+from app.db.async_session import get_db as get_async_db
+from app.models.api_key import Apikey
 from app.models.refresh_token import RefreshToken
 from app.schemas.auth import TokenResponse, RoleInfo
 from app.services.role_service import is_admin_in_tenant, get_user_role_in_tenant
@@ -70,6 +76,64 @@ def get_workspace_api_key(request: Request) -> Workspace:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This endpoint requires API key authentication",
         )
+    return workspace
+
+
+_UNAUTHORIZED_WORKSPACE = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail={"code": "unauthorized", "message": "Invalid or missing API key"},
+)
+
+
+async def get_current_workspace(
+    request: Request,
+    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
+    x_workspace_id: Optional[str] = Header(default=None, alias="x-workspace-id"),
+    db: AsyncSession = Depends(get_async_db),
+) -> Workspace:
+    """v2 M2M auth — API key headers; reuses middleware state when already resolved."""
+    raw_key = (x_api_key or "").strip()
+    workspace_header = (x_workspace_id or "").strip()
+    if not raw_key or not workspace_header:
+        raise _UNAUTHORIZED_WORKSPACE
+
+    try:
+        workspace_id = uuid.UUID(workspace_header)
+    except ValueError:
+        raise _UNAUTHORIZED_WORKSPACE
+
+    existing = get_workspace_from_request(request)
+    if existing is not None and existing.id == workspace_id:
+        if not existing.is_active:
+            raise _UNAUTHORIZED_WORKSPACE
+        return existing
+
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+    result = await db.execute(
+        select(Apikey, Tenant)
+        .join(Tenant, Apikey.tenant_id == Tenant.id)
+        .where(
+            Apikey.key_hash == key_hash,
+            Apikey.tenant_id == workspace_id,
+            Apikey.is_active.is_(True),
+        )
+    )
+    row = result.first()
+
+    if row is None:
+        raise _UNAUTHORIZED_WORKSPACE
+
+    api_key_obj, tenant = row
+    workspace = Workspace.from_tenant(tenant)
+    if not workspace.is_active:
+        raise _UNAUTHORIZED_WORKSPACE
+
+    request.state.workspace = workspace
+    request.state.workspace_id = workspace.id
+    request.state.auth_method = AUTH_METHOD_API_KEY
+    request.state.api_key_id = api_key_obj.id
+
     return workspace
 
 
