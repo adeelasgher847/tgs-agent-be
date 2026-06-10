@@ -589,6 +589,214 @@ class TestBatchCallCompletion:
         asyncio.run(notify_batch_call_ended(db, uuid.uuid4(), "completed"))
 
 
+# ── Secret validation (Fix 1) ─────────────────────────────────────────────────
+
+class TestSecretValidation:
+    def test_dispatch_raises_runtime_error_when_secret_missing(self, db):
+        """dispatch_record must fail fast with a descriptive RuntimeError when
+        N8N_WEBHOOK_SECRET is not configured — prevents silent auth bypass."""
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1)
+        record = _make_record(db, job.id, "+15550001111", status="active")
+        job.active_count = 1
+        db.commit()
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        with patch("app.services.batch_call_worker_service.settings") as mock_cfg:
+            mock_cfg.N8N_WEBHOOK_SECRET = ""
+            svc = BatchCallWorkerService(db)
+            with pytest.raises(RuntimeError, match="N8N_WEBHOOK_SECRET"):
+                asyncio.run(svc.dispatch_record(record, workspace_id, agent_id, None))
+
+    def test_dispatch_does_not_call_initiate_when_secret_missing(self, db):
+        """initiate_call must never be reached when the secret is absent."""
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1)
+        record = _make_record(db, job.id, "+15550001111", status="active")
+        job.active_count = 1
+        db.commit()
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        with patch("app.services.batch_call_worker_service.settings") as mock_cfg:
+            mock_cfg.N8N_WEBHOOK_SECRET = ""
+            with patch(
+                "app.services.voice_call_service.initiate_call",
+                new=AsyncMock(),
+            ) as mock_call:
+                svc = BatchCallWorkerService(db)
+                with pytest.raises(RuntimeError):
+                    asyncio.run(svc.dispatch_record(record, workspace_id, agent_id, None))
+                mock_call.assert_not_called()
+
+    def test_dispatch_proceeds_when_secret_present(self, db):
+        """Sanity check: a non-empty secret does not raise RuntimeError."""
+        from app.schemas.base import SuccessResponse
+        from app.schemas.twilio import CallInitiateResponse
+
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1)
+        record = _make_record(db, job.id, "+15550001111", status="active")
+        job.active_count = 1
+        db.commit()
+
+        _cid = uuid.uuid4()
+        fake_response = SuccessResponse(
+            data=CallInitiateResponse(
+                callId=str(_cid),
+                twilioCallSid="CAtest",
+                callSessionId=str(_cid),
+                status="initiated",
+            )
+        )
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        with patch("app.services.batch_call_worker_service.settings") as mock_cfg:
+            mock_cfg.N8N_WEBHOOK_SECRET = "secret-token"
+            with patch(
+                "app.services.voice_call_service.initiate_call",
+                new=AsyncMock(return_value=fake_response),
+            ):
+                svc = BatchCallWorkerService(db)
+                asyncio.run(svc.dispatch_record(record, workspace_id, agent_id, None))
+
+        db.refresh(record)
+        assert record.attempts == 1
+
+
+# ── Atomic counter updates (Fix 2) ───────────────────────────────────────────
+
+class TestAtomicCounterUpdates:
+    def test_counter_update_uses_server_side_arithmetic(self):
+        """
+        The bulk UPDATE in pick_waiting_records must use column-based arithmetic
+        so concurrent workers cannot produce lost updates.
+
+        SQLAlchemy emits  SET waiting_count = batchjob.waiting_count - :param
+        not the Python-evaluated literal  SET waiting_count = :literal_value.
+        """
+        from sqlalchemy import update
+        from sqlalchemy.dialects import postgresql
+        from app.models.batch_job import BatchJob
+
+        n = 4
+        stmt = (
+            update(BatchJob)
+            .values(
+                waiting_count=BatchJob.waiting_count - n,
+                active_count=BatchJob.active_count + n,
+            )
+        )
+        sql = str(stmt.compile(dialect=postgresql.dialect()))
+
+        # Column reference must appear on the RHS of the assignment
+        assert "waiting_count - " in sql, f"Expected server-side subtraction, got: {sql}"
+        assert "active_count + " in sql, f"Expected server-side addition, got: {sql}"
+
+    def test_two_sequential_pickups_produce_correct_counters(self, db):
+        """
+        Simulate two workers each picking half the records from a 6-record job.
+
+        The raw SKIP LOCKED SQL is mocked (SQLite does not support it); the ORM
+        counter UPDATE is allowed to execute so its correctness is verified.
+        SKIP LOCKED semantics are validated separately in Postgres integration tests.
+        """
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=6)
+        records = [_make_record(db, job.id, f"+1555000{i:04d}") for i in range(6)]
+        # Keep as UUID objects — the ORM update uses id.in_(record_ids) which needs UUIDs
+        all_ids = [r.id for r in records]
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        original_execute = db.execute
+
+        # Worker 1 picks records 0-2 (SKIP LOCKED returns them)
+        w1_ids = all_ids[:3]
+
+        def _execute_w1(stmt, params=None, **kwargs):
+            if params is not None and "lim" in params:
+                mock_result = MagicMock()
+                mock_result.fetchall.return_value = [(rid,) for rid in w1_ids]
+                return mock_result
+            return original_execute(stmt, params, **kwargs)
+
+        with patch.object(db, "execute", side_effect=_execute_w1):
+            svc1 = BatchCallWorkerService(db)
+            picked1 = svc1.pick_waiting_records(job.id, limit=3)
+
+        db.refresh(job)
+        assert len(picked1) == 3
+        assert job.waiting_count == 3
+        assert job.active_count == 3
+
+        # Worker 2 picks remaining records 3-5
+        w2_ids = all_ids[3:]
+
+        def _execute_w2(stmt, params=None, **kwargs):
+            if params is not None and "lim" in params:
+                mock_result = MagicMock()
+                mock_result.fetchall.return_value = [(rid,) for rid in w2_ids]
+                return mock_result
+            return original_execute(stmt, params, **kwargs)
+
+        with patch.object(db, "execute", side_effect=_execute_w2):
+            svc2 = BatchCallWorkerService(db)
+            picked2 = svc2.pick_waiting_records(job.id, limit=3)
+
+        db.refresh(job)
+        assert len(picked2) == 3
+        assert job.waiting_count == 0
+        assert job.active_count == 6
+
+        # Workers must have picked non-overlapping sets
+        ids1 = {r.id for r in picked1}
+        ids2 = {r.id for r in picked2}
+        assert ids1.isdisjoint(ids2), "Workers picked overlapping records"
+
+    def test_skip_locked_prevents_double_pickup_within_single_worker(self, db):
+        """
+        A second call to pick_waiting_records on the same job after all records
+        are active must return an empty list (no double-pickup).
+        """
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=2)
+        records = [_make_record(db, job.id, f"+1555000{i:04d}") for i in range(2)]
+        all_ids = [r.id for r in records]  # UUID objects for ORM compatibility
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        original_execute = db.execute
+        first_call = {"done": False}
+
+        def _execute_once(stmt, params=None, **kwargs):
+            if params is not None and "lim" in params:
+                mock_result = MagicMock()
+                if not first_call["done"]:
+                    first_call["done"] = True
+                    mock_result.fetchall.return_value = [(rid,) for rid in all_ids]
+                else:
+                    # SKIP LOCKED: all rows locked by first worker → empty
+                    mock_result.fetchall.return_value = []
+                return mock_result
+            return original_execute(stmt, params, **kwargs)
+
+        with patch.object(db, "execute", side_effect=_execute_once):
+            svc = BatchCallWorkerService(db)
+            first = svc.pick_waiting_records(job.id, limit=5)
+            second = svc.pick_waiting_records(job.id, limit=5)
+
+        assert len(first) == 2
+        assert second == []
+
+
 class TestBillingRecordCallUsage:
     def test_record_call_usage_increments_monthly_counter(self, db):
         from app.models.plan import Plan

@@ -12,6 +12,7 @@ from app.routers.api_docs import router as api_docs_router
 from app.routers.health import router as health_router
 from app.schemas.base import SuccessResponse
 from app.utils.response import create_success_response
+from app.utils.arq_pool import init_arq_pool
 from app.utils.rate_limiter import init_rate_limiter
 
 from app.core.config import settings
@@ -43,6 +44,11 @@ async def lifespan(app: FastAPI):
         logger.info("Rate limiter initialized successfully")
     except Exception as exc:
         logger.warning("Rate limiter initialization failed: %s — continuing without rate limiting", exc)
+
+    try:
+        await init_arq_pool()
+    except Exception as exc:
+        logger.warning("ARQ pool startup failed: %s — batch enqueue will use per-request pool", exc)
 
     try:
         get_rime_api_key()

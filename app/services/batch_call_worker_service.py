@@ -160,7 +160,13 @@ class BatchCallWorkerService:
 
         # Build a minimal fake Starlette Request so initiate_call can read the
         # N8N webhook secret header and resolve is_webhook=True.
-        fake_request = _build_fake_request(settings.N8N_WEBHOOK_SECRET or "")
+        secret = settings.N8N_WEBHOOK_SECRET
+        if not secret:
+            raise RuntimeError(
+                "N8N_WEBHOOK_SECRET must be set before batch dispatch can run. "
+                "Set it in your .env or Secret Manager."
+            )
+        fake_request = _build_fake_request(secret)
 
         try:
             result = await initiate_call(

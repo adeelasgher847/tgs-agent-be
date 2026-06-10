@@ -100,7 +100,21 @@ async def create_batch_job(
             detail="Uploaded file must be a CSV (text/csv or text/plain)",
         )
 
+    from app.services.batch_call_service import MAX_CSV_BYTES
+
+    if file.size is not None and file.size > MAX_CSV_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="CSV file exceeds maximum size of 20 MB",
+        )
+
     raw = await file.read()
+
+    if len(raw) > MAX_CSV_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="CSV file exceeds maximum size of 20 MB",
+        )
 
     job_out = svc.create_batch_job(
         workspace_id=workspace.id,
@@ -188,16 +202,24 @@ async def _enqueue_batch_job(
     """
     Push a process_batch_job task into ARQ.
 
-    If scheduled_at is in the future ARQ defers execution until that moment.
-    Falls back silently if Redis is unavailable — the 60-s poll cron will
-    pick up any pending jobs on the next tick.
+    Uses the application-level shared pool (app/utils/arq_pool.py) so no new
+    connection is established per request.  Falls back to a temporary per-call
+    pool if the shared pool was not initialised (e.g. Redis was down at startup).
+    Falls back silently on any error — the 60-s poll cron self-heals.
     """
     try:
-        import arq  # type: ignore
-        from app.core.config import settings as cfg
+        from app.utils.arq_pool import get_arq_pool
 
-        redis_settings = arq.connections.RedisSettings.from_dsn(cfg.REDIS_URL)
-        pool = await arq.create_pool(redis_settings)
+        pool = get_arq_pool()
+        _owns_pool = False
+
+        if pool is None:
+            import arq  # type: ignore
+            from app.core.config import settings as cfg
+
+            redis_settings = arq.connections.RedisSettings.from_dsn(cfg.REDIS_URL)
+            pool = await arq.create_pool(redis_settings)
+            _owns_pool = True
 
         kwargs: dict = {}
         if scheduled_at is not None:
@@ -209,9 +231,13 @@ async def _enqueue_batch_job(
             if scheduled_at > now:
                 kwargs["_defer_until"] = scheduled_at
 
-        await pool.enqueue_job("process_batch_job", batch_job_id, **kwargs)
-        await pool.aclose()
-        logger.info("BatchJob %s enqueued in ARQ", batch_job_id)
+        try:
+            await pool.enqueue_job("process_batch_job", batch_job_id, **kwargs)
+            logger.info("BatchJob %s enqueued in ARQ", batch_job_id)
+        finally:
+            if _owns_pool:
+                await pool.aclose()
+
     except Exception as exc:
         logger.warning(
             "ARQ enqueue failed for batch %s: %s — worker will self-heal on next poll",

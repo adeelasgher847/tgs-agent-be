@@ -15,6 +15,7 @@ Coverage:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import uuid
@@ -198,6 +199,143 @@ class TestCreateBatchJob:
         )
 
         assert resp.status_code == 422
+
+    # ── File size validation (Fix 3) ──────────────────────────────────────────
+
+    @patch("app.api.v2.routers.batch_calls._enqueue_batch_job", new_callable=AsyncMock)
+    def test_pre_read_size_check_rejects_oversized_via_size_metadata(self, mock_enqueue):
+        """
+        When UploadFile.size metadata exceeds 20 MB the router must return 422
+        without reading the file body or calling the service.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock as _AsyncMock, MagicMock, PropertyMock
+        from fastapi import UploadFile
+        from app.api.v2.routers.batch_calls import create_batch_job
+        from app.core.workspace import Workspace
+
+        mock_file = MagicMock(spec=UploadFile)
+        mock_file.content_type = "text/csv"
+        mock_file.size = 21 * 1024 * 1024  # 21 MB — over the limit
+        mock_file.read = _AsyncMock(return_value=b"phone_number\n+15550001111\n")
+
+        mock_workspace = MagicMock(spec=Workspace)
+        mock_workspace.id = WORKSPACE_ID
+
+        mock_svc = MagicMock()
+
+        from fastapi import HTTPException as _HTTPException
+        with pytest.raises(_HTTPException) as exc_info:
+            asyncio.run(
+                create_batch_job(
+                    file=mock_file,
+                    agent_id=AGENT_ID,
+                    scheduled_at=None,
+                    workspace=mock_workspace,
+                    svc=mock_svc,
+                )
+            )
+
+        assert exc_info.value.status_code == 422
+        assert "20 MB" in exc_info.value.detail
+        mock_file.read.assert_not_called()
+        mock_svc.create_batch_job.assert_not_called()
+
+    @patch("app.api.v2.routers.batch_calls._enqueue_batch_job", new_callable=AsyncMock)
+    def test_post_read_size_check_rejects_oversized_payload_without_metadata(self, mock_enqueue):
+        """
+        When UploadFile.size is None (no Content-Length) but the actual payload
+        exceeds 20 MB, the router must still return 422 after reading.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock as _AsyncMock, MagicMock
+        from fastapi import UploadFile, HTTPException as _HTTPException
+        from app.api.v2.routers.batch_calls import create_batch_job
+        from app.core.workspace import Workspace
+        from app.services.batch_call_service import MAX_CSV_BYTES
+
+        oversized_body = b"phone_number\n" + b"+15550001111\n" + b"x" * (MAX_CSV_BYTES + 1)
+
+        mock_file = MagicMock(spec=UploadFile)
+        mock_file.content_type = "text/csv"
+        mock_file.size = None  # No size metadata available
+        mock_file.read = _AsyncMock(return_value=oversized_body)
+
+        mock_workspace = MagicMock(spec=Workspace)
+        mock_workspace.id = WORKSPACE_ID
+
+        mock_svc = MagicMock()
+
+        with pytest.raises(_HTTPException) as exc_info:
+            asyncio.run(
+                create_batch_job(
+                    file=mock_file,
+                    agent_id=AGENT_ID,
+                    scheduled_at=None,
+                    workspace=mock_workspace,
+                    svc=mock_svc,
+                )
+            )
+
+        assert exc_info.value.status_code == 422
+        assert "20 MB" in exc_info.value.detail
+        mock_file.read.assert_called_once()
+        mock_svc.create_batch_job.assert_not_called()
+
+    @patch("app.api.v2.routers.batch_calls._enqueue_batch_job", new_callable=AsyncMock)
+    def test_valid_upload_unaffected_by_size_checks(self, mock_enqueue):
+        """
+        A valid CSV under the size limit must not be rejected by either size check.
+        Regression guard for Fix 3.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock as _AsyncMock, MagicMock
+        from fastapi import UploadFile
+        from app.api.v2.routers.batch_calls import create_batch_job
+        from app.core.workspace import Workspace
+        from app.schemas.batch_call import BatchJobOut
+        from datetime import datetime, timezone
+
+        job = BatchJobOut(
+            id=uuid.uuid4(),
+            workspace_id=WORKSPACE_ID,
+            agent_id=AGENT_ID,
+            status="pending",
+            total_count=2,
+            waiting_count=2,
+            active_count=0,
+            completed_count=0,
+            failed_count=0,
+            gcs_path=f"batch-files/{WORKSPACE_ID}/x.csv",
+            scheduled_at=None,
+            started_at=None,
+            completed_at=None,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        mock_file = MagicMock(spec=UploadFile)
+        mock_file.content_type = "text/csv"
+        mock_file.size = len(VALID_CSV)
+        mock_file.read = _AsyncMock(return_value=VALID_CSV)
+
+        mock_workspace = MagicMock(spec=Workspace)
+        mock_workspace.id = WORKSPACE_ID
+
+        mock_svc = MagicMock()
+        mock_svc.create_batch_job.return_value = job
+
+        result = asyncio.run(
+            create_batch_job(
+                file=mock_file,
+                agent_id=AGENT_ID,
+                scheduled_at=None,
+                workspace=mock_workspace,
+                svc=mock_svc,
+            )
+        )
+
+        mock_svc.create_batch_job.assert_called_once()
+        assert result.total_count == 2
 
     def test_missing_api_key_returns_401(self):
         from app.api.v2.routers import batch_calls as bc_module
