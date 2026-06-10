@@ -16,4 +16,5 @@ def test_v2_health_returns_200_without_auth():
         "status": "ok",
         "version": settings.APP_VERSION,
         "service": "fastapi-v2",
+        "db": "ok",
     }

@@ -57,3 +57,6 @@ from app.models.stt_model import STTModel
 # Batch outbound calls
 from app.models.batch_job import BatchJob
 from app.models.batch_call_record import BatchCallRecord
+
+# Custom webhooks
+from app.models.webhook import WebhookEndpoint, WebhookDelivery
