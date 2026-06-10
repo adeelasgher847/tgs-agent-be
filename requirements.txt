@@ -49,3 +49,4 @@ livekit-api==1.1.0
 livekit==1.1.2
 google-cloud-storage==3.11.0
 greenlet==3.5.0
+arq==0.26.1

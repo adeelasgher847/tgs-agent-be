@@ -367,8 +367,16 @@ Previous conversation:
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
 
+            # Batch calls may inject a per-row substituted prompt via call_metadata
+            batch_prompt_override = None
+            if self._h.call_session and self._h.call_session.call_metadata:
+                batch_prompt_override = self._h.call_session.call_metadata.get(
+                    "batch_prompt_override"
+                )
+
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self._h.agent and self._h.agent.system_prompt:
+                effective_custom_prompt = batch_prompt_override or self._h.agent.system_prompt
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -382,7 +390,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 {_bk_block}
 
 # CUSTOM INSTRUCTIONS
-{self._h.agent.system_prompt}
+{effective_custom_prompt}
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
@@ -405,6 +413,9 @@ Previous conversation:
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
+                effective_model_prompt = (
+                    batch_prompt_override or self._h.agent.model.system_prompt
+                )
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -418,7 +429,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 {_bk_block}
 
 # MODEL INSTRUCTIONS
-{self._h.agent.model.system_prompt}
+{effective_model_prompt}
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).

@@ -6136,6 +6136,212 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Health Check Api V2 Health Get
+  /api/v2/batch-calls:
+    post:
+      tags:
+      - batch-calls
+      summary: Create Batch Job
+      description: 'Upload a CSV and create a batch outbound-call job.
+
+
+        Required CSV column: phone_number.
+
+        Additional columns are available as {variable} substitutions in the agent
+        prompt.
+
+        Requires admin / member / owner / config role for JWT users; any API key client.'
+      operationId: create_batch_job_api_v2_batch_calls_post
+      security:
+      - HTTPBearer: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_create_batch_job_api_v2_batch_calls_post'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchJobOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - batch-calls
+      summary: List Batch Jobs
+      operationId: list_batch_jobs_api_v2_batch_calls_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBatchJobs'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/batch-calls/{batch_id}:
+    get:
+      tags:
+      - batch-calls
+      summary: Get Batch Job
+      operationId: get_batch_job_api_v2_batch_calls__batch_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchJobOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - batch-calls
+      summary: Cancel Batch Job
+      description: 'Cancel a batch job.
+
+
+        Requires admin / member / owner / config role for JWT users; any API key client.
+
+        Already-connected calls complete naturally; waiting records are cancelled.'
+      operationId: cancel_batch_job_api_v2_batch_calls__batch_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchJobOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/batch-calls/{batch_id}/progress:
+    get:
+      tags:
+      - batch-calls
+      summary: Get Batch Job Progress
+      operationId: get_batch_job_progress_api_v2_batch_calls__batch_id__progress_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchJobProgress'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/batch-calls/{batch_id}/calls:
+    get:
+      tags:
+      - batch-calls
+      summary: List Batch Call Records
+      operationId: list_batch_call_records_api_v2_batch_calls__batch_id__calls_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Batch Id
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBatchCallRecords'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AccountSnapshot:
@@ -6902,6 +7108,159 @@ components:
       - slots
       - total
       title: AvailableSlotsResponse
+    BatchCallRecordOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        batch_job_id:
+          type: string
+          format: uuid
+          title: Batch Job Id
+        phone_number:
+          type: string
+          title: Phone Number
+        variables:
+          additionalProperties: true
+          type: object
+          nullable: true
+        status:
+          type: string
+          title: Status
+        call_id:
+          type: string
+          format: uuid
+          nullable: true
+        attempts:
+          type: integer
+          title: Attempts
+        last_error:
+          type: string
+          nullable: true
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - id
+      - batch_job_id
+      - phone_number
+      - status
+      - attempts
+      - created_at
+      title: BatchCallRecordOut
+    BatchJobOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        workspace_id:
+          type: string
+          format: uuid
+          title: Workspace Id
+        agent_id:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          type: string
+          title: Status
+        total_count:
+          type: integer
+          title: Total Count
+        waiting_count:
+          type: integer
+          title: Waiting Count
+        active_count:
+          type: integer
+          title: Active Count
+        completed_count:
+          type: integer
+          title: Completed Count
+        failed_count:
+          type: integer
+          title: Failed Count
+        gcs_path:
+          type: string
+          nullable: true
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - workspace_id
+      - status
+      - total_count
+      - waiting_count
+      - active_count
+      - completed_count
+      - failed_count
+      - created_at
+      title: BatchJobOut
+    BatchJobProgress:
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+          title: Batch Id
+        status:
+          type: string
+          title: Status
+        waiting:
+          type: integer
+          title: Waiting
+        active:
+          type: integer
+          title: Active
+        completed:
+          type: integer
+          title: Completed
+        failed:
+          type: integer
+          title: Failed
+        total:
+          type: integer
+          title: Total
+        percent_complete:
+          type: number
+          title: Percent Complete
+      type: object
+      required:
+      - batch_id
+      - status
+      - waiting
+      - active
+      - completed
+      - failed
+      - total
+      - percent_complete
+      title: BatchJobProgress
+      description: Live progress snapshot for GET /batch-calls/{batch_id}/progress.
     BindNumberRequest:
       properties:
         number_id:
@@ -7019,6 +7378,26 @@ components:
       - board_id
       - board_url
       title: BoardInfoResponse
+    Body_create_batch_job_api_v2_batch_calls_post:
+      properties:
+        file:
+          type: string
+          title: File
+          description: UTF-8 CSV file, max 20 MB
+          format: binary
+        agent_id:
+          type: string
+          format: uuid
+          title: Agent Id
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - file
+      - agent_id
+      title: Body_create_batch_job_api_v2_batch_calls_post
     Body_upload_job_description_api_v1_recruiting_job_descriptions_upload_post:
       properties:
         file:
@@ -7709,6 +8088,12 @@ components:
           type: string
           nullable: true
         callFlowId:
+          type: string
+          nullable: true
+        batch_call_record_id:
+          type: string
+          nullable: true
+        batch_prompt_override:
           type: string
           nullable: true
       type: object
@@ -9246,6 +9631,52 @@ components:
       - max_duration_seconds
       - created_at
       title: NumberConfigurationResponse
+    PaginatedBatchCallRecords:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/BatchCallRecordOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      title: PaginatedBatchCallRecords
+    PaginatedBatchJobs:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/BatchJobOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      title: PaginatedBatchJobs
     ParseMode:
       type: string
       enum:

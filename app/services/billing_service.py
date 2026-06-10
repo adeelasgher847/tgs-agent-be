@@ -239,6 +239,55 @@ class BillingService:
         return subscription
 
     @staticmethod
+    def record_call_usage(
+        db: Session,
+        tenant_id: uuid.UUID,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """
+        Increment monthly call usage for a connected outbound call (batch or otherwise).
+
+        Resolves subscription via workspace user when user_id is omitted.
+        """
+        from app.core.logger import logger
+        from app.models.user import user_tenant_association
+        from sqlalchemy import select
+
+        resolved_user_id = user_id
+        if resolved_user_id is None:
+            resolved_user_id = db.execute(
+                select(user_tenant_association.c.user_id).where(
+                    user_tenant_association.c.tenant_id == tenant_id
+                ).limit(1)
+            ).scalar()
+
+        if resolved_user_id is None:
+            logger.warning("record_call_usage: no user found for tenant %s", tenant_id)
+            return
+
+        now = datetime.now(timezone.utc)
+        subscription = BillingService.get_or_create_subscription(db, resolved_user_id)
+
+        usage = db.query(UsageRecord).filter(
+            UsageRecord.subscription_id == subscription.id,
+            UsageRecord.month == now.month,
+            UsageRecord.year == now.year,
+        ).first()
+
+        if usage is None:
+            usage = UsageRecord(
+                subscription_id=subscription.id,
+                month=now.month,
+                year=now.year,
+                calls_used=0,
+            )
+            db.add(usage)
+
+        usage.calls_used = (usage.calls_used or 0) + 1
+        usage.updated_at = now
+        db.commit()
+
+    @staticmethod
     def has_crm_access(db: Session, user_id: uuid.UUID, crm_type: str) -> bool:
         """Check if user has active subscription for this CRM type and period has not ended."""
         now = datetime.now(timezone.utc)

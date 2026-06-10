@@ -411,6 +411,18 @@ async def initiate_call(
             db.commit()
             db.refresh(call_session)
 
+        # Batch call — store substituted prompt for the voice agent runtime
+        batch_record_id = (call_request.batch_call_record_id or "").strip()
+        if batch_record_id or call_request.batch_prompt_override:
+            md = {**(call_session.call_metadata or {})}
+            if batch_record_id:
+                md["batch_call_record_id"] = batch_record_id
+            if call_request.batch_prompt_override:
+                md["batch_prompt_override"] = call_request.batch_prompt_override
+            call_session.call_metadata = md
+            db.commit()
+            db.refresh(call_session)
+
         # callFlowId
         if flow_uuid:
             call_session.call_flow_id = flow_uuid

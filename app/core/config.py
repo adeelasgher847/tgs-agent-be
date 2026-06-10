@@ -344,6 +344,9 @@ class Settings(BaseSettings):
     # Increase at the tenant level by changing this value (no per-tenant override yet).
     OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE: int = 10
 
+    # Batch calls — max records picked per ARQ job tick (SKIP LOCKED window size).
+    MAX_BATCH_CONCURRENCY: int = 5
+
     # Resume ↔ job matching (recruiting): LLM + rules
     # hybrid = blend (recommended); rules = heuristics only; ai = LLM scores (rules if LLM fails)
     RECRUIT_MATCH_MODE: str = "hybrid"

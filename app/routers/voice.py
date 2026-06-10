@@ -43,6 +43,7 @@ from app.routers.general_websocket import (
 from app.services.model_service import ModelService
 from app.services.transcript_service import transcript_service
 from app.services.credit_service import credit_service
+from app.services.batch_call_completion_service import notify_batch_call_ended
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.services.phone_number_service import phone_number_service
@@ -466,6 +467,11 @@ async def handle_call_events_webhook(
             except Exception as mq_exc:
                 logger.warning("Resume screening qualify on completed webhook: %s", mq_exc, exc_info=True)
 
+            try:
+                await notify_batch_call_ended(db, call_session.id, call_status)
+            except Exception as batch_exc:
+                logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
+
             # Schedule GCS recording upload (non-blocking; skipped if recording_enabled=false)
             try:
                 from app.services.call_recording_upload_service import schedule_recording_upload
@@ -656,6 +662,11 @@ async def handle_call_events_webhook(
                     logger.debug(f"✅ Stopped credit monitoring for failed call session {call_session.id}")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+
+                try:
+                    await notify_batch_call_ended(db, call_session.id, call_status)
+                except Exception as batch_exc:
+                    logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
             
             return HTMLResponse("", media_type="application/xml")
         
@@ -691,6 +702,11 @@ async def handle_call_events_webhook(
                     credit_service.stop_credit_monitoring(call_session.id)
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+
+                try:
+                    await notify_batch_call_ended(db, call_session.id, call_status)
+                except Exception as batch_exc:
+                    logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
             return HTMLResponse("", media_type="application/xml")
         
         else:
