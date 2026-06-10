@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Numeric, Index, text
+from sqlalchemy import Column, String, DateTime, Numeric, Index, text, ForeignKey, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -16,6 +16,16 @@ class Tenant(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
     credits = Column(Numeric(10, 4), default=0, nullable=False)  # Float credits with 4 decimal precision
+    parent_workspace_id = Column(
+        UUID(as_uuid=True), 
+        ForeignKey("tenant.id", ondelete="SET NULL"), 
+        nullable=True
+    )
+    workspace_type = Column(
+        String, 
+        nullable=False, 
+        server_default="standalone"
+    )
     
     # Relationships
     users = relationship("User", secondary="user_tenant_association", back_populates="tenants") 
@@ -29,6 +39,12 @@ class Tenant(Base):
     transfer_routes = relationship("TransferRoute", back_populates="tenant")
     api_keys = relationship("Apikey", back_populates="tenant", cascade="all, delete-orphan")
 
+    parent_workspace = relationship("Tenant", remote_side=[id], backref="sub_accounts")
+    branding_config = relationship("BrandingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
+    pricing_config = relationship("PricingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
+    rbac_roles = relationship("RbacRole", back_populates="tenant", cascade="all, delete-orphan")
+    usage_records = relationship("UsageRecords", back_populates="tenant", cascade="all, delete-orphan")
+
     __table_args__ = (
         Index(
             "uq_tenant_name_active",
@@ -36,5 +52,10 @@ class Tenant(Base):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
             sqlite_where=text("deleted_at IS NULL"),
+        ),
+        Index("idx_tenants_parent_workspace_id", "parent_workspace_id"),
+        CheckConstraint(
+            "workspace_type IN ('agency', 'sub_account', 'standalone')", 
+            name="chk_tenant_workspace_type"
         ),
     )
