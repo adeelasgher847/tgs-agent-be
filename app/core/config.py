@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     
     ADMIN_ROLE: str = "admin"
     
-    DATABASE_URL: str = "postgresql+psycopg2://postgres:Ahbilal220@localhost:5432/voice-agent-db"
+    DATABASE_URL: str = "postgresql+psycopg2://postgres:admin@localhost:5432/voiceagent"
     SECRET_KEY: str = "change-me-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
@@ -39,8 +39,8 @@ class Settings(BaseSettings):
 
     # Swagger / committed OpenAPI at GET /api/docs (HTTP Basic — not dashboard JWT).
     API_DOCS_ENABLED: bool = True
-    API_DOCS_USERNAME: str = "Ahbilal220"
-    API_DOCS_PASSWORD: str = "Ahbilal220"
+    API_DOCS_USERNAME: str = ""
+    API_DOCS_PASSWORD: str = ""
 
     # CORS — comma-separated list of allowed origins.
     # Example: "https://app.example.com,https://admin.example.com"
