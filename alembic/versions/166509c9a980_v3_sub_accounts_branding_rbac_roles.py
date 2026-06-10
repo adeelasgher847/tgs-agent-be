@@ -29,6 +29,12 @@ def upgrade() -> None:
         "workspace_type IN ('agency', 'sub_account', 'standalone')"
     )
     op.create_index('idx_tenant_parent_workspace_id', 'tenant', ['parent_workspace_id'])
+    op.create_index(
+        'idx_tenant_sub_accounts',
+        'tenant',
+        ['parent_workspace_id'],
+        postgresql_where=sa.text("workspace_type = 'sub_account'")
+    )
 
     # 2. Create branding_configs table
     op.create_table(
@@ -73,7 +79,6 @@ def upgrade() -> None:
         'rbac_roles',
         "role IN ('admin', 'manager', 'config_only', 'read_only', 'billing_only')"
     )
-    op.create_index('idx_rbac_roles_workspace_user', 'rbac_roles', ['workspace_id', 'user_id'])
     op.create_index(
         'uq_rbac_roles_workspace_user_active', 
         'rbac_roles', 
@@ -107,6 +112,11 @@ def downgrade() -> None:
     # Wrapped in try/except blocks so it won't crash if they are partially missing
     try:
         op.drop_index('idx_tenant_parent_workspace_id', table_name='tenant')
+    except Exception:
+        pass
+
+    try:
+        op.drop_index('idx_tenant_sub_accounts', table_name='tenant')
     except Exception:
         pass
 

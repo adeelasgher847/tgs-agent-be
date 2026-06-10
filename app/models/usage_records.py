@@ -11,7 +11,7 @@ class UsageRecords(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False)
-    call_id = Column(UUID(as_uuid=True), ForeignKey("call_sessions.id", ondelete="SET NULL"), nullable=True) # Adjusted based on your relation list
+    call_id = Column(UUID(as_uuid=True), ForeignKey("callsessions.id", ondelete="SET NULL"), nullable=True) 
     billable_minutes = Column(Numeric(10, 2), nullable=False)
     recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True) # Soft-delete convention
