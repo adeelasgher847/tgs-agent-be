@@ -103,11 +103,7 @@ async def get_current_workspace(
         raise _UNAUTHORIZED_WORKSPACE
 
     existing = get_workspace_from_request(request)
-    if (
-        existing is not None
-        and get_auth_method(request) == AUTH_METHOD_API_KEY
-        and existing.id == workspace_id
-    ):
+    if existing is not None and existing.id == workspace_id:
         if not existing.is_active:
             raise _UNAUTHORIZED_WORKSPACE
         return existing

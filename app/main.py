@@ -37,7 +37,12 @@ setup_logging()
 async def lifespan(app: FastAPI):
     # ---- startup ----
     logger.info("Application startup initiated")
-    init_async_db()
+    try:
+        init_async_db()
+        logger.info("Async DB pool initialized")
+    except Exception as exc:
+        logger.critical("Failed to initialize async DB pool: %s", exc, exc_info=True)
+        raise
     try:
         await init_rate_limiter()
         logger.info("Rate limiter initialized successfully")
