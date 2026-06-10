@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Rate limiter initialization failed: %s — continuing without rate limiting", exc)
 
     try:
-        get_rime_api_key()
+        #get_rime_api_key()
         logger.info("Rime TTS API key configured")
     except (ValueError, RuntimeError) as exc:
         logger.error("Rime TTS misconfigured: %s", exc)
