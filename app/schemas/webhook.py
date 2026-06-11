@@ -6,6 +6,8 @@ from typing import Optional
 
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
+from app.utils.ssrf import assert_public_url
+
 
 class WebhookEndpointCreate(BaseModel):
     url: AnyHttpUrl
@@ -13,9 +15,13 @@ class WebhookEndpointCreate(BaseModel):
 
     @field_validator("url")
     @classmethod
-    def must_be_https(cls, v: AnyHttpUrl) -> AnyHttpUrl:
-        if str(v).startswith("http://"):
+    def must_be_https_and_public(cls, v: AnyHttpUrl) -> AnyHttpUrl:
+        url_str = str(v)
+        if url_str.startswith("http://"):
             raise ValueError("Webhook URL must use HTTPS")
+        # SSRF guard — raises SSRFBlockedError (ValueError subclass) which Pydantic
+        # converts to a validation error message.
+        assert_public_url(url_str)
         return v
 
 

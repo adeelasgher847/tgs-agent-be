@@ -122,6 +122,100 @@ def is_pgcrypto_ciphertext(value: str) -> bool:
     return bool(raw) and raw[0] in _PGP_SYM_ENCRYPT_MARKERS
 
 
+def encrypt_webhook_secret(plaintext: str, db: Session) -> str:
+    """Encrypt *plaintext* webhook secret using pgp_sym_encrypt; return base64 ciphertext.
+
+    Raises ``ValueError`` if ``WEBHOOK_SECRET_ENCRYPTION_KEY`` is not configured.
+    """
+    key = settings.WEBHOOK_SECRET_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "WEBHOOK_SECRET_ENCRYPTION_KEY is not configured — "
+            "cannot encrypt webhook secret."
+        )
+    result = _pgcrypto_scalar(
+        db,
+        "SELECT encode(pgp_sym_encrypt(:pt, :key), 'base64')",
+        {"pt": plaintext, "key": key},
+    )
+    return result  # type: ignore[return-value]
+
+
+def decrypt_webhook_secret(ciphertext: str, db: Session) -> str:
+    """Decrypt base64 ciphertext produced by :func:`encrypt_webhook_secret`.
+
+    Raises ``ValueError`` if ``WEBHOOK_SECRET_ENCRYPTION_KEY`` is not configured or
+    if the ciphertext is corrupt / encrypted with a different key.
+    """
+    key = settings.WEBHOOK_SECRET_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "WEBHOOK_SECRET_ENCRYPTION_KEY is not configured — "
+            "cannot decrypt webhook secret."
+        )
+    try:
+        result = _pgcrypto_scalar(
+            db,
+            "SELECT pgp_sym_decrypt(decode(:ct, 'base64'), :key)",
+            {"ct": ciphertext, "key": key},
+        )
+        return result or ""  # type: ignore[return-value]
+    except Exception as exc:
+        raise ValueError(f"Webhook secret decryption failed: {exc}") from exc
+
+
+def decrypt_stored_webhook_secret(
+    ciphertext: str,
+    *,
+    db: "Session | None" = None,
+) -> str:
+    """Unified webhook secret decrypt — handles both pgcrypto and legacy JWT.
+
+    New secrets are always written as pgcrypto (base64 PGP) via
+    :func:`encrypt_webhook_secret`.  Secrets written before v20260612 were
+    JWT-encrypted via ``encrypt_api_key``; those are decrypted transparently
+    so existing rows keep working without a data migration.
+
+    Raises ``ValueError`` on unrecognisable ciphertext or missing config.
+    """
+    if not ciphertext:
+        raise ValueError("ciphertext is empty")
+
+    if is_legacy_jwt_ciphertext(ciphertext):
+        from app.core.security import decrypt_api_key
+
+        return decrypt_api_key(ciphertext)
+
+    if not is_pgcrypto_ciphertext(ciphertext):
+        _log.warning(
+            "Webhook secret: unrecognized ciphertext format "
+            "(expected legacy JWT or pgcrypto base64)"
+        )
+        raise ValueError(
+            "Unrecognized webhook secret ciphertext format "
+            "(expected legacy JWT or pgcrypto base64)."
+        )
+
+    try:
+        if db is not None:
+            return decrypt_webhook_secret(ciphertext, db)
+
+        from app.db.session import SessionLocal
+
+        _db = SessionLocal()
+        try:
+            return decrypt_webhook_secret(ciphertext, _db)
+        finally:
+            _db.close()
+    except ValueError as exc:
+        _log.warning(
+            "Webhook secret: pgcrypto decrypt failed (%s) — "
+            "wrong WEBHOOK_SECRET_ENCRYPTION_KEY or heuristic false-positive",
+            exc,
+        )
+        raise
+
+
 def decrypt_stored_elevenlabs_key(
     ciphertext: str,
     *,
