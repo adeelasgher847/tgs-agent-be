@@ -4432,13 +4432,214 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/:
+    get:
+      tags:
+      - Knowledge Base
+      summary: List Knowledge Bases
+      operationId: list_knowledge_bases_api_v1_kb__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbList_'
+      security:
+      - HTTPBearer: []
+    post:
+      tags:
+      - Knowledge Base
+      summary: Create Knowledge Base
+      operationId: create_knowledge_base_api_v1_kb__post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KbCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/kb/{kb_id}:
+    delete:
+      tags:
+      - Knowledge Base
+      summary: Delete Knowledge Base
+      operationId: delete_knowledge_base_api_v1_kb__kb_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_dict_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/{kb_id}/file:
+    post:
+      tags:
+      - Knowledge Base
+      summary: Upload Kb File
+      description: 'Accept a PDF, DOCX, or TXT file (≤50 MB).
+
+        Streams it to GCS, creates a KbFile record, enqueues the ARQ ingestion job.
+
+        Returns 202 {job_id, file_id}.'
+      operationId: upload_kb_file_api_v1_kb__kb_id__file_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_kb_file_api_v1_kb__kb_id__file_post'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbFileUploadResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/{kb_id}/text:
+    post:
+      tags:
+      - Knowledge Base
+      summary: Ingest Kb Text
+      description: 'Ingest a raw text snippet (≤10 000 chars) synchronously.
+
+        Chunks via tiktoken, embeds with OpenAI ada-002, inserts kb_chunks.
+
+        Returns 201 {kb_id, chunk_count}.'
+      operationId: ingest_kb_text_api_v1_kb__kb_id__text_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KbTextIngestRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbTextIngestResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/{kb_id}/files/{file_id}/status:
+    get:
+      tags:
+      - Knowledge Base
+      summary: Get File Status
+      operationId: get_file_status_api_v1_kb__kb_id__files__file_id__status_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: File Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbFileStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/documents:
+    get:
+      tags:
+      - Knowledge Base
+      summary: List Documents
+      operationId: list_documents_api_v1_kb_documents_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KnowledgeBaseDocumentList_'
+      security:
+      - HTTPBearer: []
   /api/v1/kb/documents/ingest-text:
     post:
       tags:
       - Knowledge Base
       summary: Ingest Text Document
-      description: 'Admin endpoint: ingest a normalized text document into Pinecone-backed
-        RAG.'
+      description: 'Legacy endpoint: ingest normalized text into the workspace''s
+        Auto-Ingest KB.'
       operationId: ingest_text_document_api_v1_kb_documents_ingest_text_post
       requestBody:
         content:
@@ -4461,51 +4662,11 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
-  /api/v1/kb/documents:
-    get:
-      tags:
-      - Knowledge Base
-      summary: List Documents
-      operationId: list_documents_api_v1_kb_documents_get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: agent_id
-        in: query
-        required: false
-        schema:
-          type: string
-          format: uuid
-          nullable: true
-      - name: active_only
-        in: query
-        required: false
-        schema:
-          type: boolean
-          default: true
-          title: Active Only
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_KnowledgeBaseDocumentList_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/kb/retrieve-preview:
     post:
       tags:
       - Knowledge Base
       summary: Retrieve Preview
-      description: 'Admin endpoint: runs retrieval and returns the context block +
-        retrieved chunk previews.
-
-        Useful for debugging prompt/KB issues.'
       operationId: retrieve_preview_api_v1_kb_retrieve_preview_post
       requestBody:
         content:
@@ -4533,8 +4694,6 @@ paths:
       tags:
       - Knowledge Base
       summary: Delete Document
-      description: 'Admin endpoint: delete a KB document''s vectors from Pinecone
-        and remove chunk inventory.'
       operationId: delete_document_api_v1_kb_documents__document_id__delete
       security:
       - HTTPBearer: []
@@ -7560,6 +7719,16 @@ components:
       required:
       - file
       title: Body_upload_job_description_api_v1_recruiting_job_descriptions_upload_post
+    Body_upload_kb_file_api_v1_kb__kb_id__file_post:
+      properties:
+        file:
+          type: string
+          title: File
+          format: binary
+      type: object
+      required:
+      - file
+      title: Body_upload_kb_file_api_v1_kb__kb_id__file_post
     Body_upload_multiple_resumes_and_match_api_v1_recruiting_resumes_upload_multiple_and_match_post:
       properties:
         files:
@@ -9371,6 +9540,125 @@ components:
           nullable: true
       type: object
       title: JobDescriptionUpdate
+    KbCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        description:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - name
+      title: KbCreate
+    KbFileStatusOut:
+      properties:
+        file_id:
+          type: string
+          format: uuid
+          title: File Id
+        status:
+          type: string
+          title: Status
+        chunk_count:
+          type: integer
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - file_id
+      - status
+      title: KbFileStatusOut
+    KbFileUploadResponse:
+      properties:
+        job_id:
+          type: string
+          title: Job Id
+        file_id:
+          type: string
+          format: uuid
+          title: File Id
+      type: object
+      required:
+      - job_id
+      - file_id
+      title: KbFileUploadResponse
+    KbList:
+      properties:
+        knowledge_bases:
+          items:
+            $ref: '#/components/schemas/KbOut'
+          type: array
+          title: Knowledge Bases
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - knowledge_bases
+      - total
+      title: KbList
+    KbOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        workspace_id:
+          type: string
+          format: uuid
+          title: Workspace Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - id
+      - workspace_id
+      - name
+      - created_at
+      title: KbOut
+    KbTextIngestRequest:
+      properties:
+        content:
+          type: string
+          maxLength: 10000
+          minLength: 1
+          title: Content
+      type: object
+      required:
+      - content
+      title: KbTextIngestRequest
+    KbTextIngestResponse:
+      properties:
+        kb_id:
+          type: string
+          format: uuid
+          title: Kb Id
+        chunk_count:
+          type: integer
+          title: Chunk Count
+      type: object
+      required:
+      - kb_id
+      - chunk_count
+      title: KbTextIngestResponse
     KnowledgeBaseDocumentList:
       properties:
         documents:
@@ -9392,29 +9680,16 @@ components:
           type: string
           format: uuid
           title: Id
-        tenant_id:
+        workspace_id:
           type: string
           format: uuid
-          title: Tenant Id
-        agent_id:
+          title: Workspace Id
+        name:
           type: string
-          format: uuid
+          title: Name
+        description:
+          type: string
           nullable: true
-        title:
-          type: string
-          title: Title
-        source_type:
-          type: string
-          title: Source Type
-        source_ref:
-          type: string
-          title: Source Ref
-        version:
-          type: string
-          title: Version
-        is_active:
-          type: boolean
-          title: Is Active
         created_at:
           type: string
           format: date-time
@@ -9426,12 +9701,8 @@ components:
       type: object
       required:
       - id
-      - tenant_id
-      - title
-      - source_type
-      - source_ref
-      - version
-      - is_active
+      - workspace_id
+      - name
       - created_at
       title: KnowledgeBaseDocumentOut
     KnowledgeBaseIngestTextRequest:
@@ -9443,11 +9714,11 @@ components:
         source_type:
           type: string
           title: Source Type
-          description: Source type (e.g. html, faq, kb_text_dir, db_rows)
+          description: Source type (e.g. html, faq, kb_text_dir)
         source_ref:
           type: string
           title: Source Ref
-          description: Source reference (URL/slug/path), used for de-duplication
+          description: Source reference used for de-duplication
         full_text:
           type: string
           title: Full Text
@@ -9455,7 +9726,6 @@ components:
         version:
           type: string
           title: Version
-          description: Version label for this document ingest
           default: v1
         agent_id:
           type: string
@@ -11859,6 +12129,86 @@ components:
       required:
       - data
       title: SuccessResponse[JobDescriptionOut]
+    SuccessResponse_KbFileStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbFileStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbFileStatusOut]
+    SuccessResponse_KbFileUploadResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbFileUploadResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbFileUploadResponse]
+    SuccessResponse_KbList_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbList'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbList]
+    SuccessResponse_KbOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbOut]
+    SuccessResponse_KbTextIngestResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbTextIngestResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbTextIngestResponse]
     SuccessResponse_KnowledgeBaseDocumentList_:
       properties:
         data:

@@ -22,7 +22,7 @@ def _413_payload(request_id: str) -> bytes:
     body = {
         "error": {
             "code": "payload_too_large",
-            "message": "Request body exceeds the 10 MB limit.",
+            "message": "Request body exceeds the allowed size limit.",
             "requestId": request_id,
         }
     }

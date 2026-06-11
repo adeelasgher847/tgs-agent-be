@@ -339,6 +339,10 @@ class Settings(BaseSettings):
     GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS: int = 3600
     GCS_RECORDINGS_PREFIX: str = "recordings"
 
+    # GCS knowledge-base file storage — Sprint 5
+    GCS_KB_BUCKET: str = ""
+    GCS_KB_PREFIX: str = "kb-files"
+
     # Outbound call concurrency — max simultaneous outbound calls per workspace.
     # Counts outbound sessions with status IN (initiated, ringing, connected, in-progress).
     # Increase at the tenant level by changing this value (no per-tenant override yet).

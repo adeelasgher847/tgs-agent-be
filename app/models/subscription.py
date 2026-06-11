@@ -24,8 +24,6 @@ class Subscription(Base):
     # Relationships
     user = relationship("User", back_populates="subscriptions")
     plan = relationship("Plan", back_populates="subscriptions")
-    usage_records = relationship("UsageRecord", back_populates="subscription", cascade="all, delete-orphan")
-
     __table_args__ = (
         UniqueConstraint('user_id', 'crm_type', name='uq_user_crm_subscription'),
     )

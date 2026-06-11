@@ -57,9 +57,9 @@ If the user asks for specific factual, pricing, or policy details you do not see
 respond that this information is not available instead of guessing or inventing details.
 """, trace
 
-    # If RAG is not configured or we don't know the tenant, don't even try.
-    if not tenant_id or not settings.PINECONE_API_KEY:
-        trace["status"] = "missing_tenant_or_config"
+    # If we don't know the tenant, skip retrieval.
+    if not tenant_id:
+        trace["status"] = "missing_tenant"
         return """
 # KNOWLEDGE BASE CONTEXT
 No relevant knowledge base entries were found for this query.
