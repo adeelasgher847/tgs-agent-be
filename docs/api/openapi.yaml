@@ -4618,6 +4618,56 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/{kb_id}/search:
+    get:
+      tags:
+      - Knowledge Base
+      summary: Search Knowledge Base
+      description: 'Cosine-similarity search over a single KB''s chunks.
+
+        Returns [{content, score, metadata}] sorted by relevance descending.'
+      operationId: search_knowledge_base_api_v1_kb__kb_id__search_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      - name: q
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          description: Search query text
+          title: Q
+        description: Search query text
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 25
+          minimum: 1
+          default: 5
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbSearchResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/kb/documents:
     get:
       tags:
@@ -9634,6 +9684,35 @@ components:
       - name
       - created_at
       title: KbOut
+    KbSearchResponse:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/KbSearchResultItem'
+          type: array
+          title: Results
+      type: object
+      required:
+      - results
+      title: KbSearchResponse
+    KbSearchResultItem:
+      properties:
+        content:
+          type: string
+          title: Content
+        score:
+          type: number
+          title: Score
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+      type: object
+      required:
+      - content
+      - score
+      - metadata
+      title: KbSearchResultItem
     KbTextIngestRequest:
       properties:
         content:
@@ -12193,6 +12272,22 @@ components:
       required:
       - data
       title: SuccessResponse[KbOut]
+    SuccessResponse_KbSearchResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbSearchResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbSearchResponse]
     SuccessResponse_KbTextIngestResponse_:
       properties:
         data:

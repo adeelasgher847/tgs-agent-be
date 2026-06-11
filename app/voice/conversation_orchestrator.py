@@ -460,6 +460,48 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if call_policy_block:
                 system_prompt = call_policy_block + "\n" + system_prompt
 
+            # KB context injection: runs when flow.knowledge_base_ids is non-empty.
+            # Injected AFTER the system prompt and BEFORE conversation history.
+            kb_context_block = ""
+            flow = getattr(self._h, "call_flow", None)
+            flow_kb_ids = (flow.knowledge_base_ids or []) if flow else []
+            if flow_kb_ids and self._h.db:
+                try:
+                    from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+                    from app.utils.redis_client import get_redis
+
+                    kb_context_block, kb_latency_ms = await asyncio.wait_for(
+                        retrieve_kb_context_for_turn(
+                            transcript=user_text,
+                            kb_ids=flow_kb_ids,
+                            db=self._h.db,
+                            redis_client=get_redis(),
+                        ),
+                        timeout=0.45,  # stay within 500ms budget; fail open if exceeded
+                    )
+                    logger.info(
+                        "kb_retrieval latency_ms=%.1f kb_count=%d call_sid=%s",
+                        kb_latency_ms,
+                        len(flow_kb_ids),
+                        getattr(self._h, "call_sid", ""),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "kb_retrieval timed out after 450ms; proceeding without KB context"
+                    )
+                except Exception as exc:
+                    logger.error("kb_retrieval failed; proceeding without context: %s", exc)
+
+            # Inject KB context block between system prompt and conversation history.
+            if kb_context_block:
+                anchor = "# CONVERSATION STATE"
+                if anchor in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        anchor, kb_context_block + "\n\n" + anchor, 1
+                    )
+                else:
+                    system_prompt = system_prompt + "\n\n" + kb_context_block
+
             from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
 
             llm_runtime = resolve_llm_runtime(self._h.agent)

@@ -325,6 +325,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         # Session data
         self.call_session = None
         self.agent = None
+        self.call_flow = None
         self._last_offered_calendar_slots: List[datetime] = []
         self._last_requested_calendar_date: Optional[date] = None
         self._last_selected_calendar_slot: Optional[datetime] = None
@@ -567,11 +568,11 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             )
 
     def _load_session_data(self):
-        """Load call session and agent data"""
+        """Load call session, agent, and call flow data."""
         try:
             session_uuid = uuid.UUID(self.call_session_id)
             self.call_session = call_session_service.get_call_session_by_id(self.db, session_uuid)
-            
+
             if self.call_session and self.agent_id:
                 agent_uuid = uuid.UUID(self.agent_id)
                 self.agent = agent_service.get_agent_by_id(
@@ -582,6 +583,17 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                 # Lazy safety net: ensure prompt KB exists for older agents
                 # created before auto-ingest rollout.
                 agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
+
+            if self.call_session and self.call_session.call_flow_id:
+                from app.models.call_flow import CallFlow
+                self.call_flow = (
+                    self.db.query(CallFlow)
+                    .filter(
+                        CallFlow.id == self.call_session.call_flow_id,
+                        CallFlow.is_deleted == False,  # noqa: E712
+                    )
+                    .first()
+                )
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
 

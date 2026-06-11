@@ -107,3 +107,15 @@ class KnowledgeBaseRetrievedChunkOut(BaseModel):
 class KnowledgeBaseRetrievePreviewResponse(BaseModel):
     context_block: str
     retrieved_chunks: List[KnowledgeBaseRetrievedChunkOut]
+
+
+# ── Search ────────────────────────────────────────────────────────────────────
+
+class KbSearchResultItem(BaseModel):
+    content: str
+    score: float
+    metadata: dict
+
+
+class KbSearchResponse(BaseModel):
+    results: List[KbSearchResultItem]

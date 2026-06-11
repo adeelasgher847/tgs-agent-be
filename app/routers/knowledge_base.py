@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_tenant
@@ -20,6 +20,8 @@ from app.schemas.knowledge_base import (
     KbFileUploadResponse,
     KbList,
     KbOut,
+    KbSearchResponse,
+    KbSearchResultItem,
     KbTextIngestRequest,
     KbTextIngestResponse,
     KnowledgeBaseDocumentList,
@@ -282,6 +284,82 @@ def get_file_status(
             error_message=kb_file.error_message,
         ),
         "File status fetched",
+    )
+
+
+# ── Similarity search ─────────────────────────────────────────────────────────
+
+@router.get("/{kb_id}/search", response_model=SuccessResponse[KbSearchResponse])
+async def search_knowledge_base(
+    kb_id: uuid.UUID,
+    q: str = Query(..., min_length=1, description="Search query text"),
+    limit: int = Query(default=5, ge=1, le=25),
+    user=Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Cosine-similarity search over a single KB's chunks.
+    Returns [{content, score, metadata}] sorted by relevance descending.
+    """
+    workspace_id = user.current_tenant_id
+    if workspace_id is None:
+        raise HTTPException(status_code=403, detail="No tenant selected")
+
+    _get_kb_or_404(db, kb_id, workspace_id)
+
+    if not settings.OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail="OPENAI_API_KEY is required for KB search",
+        )
+
+    try:
+        from sqlalchemy import text as sa_text
+
+        loop = asyncio.get_running_loop()
+        embedding = await loop.run_in_executor(None, embed_text_for_rag, q)
+        vec_str = "[" + ",".join(str(f) for f in embedding) + "]"
+
+        stmt = sa_text(
+            """
+            SELECT content,
+                   1 - (embedding::vector <=> CAST(:vec AS vector)) AS score,
+                   metadata AS chunk_metadata
+            FROM kbchunk
+            WHERE kb_id = :kb_id
+              AND embedding IS NOT NULL
+            ORDER BY embedding::vector <=> CAST(:vec AS vector)
+            LIMIT :limit
+            """
+        )
+        rows = db.execute(
+            stmt, {"vec": vec_str, "kb_id": str(kb_id), "limit": limit}
+        ).fetchall()
+    except Exception as e:
+        logger.error("KB search failed for kb_id=%s: %s", kb_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Search failed")
+
+    import json as _json
+
+    results = []
+    for row in rows:
+        meta = row.chunk_metadata or {}
+        if isinstance(meta, str):
+            try:
+                meta = _json.loads(meta)
+            except Exception:
+                meta = {}
+        results.append(
+            KbSearchResultItem(
+                content=row.content,
+                score=float(row.score or 0.0),
+                metadata=meta,
+            )
+        )
+
+    return create_success_response(
+        KbSearchResponse(results=results),
+        f"Search returned {len(results)} result(s)",
     )
 
 

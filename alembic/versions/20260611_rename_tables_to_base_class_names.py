@@ -8,6 +8,7 @@ Renames:
   branding_configs  → brandingconfig
   pricing_configs   → pricingconfig
   rbac_roles        → rbacrole
+  usagerecord (old subscription-quota table) → DROPPED (no longer used)
   usage_records     → usagerecord
   knowledge_bases   → knowledgebase
   kb_files          → kbfile
@@ -28,7 +29,13 @@ def upgrade() -> None:
     op.rename_table("branding_configs", "brandingconfig")
     op.rename_table("pricing_configs", "pricingconfig")
     op.rename_table("rbac_roles", "rbacrole")
+
+    # The legacy subscription-quota table `usagerecord` (columns: subscription_id,
+    # month, year, calls_used, agents_created) is no longer used. Drop it so we can
+    # rename the billing-audit table `usage_records` → `usagerecord`.
+    op.execute("DROP TABLE IF EXISTS usagerecord CASCADE")
     op.rename_table("usage_records", "usagerecord")
+
     op.rename_table("knowledge_bases", "knowledgebase")
     op.rename_table("kb_files", "kbfile")
     op.rename_table("kb_chunks", "kbchunk")
