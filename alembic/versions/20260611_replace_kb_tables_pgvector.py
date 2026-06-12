@@ -1,7 +1,7 @@
-"""Replace Pinecone-backed KB tables with pgvector-native schema
+"""Migrate kbchunk.embedding from text to vector(1536) and drop legacy Pinecone tables
 
 Revision ID: 20260611_kb_pgvector
-Revises: 20260610_webhooks
+Revises: 20260611_cleanup_orphan_tables
 Create Date: 2026-06-11 00:00:00.000000
 """
 
@@ -14,82 +14,53 @@ from alembic import op
 
 
 def upgrade() -> None:
-    # Drop old Pinecone-backed tables (chunk first — FK constraint)
+    # Drop legacy Pinecone-backed tables (chunk first — FK constraint)
     op.execute("DROP TABLE IF EXISTS knowledgebasechunk CASCADE;")
     op.execute("DROP TABLE IF EXISTS knowledgebasedocument CASCADE;")
 
-    # Enable pgvector
+    # Enable pgvector (idempotent)
     op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
-    # knowledge_bases: one KB per workspace (or many)
+    # Cast the existing text column (JSON array string) to vector(1536).
+    # pgvector accepts the "[f1,f2,...]" text format that json.dumps produces.
+    # NULL values pass through unchanged.
     op.execute(
         """
-        CREATE TABLE knowledge_bases (
-            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            workspace_id UUID NOT NULL REFERENCES tenant(id) ON DELETE CASCADE,
-            name        TEXT NOT NULL,
-            description TEXT,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ
-        );
+        ALTER TABLE kbchunk
+            ALTER COLUMN embedding TYPE vector(1536)
+            USING CASE
+                WHEN embedding IS NULL THEN NULL
+                ELSE embedding::vector(1536)
+            END;
         """
     )
-    op.execute(
-        "CREATE INDEX ix_knowledge_bases_workspace_id ON knowledge_bases(workspace_id);"
-    )
-
-    # kb_files: tracks uploaded files per KB
-    op.execute(
-        """
-        CREATE TABLE kb_files (
-            id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            kb_id             UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
-            original_filename TEXT NOT NULL,
-            size_bytes        BIGINT,
-            file_type         TEXT,
-            gcs_path          TEXT,
-            status            TEXT NOT NULL DEFAULT 'processing'
-                                  CHECK (status IN ('processing', 'ready', 'error')),
-            error_message     TEXT,
-            chunk_count       INT,
-            created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        """
-    )
-    op.execute("CREATE INDEX ix_kb_files_kb_id ON kb_files(kb_id);")
-
-    # kb_chunks: stores text chunks and their 1536-dim embeddings
-    op.execute(
-        """
-        CREATE TABLE kb_chunks (
-            id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            kb_id      UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
-            file_id    UUID REFERENCES kb_files(id) ON DELETE SET NULL,
-            content    TEXT NOT NULL,
-            embedding  vector(1536),
-            metadata   JSONB NOT NULL DEFAULT '{}',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        """
-    )
-    op.execute("CREATE INDEX ix_kb_chunks_kb_id ON kb_chunks(kb_id);")
-    op.execute("CREATE INDEX ix_kb_chunks_file_id ON kb_chunks(file_id);")
 
     # HNSW index for fast approximate cosine-similarity search
     op.execute(
         """
-        CREATE INDEX ix_kb_chunks_embedding_hnsw
-            ON kb_chunks USING hnsw (embedding vector_cosine_ops)
+        CREATE INDEX IF NOT EXISTS ix_kbchunk_embedding_hnsw
+            ON kbchunk USING hnsw (embedding vector_cosine_ops)
             WITH (m=16, ef_construction=64);
         """
     )
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS kb_chunks CASCADE;")
-    op.execute("DROP TABLE IF EXISTS kb_files CASCADE;")
-    op.execute("DROP TABLE IF EXISTS knowledge_bases CASCADE;")
-    # Restore old tables
+    op.execute("DROP INDEX IF EXISTS ix_kbchunk_embedding_hnsw;")
+
+    # Cast vector back to text (pgvector's output format is "[f1,f2,...]")
+    op.execute(
+        """
+        ALTER TABLE kbchunk
+            ALTER COLUMN embedding TYPE text
+            USING CASE
+                WHEN embedding IS NULL THEN NULL
+                ELSE embedding::text
+            END;
+        """
+    )
+
+    # Restore legacy Pinecone-backed tables
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS knowledgebasedocument (
