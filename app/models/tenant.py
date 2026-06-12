@@ -43,7 +43,7 @@ class Tenant(Base):
     branding_config = relationship("BrandingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     pricing_config = relationship("PricingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     rbac_roles = relationship("RbacRole", back_populates="tenant", cascade="all, delete-orphan")
-    usage_records = relationship("UsageRecords", back_populates="tenant", cascade="all, delete-orphan")
+    usage_record = relationship("UsageRecord", back_populates="tenant", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index(

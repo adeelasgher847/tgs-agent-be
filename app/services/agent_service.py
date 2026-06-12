@@ -6,7 +6,7 @@ from app.models.agent import Agent
 from app.models.phone_number import PhoneNumber
 from app.models.transfer_route import TransferRoute
 from app.models.model import Model
-from app.models.knowledge_base_document import KnowledgeBaseDocument
+from app.models.knowledge_base_document import KnowledgeBase, KnowledgeBaseDocument
 from app.models.business_knowledge import BusinessKnowledge
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
@@ -460,31 +460,11 @@ class AgentService:
 
     def ensure_agent_prompt_ingested(self, db: Session, agent: Agent) -> None:
         """
-        Lazy safety net for existing agents: if auto KB doc is missing, ingest now.
-        Best-effort and non-blocking for call/runtime flows.
+        Migrated to pgvector schema: auto-ingest via the new pipeline.
+        Calls _auto_ingest_agent_system_prompt which uses rag_service.ingest_document.
         """
         if not agent:
             return
-
-        source_ref = f"agent-system-prompt:{agent.id}"
-        exists = (
-            db.query(KnowledgeBaseDocument.id)
-            .filter(
-                KnowledgeBaseDocument.tenant_id == agent.tenant_id,
-                KnowledgeBaseDocument.agent_id == agent.id,
-                KnowledgeBaseDocument.source_type == "agent_system_prompt_auto",
-                KnowledgeBaseDocument.source_ref == source_ref,
-                KnowledgeBaseDocument.is_active == True,  # noqa: E712
-            )
-            .first()
-        )
-        if exists:
-            return
-
-        logger.info(
-            "Auto KB document missing for agent_id=%s; triggering lazy ingest",
-            agent.id,
-        )
         self._auto_ingest_agent_system_prompt(db, agent)
 
     def create_agent(
@@ -758,9 +738,8 @@ class AgentService:
             Agent.id != inbound_agent_id,
         ).all()
 
-        kb_documents = db.query(KnowledgeBaseDocument).filter(
-            KnowledgeBaseDocument.tenant_id == tenant_id,
-            KnowledgeBaseDocument.is_active == True,  # noqa: E712
+        kb_documents = db.query(KnowledgeBase).filter(
+            KnowledgeBase.workspace_id == tenant_id,
         ).all()
 
         return {
@@ -778,10 +757,10 @@ class AgentService:
             "knowledge_documents": [
                 {
                     "document_id": str(doc.id),
-                    "title": doc.title,
-                    "source_type": doc.source_type,
-                    "source_ref": doc.source_ref,
-                    "agent_id": str(doc.agent_id) if doc.agent_id else None,
+                    "title": doc.name,
+                    "source_type": "knowledge_base",
+                    "source_ref": str(doc.id),
+                    "agent_id": None,
                 }
                 for doc in kb_documents
             ],

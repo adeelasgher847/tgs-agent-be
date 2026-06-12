@@ -175,6 +175,90 @@ async def poll_pending_batch_jobs(ctx: dict) -> None:
         db.close()
 
 
+# ── KB ingestion task ─────────────────────────────────────────────────────────
+
+
+async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
+    """
+    ARQ job: download the KB file from GCS, extract text, chunk via tiktoken,
+    embed with OpenAI ada-002, insert kb_chunks, and update kb_file.status.
+    """
+    from app.db.session import SessionLocal
+    from app.models.kb_file import KbFile
+    from app.services.kb_ingestion_service import run_file_ingestion
+
+    fid = uuid.UUID(file_id)
+    db = SessionLocal()
+    try:
+        kb_file = db.get(KbFile, fid)
+        if kb_file is None:
+            logger.warning("kb_ingestion_task: KbFile %s not found", file_id)
+            return
+
+        if kb_file.status != "processing":
+            logger.info("kb_ingestion_task: KbFile %s already %s — skipping", file_id, kb_file.status)
+            return
+
+        # Download bytes from GCS
+        file_bytes: Optional[bytes] = None
+        if kb_file.gcs_path and settings.GCS_KB_BUCKET:
+            try:
+                from google.cloud import storage as gcs_storage  # type: ignore
+
+                gcs_client = gcs_storage.Client()
+                bucket = gcs_client.bucket(settings.GCS_KB_BUCKET)
+                blob = bucket.blob(kb_file.gcs_path)
+                file_bytes = blob.download_as_bytes()
+            except Exception as e:
+                logger.error(
+                    "kb_ingestion_task: GCS download failed for file_id=%s: %s", file_id, e, exc_info=True
+                )
+                kb_file.status = "error"
+                kb_file.error_message = f"GCS download failed: {str(e)[:500]}"
+                db.commit()
+                return
+
+        if file_bytes is None:
+            kb_file.status = "error"
+            kb_file.error_message = "No GCS path set or GCS_KB_BUCKET not configured"
+            db.commit()
+            return
+
+        api_key = settings.OPENAI_API_KEY
+        if not api_key:
+            kb_file.status = "error"
+            kb_file.error_message = "OPENAI_API_KEY not configured"
+            db.commit()
+            return
+
+        try:
+            chunk_count = await run_file_ingestion(
+                db=db,
+                file_id=fid,
+                file_bytes=file_bytes,
+                file_type=kb_file.file_type or "",
+                api_key=api_key,
+            )
+            kb_file.status = "ready"
+            kb_file.chunk_count = chunk_count
+            db.commit()
+            logger.info(
+                "kb_ingestion_task: file_id=%s ingested %d chunks", file_id, chunk_count
+            )
+        except Exception as e:
+            db.rollback()
+            logger.error(
+                "kb_ingestion_task: ingestion failed for file_id=%s: %s", file_id, e, exc_info=True
+            )
+            kb_file = db.get(KbFile, fid)
+            if kb_file:
+                kb_file.status = "error"
+                kb_file.error_message = str(e)[:1000]
+                db.commit()
+    finally:
+        db.close()
+
+
 # ── WorkerSettings ────────────────────────────────────────────────────────────
 
 class WorkerSettings:
@@ -190,7 +274,7 @@ class WorkerSettings:
         arq app.workers.batch_call_worker.WorkerSettings
     """
 
-    functions = [process_batch_job, poll_pending_batch_jobs, retry_webhook_delivery]
+    functions = [process_batch_job, poll_pending_batch_jobs, retry_webhook_delivery, kb_ingestion_task]
 
     cron_jobs = [
         # Poll every 60 seconds for orphaned pending jobs

@@ -210,8 +210,8 @@ app.add_middleware(ApiKeyMiddleware)
 # 3. PII-safe request logging
 app.add_middleware(PiiLoggingMiddleware)
 
-# 4. Body size limit (10 MB)
-app.add_middleware(BodyLimitMiddleware)
+# 4. Body size limit — 10 MB global; KB upload paths get 52 MB via middleware path check.
+app.add_middleware(BodyLimitMiddleware, max_bytes=10 * 1024 * 1024)
 
 # 5. Request ID — nanoid on request.state before auth errors are built.
 app.add_middleware(RequestIdMiddleware)

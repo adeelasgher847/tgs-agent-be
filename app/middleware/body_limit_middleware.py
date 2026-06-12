@@ -11,6 +11,9 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.middleware.request_id_middleware import new_request_id, request_id_from_scope
 
 _10MB = 10 * 1024 * 1024  # bytes
+_52MB = 52 * 1024 * 1024  # bytes — knowledge-base file uploads only
+
+_LARGE_BODY_PREFIXES = ("/api/v1/knowledge-base",)
 
 
 def _resolve_request_id(scope: Scope) -> str:
@@ -22,7 +25,7 @@ def _413_payload(request_id: str) -> bytes:
     body = {
         "error": {
             "code": "payload_too_large",
-            "message": "Request body exceeds the 10 MB limit.",
+            "message": "Request body exceeds the allowed size limit.",
             "requestId": request_id,
         }
     }
@@ -45,8 +48,15 @@ class BodyLimitMiddleware:
         content_length = headers.get("content-length")
         request_id = _resolve_request_id(scope)
 
+        path: str = scope.get("path", "")
+        limit = (
+            _52MB
+            if path.startswith(_LARGE_BODY_PREFIXES)
+            else self.max_bytes
+        )
+
         # Fast-path: reject immediately when Content-Length alone exceeds limit.
-        if content_length and int(content_length) > self.max_bytes:
+        if content_length and int(content_length) > limit:
             await self._send_413(send, request_id)
             return
 
@@ -58,7 +68,7 @@ class BodyLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received_bytes += len(message.get("body", b""))
-                if received_bytes > self.max_bytes:
+                if received_bytes > limit:
                     limit_exceeded = True
             return message
 
