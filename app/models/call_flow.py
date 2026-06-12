@@ -23,6 +23,7 @@ class CallFlow(Base):
     )
     flow_data = Column(JSONB, nullable=True)
     settings = Column(JSONB, nullable=True)
+    knowledge_base_ids = Column(JSONB, nullable=True, default=list)
     is_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)

@@ -1,0 +1,52 @@
+name: OpenAPI spec up to date
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "app/**"
+      - "scripts/export_openapi.py"
+      - "docs/api/openapi.yaml"
+
+concurrency:
+  group: openapi-lint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check-spec:
+    name: Regenerate & diff openapi.yaml
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Regenerate OpenAPI spec
+        run: python scripts/export_openapi.py
+
+      - name: Fail if spec is stale
+        run: |
+          git diff --exit-code docs/api/openapi.yaml || {
+            echo ""
+            echo "ERROR: docs/api/openapi.yaml is stale."
+            echo "Run 'python scripts/export_openapi.py' locally and commit the updated file."
+            exit 1
+          }
