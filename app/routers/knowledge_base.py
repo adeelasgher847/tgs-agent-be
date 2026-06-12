@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 from typing import Optional
 
@@ -125,7 +124,7 @@ def delete_knowledge_base(
 # ── File upload → async ingestion ─────────────────────────────────────────────
 
 @router.post("/{kb_id}/file", response_model=SuccessResponse[KbFileUploadResponse], status_code=202)
-def upload_kb_file(
+async def upload_kb_file(
     kb_id: uuid.UUID,
     file: UploadFile = File(...),
     user=Depends(require_tenant),
@@ -193,9 +192,7 @@ def upload_kb_file(
     pool = get_arq_pool()
     if pool:
         try:
-            asyncio.get_event_loop().run_until_complete(
-                pool.enqueue_job("kb_ingestion_task", str(file_id))  # type: ignore[union-attr]
-            )
+            await pool.enqueue_job("kb_ingestion_task", str(file_id))
         except Exception as e:
             logger.warning("ARQ enqueue failed for file_id=%s: %s", file_id, e)
     else:

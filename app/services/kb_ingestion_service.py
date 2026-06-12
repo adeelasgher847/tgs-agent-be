@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import uuid
 from typing import IO, List
 
@@ -206,7 +205,7 @@ async def run_file_ingestion(
                 file_id=file_id,
                 content=chunk_content,
                 # Store as JSON string for the TEXT column; Postgres sees it as vector-compatible string
-                embedding=json.dumps(embedding),
+                embedding=embedding,
                 chunk_metadata={"chunk_index": i, "source": "file", "filename": kb_file.original_filename},
             )
         )
@@ -242,7 +241,7 @@ async def run_text_ingestion(
                 kb_id=kb_id,
                 file_id=None,
                 content=chunk_content,
-                embedding=json.dumps(embedding),
+                embedding=embedding,
                 chunk_metadata={"chunk_index": i, "source": "text"},
             )
         )
