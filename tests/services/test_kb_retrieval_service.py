@@ -79,19 +79,24 @@ def _fake_db_rows(chunks: list[dict]):
 def test_retrieve_returns_block_when_kb_attached():
     """KB attached → context block contains the retrieved chunk text."""
     kb_id = uuid.uuid4()
-    db = _fake_db_rows([
-        {"content": "Company refund policy is 30 days.", "score": 0.92, "metadata": {}},
-    ])
 
-    with patch(
-        "app.services.kb_retrieval_service._get_embedding_cached",
-        new=AsyncMock(return_value=FAKE_EMBEDDING),
+    async def fake_query(kb_id, vec_str, top_k):
+        return [RetrievedChunk(content="Company refund policy is 30 days.", score=0.92, metadata={})]
+
+    with (
+        patch(
+            "app.services.kb_retrieval_service._get_embedding_cached",
+            new=AsyncMock(return_value=FAKE_EMBEDDING),
+        ),
+        patch(
+            "app.services.kb_retrieval_service._query_single_kb",
+            side_effect=fake_query,
+        ),
     ):
         context_block, latency_ms = asyncio.run(
             retrieve_kb_context_for_turn(
                 transcript="What is your refund policy?",
                 kb_ids=[kb_id],
-                db=db,
                 redis_client=None,
             )
         )
@@ -130,7 +135,6 @@ def test_retrieve_redis_cache_hit_skips_embedding():
             retrieve_kb_context_for_turn(
                 transcript=transcript,
                 kb_ids=kb_ids,
-                db=MagicMock(),
                 redis_client=redis_client,
             )
         )
@@ -144,7 +148,6 @@ def test_retrieve_no_kb_ids_returns_empty():
         retrieve_kb_context_for_turn(
             transcript="Hello",
             kb_ids=[],
-            db=MagicMock(),
             redis_client=None,
         )
     )
@@ -157,7 +160,7 @@ def test_retrieve_partial_failure_continues():
     good_kb_id = uuid.uuid4()
     bad_kb_id = uuid.uuid4()
 
-    async def fake_query(db, kb_id, vec_str, top_k):
+    async def fake_query(kb_id, vec_str, top_k):
         if kb_id == bad_kb_id:
             raise RuntimeError("DB failure")
         return [RetrievedChunk(content="Good KB chunk.", score=0.88, metadata={})]
@@ -176,7 +179,6 @@ def test_retrieve_partial_failure_continues():
             retrieve_kb_context_for_turn(
                 transcript="Test",
                 kb_ids=[good_kb_id, bad_kb_id],
-                db=MagicMock(),
                 redis_client=None,
             )
         )
@@ -194,7 +196,6 @@ def test_retrieve_embedding_failure_returns_empty():
             retrieve_kb_context_for_turn(
                 transcript="Any query",
                 kb_ids=[uuid.uuid4()],
-                db=MagicMock(),
                 redis_client=None,
             )
         )
@@ -209,7 +210,7 @@ def test_retrieve_top5_merge_across_kbs():
     chunks_a = [RetrievedChunk(content=f"A{i}", score=0.50 + i * 0.05, metadata={}) for i in range(3)]
     chunks_b = [RetrievedChunk(content=f"B{i}", score=0.70 + i * 0.02, metadata={}) for i in range(4)]
 
-    async def fake_query(db, kb_id, vec_str, top_k):
+    async def fake_query(kb_id, vec_str, top_k):
         return chunks_a if kb_id == kb_a else chunks_b
 
     with (
@@ -226,7 +227,6 @@ def test_retrieve_top5_merge_across_kbs():
             retrieve_kb_context_for_turn(
                 transcript="query",
                 kb_ids=[kb_a, kb_b],
-                db=MagicMock(),
                 redis_client=None,
             )
         )

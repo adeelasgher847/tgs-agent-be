@@ -474,7 +474,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         retrieve_kb_context_for_turn(
                             transcript=user_text,
                             kb_ids=flow_kb_ids,
-                            db=self._h.db,
                             redis_client=get_redis(),
                         ),
                         timeout=0.45,  # stay within 500ms budget; fail open if exceeded

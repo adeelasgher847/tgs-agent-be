@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -62,15 +61,18 @@ async def _get_embedding_cached(
 # ── Per-KB pgvector query ─────────────────────────────────────────────────────
 
 async def _query_single_kb(
-    db: Session,
     kb_id: uuid.UUID,
     vec_str: str,
     top_k: int,
 ) -> List[RetrievedChunk]:
     """
     Run cosine-similarity search against one KB.
+    Opens its own short-lived SessionLocal so concurrent gather() calls never
+    share a Session across threads (SQLAlchemy Session is not thread-safe).
     Returns empty list on failure so asyncio.gather partial failures are safe.
     """
+    from app.db.session import SessionLocal
+
     stmt = text(
         """
         SELECT content,
@@ -83,14 +85,16 @@ async def _query_single_kb(
         LIMIT :top_k
         """
     )
+
+    def _run() -> list:
+        with SessionLocal() as session:
+            return session.execute(
+                stmt,
+                {"vec": vec_str, "kb_id": str(kb_id), "top_k": top_k},
+            ).fetchall()
+
     loop = asyncio.get_running_loop()
-    rows = await loop.run_in_executor(
-        None,
-        lambda: db.execute(
-            stmt,
-            {"vec": vec_str, "kb_id": str(kb_id), "top_k": top_k},
-        ).fetchall(),
-    )
+    rows = await loop.run_in_executor(None, _run)
 
     results: List[RetrievedChunk] = []
     for row in rows:
@@ -129,7 +133,6 @@ def format_kb_context_block(chunks: List[RetrievedChunk]) -> str:
 async def retrieve_kb_context_for_turn(
     transcript: str,
     kb_ids: List[uuid.UUID],
-    db: Session,
     redis_client=None,
 ) -> tuple[str, float]:
     """
@@ -189,9 +192,9 @@ async def retrieve_kb_context_for_turn(
     vec_str = "[" + ",".join(str(f) for f in embedding) + "]"
     top_k = settings.RAG_TOP_K
 
-    # Query all KBs in parallel; log and skip individual failures
+    # Query all KBs in parallel; each call opens its own session (thread-safe).
     raw_results = await asyncio.gather(
-        *[_query_single_kb(db, kb_id, vec_str, top_k) for kb_id in kb_ids],
+        *[_query_single_kb(kb_id, vec_str, top_k) for kb_id in kb_ids],
         return_exceptions=True,
     )
 
