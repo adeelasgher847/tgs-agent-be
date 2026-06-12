@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Depends, status, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Query, Depends, status, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
@@ -247,6 +247,7 @@ _TWILIO_TO_INTERNAL_STATUS: dict[str, str] = {
 @router.post("/webhook/call-events", response_class=HTMLResponse, include_in_schema=False)
 async def handle_call_events_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     agentId: Optional[str] = Query(None),
     userId: Optional[str] = Query(None),
     callSessionId: Optional[str] = Query(None),
@@ -546,7 +547,7 @@ async def handle_call_events_webhook(
         if call_status == "initiated" and direction == "outbound-api":
             # Call has been initiated - just log and return empty response
             logger.info(f"Call initiated - SID: {call_sid}")
-            
+
             # Broadcast call initiated event (non-blocking - fire and forget)
             if call_session:
                 try:
@@ -563,7 +564,25 @@ async def handle_call_events_webhook(
                     logger.debug(f"✅ Broadcasted call initiated event for session {call_session.id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to broadcast call initiated event: {e}")
-            
+
+                # Fire call.started webhook
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.started",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.started webhook fire failed: %s", _wh_exc)
+
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "ringing" and direction == "outbound-api":
@@ -617,16 +636,53 @@ async def handle_call_events_webhook(
         elif call_status == "completed":
             # Call completed
             logger.info(f"📞 CALL COMPLETED - SID: {call_sid}")
-            
-            # Broadcast call completed event (this is already handled above in the status update section)
-            # The broadcast_call_ended is already called in the status update section above
-            
+
+            # Fire call.completed webhook
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.completed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "duration": call_session.duration,
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.completed webhook fire failed: %s", _wh_exc)
+
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "failed":
             # Call failed - handle error
             logger.error(f"Call failed - SID: {call_sid}")
-            
+
+            # Fire call.failed webhook
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.failed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "reason": "failed",
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.failed webhook fire failed: %s", _wh_exc)
+
             # Broadcast call failed event (non-blocking - fire and forget)
             if call_session:
                 try:
@@ -673,6 +729,28 @@ async def handle_call_events_webhook(
         elif call_status in ("busy", "no-answer"):
             # Both busy and no-answer → internal "no_answer" (per ticket spec)
             logger.info(f"Call {call_status} (internal: no_answer) - SID: {call_sid}")
+
+            # Fire call.failed webhook for no_answer/busy
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.failed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "reason": "no_answer",
+                            "twilio_status": call_status,
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.failed (no_answer) webhook fire failed: %s", _wh_exc)
+
             if call_session:
                 try:
                     asyncio.create_task(broadcast_call_status_update(

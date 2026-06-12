@@ -352,6 +352,28 @@ async def _maybe_complete_job(db: Session, batch_job_id: uuid.UUID) -> None:
         db.commit()
         logger.info("BatchJob %s completed", batch_job_id)
 
+        # Fire batch.completed webhook (non-blocking)
+        try:
+            import asyncio as _asyncio
+            from app.services.webhook_service import fire_webhooks
+
+            _asyncio.create_task(
+                fire_webhooks(
+                    workspace_id=job.workspace_id,
+                    event_type="batch.completed",
+                    data={
+                        "batch_job_id": str(batch_job_id),
+                        "agent_id": str(job.agent_id) if job.agent_id else None,
+                        "total_count": job.total_count,
+                        "completed_count": job.completed_count,
+                        "failed_count": job.failed_count,
+                        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                    },
+                )
+            )
+        except Exception as _wh_exc:
+            logger.warning("batch.completed webhook fire failed: %s", _wh_exc)
+
 
 async def _bill_connected_call(record: BatchCallRecord, db: Session) -> None:
     """Increment the workspace usage_record for a connected batch call."""

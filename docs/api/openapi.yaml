@@ -6342,6 +6342,157 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/webhooks:
+    get:
+      tags:
+      - webhooks
+      summary: List Webhook Endpoints
+      description: List all webhook endpoints for the workspace. Secret is never returned.
+      operationId: list_webhook_endpoints_api_v2_webhooks_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/WebhookEndpointOut'
+                type: array
+                title: Response List Webhook Endpoints Api V2 Webhooks Get
+      security:
+      - HTTPBearer: []
+    post:
+      tags:
+      - webhooks
+      summary: Create Webhook Endpoint
+      description: 'Register a new webhook endpoint for the workspace.
+
+
+        The secret is stored encrypted and never returned. Minimum 16 characters.
+
+        URL must use HTTPS.'
+      operationId: create_webhook_endpoint_api_v2_webhooks_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/webhooks/{endpoint_id}:
+    delete:
+      tags:
+      - webhooks
+      summary: Delete Webhook Endpoint
+      description: Remove a webhook endpoint and all its delivery logs.
+      operationId: delete_webhook_endpoint_api_v2_webhooks__endpoint_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/webhooks/{endpoint_id}/test:
+    post:
+      tags:
+      - webhooks
+      summary: Test Webhook Endpoint
+      description: Send a test ping to the endpoint and return the delivery result.
+      operationId: test_webhook_endpoint_api_v2_webhooks__endpoint_id__test_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/webhooks/{endpoint_id}/deliveries:
+    get:
+      tags:
+      - webhooks
+      summary: List Webhook Deliveries
+      description: Return paginated delivery log for an endpoint.
+      operationId: list_webhook_deliveries_api_v2_webhooks__endpoint_id__deliveries_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookDeliveries'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AccountSnapshot:
@@ -9677,6 +9828,29 @@ components:
       - page
       - page_size
       title: PaginatedBatchJobs
+    PaginatedWebhookDeliveries:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/WebhookDeliveryOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      title: PaginatedWebhookDeliveries
     ParseMode:
       type: string
       enum:
@@ -13438,6 +13612,95 @@ components:
       - male
       - female
       title: VoiceTypeEnum
+    WebhookDeliveryOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        endpoint_id:
+          type: string
+          format: uuid
+          title: Endpoint Id
+        event_type:
+          type: string
+          title: Event Type
+        payload:
+          additionalProperties: true
+          type: object
+          title: Payload
+        status:
+          type: string
+          title: Status
+        http_status:
+          type: integer
+          nullable: true
+        response_body:
+          type: string
+          nullable: true
+        attempt_count:
+          type: integer
+          title: Attempt Count
+        last_attempted_at:
+          type: string
+          format: date-time
+          title: Last Attempted At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - endpoint_id
+      - event_type
+      - payload
+      - status
+      - http_status
+      - response_body
+      - attempt_count
+      - last_attempted_at
+      - created_at
+      title: WebhookDeliveryOut
+    WebhookEndpointCreate:
+      properties:
+        url:
+          type: string
+          minLength: 1
+          format: uri
+          title: Url
+        secret:
+          type: string
+          minLength: 16
+          title: Secret
+      type: object
+      required:
+      - url
+      - secret
+      title: WebhookEndpointCreate
+    WebhookEndpointOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        url:
+          type: string
+          title: Url
+        is_active:
+          type: boolean
+          title: Is Active
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - url
+      - is_active
+      - created_at
+      title: WebhookEndpointOut
     WelcomeMessageTypeEnum:
       type: string
       enum:

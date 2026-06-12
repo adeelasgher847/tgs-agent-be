@@ -114,6 +114,25 @@ async def process_batch_job(ctx: dict, batch_job_id: str) -> None:
         db.close()
 
 
+async def retry_webhook_delivery(
+    ctx: dict, delivery_id: str, attempt_number: int
+) -> None:
+    """
+    ARQ job function — re-attempts a failed webhook delivery.
+
+    delivery_id: str UUID of the WebhookDelivery row.
+    attempt_number: 1-indexed retry count (1 = first retry after initial failure).
+    """
+    import uuid as _uuid
+
+    from app.services.webhook_service import retry_webhook_delivery as _retry
+
+    await _retry(
+        delivery_id=_uuid.UUID(delivery_id),
+        attempt_number=attempt_number,
+    )
+
+
 async def poll_pending_batch_jobs(ctx: dict) -> None:
     """
     Periodic cron job — picks up any pending/processing jobs that have
@@ -171,7 +190,7 @@ class WorkerSettings:
         arq app.workers.batch_call_worker.WorkerSettings
     """
 
-    functions = [process_batch_job, poll_pending_batch_jobs]
+    functions = [process_batch_job, poll_pending_batch_jobs, retry_webhook_delivery]
 
     cron_jobs = [
         # Poll every 60 seconds for orphaned pending jobs
