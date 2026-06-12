@@ -13,6 +13,11 @@ class KbCreate(BaseModel):
     description: Optional[str] = None
 
 
+class KbUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+
+
 class KbOut(BaseModel):
     id: uuid.UUID
     workspace_id: uuid.UUID
@@ -24,9 +29,48 @@ class KbOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class KbListItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+    file_count: int
+    total_chunk_count: int
+    created_at: datetime
+
+
 class KbList(BaseModel):
-    knowledge_bases: List[KbOut]
+    knowledge_bases: List[KbListItem]
     total: int
+
+
+# ── KB detail with files ──────────────────────────────────────────────────────
+
+class KbFileOut(BaseModel):
+    id: uuid.UUID
+    filename: str
+    size_bytes: Optional[int] = None
+    size_mb: Optional[str] = None
+    status: str
+    chunk_count: Optional[int] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class KbDetail(BaseModel):
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    files: List[KbFileOut]
+
+
+# ── Call-flow KB linking ──────────────────────────────────────────────────────
+
+class FlowKbUpdate(BaseModel):
+    kb_ids: List[uuid.UUID]
 
 
 # ── File upload ───────────────────────────────────────────────────────────────

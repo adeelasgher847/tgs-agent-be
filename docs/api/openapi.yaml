@@ -1287,6 +1287,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/call-flows/{flow_id}/knowledge-bases:
+    put:
+      tags:
+      - Call Flows
+      summary: Update Flow Knowledge Bases
+      description: 'Replace the list of KB IDs attached to a call flow.
+
+
+        Each supplied kb_id is validated to belong to the same workspace.
+
+        Passing an empty list detaches all KBs.'
+      operationId: update_flow_knowledge_bases_api_v1_call_flows__flow_id__knowledge_bases_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowKbUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/folders/:
     get:
       tags:
@@ -4433,31 +4473,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/kb/:
-    get:
-      tags:
-      - Knowledge Base
-      summary: List Knowledge Bases
-      operationId: list_knowledge_bases_api_v1_kb__get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_KbList_'
-      security:
-      - HTTPBearer: []
     post:
       tags:
       - Knowledge Base
       summary: Create Knowledge Base
       operationId: create_knowledge_base_api_v1_kb__post
+      security:
+      - HTTPBearer: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/KbCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -4471,9 +4499,107 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Knowledge Base
+      summary: List Knowledge Bases
+      operationId: list_knowledge_bases_api_v1_kb__get
       security:
       - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbList_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/kb/{kb_id}:
+    get:
+      tags:
+      - Knowledge Base
+      summary: Get Knowledge Base
+      operationId: get_knowledge_base_api_v1_kb__kb_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbDetail_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Knowledge Base
+      summary: Update Knowledge Base
+      operationId: update_knowledge_base_api_v1_kb__kb_id__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KbUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     delete:
       tags:
       - Knowledge Base
@@ -4489,6 +4615,42 @@ paths:
           type: string
           format: uuid
           title: Kb Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_dict_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/{kb_id}/files/{file_id}:
+    delete:
+      tags:
+      - Knowledge Base
+      summary: Delete Kb File
+      operationId: delete_kb_file_api_v1_kb__kb_id__files__file_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: kb_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Kb Id
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: File Id
       responses:
         '200':
           description: Successful Response
@@ -9039,6 +9201,18 @@ components:
       title: FlowDataSchema
       description: Structural validation for flowData JSONB — future visual-editor
         format.
+    FlowKbUpdate:
+      properties:
+        kb_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Kb Ids
+      type: object
+      required:
+      - kb_ids
+      title: FlowKbUpdate
     FolderCreate:
       properties:
         name:
@@ -9604,6 +9778,75 @@ components:
       required:
       - name
       title: KbCreate
+    KbDetail:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        workspace_id:
+          type: string
+          format: uuid
+          title: Workspace Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+        files:
+          items:
+            $ref: '#/components/schemas/KbFileOut'
+          type: array
+          title: Files
+      type: object
+      required:
+      - id
+      - workspace_id
+      - name
+      - created_at
+      - files
+      title: KbDetail
+    KbFileOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        filename:
+          type: string
+          title: Filename
+        size_bytes:
+          type: integer
+          nullable: true
+        size_mb:
+          type: string
+          nullable: true
+        status:
+          type: string
+          title: Status
+        chunk_count:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - filename
+      - status
+      - created_at
+      title: KbFileOut
     KbFileStatusOut:
       properties:
         file_id:
@@ -9642,7 +9885,7 @@ components:
       properties:
         knowledge_bases:
           items:
-            $ref: '#/components/schemas/KbOut'
+            $ref: '#/components/schemas/KbListItem'
           type: array
           title: Knowledge Bases
         total:
@@ -9653,6 +9896,36 @@ components:
       - knowledge_bases
       - total
       title: KbList
+    KbListItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          nullable: true
+        file_count:
+          type: integer
+          title: File Count
+        total_chunk_count:
+          type: integer
+          title: Total Chunk Count
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - name
+      - file_count
+      - total_chunk_count
+      - created_at
+      title: KbListItem
     KbOut:
       properties:
         id:
@@ -9738,6 +10011,18 @@ components:
       - kb_id
       - chunk_count
       title: KbTextIngestResponse
+    KbUpdate:
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          nullable: true
+        description:
+          type: string
+          nullable: true
+      type: object
+      title: KbUpdate
     KnowledgeBaseDocumentList:
       properties:
         documents:
@@ -12208,6 +12493,22 @@ components:
       required:
       - data
       title: SuccessResponse[JobDescriptionOut]
+    SuccessResponse_KbDetail_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbDetail'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbDetail]
     SuccessResponse_KbFileStatusOut_:
       properties:
         data:
