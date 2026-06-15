@@ -1,5 +1,5 @@
-from sqlalchemy import Column, String, DateTime, Numeric, Index, text, ForeignKey, CheckConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, DateTime, Numeric, Index, ForeignKey, CheckConstraint, text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
@@ -38,6 +38,8 @@ class Tenant(Base):
     appointments = relationship("Appointment", back_populates="tenant")
     transfer_routes = relationship("TransferRoute", back_populates="tenant")
     api_keys = relationship("Apikey", back_populates="tenant", cascade="all, delete-orphan")
+
+    workspace_settings = Column(JSONB, nullable=True, default=dict)
 
     parent_workspace = relationship("Tenant", remote_side=[id], backref="sub_accounts")
     branding_config = relationship("BrandingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
