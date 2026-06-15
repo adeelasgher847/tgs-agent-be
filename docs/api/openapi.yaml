@@ -6616,6 +6616,367 @@ paths:
                 $ref: '#/components/schemas/IntegrationListResponse'
       security:
       - HTTPBearer: []
+  /api/v1/calls/history:
+    get:
+      tags:
+      - Call History Analytics
+      summary: Paginated call history list
+      description: Paginated call history. Date filters expect ISO 8601 UTC timestamps.
+      operationId: get_call_history_api_v1_calls_history_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: per_page
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 25
+          title: Per Page
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          enum:
+          - started_at
+          - duration
+          - status
+          type: string
+          default: started_at
+          title: Sort By
+      - name: sort_dir
+        in: query
+        required: false
+        schema:
+          enum:
+          - asc
+          - desc
+          type: string
+          default: desc
+          title: Sort Dir
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by agent ID
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by call flow ID
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+        description: Filter by call direction
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound for call start time
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound for call start time
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Filter by call status (completed, failed, no_answer, …)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CallHistoryList_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/calls/history/metrics:
+    get:
+      tags:
+      - Call History Analytics
+      summary: Aggregated call metrics
+      description: 'Returns aggregated totals and success rate. All computation is
+        pushed to Postgres.
+
+        Date filters expect ISO 8601 UTC timestamps.'
+      operationId: get_call_metrics_api_v1_calls_history_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by agent ID
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by call flow ID
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+        description: Filter by call direction
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound for call start time
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound for call start time
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Filter by call status (completed, failed, no_answer, …)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CallHistoryMetrics_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/calls/history/time-series:
+    get:
+      tags:
+      - Call History Analytics
+      summary: Daily call counts for charts
+      description: 'Returns one row per calendar day (UTC). Format matches Recharts
+        LineChart:
+
+        [{date:''2026-05-01'', total:12, completed:10, failed:2}]'
+      operationId: get_call_time_series_api_v1_calls_history_time_series_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_List_CallHistoryTimeSeriesPoint__'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/calls/history/export:
+    post:
+      tags:
+      - Call History Analytics
+      summary: Stream CSV export of call history
+      description: "Streams a CSV file directly from the database cursor — no in-memory\
+        \ buffering.\nColumns: call_id, direction, from_number, to_number, agent_name,\
+        \ flow_name,\n         status, duration_seconds, started_at, ended_at.\nDate\
+        \ filters expect ISO 8601 UTC timestamps."
+      operationId: export_call_history_csv_api_v1_calls_history_export_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by agent ID
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by call flow ID
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+        description: Filter by call direction
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound for call start time
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound for call start time
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Filter by call status (completed, failed, no_answer, …)
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/batch-calls/metrics:
+    get:
+      tags:
+      - Batch Call Analytics
+      summary: Batch call campaign metrics
+      description: Returns aggregated statistics across all batch call campaigns for
+        this tenant.
+      operationId: get_batch_call_metrics_api_v1_batch_calls_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_BatchCallMetrics_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /health:
     get:
       summary: Health Check
@@ -7882,6 +8243,27 @@ components:
       - slots
       - total
       title: AvailableSlotsResponse
+    BatchCallMetrics:
+      properties:
+        total_batches:
+          type: integer
+          title: Total Batches
+        avg_completion_rate_percent:
+          type: number
+          nullable: true
+        total_calls_dispatched:
+          type: integer
+          title: Total Calls Dispatched
+        total_failed:
+          type: integer
+          title: Total Failed
+      type: object
+      required:
+      - total_batches
+      - avg_completion_rate_percent
+      - total_calls_dispatched
+      - total_failed
+      title: BatchCallMetrics
     BatchCallRecordOut:
       properties:
         id:
@@ -8811,6 +9193,135 @@ components:
       additionalProperties: false
       type: object
       title: CallFlowUpdate
+    CallHistoryItem:
+      properties:
+        call_id:
+          type: string
+          format: uuid
+          title: Call Id
+        direction:
+          type: string
+          title: Direction
+        from_number:
+          type: string
+          nullable: true
+        to_number:
+          type: string
+          nullable: true
+        agent_name:
+          type: string
+          nullable: true
+        flow_name:
+          type: string
+          nullable: true
+        status:
+          type: string
+          title: Status
+        duration_seconds:
+          type: integer
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - call_id
+      - direction
+      - from_number
+      - to_number
+      - agent_name
+      - flow_name
+      - status
+      - duration_seconds
+      - started_at
+      - ended_at
+      title: CallHistoryItem
+    CallHistoryList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/CallHistoryItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        per_page:
+          type: integer
+          title: Per Page
+        pages:
+          type: integer
+          title: Pages
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - per_page
+      - pages
+      title: CallHistoryList
+    CallHistoryMetrics:
+      properties:
+        total_calls:
+          type: integer
+          title: Total Calls
+        completed:
+          type: integer
+          title: Completed
+        failed:
+          type: integer
+          title: Failed
+        no_answer:
+          type: integer
+          title: No Answer
+        avg_duration_seconds:
+          type: number
+          nullable: true
+        total_duration_seconds:
+          type: integer
+          nullable: true
+        success_rate_percent:
+          type: number
+          nullable: true
+      type: object
+      required:
+      - total_calls
+      - completed
+      - failed
+      - no_answer
+      - avg_duration_seconds
+      - total_duration_seconds
+      - success_rate_percent
+      title: CallHistoryMetrics
+    CallHistoryTimeSeriesPoint:
+      properties:
+        date:
+          type: string
+          title: Date
+        total:
+          type: integer
+          title: Total
+        completed:
+          type: integer
+          title: Completed
+        failed:
+          type: integer
+          title: Failed
+      type: object
+      required:
+      - date
+      - total
+      - completed
+      - failed
+      title: CallHistoryTimeSeriesPoint
     CallInitiateRequest:
       properties:
         agentId:
@@ -12629,6 +13140,22 @@ components:
       required:
       - data
       title: SuccessResponse[AvailableSlotsResponse]
+    SuccessResponse_BatchCallMetrics_:
+      properties:
+        data:
+          $ref: '#/components/schemas/BatchCallMetrics'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[BatchCallMetrics]
     SuccessResponse_BindingStatusResponse_:
       properties:
         data:
@@ -12773,6 +13300,38 @@ components:
       required:
       - data
       title: SuccessResponse[CSVUploadResponse]
+    SuccessResponse_CallHistoryList_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CallHistoryList'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CallHistoryList]
+    SuccessResponse_CallHistoryMetrics_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CallHistoryMetrics'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CallHistoryMetrics]
     SuccessResponse_CallInitiateResponse_:
       properties:
         data:
@@ -13163,6 +13722,25 @@ components:
       required:
       - data
       title: SuccessResponse[List[BusinessHoursOut]]
+    SuccessResponse_List_CallHistoryTimeSeriesPoint__:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/CallHistoryTimeSeriesPoint'
+          type: array
+          title: Data
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[List[CallHistoryTimeSeriesPoint]]
     SuccessResponse_List_PlanOut__:
       properties:
         data:
