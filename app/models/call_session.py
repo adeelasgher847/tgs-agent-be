@@ -51,6 +51,14 @@ class CallSession(Base):
     # Optional link to the call flow that triggered this session
     call_flow_id = Column(UUID(as_uuid=True), ForeignKey("callflow.id"), nullable=True, index=True)
 
+    # Smart Callback: points to the original missed call in a retry chain
+    parent_call_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("callsession.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -63,6 +71,9 @@ class CallSession(Base):
     transcript_messages = relationship("TranscriptMessage", back_populates="call_session", cascade="all, delete-orphan")
     slot_reservations = relationship("SlotReservation", back_populates="call_session", cascade="all, delete-orphan")
     call_flow = relationship("CallFlow", back_populates="call_sessions")
+    # Self-referential: retry calls point back to the original missed call
+    parent_call = relationship("CallSession", remote_side="CallSession.id", foreign_keys=[parent_call_id])
+    callback_schedules = relationship("CallbackSchedule", back_populates="original_call", foreign_keys="CallbackSchedule.original_call_id")
     
     def __repr__(self):
         return f"<CallSession(id={self.id}, status={self.status})>"

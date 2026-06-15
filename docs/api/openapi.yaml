@@ -6864,6 +6864,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/agents/{agent_id}/callback-config:
+    put:
+      tags:
+      - Smart Callback Scheduler
+      summary: Update agent smart-callback configuration
+      description: 'Set the smart-callback configuration for an agent.
+
+
+        - **smart_callback_enabled**: activates the retry loop.
+
+        - **max_attempts**: total retry budget (1–20).
+
+        - **gap_schedule**: ordered list of `{days, hours}` gaps between attempts.
+
+        - **timezone**: IANA timezone string — returns 422 if invalid.'
+      operationId: update_callback_config_api_v2_agents__agent_id__callback_config_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallbackConfigUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallbackConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/agents/{agent_id}/callback-status:
+    get:
+      tags:
+      - Smart Callback Scheduler
+      summary: Get agent callback config and live retry counters
+      description: 'Returns the agent''s callback config plus:
+
+        - `pending_retries`: number of pending callback records.
+
+        - `next_scheduled_at`: UTC time of the earliest pending callback.'
+      operationId: get_callback_status_api_v2_agents__agent_id__callback_status_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Agent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallbackStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/calls/{call_id}/callback-history:
+    get:
+      tags:
+      - Smart Callback Scheduler
+      summary: Get callback retry history for a call
+      description: 'Returns ordered callback attempts for `call_id`.
+
+        Returns 404 if the call does not belong to the caller''s tenant.'
+      operationId: get_callback_history_api_v2_calls__call_id__callback_history_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: call_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Call Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CallbackHistoryItem'
+                title: Response Get Callback History Api V2 Calls  Call Id  Callback
+                  History Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AccountSnapshot:
@@ -9083,6 +9198,120 @@ components:
       - assistant_messages
       - total_response_time_entries
       title: CallSessionStats
+    CallbackConfigResponse:
+      properties:
+        smart_callback_enabled:
+          type: boolean
+          title: Smart Callback Enabled
+        max_attempts:
+          type: integer
+          title: Max Attempts
+        gap_schedule:
+          items:
+            $ref: '#/components/schemas/GapInterval'
+          type: array
+          title: Gap Schedule
+        timezone:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - smart_callback_enabled
+      - max_attempts
+      - gap_schedule
+      - timezone
+      title: CallbackConfigResponse
+      description: Response body for PUT /api/v1/agents/{id}/callback-config.
+    CallbackConfigUpdate:
+      properties:
+        smart_callback_enabled:
+          type: boolean
+          title: Smart Callback Enabled
+        max_attempts:
+          type: integer
+          maximum: 20.0
+          minimum: 1.0
+          title: Max Attempts
+          description: Maximum retry attempts before the chain is exhausted
+          default: 5
+        gap_schedule:
+          items:
+            $ref: '#/components/schemas/GapInterval'
+          type: array
+          title: Gap Schedule
+          description: Ordered list of gaps between attempts; index 0 = gap after
+            first miss
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone, e.g. 'America/New_York'
+      type: object
+      required:
+      - smart_callback_enabled
+      - timezone
+      title: CallbackConfigUpdate
+      description: 'PUT /api/v1/agents/{id}/callback-config request body.
+
+        Validates the timezone against the IANA zoneinfo database.'
+    CallbackHistoryItem:
+      properties:
+        attempt_number:
+          type: integer
+          title: Attempt Number
+        scheduled_at:
+          type: string
+          format: date-time
+          title: Scheduled At
+        executed_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - attempt_number
+      - scheduled_at
+      - executed_at
+      - status
+      title: CallbackHistoryItem
+      description: One row from GET /api/v1/calls/{call_id}/callback-history.
+    CallbackStatusResponse:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+        max_attempts:
+          type: integer
+          title: Max Attempts
+        gap_schedule:
+          items:
+            $ref: '#/components/schemas/GapInterval'
+          type: array
+          title: Gap Schedule
+        timezone:
+          type: string
+          nullable: true
+        pending_retries:
+          type: integer
+          title: Pending Retries
+          description: Number of pending callbacks for this agent
+        next_scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - enabled
+      - max_attempts
+      - gap_schedule
+      - timezone
+      - pending_retries
+      title: CallbackStatusResponse
+      description: 'GET /api/v1/agents/{id}/callback-status response.
+
+        Returns live counters alongside the static config.'
     CandidateStatusEnum:
       type: string
       enum:
@@ -9256,6 +9485,23 @@ components:
       required:
       - message
       title: ForgotPasswordResponse
+    GapInterval:
+      properties:
+        days:
+          type: integer
+          minimum: 0.0
+          title: Days
+          description: Number of days to wait
+          default: 0
+        hours:
+          type: integer
+          minimum: 0.0
+          title: Hours
+          description: Number of hours to wait
+          default: 0
+      type: object
+      title: GapInterval
+      description: A single time gap between callback attempts.
     GoogleLoginRequest:
       properties:
         google_token:

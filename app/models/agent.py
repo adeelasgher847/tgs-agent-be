@@ -41,6 +41,18 @@ class Agent(Base):
     # Smart callback flag — agent proactively calls back when a slot opens.
     smart_callback = Column(Boolean, default=False, nullable=False, server_default="false")
 
+    # ── Smart Callback Scheduler (Sprint 8) ───────────────────────────────────
+    # Enables the APScheduler-driven retry loop for no_answer / busy calls.
+    smart_callback_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    # Maximum number of retry attempts before the chain is exhausted.
+    max_callback_attempts = Column(Integer, default=5, nullable=False, server_default="5")
+    # Ordered list of {days, hours} gaps between attempts, e.g. [{days:0,hours:1},{days:1,hours:0}].
+    callback_gap_schedule = Column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    # IANA timezone used for business-hours enforcement, e.g. "America/New_York".
+    callback_timezone = Column(Text, nullable=True)
+
     # ── STT model triad (mirrors TTS triad: provider_slug / external_id / language) ──
     stt_provider_slug = Column(String(40), nullable=True)
     stt_model_external_id = Column(String(255), nullable=True)
@@ -95,6 +107,7 @@ class Agent(Base):
     stt_provider = relationship("STTProvider", back_populates="agents", foreign_keys=[stt_provider_id])
     stt_model = relationship("STTModel", back_populates="agents", foreign_keys=[stt_model_id])
     transfer_route = relationship("TransferRoute", back_populates="agents")
+    callback_schedules = relationship("CallbackSchedule", back_populates="agent")
 
     __table_args__ = (
         Index("ix_agent_tenant_id", "tenant_id"),

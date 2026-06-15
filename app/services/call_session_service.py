@@ -206,7 +206,7 @@ class CallSessionService:
                 
                 db.commit()
                 db.refresh(call_session)
-                
+
                 self._update_call_log_for_session(
                     db, call_session, ended_reason, success_evaluation, cost, transferred
                 )
@@ -220,7 +220,19 @@ class CallSessionService:
                         schedule_inbound_crm_sync(call_session.id)
                     except Exception as sync_exc:  # pragma: no cover
                         logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
-            
+
+                # Smart Callback: trigger a retry chain for missed outbound calls
+                if status in ("no_answer", "busy"):
+                    try:
+                        from app.services.callback_scheduler_service import callback_scheduler_service
+                        callback_scheduler_service.maybe_schedule_callback(db, call_session)
+                    except Exception as cb_exc:
+                        logger.warning(
+                            "Smart callback schedule failed (non-critical) session=%s: %s",
+                            session_id,
+                            cb_exc,
+                        )
+
             return call_session
 
         except Exception as e:
