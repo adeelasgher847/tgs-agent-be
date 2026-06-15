@@ -1,28 +1,38 @@
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from typing import Optional
 
+import json as _json
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import String, cast, func, text as sa_text
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_admin_or_owner, require_tenant
 from app.core.config import settings
 from app.core.logger import logger
+from app.models.call_flow import CallFlow
 from app.models.knowledge_base_document import KnowledgeBase
 from app.models.knowledge_base_chunk import KbChunk
 from app.models.kb_file import KbFile
 from app.schemas.base import SuccessResponse
 from app.schemas.knowledge_base import (
     KbCreate,
+    KbDetail,
+    KbFileOut,
     KbFileStatusOut,
     KbFileUploadResponse,
     KbList,
+    KbListItem,
     KbOut,
     KbSearchResponse,
     KbSearchResultItem,
     KbTextIngestRequest,
     KbTextIngestResponse,
+    KbUpdate,
     KnowledgeBaseDocumentList,
     KnowledgeBaseDocumentOut,
     KnowledgeBaseIngestTextRequest,
@@ -40,14 +50,22 @@ from app.services.kb_ingestion_service import (
 from app.services.rag_service import rag_service
 from app.utils.response import create_success_response
 from app.utils.arq_pool import get_arq_pool
+from app.utils.redis_client import get_redis
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
+# In-process TTL cache used when Redis is unavailable.
+# Structure: key -> (value: int, expires_at: float)
+_MEM_CACHE: dict[str, tuple[int, float]] = {}
+
+_FILE_COUNT_TTL = 60    # seconds
+_CHUNK_COUNT_TTL = 120  # seconds
+
 router = APIRouter()
 
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_kb_or_404(db: Session, kb_id: uuid.UUID, workspace_id: uuid.UUID) -> KnowledgeBase:
     kb = (
@@ -60,18 +78,126 @@ def _get_kb_or_404(db: Session, kb_id: uuid.UUID, workspace_id: uuid.UUID) -> Kn
     return kb
 
 
+def _file_count(db: Session, kb_id: uuid.UUID) -> int:
+    return (
+        db.query(func.count(KbFile.id))
+        .filter(KbFile.kb_id == kb_id, KbFile.status == "ready")
+        .scalar()
+        or 0
+    )
+
+
+def _chunk_count(db: Session, kb_id: uuid.UUID) -> int:
+    return (
+        db.query(func.count(KbChunk.id))
+        .filter(KbChunk.kb_id == kb_id)
+        .scalar()
+        or 0
+    )
+
+
+def _mem_cache_get(key: str) -> Optional[int]:
+    entry = _MEM_CACHE.get(key)
+    if entry is not None and time.monotonic() < entry[1]:
+        return entry[0]
+    _MEM_CACHE.pop(key, None)
+    return None
+
+
+def _mem_cache_set(key: str, value: int, ttl: int) -> None:
+    _MEM_CACHE[key] = (value, time.monotonic() + ttl)
+
+
+async def _cached_file_count(db: Session, kb_id: uuid.UUID) -> int:
+    """COUNT of ready files for a KB; cached 60 s in Redis (fallback: in-process dict)."""
+    key = f"kb:file_count:{kb_id}"
+    redis = get_redis()
+    if redis is not None:
+        try:
+            cached = await redis.get(key)
+            if cached is not None:
+                return int(cached)
+        except Exception:
+            pass
+    else:
+        mem = _mem_cache_get(key)
+        if mem is not None:
+            return mem
+
+    count = _file_count(db, kb_id)
+
+    if redis is not None:
+        try:
+            await redis.setex(key, _FILE_COUNT_TTL, count)
+        except Exception:
+            pass
+    else:
+        _mem_cache_set(key, count, _FILE_COUNT_TTL)
+
+    return count
+
+
+async def _cached_chunk_count(db: Session, kb_id: uuid.UUID) -> int:
+    """COUNT of chunks for a KB; cached 120 s in Redis (fallback: in-process dict)."""
+    key = f"kb:chunk_count:{kb_id}"
+    redis = get_redis()
+    if redis is not None:
+        try:
+            cached = await redis.get(key)
+            if cached is not None:
+                return int(cached)
+        except Exception:
+            pass
+    else:
+        mem = _mem_cache_get(key)
+        if mem is not None:
+            return mem
+
+    count = _chunk_count(db, kb_id)
+
+    if redis is not None:
+        try:
+            await redis.setex(key, _CHUNK_COUNT_TTL, count)
+        except Exception:
+            pass
+    else:
+        _mem_cache_set(key, count, _CHUNK_COUNT_TTL)
+
+    return count
+
+
+def _bytes_to_mb(size_bytes: Optional[int]) -> Optional[str]:
+    if size_bytes is None:
+        return None
+    return f"{round(size_bytes / 1_048_576, 2):.2f} MB"
+
+
+def _is_kb_linked_to_active_flow(db: Session, kb_id: uuid.UUID) -> bool:
+    """Return True if the KB is referenced in any non-deleted call flow.
+
+    Uses a String-cast LIKE search so it works on both PostgreSQL (JSONB) and
+    SQLite (TEXT) test environments.
+    """
+    result = (
+        db.query(CallFlow)
+        .filter(
+            CallFlow.is_deleted == False,  # noqa: E712
+            cast(CallFlow.knowledge_base_ids, String).contains(str(kb_id)),
+        )
+        .first()
+    )
+    return result is not None
+
+
 # ── Knowledge base CRUD ───────────────────────────────────────────────────────
 
 @router.post("/", response_model=SuccessResponse[KbOut], status_code=201)
 def create_knowledge_base(
     payload: KbCreate,
-    user=Depends(require_tenant),
+    user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
     workspace_id = user.current_tenant_id
-    if workspace_id is None:
-        raise HTTPException(status_code=403, detail="No tenant selected")
-
     kb = KnowledgeBase(
         id=uuid.uuid4(),
         workspace_id=workspace_id,
@@ -85,7 +211,9 @@ def create_knowledge_base(
 
 
 @router.get("/", response_model=SuccessResponse[KbList])
-def list_knowledge_bases(
+async def list_knowledge_bases(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
     user=Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
@@ -97,16 +225,37 @@ def list_knowledge_bases(
         db.query(KnowledgeBase)
         .filter(KnowledgeBase.workspace_id == workspace_id)
         .order_by(KnowledgeBase.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
         .all()
     )
+    total = (
+        db.query(func.count(KnowledgeBase.id))
+        .filter(KnowledgeBase.workspace_id == workspace_id)
+        .scalar()
+        or 0
+    )
+
+    items = []
+    for kb in kbs:
+        items.append(
+            KbListItem(
+                id=kb.id,
+                name=kb.name,
+                description=kb.description,
+                file_count=await _cached_file_count(db, kb.id),
+                total_chunk_count=await _cached_chunk_count(db, kb.id),
+                created_at=kb.created_at,
+            )
+        )
     return create_success_response(
-        KbList(knowledge_bases=[KbOut.model_validate(k) for k in kbs], total=len(kbs)),
+        KbList(knowledge_bases=items, total=total),
         "Knowledge bases fetched",
     )
 
 
-@router.delete("/{kb_id}", response_model=SuccessResponse[dict])
-def delete_knowledge_base(
+@router.get("/{kb_id}", response_model=SuccessResponse[KbDetail])
+def get_knowledge_base(
     kb_id: uuid.UUID,
     user=Depends(require_tenant),
     db: Session = Depends(get_db),
@@ -116,9 +265,104 @@ def delete_knowledge_base(
         raise HTTPException(status_code=403, detail="No tenant selected")
 
     kb = _get_kb_or_404(db, kb_id, workspace_id)
+    files = (
+        db.query(KbFile)
+        .filter(KbFile.kb_id == kb_id)
+        .order_by(KbFile.created_at.desc())
+        .all()
+    )
+    file_out = [
+        KbFileOut(
+            id=f.id,
+            filename=f.original_filename,
+            size_bytes=f.size_bytes,
+            size_mb=_bytes_to_mb(f.size_bytes),
+            status=f.status,
+            chunk_count=f.chunk_count,
+            created_at=f.created_at,
+        )
+        for f in files
+    ]
+    detail = KbDetail(
+        id=kb.id,
+        workspace_id=kb.workspace_id,
+        name=kb.name,
+        description=kb.description,
+        created_at=kb.created_at,
+        updated_at=kb.updated_at,
+        files=file_out,
+    )
+    return create_success_response(detail, "Knowledge base fetched")
+
+
+@router.put("/{kb_id}", response_model=SuccessResponse[KbOut])
+def update_knowledge_base(
+    kb_id: uuid.UUID,
+    payload: KbUpdate,
+    user=Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    workspace_id = user.current_tenant_id
+    kb = _get_kb_or_404(db, kb_id, workspace_id)
+
+    if payload.name is not None:
+        kb.name = payload.name
+    if payload.description is not None:
+        kb.description = payload.description
+
+    db.commit()
+    db.refresh(kb)
+    return create_success_response(KbOut.model_validate(kb), "Knowledge base updated")
+
+
+@router.delete("/{kb_id}", response_model=SuccessResponse[dict])
+def delete_knowledge_base(
+    kb_id: uuid.UUID,
+    user=Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    workspace_id = user.current_tenant_id
+    kb = _get_kb_or_404(db, kb_id, workspace_id)
+
+    if _is_kb_linked_to_active_flow(db, kb_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot delete a knowledge base that is linked to an active call flow",
+        )
+
     db.delete(kb)
     db.commit()
     return create_success_response({"kb_id": str(kb_id)}, "Knowledge base deleted")
+
+
+# ── File management ───────────────────────────────────────────────────────────
+
+@router.delete("/{kb_id}/files/{file_id}", response_model=SuccessResponse[dict])
+def delete_kb_file(
+    kb_id: uuid.UUID,
+    file_id: uuid.UUID,
+    user=Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    workspace_id = user.current_tenant_id
+    _get_kb_or_404(db, kb_id, workspace_id)
+
+    kb_file = (
+        db.query(KbFile)
+        .filter(KbFile.id == file_id, KbFile.kb_id == kb_id)
+        .first()
+    )
+    if not kb_file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Explicitly delete associated chunks (FK is SET NULL, not CASCADE)
+    db.query(KbChunk).filter(KbChunk.file_id == file_id).delete(synchronize_session=False)
+    db.delete(kb_file)
+    db.commit()
+    return create_success_response(
+        {"file_id": str(file_id), "kb_id": str(kb_id)},
+        "File deleted",
+    )
 
 
 # ── File upload → async ingestion ─────────────────────────────────────────────
@@ -141,7 +385,6 @@ async def upload_kb_file(
 
     _get_kb_or_404(db, kb_id, workspace_id)
 
-    # Validate extension
     filename = file.filename or ""
     ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -150,7 +393,6 @@ async def upload_kb_file(
             detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
         )
 
-    # Read content — enforce 50 MB cap
     content = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(
@@ -161,7 +403,6 @@ async def upload_kb_file(
     file_id = uuid.uuid4()
     file_type = ext.lstrip(".")
 
-    # Persist KbFile record (status=processing)
     kb_file = KbFile(
         id=file_id,
         kb_id=kb_id,
@@ -171,7 +412,6 @@ async def upload_kb_file(
         status="processing",
     )
 
-    # Upload to GCS if bucket is configured
     if settings.GCS_KB_BUCKET:
         gcs_path = gcs_kb_path(workspace_id, kb_id, file_id, filename)
         try:
@@ -187,7 +427,6 @@ async def upload_kb_file(
     db.add(kb_file)
     db.commit()
 
-    # Enqueue ARQ ingestion job
     job_id = str(uuid.uuid4())
     pool = get_arq_pool()
     if pool:
@@ -311,8 +550,6 @@ async def search_knowledge_base(
         )
 
     try:
-        from sqlalchemy import text as sa_text
-
         loop = asyncio.get_running_loop()
         embedding = await loop.run_in_executor(None, embed_text_for_rag, q)
         vec_str = "[" + ",".join(str(f) for f in embedding) + "]"
@@ -336,8 +573,6 @@ async def search_knowledge_base(
         logger.error("KB search failed for kb_id=%s: %s", kb_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail="Search failed")
 
-    import json as _json
-
     results = []
     for row in rows:
         meta = row.chunk_metadata or {}
@@ -360,7 +595,7 @@ async def search_knowledge_base(
     )
 
 
-# ── Legacy: list knowledge bases as "documents" ───────────────────────────────
+# ── Legacy: list knowledge bases as "documents" ────────────────────────────────
 
 @router.get("/documents", response_model=SuccessResponse[KnowledgeBaseDocumentList])
 def list_documents(
@@ -491,7 +726,6 @@ def delete_document(
     if workspace_id is None:
         raise HTTPException(status_code=403, detail="No tenant selected")
 
-    # document_id maps to kb_id in the new schema
     kb = _get_kb_or_404(db, document_id, workspace_id)
 
     chunk_rows = db.query(KbChunk).filter(KbChunk.kb_id == kb.id).all()

@@ -7,12 +7,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_admin_or_owner, require_tenant
 from app.core.error_responses import build_api_error_payload
 from app.core.request_auth import ApiKeyPrincipal
+from app.models.call_flow import CallFlow
+from app.models.knowledge_base_document import KnowledgeBase
 from app.models.user import User
 from app.schemas.call_flow import CallFlowCreate, CallFlowUpdate
+from app.schemas.knowledge_base import FlowKbUpdate
 from app.services.call_flow_service import call_flow_service
+from app.utils.response import create_success_response
 
 router = APIRouter()
 
@@ -112,3 +116,55 @@ def delete_call_flow(
             )
         raise
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put("/{flow_id}/knowledge-bases")
+def update_flow_knowledge_bases(
+    flow_id: uuid.UUID,
+    body: FlowKbUpdate,
+    principal: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    """Replace the list of KB IDs attached to a call flow.
+
+    Each supplied kb_id is validated to belong to the same workspace.
+    Passing an empty list detaches all KBs.
+    """
+    workspace_id = _workspace_id(principal)
+
+    flow = (
+        db.query(CallFlow)
+        .filter(
+            CallFlow.id == flow_id,
+            CallFlow.tenant_id == workspace_id,
+            CallFlow.is_deleted == False,  # noqa: E712
+        )
+        .first()
+    )
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"Call flow {flow_id} not found")
+
+    # Validate every supplied KB belongs to this workspace
+    for kb_id in body.kb_ids:
+        kb = (
+            db.query(KnowledgeBase)
+            .filter(
+                KnowledgeBase.id == kb_id,
+                KnowledgeBase.workspace_id == workspace_id,
+            )
+            .first()
+        )
+        if kb is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Knowledge base {kb_id} not found in this workspace",
+            )
+
+    flow.knowledge_base_ids = [str(k) for k in body.kb_ids]
+    db.commit()
+    db.refresh(flow)
+
+    return create_success_response(
+        {"flow_id": str(flow_id), "kb_ids": flow.knowledge_base_ids},
+        "Knowledge bases updated",
+    )
