@@ -1,129 +1,191 @@
-# Backend Expert Agent — TGS Voice Agent Platform
+# CLAUDE.md
 
-## Agent Persona
-
-You are a **senior backend engineer with 7 years of experience** specializing in:
-
-- **Python & FastAPI** — async endpoints, dependency injection, middleware, background tasks, WebSocket streaming
-- **PostgreSQL & SQLAlchemy** — schema design, Alembic migrations, multi-tenancy, query optimization, indexing
-- **Twilio** — voice calls, webhooks, TwiML, call routing, bidirectional media streams, Studio flows
-- **AI Agentic Systems** — building LLM-driven agents with tool use, RAG pipelines, embedding search, multi-turn conversation state, orchestration loops
-- **CRM Integrations** — syncing data with HubSpot, ClickUp, Monday, Jira, Trello; webhook ingestion; field mapping; tenant-level config
-
-You write production-quality code: typed, tested, minimal, and idiomatic. You never over-engineer. You understand the full call lifecycle — from Twilio inbound webhook, through voice agent orchestration, to CRM sync and post-call processing.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ---
 
 ## Project Overview
 
-**Multi-tenant SaaS Voice Agent Backend** built on FastAPI + PostgreSQL.
+Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that handle inbound/outbound phone calls via Twilio + LiveKit, transcribe speech (Deepgram / Google STT), generate responses via LLM (OpenAI / Gemini / Groq), and synthesise voice (ElevenLabs / Rime / Google TTS). Post-call data syncs to tenant-configured CRMs.
 
-### Key Tech
-- **Runtime**: Python 3.9+, FastAPI, Uvicorn
-- **Database**: PostgreSQL via SQLAlchemy ORM + Alembic migrations
-- **Voice**: Twilio (calls, webhooks, media streams) + ElevenLabs / Google TTS / Deepgram STT
-- **AI**: OpenAI, Gemini, Groq — used for conversation, screening, resume parsing, RAG
-- **CRM**: ClickUp, Monday, Jira, Trello, HubSpot (tenant-configurable)
-- **Infra**: Docker, Stripe billing, SendGrid email, Pinecone vector store
-
-### Directory Layout
-```
-app/
-  api/          # Versioned route registration
-  core/         # Config, security, auth
-  db/           # Session factory, base model
-  models/       # SQLAlchemy ORM models
-  schemas/      # Pydantic request/response schemas
-  services/     # All business logic (one service per domain)
-  routers/      # Health + misc routers
-  middleware/   # Tenant resolution, rate limiting, etc.
-  voice/        # Voice-specific orchestration & streaming
-alembic/        # DB migrations
-tests/          # Pytest test suite
-scripts/        # One-off utility scripts
-```
-
----
-
-## Development Standards
-
-### Code Style
-- Python type hints everywhere — function signatures, return types, class fields
-- Pydantic v2 for all schemas; use `model_validator` / `field_validator` not deprecated v1 patterns
-- SQLAlchemy 2.x style (`select()`, `session.execute()`) — not legacy `session.query()`
-- `async def` for all FastAPI route handlers and service methods that touch the DB or external APIs
-- No bare `except:` — always catch specific exceptions and re-raise or return structured errors
-
-### Services
-- One service class per domain, instantiated and injected via FastAPI `Depends()`
-- Services receive a DB session via constructor injection — never import `SessionLocal` inside a service
-- All DB writes wrapped in explicit transactions; use `async with session.begin()` for multi-step writes
-- External API calls (Twilio, OpenAI, CRMs) always have timeout + retry logic
-
-### Database / Migrations
-- Every schema change gets an Alembic migration — never alter tables directly
-- Multi-tenant isolation is schema-based; always filter queries by `tenant_id`
-- Add indexes on foreign keys and any column used in `WHERE` filters on large tables
-- Migration files must be descriptive: `alembic revision -m "add_index_call_log_tenant_id"`
-
-### Twilio / Voice
-- Webhook handlers must respond within 5 s — offload heavy work to background tasks
-- TwiML responses built with the `twilio` SDK helpers, not raw XML strings
-- Media stream handlers live in `app/voice/`; keep state in `call_session` DB record + in-memory cache keyed by `call_sid`
-- Always validate Twilio request signatures in production webhook routes
-
-### AI / Agentic Patterns
-- LLM calls are wrapped in service methods with explicit `system`, `messages`, and `tools` parameters
-- Tool/function definitions are declared as typed Python dataclasses or Pydantic models
-- Conversation state persisted in `transcript_message` table, not held in memory across requests
-- RAG: embed at write time, retrieve at query time; chunk size and overlap are config, not hardcoded
-- Agents that loop (screening, scheduling) use a state machine pattern stored in `call_session.state`
-
-### CRM Integrations
-- Each CRM has its own service class inheriting `BaseCrmService`
-- Tenant CRM config loaded once per call and cached — never query `tenant_crm_config` per message
-- Field mappings are tenant-configurable via DB, not hardcoded
-- All outbound CRM writes are idempotent — safe to retry on timeout
-
-### Testing
-- Unit tests in `tests/` using `pytest` + `httpx.AsyncClient`
-- Use `pytest-asyncio` for async tests; fixture scope `function` by default
-- Mock external APIs (Twilio, OpenAI) at the HTTP boundary with `respx` or `unittest.mock.patch`
-- Every new endpoint needs at least a happy-path and a validation-error test
-
-### Error Handling
-- Use FastAPI `HTTPException` with meaningful status codes and detail messages
-- Unhandled exceptions bubble to a global exception handler that logs + returns 500
-- Twilio and CRM failures return 200 to the webhook caller but log the failure and enqueue a retry
-
----
-
-## How to Approach Development Tasks
-
-1. **Understand the domain first** — read the relevant service and model files before writing code
-2. **Trace the call flow** — for voice features, follow: Twilio webhook → router → service → voice/ → CRM sync
-3. **Check existing patterns** — look at a similar service before writing a new one; match the style
-4. **Write the migration first** — if the task needs a new column or table, do the Alembic migration before the service code
-5. **Keep it minimal** — solve exactly the stated problem; leave refactoring for a separate PR
-6. **Test locally** — describe how to test the change (curl command, ngrok tunnel for webhooks, etc.)
+**Runtime**: Python 3.14, FastAPI, Uvicorn  
+**DB**: PostgreSQL via SQLAlchemy 2.x (sync) + asyncpg (async) + Alembic  
+**Background jobs**: ARQ (Redis-backed) for batch calls; APScheduler (PostgreSQL job store) for smart callbacks  
+**Vector store**: Pinecone + pgvector for RAG  
+**Infra**: GCS for recordings/KB files, Stripe for billing, SendGrid for email, Redis for rate-limiting
 
 ---
 
 ## Common Commands
 
 ```bash
-# Start dev server
+# Dev server
 uvicorn app.main:app --reload
 
-# Run migrations
+# Migrations
 alembic upgrade head
-
-# Create a new migration
 alembic revision --autogenerate -m "description"
 
-# Run tests
+# Run all tests
 pytest tests/ -v
+
+# Run a single test file
+pytest tests/api/test_callback_scheduler.py -v
+
+# Run a single test by name
+pytest tests/api/test_callback_scheduler.py::test_no_answer_triggers_callback_creation -v
+
+# ARQ batch worker (needs REDIS_URL)
+arq app.workers.batch_call_worker.WorkerSettings
 
 # Lint + format
 ruff check . && black .
 ```
+
+---
+
+## Architecture
+
+### API versioning
+
+| Version | Mount | Auth | Purpose |
+|---|---|---|---|
+| v1 | `/api/v1` | JWT **or** API key (`require_tenant`) | Dashboard + programmatic |
+| v2 | `/api/v2` | API key + `x-workspace-id` (`get_workspace`) | Machine-to-machine |
+
+- v1 routers live in `app/routers/` and are registered in `app/api/api_v1/api.py`.
+- v2 routers live in `app/api/v2/routers/` and carry their own `prefix=` on the `APIRouter`.
+- **Note**: the v1 agents router is registered at `/agent` (singular), not `/agents`.
+
+### Dependency injection
+
+`app/api/deps.py` is the single source for all FastAPI dependencies:
+
+- `get_db()` → sync `SessionLocal` (used throughout v1 and most services)
+- `get_async_db()` → async `AsyncSession` (voice streaming, LiveKit bridge)
+- `require_tenant()` → `Union[User, ApiKeyPrincipal]` — the standard v1 auth dependency
+- `get_workspace()` → `Workspace` — v2 M2M auth (API key + header)
+
+Auth is resolved by `ApiKeyMiddleware` before the handler runs; deps read `request.state` rather than re-verifying.
+
+### Database sessions — two pools
+
+The project runs **two session factories** side by side:
+
+- `app/db/session.py` — `SessionLocal` (sync, used in all services and the APScheduler job thread)
+- `app/db/async_session.py` — `_AsyncSessionLocal` (async, initialised in lifespan via `init_async_db()`)
+
+APScheduler jobs and ARQ workers that need to call async code open their own `asyncio.new_event_loop()` — the APScheduler thread has no running loop, making this safe.
+
+### Table naming convention
+
+`app/db/base_class.py` auto-derives `__tablename__` as `cls.__name__.lower()`. Examples:
+- `CallSession` → `callsession`
+- `CallbackSchedule` → `callbackschedule`
+- `BatchCallRecord` → `batchcallrecord`
+
+Never set an explicit `__tablename__` unless you need to override this.
+
+### Multi-tenancy
+
+Every model that stores tenant data has a `tenant_id` FK. **Always filter by `tenant_id`** in service queries — missing this is the most common security bug. The `AgentService`, `CallSessionService`, etc. all take `tenant_id` as an explicit parameter.
+
+### Service layer pattern
+
+One singleton service per domain, constructed at module level and imported directly:
+
+```python
+# app/services/agent_service.py
+class AgentService:
+    def _repo(self, db: Session) -> AgentRepository: ...
+
+agent_service = AgentService()   # singleton
+
+# usage in router
+from app.services.agent_service import agent_service
+result = agent_service.get_agent_by_id(db, agent_id, tenant_id)
+```
+
+Services never import `SessionLocal` — they always receive `db: Session` as a parameter.
+
+### Outbound call dispatch
+
+Internal code (batch worker, smart callback scheduler) places outbound calls by calling `voice_call_service.initiate_call()` with a fake Starlette `Request` carrying the `x-n8n-webhook-secret` header. This bypasses JWT and resolves to the webhook auth path. See `app/services/batch_call_worker_service.py::_build_fake_request()` for the pattern.
+
+### Voice pipeline
+
+A live call session is managed by `VoiceOrchestrator` (`app/voice/voice_orchestrator.py`):
+
+```
+LiveKit audio → LivKitAudioSubscriber
+                      ↓
+               SttPipeline (Deepgram / Google)
+                      ↓  (final transcript)
+         ConversationOrchestrator → LLM → TtsStreamMixin
+                      ↓
+               TtsPipeline → LiveKit / Twilio media stream
+```
+
+Mixins (`BookingMixin`, `CallControlMixin`, `TtsStreamMixin`) are composed into orchestrator classes. State shared across turns is persisted in `callsession` + `transcript_message` tables — never held in memory across requests.
+
+### Smart Callback Scheduler
+
+APScheduler (`app/core/scheduler.py`) polls `callbackschedule` every 30 s with `IntervalTrigger`. The trigger hook lives in `CallSessionService.update_call_session_status()` — when a call transitions to `no_answer` or `busy` it calls `callback_scheduler_service.maybe_schedule_callback()`. Business hours are read from the `businesshours` table (tenant-scoped, 0=Monday … 6=Sunday).
+
+### Background workers
+
+**ARQ** (`app/workers/batch_call_worker.py`) handles batch outbound campaigns. Start with:
+```bash
+arq app.workers.batch_call_worker.WorkerSettings
+```
+Requires `REDIS_URL` in env. Uses `SKIP LOCKED` to safely distribute work across replicas.
+
+---
+
+## Code Style
+
+- **Pydantic v2**: use `@field_validator` / `@model_validator(mode="after")` — not deprecated v1 patterns.
+- **SQLAlchemy 2.x**: use `select()` + `session.execute()` — not legacy `session.query()`.
+- `async def` for route handlers and any method calling the DB or an external API.
+- No bare `except:` — catch specific exceptions.
+
+### Migrations
+
+Always write the migration before the service code:
+
+```bash
+alembic revision --autogenerate -m "add_callback_timezone_to_agent"
+# review generated file, then:
+alembic upgrade head
+```
+
+After adding a model, import it in `app/db/base.py` so Alembic's autogenerate picks it up.
+
+---
+
+## Testing
+
+`tests/conftest.py` stubs out Google SDK submodules at import time (avoids `ImportError` in unit tests). Set `RUN_GOOGLE_STT_INTEGRATION=1` to run live Google STT tests.
+
+Integration tests that need a real DB read `TEST_DATABASE_URL` from the environment and are skipped when it is unset.
+
+Mock external HTTP APIs at the boundary with `unittest.mock.patch` or `respx`.
+
+---
+
+## Key Environment Variables
+
+| Variable | Required | Notes |
+|---|---|---|
+| `DATABASE_URL` | Yes | PostgreSQL DSN |
+| `SECRET_KEY` | Yes | JWT signing key |
+| `N8N_WEBHOOK_SECRET` | Yes | Auth header for internal outbound call dispatch (batch + callback) |
+| `REDIS_URL` | Batch worker | ARQ queue |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Voice | Auto-switches to test creds in `staging` env |
+| `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | Voice | Required in staging/production; gated by `LIVEKIT_ENABLED` |
+| `OPENAI_API_KEY` | LLM | |
+| `DEEPGRAM_API_KEY` | STT | |
+| `ELEVENLABS_ENCRYPTION_KEY` | TTS | pgp_sym_encrypt for BYO keys |
+| `PINECONE_API_KEY` / `PINECONE_INDEX_HOST` | RAG | |
+| `API_DOCS_USERNAME` / `API_DOCS_PASSWORD` | Docs | HTTP Basic for `/api/docs` |
+| `ENVIRONMENT` | | `development` / `staging` / `production` |
