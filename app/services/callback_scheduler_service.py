@@ -466,6 +466,211 @@ class CallbackSchedulerService:
                 f"initiate_call returned no callId for callback attempt {schedule.attempt_number}"
             )
 
+    # ── ARQ async dispatch (replaces APScheduler polling) ─────────────────────
+
+    async def dispatch_and_advance_async(
+        self,
+        db: Session,
+        schedule: CallbackSchedule,
+    ) -> Optional[CallbackSchedule]:
+        """
+        Async replacement for _dispatch_and_advance, called by the ARQ
+        ``execute_callback`` task.
+
+        Returns:
+          - The same ``schedule`` (with updated ``scheduled_at``) when it was
+            rescheduled due to business-hours constraints — the caller must
+            re-enqueue it with the new time.
+          - A newly created ``CallbackSchedule`` when the next retry was chained.
+          - ``None`` when the retry chain is exhausted or the agent was removed.
+        """
+        agent: Optional[Agent] = db.get(Agent, schedule.agent_id)
+        if agent is None:
+            schedule.status = "cancelled"
+            db.commit()
+            return None
+
+        tz_name = schedule.timezone
+        now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
+        now_tz = now_utc.astimezone(ZoneInfo(tz_name))
+
+        if not self._is_within_business_hours(db, agent, now_tz):
+            next_window = self._next_valid_window(db, agent, now_utc, tz_name)
+            schedule.scheduled_at = next_window
+            # Clear so the recovery cron can re-enqueue with the new time.
+            schedule.arq_job_id = None
+            db.commit()
+            logger.info(
+                "callback_rescheduled schedule_id=%s next=%s reason=outside_business_hours",
+                schedule.id,
+                next_window.isoformat(),
+            )
+            return schedule
+
+        await self._dispatch_call_async(db, schedule, agent)
+
+        schedule.status = "executed"
+        schedule.executed_at = now_utc
+        db.add(schedule)
+
+        gap_schedule: List[dict] = agent.callback_gap_schedule or []
+        next_attempt_number = schedule.attempt_number + 1
+
+        if next_attempt_number <= agent.max_callback_attempts and gap_schedule:
+            gap_index = min(next_attempt_number - 1, len(gap_schedule) - 1)
+            gap = gap_schedule[gap_index]
+            target_at = now_utc + timedelta(
+                days=gap.get("days", 0),
+                hours=gap.get("hours", 0),
+            )
+            next_scheduled_at = self._next_valid_window(db, agent, target_at, tz_name)
+
+            next_schedule = CallbackSchedule(
+                original_call_id=schedule.original_call_id,
+                agent_id=schedule.agent_id,
+                phone_number=schedule.phone_number,
+                attempt_number=next_attempt_number,
+                scheduled_at=next_scheduled_at,
+                timezone=tz_name,
+                status="pending",
+            )
+            db.add(next_schedule)
+            db.commit()
+            db.refresh(next_schedule)
+
+            logger.info(
+                "callback_chained original_call_id=%s attempt=%d at=%s",
+                schedule.original_call_id,
+                next_attempt_number,
+                next_scheduled_at.isoformat(),
+            )
+            return next_schedule
+
+        else:
+            schedule.status = "exhausted"
+            db.execute(
+                CallbackSchedule.__table__.update()
+                .where(
+                    CallbackSchedule.__table__.c.original_call_id == schedule.original_call_id,
+                    CallbackSchedule.__table__.c.status == "pending",
+                    CallbackSchedule.__table__.c.id != schedule.id,
+                )
+                .values(status="cancelled")
+            )
+            db.commit()
+            logger.info(
+                "callback_exhausted original_call_id=%s max_attempts=%d reached",
+                schedule.original_call_id,
+                agent.max_callback_attempts,
+            )
+            return None
+
+    async def _dispatch_call_async(
+        self,
+        db: Session,
+        schedule: CallbackSchedule,
+        agent: Agent,
+    ) -> None:
+        """
+        Truly async dispatch — no asyncio.new_event_loop() hack needed.
+        Called from the ARQ worker's event loop, so initiate_call is awaited
+        directly. A dedicated SessionLocal is used so the async path cannot
+        interfere with the caller's sync session.
+        """
+        import json as _json
+
+        from fastapi.responses import JSONResponse as _JSONResponse
+        from starlette.requests import Request as _Request
+
+        from app.core.config import settings
+        from app.db.session import SessionLocal
+        from app.schemas.twilio import CallInitiateRequest
+        from app.services import voice_call_service as _vcs
+
+        logger.info(
+            "callback_dispatch_async agent_id=%s phone=%s attempt=%d",
+            agent.id,
+            schedule.phone_number,
+            schedule.attempt_number,
+        )
+
+        secret = settings.N8N_WEBHOOK_SECRET
+        if not secret:
+            raise RuntimeError(
+                "N8N_WEBHOOK_SECRET must be configured for smart callback dispatch"
+            )
+
+        original = db.get(CallSession, schedule.original_call_id)
+        if original is None:
+            raise RuntimeError(
+                f"Original call {schedule.original_call_id} not found; cannot dispatch callback"
+            )
+
+        call_request = CallInitiateRequest(
+            agentId=str(agent.id),
+            toNumber=schedule.phone_number,
+            tenant_id=str(original.tenant_id),
+            user_id=str(original.user_id),
+        )
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/internal/callback",
+            "query_string": b"",
+            "headers": [
+                (b"x-n8n-webhook-secret", secret.encode("latin-1")),
+                (b"content-type", b"application/json"),
+            ],
+            "state": {},
+        }
+
+        async def _receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        fake_request = _Request(scope, receive=_receive)
+
+        dispatch_db = SessionLocal()
+        try:
+            result = await _vcs.initiate_call(
+                call_request=call_request,
+                http_request=fake_request,
+                user=None,
+                db=dispatch_db,
+            )
+        finally:
+            dispatch_db.close()
+
+        if isinstance(result, _JSONResponse):
+            body = _json.loads(result.body)
+            new_call_id_str = (body.get("data") or {}).get("callId")
+            if not new_call_id_str:
+                raise RuntimeError(
+                    f"initiate_call failed for callback (attempt {schedule.attempt_number}): "
+                    f"{body.get('message', 'unknown error')}"
+                )
+        else:
+            new_call_id_str = getattr(getattr(result, "data", None), "callId", None)
+
+        if new_call_id_str:
+            new_session_id = uuid.UUID(new_call_id_str)
+            db.execute(
+                CallSession.__table__.update()
+                .where(CallSession.__table__.c.id == new_session_id)
+                .values(parent_call_id=schedule.original_call_id)
+            )
+            db.commit()
+            logger.info(
+                "callback_dispatched_async new_session=%s parent=%s attempt=%d",
+                new_session_id,
+                schedule.original_call_id,
+                schedule.attempt_number,
+            )
+        else:
+            raise RuntimeError(
+                f"initiate_call returned no callId for callback attempt {schedule.attempt_number}"
+            )
+
     # ── Business hours helpers ─────────────────────────────────────────────────
 
     def _is_within_business_hours(

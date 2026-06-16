@@ -42,6 +42,9 @@ class CallbackSchedule(Base):
     # Populated when the callback call is actually dispatched
     executed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # ARQ job ID for the deferred execute_callback task. NULL means the job has
+    # not yet been submitted to Redis (recovery cron will pick it up within 60 s).
+    arq_job_id = Column(String(255), nullable=True, index=True)
 
     # ── Relationships ──────────────────────────────────────────────────────────
     original_call = relationship(

@@ -42,7 +42,7 @@ class Agent(Base):
     smart_callback = Column(Boolean, default=False, nullable=False, server_default="false")
 
     # ── Smart Callback Scheduler (Sprint 8) ───────────────────────────────────
-    # Enables the APScheduler-driven retry loop for no_answer / busy calls.
+    # Enables the ARQ-deferred retry loop for no_answer / busy calls.
     smart_callback_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
     # Maximum number of retry attempts before the chain is exhausted.
     max_callback_attempts = Column(Integer, default=5, nullable=False, server_default="5")

@@ -99,22 +99,9 @@ def create_app() -> FastAPI:
                     "/api/docs will return 503 until set; restart server after updating .env"
                 )
 
-        # ---- APScheduler — Smart Callback Scheduler ----
-        try:
-            from app.core.scheduler import start_scheduler
-            start_scheduler()
-            logger.info("APScheduler started for smart callback polling")
-        except Exception as exc:
-            logger.warning(
-                "APScheduler startup failed: %s — smart callbacks will not fire automatically",
-                exc,
-            )
-
         yield
 
         # ---- shutdown (SIGTERM / reload) ----
-        from app.core.scheduler import stop_scheduler
-        stop_scheduler()
         await dispose_async_db()
         await graceful_shutdown()
 
