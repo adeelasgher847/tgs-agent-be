@@ -776,6 +776,38 @@ paths:
         '429':
           description: Rate limit exceeded (60 req / 60 s per API key)
       security: *id001
+  /api/v1/workspace/settings/n8n-secret:
+    post:
+      tags:
+      - Workspace
+      summary: Generate (or rotate) the n8n integration secret for this workspace
+      description: Generates a new 64-character hex secret and stores it in workspace_settings.
+        Calling this again rotates the secret — existing n8n workflows must be updated.
+        Returns the new secret and the webhook URL to configure in n8n.
+      operationId: generate_n8n_integration_secret_api_v1_workspace_settings_n8n_secret_post
+      responses:
+        '200':
+          description: Secret generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/N8nSecretResponse'
+              example:
+                secret: a3f2...hex64...
+                webhook_url: https://example.com/api/v1/integrations/n8n/trigger
+        '400':
+          description: Validation error — name too short/long or invalid JSON
+        '401':
+          description: Missing or invalid x-api-key / x-workspace-id header
+        '403':
+          description: Workspace mismatch or JWT used on an API-key-only route
+        '404':
+          description: Workspace not found
+        '409':
+          description: Workspace name already taken
+        '429':
+          description: Rate limit exceeded (60 req / 60 s per API key)
+      security: *id001
   /api/v1/roles/{role_id}:
     get:
       tags:
@@ -6567,14 +6599,22 @@ paths:
       summary: n8n — trigger an outbound call
       description: Trigger an outbound call from an n8n HTTP Request node. Body is
         identical to `POST /api/v1/voice/call/initiate`. Requires `X-N8N-Webhook-Secret`
-        header. Rate limited to 10 calls per minute per workspace.
+        header containing the workspace-specific secret. Rate limited to 10 calls
+        per minute per workspace.
       operationId: n8n_trigger_api_v1_integrations_n8n_trigger_post
+      parameters:
+      - name: X-N8N-Webhook-Secret
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/CallInitiateRequest'
-        required: true
       responses:
         '200':
           description: Call initiated
@@ -11331,6 +11371,19 @@ components:
       type: object
       title: ModelUpdate
       description: Schema for updating a model
+    N8nSecretResponse:
+      properties:
+        secret:
+          type: string
+          title: Secret
+        webhook_url:
+          type: string
+          title: Webhook Url
+      type: object
+      required:
+      - secret
+      - webhook_url
+      title: N8nSecretResponse
     N8nTriggerResponse:
       properties:
         success:
