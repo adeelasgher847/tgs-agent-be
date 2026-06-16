@@ -503,6 +503,25 @@ class CallControlMixin:
             if added is None:
                 return
 
+            # Mirror to Redis for live insights polling (key: call_transcript:{room_name}).
+            # Only speech turns (client/agent) are useful for live analysis — skip system
+            # messages, greeting meta, etc.
+            if role in ("client", "agent") and message_type in (
+                "speech", "agent_response", "greeting"
+            ):
+                try:
+                    import json as _json
+                    from app.utils.redis_client import get_redis
+                    _redis = get_redis()
+                    if _redis is not None:
+                        _key = f"call_transcript:room_{self.call_session.id}"
+                        _raw = await _redis.get(_key)
+                        _turns: list = _json.loads(_raw) if _raw else []
+                        _turns.append({"role": role, "text": clean_message})
+                        await _redis.set(_key, _json.dumps(_turns), ex=7200)
+                except Exception as _re:
+                    logger.debug("Redis transcript mirror failed (non-fatal): %s", _re)
+
             # Remember committed agent lines for future dedupe / turn-coordination.
             if role == "agent" and message_type in {"agent_response", "greeting"}:
                 user_text_meta = None
