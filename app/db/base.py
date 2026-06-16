@@ -66,3 +66,6 @@ from app.models.webhook import WebhookEndpoint, WebhookDelivery
 from app.models.branding_configs import BrandingConfig  # noqa: F401
 from app.models.pricing_configs import PricingConfig  # noqa: F401
 from app.models.rbac_roles import RbacRole  # noqa: F401
+
+# Smart Callback Scheduler
+from app.models.callback_schedule import CallbackSchedule  # noqa: F401

@@ -13,16 +13,26 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, get_workspace_api_key
+from app.api.deps import get_db, get_workspace_api_key, require_tenant
+from app.core.request_auth import get_workspace_from_request
+from app.core.config import settings
 from app.core.logger import logger
 from app.core.workspace import Workspace
+from app.models.tenant import Tenant
 from app.repositories.workspace_repository import WorkspaceRepository
 from app.schemas.base import SuccessResponse
+from app.schemas.integration import MakeSecretResponse, N8nSecretResponse
 from app.schemas.workspace import (
     WorkspaceCreate,
     WorkspaceCreatedOut,
     WorkspaceOut,
     WorkspaceUpdateName,
+)
+from app.services.integration_service import (
+    generate_make_secret,
+    generate_n8n_secret,
+    store_make_secret,
+    store_n8n_secret,
 )
 from app.utils.response import create_success_response
 
@@ -205,6 +215,102 @@ def update_workspace_name(
     return create_success_response(
         WorkspaceOut.model_validate(tenant),
         "Workspace name updated successfully",
+    )
+
+
+@router.post(
+    "/settings/make-secret",
+    response_model=MakeSecretResponse,
+    summary="Generate (or rotate) the Make.com integration secret for this workspace",
+    description=(
+        "Generates a new 64-character hex secret and stores it in workspace_settings. "
+        "Calling this again rotates the secret — old scenarios must be updated. "
+        "Returns the new secret and the webhook URL to configure in Make.com."
+    ),
+    responses={
+        200: {
+            "description": "Secret generated",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "secret": "a3f2...hex64...",
+                        "webhook_url": "https://example.com/api/v1/integrations/make/trigger",
+                    }
+                }
+            },
+        },
+        **_COMMON_ERROR_RESPONSES,
+    },
+)
+def generate_make_integration_secret(
+    request: Request,
+    _user=Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Generate or rotate the Make.com webhook secret for the authenticated workspace."""
+    workspace = get_workspace_from_request(request)
+    if workspace is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Workspace context not available")
+
+    tenant = db.query(Tenant).filter(Tenant.id == workspace.id).first()
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+
+    secret = generate_make_secret()
+    store_make_secret(db, tenant, secret)
+
+    base_url = settings.WEBHOOK_BASE_URL.rstrip("/")
+    return MakeSecretResponse(
+        secret=secret,
+        webhook_url=f"{base_url}/api/v1/integrations/make/trigger",
+    )
+
+
+@router.post(
+    "/settings/n8n-secret",
+    response_model=N8nSecretResponse,
+    summary="Generate (or rotate) the n8n integration secret for this workspace",
+    description=(
+        "Generates a new 64-character hex secret and stores it in workspace_settings. "
+        "Calling this again rotates the secret — existing n8n workflows must be updated. "
+        "Returns the new secret and the webhook URL to configure in n8n."
+    ),
+    responses={
+        200: {
+            "description": "Secret generated",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "secret": "a3f2...hex64...",
+                        "webhook_url": "https://example.com/api/v1/integrations/n8n/trigger",
+                    }
+                }
+            },
+        },
+        **_COMMON_ERROR_RESPONSES,
+    },
+)
+def generate_n8n_integration_secret(
+    request: Request,
+    _user=Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Generate or rotate the n8n webhook secret for the authenticated workspace."""
+    workspace = get_workspace_from_request(request)
+    if workspace is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Workspace context not available")
+
+    tenant = db.query(Tenant).filter(Tenant.id == workspace.id).first()
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+
+    secret = generate_n8n_secret()
+    store_n8n_secret(db, tenant, secret)
+
+    base_url = settings.WEBHOOK_BASE_URL.rstrip("/")
+    return N8nSecretResponse(
+        secret=secret,
+        webhook_url=f"{base_url}/api/v1/integrations/n8n/trigger",
     )
 
 

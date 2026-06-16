@@ -744,6 +744,70 @@ paths:
         '429':
           description: Rate limit exceeded (60 req / 60 s per API key)
       security: *id001
+  /api/v1/workspace/settings/make-secret:
+    post:
+      tags:
+      - Workspace
+      summary: Generate (or rotate) the Make.com integration secret for this workspace
+      description: Generates a new 64-character hex secret and stores it in workspace_settings.
+        Calling this again rotates the secret — old scenarios must be updated. Returns
+        the new secret and the webhook URL to configure in Make.com.
+      operationId: generate_make_integration_secret_api_v1_workspace_settings_make_secret_post
+      responses:
+        '200':
+          description: Secret generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MakeSecretResponse'
+              example:
+                secret: a3f2...hex64...
+                webhook_url: https://example.com/api/v1/integrations/make/trigger
+        '400':
+          description: Validation error — name too short/long or invalid JSON
+        '401':
+          description: Missing or invalid x-api-key / x-workspace-id header
+        '403':
+          description: Workspace mismatch or JWT used on an API-key-only route
+        '404':
+          description: Workspace not found
+        '409':
+          description: Workspace name already taken
+        '429':
+          description: Rate limit exceeded (60 req / 60 s per API key)
+      security: *id001
+  /api/v1/workspace/settings/n8n-secret:
+    post:
+      tags:
+      - Workspace
+      summary: Generate (or rotate) the n8n integration secret for this workspace
+      description: Generates a new 64-character hex secret and stores it in workspace_settings.
+        Calling this again rotates the secret — existing n8n workflows must be updated.
+        Returns the new secret and the webhook URL to configure in n8n.
+      operationId: generate_n8n_integration_secret_api_v1_workspace_settings_n8n_secret_post
+      responses:
+        '200':
+          description: Secret generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/N8nSecretResponse'
+              example:
+                secret: a3f2...hex64...
+                webhook_url: https://example.com/api/v1/integrations/n8n/trigger
+        '400':
+          description: Validation error — name too short/long or invalid JSON
+        '401':
+          description: Missing or invalid x-api-key / x-workspace-id header
+        '403':
+          description: Workspace mismatch or JWT used on an API-key-only route
+        '404':
+          description: Workspace not found
+        '409':
+          description: Workspace name already taken
+        '429':
+          description: Rate limit exceeded (60 req / 60 s per API key)
+      security: *id001
   /api/v1/roles/{role_id}:
     get:
       tags:
@@ -6479,6 +6543,480 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/make/trigger:
+    post:
+      tags:
+      - Integrations
+      - Integrations
+      summary: Make.com — trigger an outbound call
+      description: Trigger an outbound call from a Make.com scenario. Supply the workspace-specific
+        secret in the `X-Make-Secret` header. Rate limited to 10 calls per minute
+        per workspace.
+      operationId: make_trigger_api_v1_integrations_make_trigger_post
+      parameters:
+      - name: X-Make-Secret
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MakeTriggerRequest'
+      responses:
+        '200':
+          description: Call initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MakeTriggerResponse'
+              example:
+                call_id: uuid
+                status: initiated
+        '403':
+          description: Invalid secret
+          content:
+            application/json:
+              example:
+                message: Invalid secret
+                code: unauthorized
+        '429':
+          description: Rate limit exceeded
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/n8n/trigger:
+    post:
+      tags:
+      - Integrations
+      - Integrations
+      summary: n8n — trigger an outbound call
+      description: Trigger an outbound call from an n8n HTTP Request node. Body is
+        identical to `POST /api/v1/voice/call/initiate`. Requires `X-N8N-Webhook-Secret`
+        header containing the workspace-specific secret. Rate limited to 10 calls
+        per minute per workspace.
+      operationId: n8n_trigger_api_v1_integrations_n8n_trigger_post
+      parameters:
+      - name: X-N8N-Webhook-Secret
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallInitiateRequest'
+      responses:
+        '200':
+          description: Call initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/N8nTriggerResponse'
+              example:
+                success: true
+                data:
+                  call_id: uuid
+                  status: initiated
+        '403':
+          description: Missing or invalid webhook secret
+        '429':
+          description: Rate limit exceeded
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations:
+    get:
+      tags:
+      - Integrations
+      - Integrations
+      summary: List available integrations and their connection status
+      description: Returns Make.com and n8n integration status for the authenticated
+        workspace. Connected = secret is configured. webhook_url is the endpoint to
+        configure in each tool.
+      operationId: list_integrations_api_v1_integrations_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationListResponse'
+      security:
+      - HTTPBearer: []
+  /api/v1/calls/history:
+    get:
+      tags:
+      - Call History Analytics
+      summary: Paginated call history list
+      description: Paginated call history. Date filters expect ISO 8601 UTC timestamps.
+      operationId: get_call_history_api_v1_calls_history_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: per_page
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 25
+          title: Per Page
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          enum:
+          - started_at
+          - duration
+          - status
+          type: string
+          default: started_at
+          title: Sort By
+      - name: sort_dir
+        in: query
+        required: false
+        schema:
+          enum:
+          - asc
+          - desc
+          type: string
+          default: desc
+          title: Sort Dir
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by agent ID
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by call flow ID
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+        description: Filter by call direction
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound for call start time
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound for call start time
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Filter by call status (completed, failed, no_answer, …)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CallHistoryList_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/calls/history/metrics:
+    get:
+      tags:
+      - Call History Analytics
+      summary: Aggregated call metrics
+      description: 'Returns aggregated totals and success rate. All computation is
+        pushed to Postgres.
+
+        Date filters expect ISO 8601 UTC timestamps.'
+      operationId: get_call_metrics_api_v1_calls_history_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by agent ID
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by call flow ID
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+        description: Filter by call direction
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound for call start time
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound for call start time
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Filter by call status (completed, failed, no_answer, …)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CallHistoryMetrics_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/calls/history/time-series:
+    get:
+      tags:
+      - Call History Analytics
+      summary: Daily call counts for charts
+      description: 'Returns one row per calendar day (UTC). Format matches Recharts
+        LineChart:
+
+        [{date:''2026-05-01'', total:12, completed:10, failed:2}]'
+      operationId: get_call_time_series_api_v1_calls_history_time_series_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_List_CallHistoryTimeSeriesPoint__'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/calls/history/export:
+    post:
+      tags:
+      - Call History Analytics
+      summary: Stream CSV export of call history
+      description: "Streams a CSV file directly from the database cursor — no in-memory\
+        \ buffering.\nColumns: call_id, direction, from_number, to_number, agent_name,\
+        \ flow_name,\n         status, duration_seconds, started_at, ended_at.\nDate\
+        \ filters expect ISO 8601 UTC timestamps."
+      operationId: export_call_history_csv_api_v1_calls_history_export_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by agent ID
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+          nullable: true
+        description: Filter by call flow ID
+      - name: direction
+        in: query
+        required: false
+        schema:
+          enum:
+          - inbound
+          - outbound
+          type: string
+          nullable: true
+        description: Filter by call direction
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound for call start time
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound for call start time
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Filter by call status (completed, failed, no_answer, …)
+      responses:
+        '200':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/batch-calls/metrics:
+    get:
+      tags:
+      - Batch Call Analytics
+      summary: Batch call campaign metrics
+      description: Returns aggregated statistics across all batch call campaigns for
+        this tenant.
+      operationId: get_batch_call_metrics_api_v1_batch_calls_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC lower bound
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+        description: ISO 8601 UTC upper bound
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_BatchCallMetrics_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /health:
     get:
       summary: Health Check
@@ -6858,6 +7396,121 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedWebhookDeliveries'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/agents/{agent_id}/callback-config:
+    put:
+      tags:
+      - Smart Callback Scheduler
+      summary: Update agent smart-callback configuration
+      description: 'Set the smart-callback configuration for an agent.
+
+
+        - **smart_callback_enabled**: activates the retry loop.
+
+        - **max_attempts**: total retry budget (1–20).
+
+        - **gap_schedule**: ordered list of `{days, hours}` gaps between attempts.
+
+        - **timezone**: IANA timezone string — returns 422 if invalid.'
+      operationId: update_callback_config_api_v2_agents__agent_id__callback_config_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallbackConfigUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallbackConfigResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/agents/{agent_id}/callback-status:
+    get:
+      tags:
+      - Smart Callback Scheduler
+      summary: Get agent callback config and live retry counters
+      description: 'Returns the agent''s callback config plus:
+
+        - `pending_retries`: number of pending callback records.
+
+        - `next_scheduled_at`: UTC time of the earliest pending callback.'
+      operationId: get_callback_status_api_v2_agents__agent_id__callback_status_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Agent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallbackStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/calls/{call_id}/callback-history:
+    get:
+      tags:
+      - Smart Callback Scheduler
+      summary: Get callback retry history for a call
+      description: 'Returns ordered callback attempts for `call_id`.
+
+        Returns 404 if the call does not belong to the caller''s tenant.'
+      operationId: get_callback_history_api_v2_calls__call_id__callback_history_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: call_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Call Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CallbackHistoryItem'
+                title: Response Get Callback History Api V2 Calls  Call Id  Callback
+                  History Get
         '422':
           description: Validation Error
           content:
@@ -7630,6 +8283,27 @@ components:
       - slots
       - total
       title: AvailableSlotsResponse
+    BatchCallMetrics:
+      properties:
+        total_batches:
+          type: integer
+          title: Total Batches
+        avg_completion_rate_percent:
+          type: number
+          nullable: true
+        total_calls_dispatched:
+          type: integer
+          title: Total Calls Dispatched
+        total_failed:
+          type: integer
+          title: Total Failed
+      type: object
+      required:
+      - total_batches
+      - avg_completion_rate_percent
+      - total_calls_dispatched
+      - total_failed
+      title: BatchCallMetrics
     BatchCallRecordOut:
       properties:
         id:
@@ -8559,6 +9233,135 @@ components:
       additionalProperties: false
       type: object
       title: CallFlowUpdate
+    CallHistoryItem:
+      properties:
+        call_id:
+          type: string
+          format: uuid
+          title: Call Id
+        direction:
+          type: string
+          title: Direction
+        from_number:
+          type: string
+          nullable: true
+        to_number:
+          type: string
+          nullable: true
+        agent_name:
+          type: string
+          nullable: true
+        flow_name:
+          type: string
+          nullable: true
+        status:
+          type: string
+          title: Status
+        duration_seconds:
+          type: integer
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - call_id
+      - direction
+      - from_number
+      - to_number
+      - agent_name
+      - flow_name
+      - status
+      - duration_seconds
+      - started_at
+      - ended_at
+      title: CallHistoryItem
+    CallHistoryList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/CallHistoryItem'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        per_page:
+          type: integer
+          title: Per Page
+        pages:
+          type: integer
+          title: Pages
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - per_page
+      - pages
+      title: CallHistoryList
+    CallHistoryMetrics:
+      properties:
+        total_calls:
+          type: integer
+          title: Total Calls
+        completed:
+          type: integer
+          title: Completed
+        failed:
+          type: integer
+          title: Failed
+        no_answer:
+          type: integer
+          title: No Answer
+        avg_duration_seconds:
+          type: number
+          nullable: true
+        total_duration_seconds:
+          type: integer
+          nullable: true
+        success_rate_percent:
+          type: number
+          nullable: true
+      type: object
+      required:
+      - total_calls
+      - completed
+      - failed
+      - no_answer
+      - avg_duration_seconds
+      - total_duration_seconds
+      - success_rate_percent
+      title: CallHistoryMetrics
+    CallHistoryTimeSeriesPoint:
+      properties:
+        date:
+          type: string
+          title: Date
+        total:
+          type: integer
+          title: Total
+        completed:
+          type: integer
+          title: Completed
+        failed:
+          type: integer
+          title: Failed
+      type: object
+      required:
+      - date
+      - total
+      - completed
+      - failed
+      title: CallHistoryTimeSeriesPoint
     CallInitiateRequest:
       properties:
         agentId:
@@ -9083,6 +9886,120 @@ components:
       - assistant_messages
       - total_response_time_entries
       title: CallSessionStats
+    CallbackConfigResponse:
+      properties:
+        smart_callback_enabled:
+          type: boolean
+          title: Smart Callback Enabled
+        max_attempts:
+          type: integer
+          title: Max Attempts
+        gap_schedule:
+          items:
+            $ref: '#/components/schemas/GapInterval'
+          type: array
+          title: Gap Schedule
+        timezone:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - smart_callback_enabled
+      - max_attempts
+      - gap_schedule
+      - timezone
+      title: CallbackConfigResponse
+      description: Response body for PUT /api/v1/agents/{id}/callback-config.
+    CallbackConfigUpdate:
+      properties:
+        smart_callback_enabled:
+          type: boolean
+          title: Smart Callback Enabled
+        max_attempts:
+          type: integer
+          maximum: 20.0
+          minimum: 1.0
+          title: Max Attempts
+          description: Maximum retry attempts before the chain is exhausted
+          default: 5
+        gap_schedule:
+          items:
+            $ref: '#/components/schemas/GapInterval'
+          type: array
+          title: Gap Schedule
+          description: Ordered list of gaps between attempts; index 0 = gap after
+            first miss
+        timezone:
+          type: string
+          title: Timezone
+          description: IANA timezone, e.g. 'America/New_York'
+      type: object
+      required:
+      - smart_callback_enabled
+      - timezone
+      title: CallbackConfigUpdate
+      description: 'PUT /api/v1/agents/{id}/callback-config request body.
+
+        Validates the timezone against the IANA zoneinfo database.'
+    CallbackHistoryItem:
+      properties:
+        attempt_number:
+          type: integer
+          title: Attempt Number
+        scheduled_at:
+          type: string
+          format: date-time
+          title: Scheduled At
+        executed_at:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - attempt_number
+      - scheduled_at
+      - executed_at
+      - status
+      title: CallbackHistoryItem
+      description: One row from GET /api/v1/calls/{call_id}/callback-history.
+    CallbackStatusResponse:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+        max_attempts:
+          type: integer
+          title: Max Attempts
+        gap_schedule:
+          items:
+            $ref: '#/components/schemas/GapInterval'
+          type: array
+          title: Gap Schedule
+        timezone:
+          type: string
+          nullable: true
+        pending_retries:
+          type: integer
+          title: Pending Retries
+          description: Number of pending callbacks for this agent
+        next_scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - enabled
+      - max_attempts
+      - gap_schedule
+      - timezone
+      - pending_retries
+      title: CallbackStatusResponse
+      description: 'GET /api/v1/agents/{id}/callback-status response.
+
+        Returns live counters alongside the static config.'
     CandidateStatusEnum:
       type: string
       enum:
@@ -9256,6 +10173,23 @@ components:
       required:
       - message
       title: ForgotPasswordResponse
+    GapInterval:
+      properties:
+        days:
+          type: integer
+          minimum: 0.0
+          title: Days
+          description: Number of days to wait
+          default: 0
+        hours:
+          type: integer
+          minimum: 0.0
+          title: Hours
+          description: Number of hours to wait
+          default: 0
+      type: object
+      title: GapInterval
+      description: A single time gap between callback attempts.
     GoogleLoginRequest:
       properties:
         google_token:
@@ -9347,6 +10281,38 @@ components:
       - board_id
       title: InboundBoardUrlOut
       description: Public board link — no secrets.
+    IntegrationItem:
+      properties:
+        name:
+          type: string
+          title: Name
+        connected:
+          type: boolean
+          title: Connected
+        webhook_url:
+          type: string
+          title: Webhook Url
+        last_triggered_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - name
+      - connected
+      - webhook_url
+      title: IntegrationItem
+    IntegrationListResponse:
+      properties:
+        integrations:
+          items:
+            $ref: '#/components/schemas/IntegrationItem'
+          type: array
+          title: Integrations
+      type: object
+      required:
+      - integrations
+      title: IntegrationListResponse
     InviteCreate:
       properties:
         email:
@@ -10199,6 +11165,49 @@ components:
       - email
       - password
       title: LoginRequest
+    MakeSecretResponse:
+      properties:
+        secret:
+          type: string
+          title: Secret
+        webhook_url:
+          type: string
+          title: Webhook Url
+      type: object
+      required:
+      - secret
+      - webhook_url
+      title: MakeSecretResponse
+    MakeTriggerRequest:
+      properties:
+        agent_id:
+          type: string
+          title: Agent Id
+        to_number:
+          type: string
+          title: To Number
+        variables:
+          additionalProperties: true
+          type: object
+          nullable: true
+      type: object
+      required:
+      - agent_id
+      - to_number
+      title: MakeTriggerRequest
+    MakeTriggerResponse:
+      properties:
+        call_id:
+          type: string
+          title: Call Id
+        status:
+          type: string
+          title: Status
+      type: object
+      required:
+      - call_id
+      - status
+      title: MakeTriggerResponse
     MatchMode:
       type: string
       enum:
@@ -10362,6 +11371,33 @@ components:
       type: object
       title: ModelUpdate
       description: Schema for updating a model
+    N8nSecretResponse:
+      properties:
+        secret:
+          type: string
+          title: Secret
+        webhook_url:
+          type: string
+          title: Webhook Url
+      type: object
+      required:
+      - secret
+      - webhook_url
+      title: N8nSecretResponse
+    N8nTriggerResponse:
+      properties:
+        success:
+          type: boolean
+          title: Success
+        data:
+          additionalProperties: true
+          type: object
+          title: Data
+      type: object
+      required:
+      - success
+      - data
+      title: N8nTriggerResponse
     NumberConfigurationRequest:
       properties:
         recording_enabled:
@@ -12157,6 +13193,22 @@ components:
       required:
       - data
       title: SuccessResponse[AvailableSlotsResponse]
+    SuccessResponse_BatchCallMetrics_:
+      properties:
+        data:
+          $ref: '#/components/schemas/BatchCallMetrics'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[BatchCallMetrics]
     SuccessResponse_BindingStatusResponse_:
       properties:
         data:
@@ -12301,6 +13353,38 @@ components:
       required:
       - data
       title: SuccessResponse[CSVUploadResponse]
+    SuccessResponse_CallHistoryList_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CallHistoryList'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CallHistoryList]
+    SuccessResponse_CallHistoryMetrics_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CallHistoryMetrics'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CallHistoryMetrics]
     SuccessResponse_CallInitiateResponse_:
       properties:
         data:
@@ -12691,6 +13775,25 @@ components:
       required:
       - data
       title: SuccessResponse[List[BusinessHoursOut]]
+    SuccessResponse_List_CallHistoryTimeSeriesPoint__:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/CallHistoryTimeSeriesPoint'
+          type: array
+          title: Data
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[List[CallHistoryTimeSeriesPoint]]
     SuccessResponse_List_PlanOut__:
       properties:
         data:
