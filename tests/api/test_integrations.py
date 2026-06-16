@@ -7,14 +7,16 @@ Coverage:
   3.  Make.com missing secret → 403
   4.  Make.com unknown agent → 404
   5.  Make.com rate limit → 429 with retry_after
-  6.  n8n happy path — valid secret dispatches call, returns {success, data}
+  6.  n8n happy path — valid per-workspace secret dispatches call, returns {success, data}
   7.  n8n invalid secret → 403
-  8.  n8n missing tenant_id → 400
-  9.  n8n rate limit → 429 with retry_after
-  10. GET /integrations — not connected (no make_secret, no N8N_WEBHOOK_SECRET)
-  11. GET /integrations — make connected, n8n connected
-  12. POST /workspace/settings/make-secret generates and returns a secret
-  13. Rotating make-secret generates a new value each call
+  8.  n8n missing secret → 403
+  9.  n8n unknown agent → 404
+  10. n8n rate limit → 429 with retry_after
+  11. GET /integrations — not connected (no make_secret, no n8n_secret)
+  12. GET /integrations — make connected, n8n connected
+  13. POST /workspace/settings/make-secret generates and returns a secret
+  14. Rotating make-secret generates a new value each call
+  15. n8n secret generation/rotation (generate_n8n_secret, store/get_n8n_secret)
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ _TENANT_ID = uuid.UUID("bb100000-0000-0000-0000-000000000002")
 _SESSION_ID = uuid.UUID("cc100000-0000-0000-0000-000000000003")
 _TWILIO_SID = "CA99999999999999999999999999999999"
 _MAKE_SECRET = "a" * 64  # 32-byte hex = 64 chars
+_N8N_SECRET = "b" * 64   # 32-byte hex = 64 chars
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -47,12 +50,14 @@ def _make_agent():
     return ag
 
 
-def _make_tenant(*, make_secret: str | None = _MAKE_SECRET):
+def _make_tenant(*, make_secret: str | None = _MAKE_SECRET, n8n_secret: str | None = _N8N_SECRET):
     t = MagicMock()
     t.id = _TENANT_ID
     settings_dict = {}
     if make_secret is not None:
         settings_dict["make_secret"] = make_secret
+    if n8n_secret is not None:
+        settings_dict["n8n_secret"] = n8n_secret
     t.workspace_settings = settings_dict
     return t
 
@@ -175,17 +180,10 @@ def _patch_record_triggered():
     )
 
 
-def _patch_n8n_secret_valid():
+def _patch_build_internal_request():
     return patch(
-        "app.routers.integrations.verify_n8n_webhook_secret_async",
-        AsyncMock(return_value=True),
-    )
-
-
-def _patch_n8n_secret_invalid():
-    return patch(
-        "app.routers.integrations.verify_n8n_webhook_secret_async",
-        AsyncMock(return_value=False),
+        "app.routers.integrations._build_internal_request",
+        MagicMock(return_value=MagicMock()),
     )
 
 
@@ -328,21 +326,23 @@ class TestN8nTrigger:
         body = CallInitiateRequest(
             agentId=str(_AGENT_ID),
             toNumber="+15550002222",
-            tenant_id=str(_TENANT_ID),
         )
         request = MagicMock()
 
         with (
-            _patch_n8n_secret_valid(),
+            _patch_resolve_tenant(),
             _patch_rate_limit_allow(),
             _patch_initiate_call(),
             _patch_record_triggered(),
-            patch("app.routers.integrations.record_last_triggered", MagicMock()),
-            patch("app.routers.integrations.TenantModel" if False else "app.models.tenant.Tenant", MagicMock()),
+            _patch_build_internal_request(),
+            patch("app.core.config.settings.N8N_WEBHOOK_SECRET", "global-secret"),
         ):
-            # Patch DB tenant lookup inside n8n_trigger
-            db = _db()
-            result = await n8n_trigger(body=body, request=request, db=db)
+            result = await n8n_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_n8n_webhook_secret=_N8N_SECRET,
+            )
 
         assert result.success is True
         assert result.data["call_id"] == str(_SESSION_ID)
@@ -354,37 +354,82 @@ class TestN8nTrigger:
         from app.routers.integrations import n8n_trigger
         from app.schemas.twilio import CallInitiateRequest
 
-        body = CallInitiateRequest(
-            agentId=str(_AGENT_ID),
-            toNumber="+15550002222",
-            tenant_id=str(_TENANT_ID),
-        )
+        body = CallInitiateRequest(agentId=str(_AGENT_ID), toNumber="+15550002222")
         request = MagicMock()
 
-        with _patch_n8n_secret_invalid():
+        with _patch_resolve_tenant():
             with pytest.raises(HTTPException) as exc_info:
-                await n8n_trigger(body=body, request=request, db=_db())
+                await n8n_trigger(
+                    body=body,
+                    request=request,
+                    db=_db(),
+                    x_n8n_webhook_secret="wrong-secret",
+                )
 
         assert exc_info.value.status_code == 403
+        assert exc_info.value.detail["code"] == "unauthorized"
 
     @pytest.mark.anyio
-    async def test_missing_tenant_id_returns_400(self):
+    async def test_missing_secret_returns_403(self):
         from fastapi import HTTPException
         from app.routers.integrations import n8n_trigger
         from app.schemas.twilio import CallInitiateRequest
 
-        body = CallInitiateRequest(
-            agentId=str(_AGENT_ID),
-            toNumber="+15550002222",
-            # tenant_id intentionally omitted
-        )
+        body = CallInitiateRequest(agentId=str(_AGENT_ID), toNumber="+15550002222")
         request = MagicMock()
 
-        with _patch_n8n_secret_valid():
+        with _patch_resolve_tenant():
             with pytest.raises(HTTPException) as exc_info:
-                await n8n_trigger(body=body, request=request, db=_db())
+                await n8n_trigger(
+                    body=body,
+                    request=request,
+                    db=_db(),
+                    x_n8n_webhook_secret=None,
+                )
 
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_unknown_agent_returns_404(self):
+        from fastapi import HTTPException
+        from app.routers.integrations import n8n_trigger
+        from app.schemas.twilio import CallInitiateRequest
+
+        body = CallInitiateRequest(agentId=str(uuid.uuid4()), toNumber="+15550002222")
+        request = MagicMock()
+
+        with _patch_resolve_tenant_not_found():
+            with pytest.raises(HTTPException) as exc_info:
+                await n8n_trigger(
+                    body=body,
+                    request=request,
+                    db=_db(),
+                    x_n8n_webhook_secret=_N8N_SECRET,
+                )
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_no_workspace_secret_returns_403(self):
+        """If n8n_secret is not configured for the workspace, any secret is rejected."""
+        from fastapi import HTTPException
+        from app.routers.integrations import n8n_trigger
+        from app.schemas.twilio import CallInitiateRequest
+
+        tenant_no_secret = _make_tenant(n8n_secret=None)
+        body = CallInitiateRequest(agentId=str(_AGENT_ID), toNumber="+15550002222")
+        request = MagicMock()
+
+        with _patch_resolve_tenant(tenant=tenant_no_secret):
+            with pytest.raises(HTTPException) as exc_info:
+                await n8n_trigger(
+                    body=body,
+                    request=request,
+                    db=_db(tenant=tenant_no_secret),
+                    x_n8n_webhook_secret=_N8N_SECRET,
+                )
+
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.anyio
     async def test_rate_limit_returns_429(self):
@@ -392,21 +437,54 @@ class TestN8nTrigger:
         from app.routers.integrations import n8n_trigger
         from app.schemas.twilio import CallInitiateRequest
 
+        body = CallInitiateRequest(agentId=str(_AGENT_ID), toNumber="+15550002222")
+        request = MagicMock()
+
+        with (
+            _patch_resolve_tenant(),
+            _patch_rate_limit_deny(),
+        ):
+            result = await n8n_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_n8n_webhook_secret=_N8N_SECRET,
+            )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 429
+
+    @pytest.mark.anyio
+    async def test_tenant_id_overridden_by_agent_lookup(self):
+        """body.tenant_id must be set to the agent's owning tenant, not caller-supplied value."""
+        from app.routers.integrations import n8n_trigger
+        from app.schemas.twilio import CallInitiateRequest
+
         body = CallInitiateRequest(
             agentId=str(_AGENT_ID),
             toNumber="+15550002222",
-            tenant_id=str(_TENANT_ID),
+            tenant_id="00000000-0000-0000-0000-000000000000",  # attacker-supplied wrong tenant
         )
         request = MagicMock()
 
         with (
-            _patch_n8n_secret_valid(),
-            _patch_rate_limit_deny(),
+            _patch_resolve_tenant(),
+            _patch_rate_limit_allow(),
+            _patch_initiate_call(),
+            _patch_record_triggered(),
+            _patch_build_internal_request(),
+            patch("app.core.config.settings.N8N_WEBHOOK_SECRET", "global-secret"),
         ):
-            result = await n8n_trigger(body=body, request=request, db=_db())
+            result = await n8n_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_n8n_webhook_secret=_N8N_SECRET,
+            )
 
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == 429
+        # Dispatch succeeded — and body.tenant_id was rewritten to the real tenant
+        assert result.success is True
+        assert body.tenant_id == str(_TENANT_ID)
 
 
 class TestIntegrationList:
@@ -414,10 +492,11 @@ class TestIntegrationList:
 
     def test_not_connected(self):
         """Both integrations show connected=False when no secrets are set — service-level."""
-        from app.services.integration_service import get_make_secret
+        from app.services.integration_service import get_make_secret, get_n8n_secret
 
-        tenant = _make_tenant(make_secret=None)
+        tenant = _make_tenant(make_secret=None, n8n_secret=None)
         assert get_make_secret(tenant) is None
+        assert get_n8n_secret(tenant) is None
 
     def test_connected_make(self):
         """When make_secret is set, make shows connected=True."""
@@ -433,6 +512,20 @@ class TestIntegrationList:
 
         tenant = _make_tenant(make_secret=None)
         assert get_make_secret(tenant) is None
+
+    def test_connected_n8n(self):
+        """When n8n_secret is set, n8n shows connected=True."""
+        from app.services.integration_service import get_n8n_secret
+
+        tenant = _make_tenant(n8n_secret=_N8N_SECRET)
+        assert get_n8n_secret(tenant) == _N8N_SECRET
+
+    def test_not_connected_n8n(self):
+        """When n8n_secret is absent, get_n8n_secret returns None."""
+        from app.services.integration_service import get_n8n_secret
+
+        tenant = _make_tenant(n8n_secret=None)
+        assert get_n8n_secret(tenant) is None
 
     def test_last_triggered_at_round_trip(self):
         """record_last_triggered + get_last_triggered_at reads back a datetime."""
@@ -504,6 +597,81 @@ class TestMakeSecretGeneration:
 
         assert get_make_secret(tenant) == s2
         assert s1 != s2
+
+
+class TestN8nSecretGeneration:
+    """n8n per-workspace secret helpers."""
+
+    def test_generate_secret_format(self):
+        """generate_n8n_secret returns a 64-char hex string."""
+        from app.services.integration_service import generate_n8n_secret
+
+        secret = generate_n8n_secret()
+        assert len(secret) == 64
+        assert all(c in "0123456789abcdef" for c in secret)
+
+    def test_secrets_are_unique(self):
+        """Two consecutive calls produce different secrets."""
+        from app.services.integration_service import generate_n8n_secret
+
+        s1 = generate_n8n_secret()
+        s2 = generate_n8n_secret()
+        assert s1 != s2
+
+    def test_store_and_retrieve_n8n_secret(self):
+        """store_n8n_secret persists to tenant.workspace_settings."""
+        from app.services.integration_service import (
+            generate_n8n_secret,
+            get_n8n_secret,
+            store_n8n_secret,
+        )
+
+        tenant = _make_tenant(n8n_secret=None)
+        db = _db(tenant=tenant)
+
+        secret = generate_n8n_secret()
+        store_n8n_secret(db, tenant, secret)
+
+        retrieved = get_n8n_secret(tenant)
+        assert retrieved == secret
+
+    def test_rotate_n8n_secret(self):
+        """Calling store_n8n_secret twice replaces the first secret."""
+        from app.services.integration_service import (
+            generate_n8n_secret,
+            get_n8n_secret,
+            store_n8n_secret,
+        )
+
+        tenant = _make_tenant(n8n_secret=None)
+        db = _db(tenant=tenant)
+
+        s1 = generate_n8n_secret()
+        store_n8n_secret(db, tenant, s1)
+
+        s2 = generate_n8n_secret()
+        store_n8n_secret(db, tenant, s2)
+
+        assert get_n8n_secret(tenant) == s2
+        assert s1 != s2
+
+    def test_make_and_n8n_secrets_are_independent(self):
+        """Storing n8n_secret does not clobber make_secret and vice versa."""
+        from app.services.integration_service import (
+            generate_n8n_secret,
+            get_make_secret,
+            get_n8n_secret,
+            store_n8n_secret,
+        )
+
+        tenant = _make_tenant(make_secret=_MAKE_SECRET, n8n_secret=None)
+        db = _db(tenant=tenant)
+
+        secret = generate_n8n_secret()
+        store_n8n_secret(db, tenant, secret)
+
+        assert get_n8n_secret(tenant) == secret
+        assert get_make_secret(tenant) == _MAKE_SECRET
 
 
 class TestIntegrationRateLimit:

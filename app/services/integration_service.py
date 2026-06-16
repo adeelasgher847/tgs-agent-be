@@ -75,6 +75,11 @@ def generate_make_secret() -> str:
     return secrets.token_hex(32)
 
 
+def generate_n8n_secret() -> str:
+    """Generate a 32-byte hex secret for n8n workspace integration."""
+    return secrets.token_hex(32)
+
+
 def get_workspace_settings(tenant: Tenant) -> dict:
     return tenant.workspace_settings or {}
 
@@ -89,6 +94,18 @@ def store_make_secret(db: Session, tenant: Tenant, secret: str) -> None:
 
 def get_make_secret(tenant: Tenant) -> Optional[str]:
     return get_workspace_settings(tenant).get("make_secret")
+
+
+def store_n8n_secret(db: Session, tenant: Tenant, secret: str) -> None:
+    settings_dict = dict(get_workspace_settings(tenant))
+    settings_dict["n8n_secret"] = secret
+    tenant.workspace_settings = settings_dict
+    db.commit()
+    db.refresh(tenant)
+
+
+def get_n8n_secret(tenant: Tenant) -> Optional[str]:
+    return get_workspace_settings(tenant).get("n8n_secret")
 
 
 def record_last_triggered(db: Session, tenant: Tenant, integration: str) -> None:

@@ -36,3 +36,8 @@ class IntegrationListResponse(BaseModel):
 class MakeSecretResponse(BaseModel):
     secret: str
     webhook_url: str
+
+
+class N8nSecretResponse(BaseModel):
+    secret: str
+    webhook_url: str

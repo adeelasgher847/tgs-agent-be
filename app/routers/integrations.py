@@ -4,12 +4,13 @@ Integration trigger endpoints for Make.com and n8n.
 Both endpoints share the same internal call dispatch (voice_call_service.initiate_call).
 Auth is handled per-integration:
   - Make.com: X-Make-Secret header validated against workspace_settings.make_secret
-  - n8n:      X-N8N-Webhook-Secret header validated against settings.N8N_WEBHOOK_SECRET
+  - n8n:      X-N8N-Webhook-Secret header validated against workspace_settings.n8n_secret
 
 Rate limit: 10 integration-triggered calls per minute per workspace.
 """
 from __future__ import annotations
 
+import hmac
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -33,11 +34,11 @@ from app.services.integration_service import (
     check_integration_rate_limit,
     get_last_triggered_at,
     get_make_secret,
+    get_n8n_secret,
     record_last_triggered,
     resolve_tenant_by_agent,
 )
 from app.services.voice_call_service import initiate_call as initiate_call_service
-from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 
 router = APIRouter()
 
@@ -126,7 +127,7 @@ async def make_trigger(
 
     # 2. Validate X-Make-Secret against workspace_settings
     stored_secret = get_make_secret(tenant)
-    if not stored_secret or not x_make_secret or x_make_secret != stored_secret:
+    if not stored_secret or not x_make_secret or not hmac.compare_digest(x_make_secret, stored_secret):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"message": "Invalid secret", "code": "unauthorized"},
@@ -181,7 +182,7 @@ async def make_trigger(
     description=(
         "Trigger an outbound call from an n8n HTTP Request node. "
         "Body is identical to `POST /api/v1/voice/call/initiate`. "
-        "Requires `X-N8N-Webhook-Secret` header. "
+        "Requires `X-N8N-Webhook-Secret` header containing the workspace-specific secret. "
         "Rate limited to 10 calls per minute per workspace."
     ),
     responses={
@@ -202,47 +203,53 @@ async def n8n_trigger(
     body: CallInitiateRequest,
     request: Request,
     db: Session = Depends(get_db),
+    x_n8n_webhook_secret: Optional[str] = Header(default=None, alias="X-N8N-Webhook-Secret"),
 ) -> N8nTriggerResponse:
-    # 1. Validate n8n global webhook secret
-    is_valid = await verify_n8n_webhook_secret_async(request)
-    if not is_valid:
+    # 1. Resolve agent and owning tenant from agentId — same pattern as Make.com.
+    #    This ensures tenant resolution is authoritative (not caller-supplied tenant_id).
+    agent, tenant = resolve_tenant_by_agent(db, body.agentId)
+    if agent is None or tenant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Agent not found",
+        )
+
+    # 2. Validate X-N8N-Webhook-Secret against the per-workspace n8n secret.
+    #    The global N8N_WEBHOOK_SECRET is reserved for internal system dispatch only
+    #    and must never authorize public external calls.
+    stored_secret = get_n8n_secret(tenant)
+    if not stored_secret or not x_n8n_webhook_secret or not hmac.compare_digest(x_n8n_webhook_secret, stored_secret):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"message": "Invalid or missing webhook secret", "code": "unauthorized"},
         )
 
-    # 2. Resolve tenant for rate limiting
-    if not body.tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tenant_id is required in request body",
-        )
-    try:
-        workspace_id = uuid.UUID(body.tenant_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid tenant_id UUID format",
-        )
+    # 3. Bind tenant_id from the authoritative agent lookup so downstream dispatch
+    #    cannot be redirected to a different tenant by a manipulated body field.
+    body.tenant_id = str(tenant.id)
 
-    # 3. Per-workspace rate limit
-    allowed, retry_after = await check_integration_rate_limit(workspace_id)
+    # 4. Per-workspace rate limit
+    allowed, retry_after = await check_integration_rate_limit(tenant.id)
     if not allowed:
         return _rate_limit_response(retry_after)
 
-    # 4. Dispatch via shared call service
-    result = await initiate_call_service(body, request, None, db)
+    # 5. Dispatch via shared call service using internal fake request.
+    if not settings.N8N_WEBHOOK_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Integration dispatch is not configured on this server. Contact your administrator.",
+        )
 
-    # 5. Record last triggered (best-effort)
+    fake_request = _build_internal_request(settings.N8N_WEBHOOK_SECRET)
+    result = await initiate_call_service(body, fake_request, None, db)
+
+    # 6. Record last triggered (best-effort)
     try:
-        from app.models.tenant import Tenant as TenantModel
-        tenant = db.query(TenantModel).filter(TenantModel.id == workspace_id).first()
-        if tenant:
-            record_last_triggered(db, tenant, "n8n")
+        record_last_triggered(db, tenant, "n8n")
     except Exception as exc:
         logger.warning("Failed to record n8n last_triggered_at: %s", exc)
 
-    # 6. Wrap in n8n-style envelope
+    # 7. Wrap in n8n-style envelope
     if isinstance(result, JSONResponse):
         return result  # propagate errors
 
@@ -289,7 +296,7 @@ async def list_integrations(
     base_url = settings.WEBHOOK_BASE_URL.rstrip("/")
 
     make_secret = get_make_secret(tenant)
-    n8n_configured = bool(settings.N8N_WEBHOOK_SECRET)
+    n8n_secret = get_n8n_secret(tenant)
 
     integrations = [
         IntegrationItem(
@@ -300,7 +307,7 @@ async def list_integrations(
         ),
         IntegrationItem(
             name="n8n",
-            connected=n8n_configured,
+            connected=bool(n8n_secret),
             webhook_url=f"{base_url}/api/v1/integrations/n8n/trigger",
             last_triggered_at=get_last_triggered_at(tenant, "n8n"),
         ),
