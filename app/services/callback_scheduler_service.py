@@ -222,17 +222,30 @@ class CallbackSchedulerService:
         """
         Poll for due callbacks and dispatch each one.
         Designed to be called by the APScheduler IntervalTrigger job.
+
+        Each iteration selects a single row with FOR UPDATE SKIP LOCKED so the
+        lock is scoped to exactly one transaction. Committing (or rolling back)
+        inside _dispatch_and_advance releases only that row's lock, which means
+        other workers/pods can safely claim any remaining rows without risk of
+        double-dispatch.
         """
         now = datetime.utcnow().replace(tzinfo=ZoneInfo("UTC"))
 
-        due_rows = db.execute(
-            select(CallbackSchedule).where(
-                CallbackSchedule.status == "pending",
-                CallbackSchedule.scheduled_at <= now,
-            ).with_for_update(skip_locked=True)
-        ).scalars().all()
+        while True:
+            schedule = db.execute(
+                select(CallbackSchedule)
+                .where(
+                    CallbackSchedule.status == "pending",
+                    CallbackSchedule.scheduled_at <= now,
+                )
+                .order_by(CallbackSchedule.scheduled_at)
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            ).scalar_one_or_none()
 
-        for schedule in due_rows:
+            if schedule is None:
+                break
+
             try:
                 self._dispatch_and_advance(db, schedule)
             except Exception as exc:  # noqa: BLE001
@@ -348,12 +361,23 @@ class CallbackSchedulerService:
         """
         Dispatch the outbound callback call via the existing initiate_call path.
 
-        Runs in an APScheduler thread-pool thread (no event loop), so we create
-        a fresh event loop for the async call and a dedicated DB session so the
-        async path can commit without interfering with the caller's session.
+        Session boundaries
+        ------------------
+        dispatch_db is intentionally separate from the poller session (db).
+        initiate_call commits its own work (new CallSession, Twilio request)
+        inside dispatch_db. A db.rollback() in the poller NEVER rolls back
+        dispatch_db — the call delivery is guaranteed to persist regardless of
+        any subsequent bookkeeping failure in the poller session.
 
-        After dispatch the new CallSession.parent_call_id is set to
-        schedule.original_call_id for full call-chain traceability.
+        Failure semantics
+        -----------------
+        - initiate_call failure   → real failure; raise so the poller can
+                                    rollback and leave the row in 'pending'.
+        - parent_call_id update failure → non-critical bookkeeping; logged
+                                          but does NOT fail the dispatch.
+
+        Runs in an APScheduler thread-pool thread (no event loop), so we spin
+        up a fresh event loop for the async call.
         """
         import asyncio
         import json as _json
@@ -413,7 +437,9 @@ class CallbackSchedulerService:
 
         fake_request = _Request(scope, receive=_receive)
 
-        # ── Run async initiate_call in a fresh event loop ─────────────────────
+        # ── Phase 1: call initiation (dispatch_db, independent of poller db) ────
+        # dispatch_db owns its own transaction. Commits inside initiate_call are
+        # durable regardless of what happens to the poller session afterwards.
         # APScheduler thread has no running loop, so new_event_loop() is safe.
         dispatch_db = SessionLocal()
         result = None
@@ -433,9 +459,10 @@ class CallbackSchedulerService:
                 loop.close()
                 asyncio.set_event_loop(None)
         finally:
+            # Always close dispatch_db; its commits are already flushed to PG.
             dispatch_db.close()
 
-        # ── Extract the new session id and set parent_call_id ─────────────────
+        # ── Extract new session id — failure here = real initiation failure ────
         if isinstance(result, _JSONResponse):
             body = _json.loads(result.body)
             new_call_id_str = (body.get("data") or {}).get("callId")
@@ -447,8 +474,24 @@ class CallbackSchedulerService:
         else:
             new_call_id_str = getattr(getattr(result, "data", None), "callId", None)
 
-        if new_call_id_str:
-            new_session_id = uuid.UUID(new_call_id_str)
+        if not new_call_id_str:
+            raise RuntimeError(
+                f"initiate_call returned no callId for callback attempt {schedule.attempt_number}"
+            )
+
+        logger.info(
+            "callback_dispatched new_session=%s parent=%s attempt=%d",
+            new_call_id_str,
+            schedule.original_call_id,
+            schedule.attempt_number,
+        )
+
+        # ── Phase 2: bookkeeping — set parent_call_id on the new session ──────
+        # Non-critical: the outbound call is already placed. A failure here
+        # must NOT propagate as a dispatch failure. Log and continue so the
+        # poller can advance the schedule normally.
+        new_session_id = uuid.UUID(new_call_id_str)
+        try:
             db.execute(
                 CallSession.__table__.update()
                 .where(CallSession.__table__.c.id == new_session_id)
@@ -456,15 +499,20 @@ class CallbackSchedulerService:
             )
             db.commit()
             logger.info(
-                "callback_dispatched new_session=%s parent=%s attempt=%d",
+                "callback_parent_linked new_session=%s parent=%s",
                 new_session_id,
                 schedule.original_call_id,
-                schedule.attempt_number,
             )
-        else:
-            raise RuntimeError(
-                f"initiate_call returned no callId for callback attempt {schedule.attempt_number}"
+        except Exception as link_exc:  # noqa: BLE001
+            logger.error(
+                "callback_parent_link_failed new_session=%s parent=%s: %s "
+                "(call was placed successfully; this is a bookkeeping-only failure)",
+                new_session_id,
+                schedule.original_call_id,
+                link_exc,
+                exc_info=True,
             )
+            db.rollback()
 
     # ── Business hours helpers ─────────────────────────────────────────────────
 
