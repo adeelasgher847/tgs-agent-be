@@ -7045,6 +7045,56 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Health Check Api V2 Health Get
+  /api/v2/active-calls:
+    get:
+      tags:
+      - Active Call Insights
+      summary: List Active Calls
+      description: Return all currently active call sessions for the authenticated
+        workspace.
+      operationId: list_active_calls_api_v2_active_calls_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ActiveCallItem'
+                type: array
+                title: Response List Active Calls Api V2 Active Calls Get
+  /api/v2/active-calls/{room_name}/insights:
+    get:
+      tags:
+      - Active Call Insights
+      summary: Get Call Insights
+      description: 'Return AI-generated insights for an active call.
+
+
+        Rate-limited to 30 req/min per workspace.
+
+        Returns a safe neutral fallback on Gemini error — never raises 5xx.'
+      operationId: get_call_insights_api_v2_active_calls__room_name__insights_get
+      parameters:
+      - name: room_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Room Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallInsightsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/batch-calls:
     post:
       tags:
@@ -7550,6 +7600,40 @@ components:
       - tenant_name
       - credits
       title: AccountSnapshot
+    ActiveCallItem:
+      properties:
+        room_name:
+          type: string
+          title: Room Name
+        call_id:
+          type: string
+          title: Call Id
+        agent_name:
+          type: string
+          title: Agent Name
+        duration_seconds:
+          type: integer
+          title: Duration Seconds
+        from_number:
+          type: string
+          nullable: true
+        to_number:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+      type: object
+      required:
+      - room_name
+      - call_id
+      - agent_name
+      - duration_seconds
+      - from_number
+      - to_number
+      - started_at
+      title: ActiveCallItem
     ActiveJobRow:
       properties:
         job_description_id:
@@ -9484,6 +9568,39 @@ components:
       - callSessionId
       - status
       title: CallInitiateResponse
+    CallInsightsResponse:
+      properties:
+        sentiment:
+          type: string
+          title: Sentiment
+        sentiment_score:
+          type: number
+          title: Sentiment Score
+        topics:
+          items:
+            type: string
+          type: array
+          title: Topics
+        summary:
+          type: string
+          title: Summary
+        suggestions:
+          items:
+            type: string
+          type: array
+          title: Suggestions
+        call_duration_seconds:
+          type: integer
+          title: Call Duration Seconds
+      type: object
+      required:
+      - sentiment
+      - sentiment_score
+      - topics
+      - summary
+      - suggestions
+      - call_duration_seconds
+      title: CallInsightsResponse
     CallLogAnalysisEmailRequest:
       properties:
         call_session_id:

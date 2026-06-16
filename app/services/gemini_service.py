@@ -109,6 +109,30 @@ class GeminiService:
         except Exception as e:
             raise Exception(f"Error in Gemini text generation: {str(e)}")
 
+    def generate_json(
+        self,
+        prompt: str,
+        model_name: str = "gemini-2.0-flash",
+        temperature: float = 0.2,
+        max_tokens: int = 512,
+        api_key: str = None,
+    ) -> dict:
+        """Call Gemini with response_mime_type='application/json' and return parsed dict."""
+        from google.genai import types as genai_types
+
+        client = self.get_client(api_key)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                temperature=float(temperature),
+                max_output_tokens=int(max_tokens),
+                response_mime_type="application/json",
+            ),
+        )
+        text = self._extract_text_from_response(response)
+        return json.loads(text)
+
     def embed_text(
         self,
         text: str,
