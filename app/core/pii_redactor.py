@@ -48,19 +48,29 @@ _URL_SECRET_PARAM_RE = re.compile(
 # Applied only when the call flow has hipaa_compliance=True.
 _HIPAA_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # ── ICD-10-CM / ICD-10-PCS diagnosis codes ──────────────────────────────
-    # Letter + 2 digits + optional decimal + up to 4 sub-digits (E11.9, J45.20, M54.5)
+    # With clinical context (e.g. "diagnosis: J45.20", "dx E11.65")
     (
         REDACTED,
         re.compile(
-            r"\b[A-TV-Z]\d{2}(?:\.\d{1,4})?\b"
+            r"(?i)\b(?:diagnosis|icd[-\s]?10(?:\s*code)?|dx)[:\s]+"
+            r"[A-Z]\d{2}\.?\d{0,4}[A-Z0-9]?\b"
         ),
     ),
-    # ── CPT / HCPCS procedure codes ─────────────────────────────────────────
-    # 5-digit numeric (99213, 99214, 29881)
+    # Standalone ICD-10 with decimal required (e.g. J45.20, E11.65)
+    # Decimal requirement prevents false positives on generic codes.
     (
         REDACTED,
         re.compile(
-            r"(?<!\d)[1-9]\d{4}(?!\d)"
+            r"\b[A-Z]\d{2}\.\d{1,4}[A-Z0-9]?\b"
+        ),
+    ),
+    # ── CPT procedure codes (contextual prefix only) ────────────────────────
+    # "CPT: 99213" or "procedure code 29881" — bare 5-digit matches excluded
+    # to avoid false positives on zip codes, room numbers, etc.
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(?:CPT|procedure\s+code)[:\s]*\d{5}\b"
         ),
     ),
     # ── Medical Record Numbers (MRN) ────────────────────────────────────────

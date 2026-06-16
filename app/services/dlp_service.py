@@ -14,7 +14,9 @@ Supported DLP infoTypes (per ticket spec):
 
 from __future__ import annotations
 
+import asyncio
 import re
+from functools import lru_cache
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -119,16 +121,103 @@ def _redact_local_patterns(text: str) -> str:
     return text
 
 
+# ── DLP client singleton ──────────────────────────────────────────────────────
+# Module-level cached instances.  Created once on first use, reused across
+# requests.  Tests can inject mocks by setting ``_dlp_client = mock``.
+
+_dlp_client = None
+_dlp_async_client = None
+
+
+def _get_dlp_client():
+    """Return the cached sync DLP client, creating it on first call."""
+    global _dlp_client
+    if _dlp_client is None:
+        from google.cloud import dlp_v2  # type: ignore
+
+        _dlp_client = dlp_v2.DlpServiceClient()
+    return _dlp_client
+
+
+def _get_dlp_async_client():
+    """Return the cached async DLP client, creating it on first call."""
+    global _dlp_async_client
+    if _dlp_async_client is None:
+        from google.cloud import dlp_v2  # type: ignore
+
+        _dlp_async_client = dlp_v2.DlpServiceAsyncClient()
+    return _dlp_async_client
+
+
+# ── Core redaction functions ──────────────────────────────────────────────────
+
+
+def _build_inspect_request(project_id: str, text: str) -> dict:
+    """Build the common inspect_content request dict."""
+    from google.cloud import dlp_v2  # type: ignore
+
+    return {
+        "parent": f"projects/{project_id}",
+        "inspect_config": {
+            "info_types": [{"name": t} for t in _DLP_INFO_TYPES],
+            "min_likelihood": dlp_v2.Likelihood.POSSIBLE,
+        },
+        "item": {"value": text},
+    }
+
+
+def _apply_findings(text: str, findings) -> str:
+    """Replace DLP findings in *text* from right to left (preserving offsets)."""
+    if not findings:
+        return text
+
+    sorted_findings = sorted(
+        findings,
+        key=lambda f: f.location.byte_range.start,
+        reverse=True,
+    )
+
+    result = text
+    for finding in sorted_findings:
+        quote = finding.quote
+        if not quote:
+            continue
+        start = finding.location.byte_range.start
+        end = finding.location.byte_range.end
+        result = result[:start] + _REDACTION_TOKEN + result[end:]
+
+    return result
+
+
+def _check_project_id() -> str:
+    """Return GCP_PROJECT_ID or raise a clear configuration error.
+
+    Logs at ERROR level when missing — this is a HIPAA compliance gap that
+    must be resolved before any HIPAA call flow is enabled.  The caller
+    (redact_phi / redact_phi_async) skips Cloud DLP but still applies
+    local regex patterns so that logging is never blocked.
+    """
+    project_id = settings.GCP_PROJECT_ID
+    if not project_id:
+        logger.error(
+            "HIPAA DLP SKIPPED: GCP_PROJECT_ID is not configured. "
+            "PHI in HIPAA call flows will NOT be redacted by Cloud DLP — "
+            "this is a HIPAA §164.312 compliance gap.  "
+            "Set GCP_PROJECT_ID in your .env file to a valid GCP project ID "
+            "that has the Cloud DLP API enabled."
+        )
+        return ""
+    return project_id
+
+
 def redact_phi(text: str) -> str:
     """
-    Full PHI redaction pipeline:
+    Full PHI redaction pipeline (synchronous):
       1. Local regex patterns (_HIPAA_PATTERNS) — free, covers healthcare codes
       2. Cloud DLP inspect_content — covers person names, phone, email, DOB, MRNs
 
-    Returns the original text unchanged on any error so that logging is never
-    blocked by a DLP failure (fail-open policy).
-
-    Requires GCP_PROJECT_ID to be set in settings; local-pattern pass always runs.
+    Raises ``ValueError`` if GCP_PROJECT_ID is not configured, so that callers
+    can surface the misconfiguration rather than silently skipping redaction.
     """
     if not text:
         return text
@@ -136,55 +225,40 @@ def redact_phi(text: str) -> str:
     # Step 1: local patterns (always run — no API cost)
     text = _redact_local_patterns(text)
 
-    # Step 2: Cloud DLP (skipped if GCP_PROJECT_ID not configured)
-    project_id = settings.GCP_PROJECT_ID
-    if not project_id:
-        logger.warning("DLP redaction skipped: GCP_PROJECT_ID not configured")
-        return text
+    # Step 2: Cloud DLP
+    project_id = _check_project_id()
 
     try:
-        from google.cloud import dlp_v2  # type: ignore
-
-        client = dlp_v2.DlpServiceClient()
-        parent = f"projects/{project_id}"
-
-        inspect_config = {
-            "info_types": [{"name": t} for t in _DLP_INFO_TYPES],
-            "min_likelihood": dlp_v2.Likelihood.POSSIBLE,
-        }
-        item = {"value": text}
-
-        response = client.inspect_content(
-            request={
-                "parent": parent,
-                "inspect_config": inspect_config,
-                "item": item,
-            }
-        )
-
-        if not response.result.findings:
-            return text
-
-        # Replace findings from right to left to keep byte offsets valid
-        findings = sorted(
-            response.result.findings,
-            key=lambda f: f.location.byte_range.start,
-            reverse=True,
-        )
-
-        result = text
-        for finding in findings:
-            quote = finding.quote
-            if not quote:
-                continue
-            start = finding.location.byte_range.start
-            end = finding.location.byte_range.end
-            result = result[:start] + _REDACTION_TOKEN + result[end:]
-
-        return result
+        client = _get_dlp_client()
+        request = _build_inspect_request(project_id, text)
+        response = client.inspect_content(request=request)
+        return _apply_findings(text, response.result.findings)
 
     except Exception as exc:
-        logger.error("DLP redaction failed, returning original text: %s", exc)
+        logger.error("DLP redaction failed, returning locally-redacted text: %s", exc)
+        return text
+
+
+async def redact_phi_async(text: str) -> str:
+    """
+    Async PHI redaction pipeline — identical to :func:`redact_phi` but uses
+    ``DlpServiceAsyncClient`` so that the gRPC call does not block the
+    event loop during transcript processing.
+    """
+    if not text:
+        return text
+
+    text = _redact_local_patterns(text)
+    project_id = _check_project_id()
+
+    try:
+        client = _get_dlp_async_client()
+        request = _build_inspect_request(project_id, text)
+        response = await client.inspect_content(request=request)
+        return _apply_findings(text, response.result.findings)
+
+    except Exception as exc:
+        logger.error("Async DLP redaction failed, returning locally-redacted text: %s", exc)
         return text
 
 
@@ -193,3 +267,10 @@ def redact_phi_if_hipaa(text: str, *, hipaa_enabled: bool) -> str:
     if not hipaa_enabled:
         return text
     return redact_phi(text)
+
+
+async def redact_phi_if_hipaa_async(text: str, *, hipaa_enabled: bool) -> str:
+    """Async convenience wrapper — non-blocking DLP for transcript pipelines."""
+    if not hipaa_enabled:
+        return text
+    return await redact_phi_async(text)

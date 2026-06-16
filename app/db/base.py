@@ -69,3 +69,6 @@ from app.models.rbac_roles import RbacRole  # noqa: F401
 
 # Smart Callback Scheduler
 from app.models.callback_schedule import CallbackSchedule  # noqa: F401
+
+# HIPAA audit trail
+from app.models.audit_log import AuditLog  # noqa: F401

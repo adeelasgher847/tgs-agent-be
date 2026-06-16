@@ -8,11 +8,12 @@ Endpoints:
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
@@ -57,15 +58,12 @@ class KmsKeyUpdate(BaseModel):
 def _get_flow_or_404(
     db: Session, flow_id: uuid.UUID, tenant_id: uuid.UUID
 ) -> CallFlow:
-    flow = (
-        db.query(CallFlow)
-        .filter(
-            CallFlow.id == flow_id,
-            CallFlow.tenant_id == tenant_id,
-            CallFlow.is_deleted.is_(False),
-        )
-        .first()
+    stmt = select(CallFlow).where(
+        CallFlow.id == flow_id,
+        CallFlow.tenant_id == tenant_id,
+        CallFlow.is_deleted.is_(False),
     )
+    flow = db.execute(stmt).scalar_one_or_none()
     if flow is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -75,7 +73,8 @@ def _get_flow_or_404(
 
 
 def _get_tenant_or_404(db: Session, tenant_id: uuid.UUID) -> Tenant:
-    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    stmt = select(Tenant).where(Tenant.id == tenant_id)
+    tenant = db.execute(stmt).scalar_one_or_none()
     if tenant is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -84,16 +83,35 @@ def _get_tenant_or_404(db: Session, tenant_id: uuid.UUID) -> Tenant:
     return tenant
 
 
-def _validate_kms_key(kms_key_name: str) -> None:
+def _get_hipaa_flow_ids(
+    db: Session, tenant_id: uuid.UUID
+) -> list[uuid.UUID]:
+    stmt = select(CallFlow.id).where(
+        CallFlow.tenant_id == tenant_id,
+        CallFlow.hipaa_compliance.is_(True),
+        CallFlow.is_deleted.is_(False),
+    )
+    return [row.id for row in db.execute(stmt).all()]
+
+
+def _validate_kms_key_blocking(kms_key_name: str) -> None:
+    """Blocking KMS validation — run inside executor via to_thread."""
+    from google.cloud import kms  # type: ignore
+
+    client = kms.KeyManagementServiceClient()
+    client.get_crypto_key(request={"name": kms_key_name})
+
+
+async def _validate_kms_key(kms_key_name: str) -> None:
     """
     Verify the KMS key exists and the service account has encrypt/decrypt rights.
+    Non-blocking: wraps the blocking gRPC call in asyncio.to_thread.
     Raises HTTPException 400 if validation fails.
     """
     try:
-        from google.cloud import kms  # type: ignore
-
-        client = kms.KeyManagementServiceClient()
-        client.get_crypto_key(request={"name": kms_key_name})
+        await asyncio.to_thread(_validate_kms_key_blocking, kms_key_name)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -125,7 +143,7 @@ def _emit_audit_event(
 
 
 @flows_router.put("/{flow_id}/settings")
-def update_flow_hipaa_settings(
+async def update_flow_hipaa_settings(
     flow_id: uuid.UUID,
     body: HipaaSettingsUpdate,
     user: User = Depends(require_admin),
@@ -181,27 +199,18 @@ def update_flow_hipaa_settings(
 
 
 @workspace_router.get("/hipaa-status")
-def get_hipaa_status(
+async def get_hipaa_status(
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Return workspace-level HIPAA status summary."""
     tenant_id = user.current_tenant_id
     tenant = _get_tenant_or_404(db, tenant_id)
-
-    hipaa_flows = (
-        db.query(CallFlow.id)
-        .filter(
-            CallFlow.tenant_id == tenant_id,
-            CallFlow.hipaa_compliance.is_(True),
-            CallFlow.is_deleted.is_(False),
-        )
-        .all()
-    )
+    hipaa_flow_ids = _get_hipaa_flow_ids(db, tenant_id)
 
     return create_success_response(
         {
-            "hipaa_enabled_flows": [str(row.id) for row in hipaa_flows],
+            "hipaa_enabled_flows": [str(fid) for fid in hipaa_flow_ids],
             "kms_key_configured": bool(tenant.kms_key_name),
             "baa_on_file": bool(tenant.baa_on_file),
         },
@@ -210,7 +219,7 @@ def get_hipaa_status(
 
 
 @workspace_router.put("/kms-key")
-def update_kms_key(
+async def update_kms_key(
     body: KmsKeyUpdate,
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
@@ -224,7 +233,7 @@ def update_kms_key(
     tenant_id = user.current_tenant_id
     tenant = _get_tenant_or_404(db, tenant_id)
 
-    _validate_kms_key(body.kms_key_name)
+    await _validate_kms_key(body.kms_key_name)
 
     tenant.kms_key_name = body.kms_key_name
     db.commit()

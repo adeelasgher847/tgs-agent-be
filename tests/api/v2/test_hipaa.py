@@ -64,17 +64,19 @@ class TestRedactPhi:
         mock_client.inspect_content.return_value = mock_response
 
         mock_dlp = MagicMock()
-        mock_dlp.DlpServiceClient.return_value = mock_client
         mock_dlp.Likelihood.POSSIBLE = 2
-
-        # conftest mocks google.cloud as a MagicMock — attach dlp_v2 to it
         sys.modules["google.cloud"].dlp_v2 = mock_dlp
 
-        # Patch settings on the dlp_service module directly (module-level import)
-        mock_settings = MagicMock()
-        mock_settings.GCP_PROJECT_ID = "test-project"
-        with patch.object(dlp_service, "settings", mock_settings):
-            result = dlp_service.redact_phi(text)
+        # Inject mock client into the singleton slot
+        old_client = dlp_service._dlp_client
+        dlp_service._dlp_client = mock_client
+        try:
+            mock_settings = MagicMock()
+            mock_settings.GCP_PROJECT_ID = "test-project"
+            with patch.object(dlp_service, "settings", mock_settings):
+                result = dlp_service.redact_phi(text)
+        finally:
+            dlp_service._dlp_client = old_client
 
         mock_client.inspect_content.assert_called_once()
         call_kwargs = mock_client.inspect_content.call_args[1]["request"]
@@ -93,14 +95,18 @@ class TestRedactPhi:
         mock_client.inspect_content.return_value = mock_response
 
         mock_dlp = MagicMock()
-        mock_dlp.DlpServiceClient.return_value = mock_client
         mock_dlp.Likelihood.POSSIBLE = 2
         sys.modules["google.cloud"].dlp_v2 = mock_dlp
 
-        mock_settings = MagicMock()
-        mock_settings.GCP_PROJECT_ID = "test-project"
-        with patch.object(dlp_service, "settings", mock_settings):
-            result = dlp_service.redact_phi(text)
+        old_client = dlp_service._dlp_client
+        dlp_service._dlp_client = mock_client
+        try:
+            mock_settings = MagicMock()
+            mock_settings.GCP_PROJECT_ID = "test-project"
+            with patch.object(dlp_service, "settings", mock_settings):
+                result = dlp_service.redact_phi(text)
+        finally:
+            dlp_service._dlp_client = old_client
 
         assert result == text
 
@@ -121,14 +127,18 @@ class TestRedactPhi:
         mock_client.inspect_content.side_effect = RuntimeError("DLP unavailable")
 
         mock_dlp = MagicMock()
-        mock_dlp.DlpServiceClient.return_value = mock_client
         mock_dlp.Likelihood.POSSIBLE = 2
         sys.modules["google.cloud"].dlp_v2 = mock_dlp
 
-        mock_settings = MagicMock()
-        mock_settings.GCP_PROJECT_ID = "test-project"
-        with patch.object(dlp_service, "settings", mock_settings):
-            result = dlp_service.redact_phi("Patient John Smith")
+        old_client = dlp_service._dlp_client
+        dlp_service._dlp_client = mock_client
+        try:
+            mock_settings = MagicMock()
+            mock_settings.GCP_PROJECT_ID = "test-project"
+            with patch.object(dlp_service, "settings", mock_settings):
+                result = dlp_service.redact_phi("Patient John Smith")
+        finally:
+            dlp_service._dlp_client = old_client
 
         # Must never raise — fail open
         assert result == "Patient John Smith"
@@ -153,21 +163,23 @@ class TestRedactPhi:
         """Local _HIPAA_PATTERNS pass runs first; Cloud DLP step runs on already-cleaned text."""
         from app.services import dlp_service
 
-        # DLP returns no findings — only local patterns should redact
         mock_response = self._dlp_response([])
         mock_client = MagicMock()
         mock_client.inspect_content.return_value = mock_response
         mock_dlp = MagicMock()
-        mock_dlp.DlpServiceClient.return_value = mock_client
         mock_dlp.Likelihood.POSSIBLE = 2
         sys.modules["google.cloud"].dlp_v2 = mock_dlp
 
-        mock_settings = MagicMock()
-        mock_settings.GCP_PROJECT_ID = "test-project"
-        with patch.object(dlp_service, "settings", mock_settings):
-            result = dlp_service.redact_phi("Patient SSN: 123-45-6789")
+        old_client = dlp_service._dlp_client
+        dlp_service._dlp_client = mock_client
+        try:
+            mock_settings = MagicMock()
+            mock_settings.GCP_PROJECT_ID = "test-project"
+            with patch.object(dlp_service, "settings", mock_settings):
+                result = dlp_service.redact_phi("Patient SSN: 123-45-6789")
+        finally:
+            dlp_service._dlp_client = old_client
 
-        # Local pattern must have redacted the SSN before DLP was even called
         assert "123-45-6789" not in result
         assert "[REDACTED-SSN]" in result
         mock_client.inspect_content.assert_called_once()
@@ -596,21 +608,39 @@ def _build_hipaa_app(db_override) -> TestClient:
 class TestHipaaFlowSettings:
     """PUT /flows/{id}/settings"""
 
-    def _make_db_with_flow(self, hipaa_compliance: bool = False):
+    def _make_db_with_flow(
+        self,
+        hipaa_compliance: bool = False,
+        baa_on_file: bool = False,
+    ):
         flow = MagicMock()
         flow.id = FLOW_ID
         flow.tenant_id = WORKSPACE_ID
         flow.hipaa_compliance = hipaa_compliance
         flow.is_deleted = False
 
+        tenant = MagicMock()
+        tenant.id = WORKSPACE_ID
+        tenant.baa_on_file = baa_on_file
+        tenant.kms_key_name = None
+
         db = MagicMock()
-        db.query.return_value.filter.return_value.first.return_value = flow
+
+        # SQLAlchemy 2.x pattern: db.execute(stmt).scalar_one_or_none()
+        mock_flow_result = MagicMock()
+        mock_flow_result.scalar_one_or_none.return_value = flow
+
+        mock_tenant_result = MagicMock()
+        mock_tenant_result.scalar_one_or_none.return_value = tenant
+
+        # First execute → CallFlow query, second → Tenant query
+        db.execute.side_effect = [mock_flow_result, mock_tenant_result]
         db.commit = MagicMock()
         db.refresh = MagicMock()
         return db, flow
 
     def test_enable_hipaa_returns_200_and_updated_flag(self):
-        db, flow = self._make_db_with_flow(hipaa_compliance=False)
+        db, flow = self._make_db_with_flow(hipaa_compliance=False, baa_on_file=True)
         client = _build_hipaa_app(db)
 
         resp = client.put(f"/flows/{FLOW_ID}/settings", json={"hipaa_compliance": True})
@@ -621,7 +651,7 @@ class TestHipaaFlowSettings:
         assert body["data"]["hipaa_compliance"] is True
 
     def test_enable_hipaa_fires_audit_event(self):
-        db, flow = self._make_db_with_flow(hipaa_compliance=False)
+        db, flow = self._make_db_with_flow(hipaa_compliance=False, baa_on_file=True)
         client = _build_hipaa_app(db)
 
         with patch("app.api.v2.routers.hipaa.logger") as mock_logger:
@@ -638,7 +668,7 @@ class TestHipaaFlowSettings:
         assert True in audit_args   # new_value=True
 
     def test_no_change_skips_commit(self):
-        db, flow = self._make_db_with_flow(hipaa_compliance=True)
+        db, flow = self._make_db_with_flow(hipaa_compliance=True, baa_on_file=True)
         client = _build_hipaa_app(db)
 
         resp = client.put(f"/flows/{FLOW_ID}/settings", json={"hipaa_compliance": True})
@@ -648,7 +678,9 @@ class TestHipaaFlowSettings:
 
     def test_flow_not_found_returns_404(self):
         db = MagicMock()
-        db.query.return_value.filter.return_value.first.return_value = None
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        db.execute.return_value = mock_result
         client = _build_hipaa_app(db)
 
         resp = client.put(f"/flows/{uuid.uuid4()}/settings", json={"hipaa_compliance": True})
@@ -661,6 +693,27 @@ class TestHipaaFlowSettings:
 
         resp = client.put(f"/flows/{FLOW_ID}/settings", json={})
         assert resp.status_code == 400
+
+    def test_enable_hipaa_baa_not_on_file_returns_400(self):
+        """HIPAA cannot be enabled when tenant.baa_on_file is False."""
+        db, _ = self._make_db_with_flow(hipaa_compliance=False, baa_on_file=False)
+        client = _build_hipaa_app(db)
+
+        resp = client.put(f"/flows/{FLOW_ID}/settings", json={"hipaa_compliance": True})
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "BAA" in body["error"]["message"] or "Business Associate" in body["error"]["message"]
+
+    def test_enable_hipaa_baa_on_file_succeeds(self):
+        """HIPAA can be enabled when tenant.baa_on_file is True."""
+        db, flow = self._make_db_with_flow(hipaa_compliance=False, baa_on_file=True)
+        client = _build_hipaa_app(db)
+
+        resp = client.put(f"/flows/{FLOW_ID}/settings", json={"hipaa_compliance": True})
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["hipaa_compliance"] is True
 
 
 class TestHipaaStatus:
@@ -684,17 +737,15 @@ class TestHipaaStatus:
 
         db = MagicMock()
 
-        # Track which query is being made
-        def _query(model):
-            q = MagicMock()
-            if model is Tenant:
-                q.filter.return_value.first.return_value = tenant
-            else:
-                # db.query(CallFlow.id).filter(...).all()  — single filter call
-                q.filter.return_value.all.return_value = flow_rows
-            return q
+        # SQLAlchemy 2.x: db.execute(stmt)
+        # First call → _get_tenant_or_404 (Tenant), second → _get_hipaa_flow_ids (CallFlow.id)
+        mock_tenant_result = MagicMock()
+        mock_tenant_result.scalar_one_or_none.return_value = tenant
 
-        db.query.side_effect = _query
+        mock_flows_result = MagicMock()
+        mock_flows_result.all.return_value = flow_rows
+
+        db.execute.side_effect = [mock_tenant_result, mock_flows_result]
         return db
 
     def test_hipaa_status_returns_correct_structure(self):
@@ -733,7 +784,12 @@ class TestKmsKeyUpdate:
         tenant.kms_key_name = kms_key_name
 
         db = MagicMock()
-        db.query.return_value.filter.return_value.first.return_value = tenant
+
+        # SQLAlchemy 2.x: db.execute(stmt).scalar_one_or_none()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = tenant
+        db.execute.return_value = mock_result
+
         db.commit = MagicMock()
         db.refresh = MagicMock()
         return db, tenant
