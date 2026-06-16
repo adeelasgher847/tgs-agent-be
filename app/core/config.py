@@ -347,6 +347,9 @@ class Settings(BaseSettings):
     GCS_KB_BUCKET: str = ""
     GCS_KB_PREFIX: str = "kb-files"
 
+    # HIPAA — Google Cloud DLP + CMEK
+    GCP_PROJECT_ID: str = ""  # Required when any flow has hipaa_compliance=True
+
     # Outbound call concurrency — max simultaneous outbound calls per workspace.
     # Counts outbound sessions with status IN (initiated, ringing, connected, in-progress).
     # Increase at the tenant level by changing this value (no per-tenant override yet).

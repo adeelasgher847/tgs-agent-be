@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Numeric, Index, ForeignKey, CheckConstraint, text
+from sqlalchemy import Boolean, Column, String, DateTime, Numeric, Index, ForeignKey, CheckConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -40,6 +40,8 @@ class Tenant(Base):
     api_keys = relationship("Apikey", back_populates="tenant", cascade="all, delete-orphan")
 
     workspace_settings = Column(JSONB, nullable=True, default=dict)
+    kms_key_name = Column(String, nullable=True)
+    baa_on_file = Column(Boolean, default=False, nullable=False, server_default="false")
 
     parent_workspace = relationship("Tenant", remote_side=[id], backref="sub_accounts")
     branding_config = relationship("BrandingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
