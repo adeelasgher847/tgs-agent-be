@@ -1,13 +1,12 @@
 """Rename tables to match SQLAlchemy base-class auto-naming (cls.__name__.lower()).
 
 Also merges the two diverged heads:
-  - 166509c9a980  (branding_configs / pricing_configs / rbac_roles / usage_records)
+  - 166509c9a980  (branding_configs / pricing_configs / usage_records + role table RBAC columns)
   - 20260611_kb_pgvector  (knowledge_bases / kb_files / kb_chunks)
 
 Renames:
   branding_configs  → brandingconfig
   pricing_configs   → pricingconfig
-  rbac_roles        → rbacrole
   usagerecord (old subscription-quota table) → DROPPED (no longer used)
   usage_records     → usagerecord
   knowledge_bases   → knowledgebase
@@ -28,7 +27,6 @@ depends_on = None
 def upgrade() -> None:
     op.rename_table("branding_configs", "brandingconfig")
     op.rename_table("pricing_configs", "pricingconfig")
-    op.rename_table("rbac_roles", "rbacrole")
 
     # The legacy subscription-quota table `usagerecord` (columns: subscription_id,
     # month, year, calls_used, agents_created) is no longer used. Drop it so we can
@@ -41,20 +39,15 @@ def upgrade() -> None:
     op.rename_table("kb_chunks", "kbchunk")
 
     # Rename indexes that embed the old table names so they stay consistent.
-    op.execute("ALTER INDEX IF EXISTS idx_rbac_roles_workspace_user RENAME TO idx_rbacrole_workspace_user")
-    op.execute("ALTER INDEX IF EXISTS uq_rbac_roles_workspace_user_active RENAME TO uq_rbacrole_workspace_user_active")
     op.execute("ALTER INDEX IF EXISTS idx_usage_records_workspace_recorded_at RENAME TO idx_usagerecord_workspace_recorded_at")
 
 
 def downgrade() -> None:
-    op.execute("ALTER INDEX IF EXISTS idx_rbacrole_workspace_user RENAME TO idx_rbac_roles_workspace_user")
-    op.execute("ALTER INDEX IF EXISTS uq_rbacrole_workspace_user_active RENAME TO uq_rbac_roles_workspace_user_active")
     op.execute("ALTER INDEX IF EXISTS idx_usagerecord_workspace_recorded_at RENAME TO idx_usage_records_workspace_recorded_at")
 
     op.rename_table("kbchunk", "kb_chunks")
     op.rename_table("kbfile", "kb_files")
     op.rename_table("knowledgebase", "knowledge_bases")
     op.rename_table("usagerecord", "usage_records")
-    op.rename_table("rbacrole", "rbac_roles")
     op.rename_table("pricingconfig", "pricing_configs")
     op.rename_table("brandingconfig", "branding_configs")

@@ -8,7 +8,7 @@
 | `workspaces` / `tenants` | `tenant`              | `Tenant`         | Upgraded with hierarchy fields                        |
 | `branding_configs`       | `branding_configs`    | `BrandingConfig` | 1:1 with `tenant` via cascading FK                     |
 | `pricing_configs`        | `pricing_configs`     | `PricingConfig`  | 1:1 with `tenant` via cascading FK                     |
-| `rbac_roles`             | `rbac_roles`          | `RbacRole`       | Custom fine-grained permission templates              |
+| `rbac_roles`             | `role`                | `Role`           | RBAC columns added to existing role table             |
 | `usage_records`          | `usage_records`       | `UsageRecord`    | High-throughput billing ledger; module-qualified paths|
 
 ---
@@ -146,11 +146,15 @@ erDiagram
         JSONB tier_discounts_json
     }
 
-    rbac_roles {
+    role {
         UUID id PK
-        UUID workspace_id FK "ON DELETE CASCADE"
-        STRING role_slug "e.g., call_center_manager"
-        JSONB permissions_matrix
+        STRING name "UNIQUE"
+        STRING description
+        UUID workspace_id FK "ON DELETE CASCADE (nullable)"
+        UUID user_id FK "ON DELETE CASCADE (nullable)"
+        STRING role "CHECK IN admin,manager,config_only,read_only,billing_only"
+        TIMESTAMPTZ deleted_at "NULL = active"
+        TIMESTAMPTZ created_at
     }
 
     usage_records {
@@ -172,7 +176,7 @@ erDiagram
     tenant ||--o| tenant : "parent_workspace_id links to"
     tenant ||--o| branding_configs : "customizes UI via"
     tenant ||--o| pricing_configs : "bills via"
-    tenant ||--o{ rbac_roles : "defines access templates"
+    tenant ||--o{ role : "defines access templates"
     tenant ||--o{ usage_records : "accumulates operational costs"
     tenant ||--o{ user_tenant_association : "associates via memberships"
 
