@@ -29,6 +29,7 @@ from app.core.logger import logger
 from app.core.request_auth import ApiKeyPrincipal
 from app.core.workspace import Workspace
 from app.models.user import User
+from app.services.audit_service import log_audit_event
 from app.schemas.batch_call import (
     BatchJobOut,
     BatchJobProgress,
@@ -81,10 +82,12 @@ def _batch_service_write(
 
 @router.post("", response_model=BatchJobOut, status_code=status.HTTP_201_CREATED)
 async def create_batch_job(
+    request: Request,
     file: UploadFile = File(..., description="UTF-8 CSV file, max 20 MB"),
     agent_id: uuid.UUID = Form(...),
     scheduled_at: Optional[datetime] = Form(default=None),
     workspace: Workspace = Depends(get_workspace),
+    db: Session = Depends(get_db),
     svc=Depends(_batch_service_write),
 ) -> BatchJobOut:
     """
@@ -124,6 +127,16 @@ async def create_batch_job(
     )
 
     await _enqueue_batch_job(str(job_out.id), scheduled_at)
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=workspace.id,
+        action="batch_job.created",
+        resource_type="batch_job",
+        resource_id=job_out.id,
+        new_value={"agent_id": str(agent_id), "scheduled_at": str(scheduled_at)},
+    )
 
     return job_out
 
@@ -181,7 +194,9 @@ def list_batch_call_records(
 @router.delete("/{batch_id}", response_model=BatchJobOut)
 def cancel_batch_job(
     batch_id: uuid.UUID,
+    request: Request,
     workspace: Workspace = Depends(get_workspace),
+    db: Session = Depends(get_db),
     svc=Depends(_batch_service_write),
 ) -> BatchJobOut:
     """
@@ -190,7 +205,16 @@ def cancel_batch_job(
     Requires admin / member / owner / config role for JWT users; any API key client.
     Already-connected calls complete naturally; waiting records are cancelled.
     """
-    return svc.cancel_batch_job(workspace.id, batch_id)
+    result = svc.cancel_batch_job(workspace.id, batch_id)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=workspace.id,
+        action="batch_job.cancelled",
+        resource_type="batch_job",
+        resource_id=batch_id,
+    )
+    return result
 
 
 # ── ARQ enqueue helper ────────────────────────────────────────────────────────

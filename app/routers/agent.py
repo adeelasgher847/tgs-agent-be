@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse, LanguageEnum, VoiceTypeEnum
@@ -13,6 +13,7 @@ from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListRespo
 from app.schemas.base import SuccessResponse
 from app.schemas.prompt_engineer import PromptEngineerRequest, PromptEngineerResult
 from app.services.agent_service import agent_service
+from app.services.audit_service import log_audit_event
 from app.services.openai_service import openai_service
 from app.services.credit_service import credit_service
 from app.services.model_service import model_service
@@ -29,6 +30,7 @@ router = APIRouter()
 @router.post("/", response_model=SuccessResponse[AgentOut], status_code=status.HTTP_201_CREATED)
 def create_agent(
     agent_in: AgentCreate,
+    request: Request,
     tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
     admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
@@ -39,6 +41,16 @@ def create_agent(
     # Both tenant_user and admin_user are validated by their respective middleware
     # We can use either one since they both represent the same user
     agent = agent_service.create_agent(db, agent_in, admin_user.current_tenant_id, admin_user.id)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=admin_user.current_tenant_id,
+        action="agent.created",
+        resource_type="agent",
+        resource_id=agent.id if hasattr(agent, "id") else None,
+        new_value=agent_in.model_dump(exclude_none=True),
+        actor_user_id=admin_user.id,
+    )
     return create_success_response(agent, "Agent created successfully", status.HTTP_201_CREATED)
 
 
@@ -77,24 +89,51 @@ def list_agents(
 def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
+    request: Request,
     tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
     admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Update an agent"""
+    old = agent_service.get_agent_by_id(db, agent_id, admin_user.current_tenant_id)
+    old_val = AgentOut.model_validate(old).model_dump() if old else None
     agent = agent_service.update_agent(db, agent_id, agent_update, admin_user.current_tenant_id, admin_user.id)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=admin_user.current_tenant_id,
+        action="agent.updated",
+        resource_type="agent",
+        resource_id=agent_id,
+        old_value=old_val,
+        new_value=agent_update.model_dump(exclude_none=True),
+        actor_user_id=admin_user.id,
+    )
     return create_success_response(agent, "Agent updated successfully")
 
 
 @router.delete("/{agent_id}", response_model=SuccessResponse[dict])
 def delete_agent(
     agent_id: uuid.UUID,
+    request: Request,
     tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
     admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
     db: Session = Depends(get_db)
 ):
     """Delete an agent"""
+    old = agent_service.get_agent_by_id(db, agent_id, admin_user.current_tenant_id)
+    old_val = AgentOut.model_validate(old).model_dump() if old else None
     agent_service.delete_agent(db, agent_id, admin_user.current_tenant_id)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=admin_user.current_tenant_id,
+        action="agent.deleted",
+        resource_type="agent",
+        resource_id=agent_id,
+        old_value=old_val,
+        actor_user_id=admin_user.id,
+    )
     return create_success_response({"id": str(agent_id)}, "Agent deleted successfully")
 
 
