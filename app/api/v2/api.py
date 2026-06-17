@@ -6,6 +6,7 @@ from app.api.v2.routers.health import router as health_router
 from app.api.v2.routers.webhooks import router as webhooks_router
 from app.api.v2.routers.callback_scheduler import agents_router as cb_agents_router
 from app.api.v2.routers.callback_scheduler import calls_router as cb_calls_router
+from app.api.api_v1.endpoints.workspace import v2_router as workspace_v2_router
 
 v2_router = APIRouter()
 v2_router.include_router(health_router)
@@ -14,3 +15,4 @@ v2_router.include_router(batch_calls_router)
 v2_router.include_router(webhooks_router)
 v2_router.include_router(cb_agents_router)
 v2_router.include_router(cb_calls_router)
+v2_router.include_router(workspace_v2_router, prefix="/workspace", tags=["Workspace Settings"])

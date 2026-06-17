@@ -14,7 +14,7 @@ class Role(Base):
     role = Column(String, nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    tenant = relationship("Tenant", back_populates="rbac_roles")
+    # tenant = relationship("Tenant", back_populates="rbac_roles")
 
     __table_args__ = (
         CheckConstraint(
