@@ -8,7 +8,6 @@
 | `workspaces` / `tenants` | `tenant`              | `Tenant`         | Upgraded with hierarchy fields                        |
 | `branding_configs`       | `branding_configs`    | `BrandingConfig` | 1:1 with `tenant` via cascading FK                     |
 | `pricing_configs`        | `pricing_configs`     | `PricingConfig`  | 1:1 with `tenant` via cascading FK                     |
-| `rbac_roles`             | `role`                | `Role`           | RBAC columns added to existing role table             |
 | `usage_records`          | `usage_records`       | `UsageRecord`    | High-throughput billing ledger; module-qualified paths|
 
 ---

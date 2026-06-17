@@ -64,21 +64,12 @@ def upgrade() -> None:
     )
 
     # 4. Add RBAC assignment columns to the existing 'role' table
-    op.add_column('role', sa.Column('workspace_id', sa.UUID(), sa.ForeignKey('tenant.id', ondelete='CASCADE'), nullable=True))
-    op.add_column('role', sa.Column('user_id', sa.UUID(), sa.ForeignKey('user.id', ondelete='CASCADE'), nullable=True))
     op.add_column('role', sa.Column('role', sa.String(), nullable=True))
     op.add_column('role', sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True))
     op.create_check_constraint(
         'chk_role_role',
         'role',
         "role IN ('admin', 'manager', 'config_only', 'read_only', 'billing_only')"
-    )
-    op.create_index(
-        'uq_role_workspace_user_active', 
-        'role', 
-        ['workspace_id', 'user_id'], 
-        unique=True, 
-        postgresql_where=sa.text("deleted_at IS NULL")
     )
 
     # 5. Create usage_records table (Distinct from the old 'usagerecord')
@@ -109,8 +100,6 @@ def downgrade() -> None:
         pass
     op.drop_column('role', 'deleted_at')
     op.drop_column('role', 'role')
-    op.drop_column('role', 'user_id')
-    op.drop_column('role', 'workspace_id')
     op.execute("DROP TABLE IF EXISTS pricing_configs CASCADE;")
     op.execute("DROP TABLE IF EXISTS branding_configs CASCADE;")
     
