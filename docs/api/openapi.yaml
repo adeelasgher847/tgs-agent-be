@@ -7806,8 +7806,92 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v2/workspace/data-export:
+    post:
+      tags:
+      - workspace-gdpr
+      summary: Trigger Data Export
+      description: Kick off an async export of all workspace data. Admin role required.
+      operationId: trigger_data_export_api_v2_workspace_data_export_post
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataExportTriggerOut'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/data-export/{job_id}:
+    get:
+      tags:
+      - workspace-gdpr
+      summary: Get Data Export Status
+      description: Poll export job status. Returns a fresh 24h signed URL once ready.
+      operationId: get_data_export_status_api_v2_workspace_data_export__job_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: job_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Job Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataExportStatusOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/account:
+    delete:
+      tags:
+      - workspace-gdpr
+      summary: Delete Account
+      description: 'Irreversibly erase the workspace: wipes PII, deletes KB embeddings
+        and
+
+        GCS recordings, anonymizes audit log actor fields, and soft-deletes the
+
+        workspace. Requires an exact, case-sensitive confirmation phrase.'
+      operationId: delete_account_api_v2_workspace_account_delete
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeletionRequest'
+        required: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
 components:
   schemas:
+    AccountDeletionRequest:
+      properties:
+        confirmation:
+          type: string
+          title: Confirmation
+      type: object
+      required:
+      - confirmation
+      title: AccountDeletionRequest
     AccountSnapshot:
       properties:
         user_id:
@@ -10466,6 +10550,28 @@ components:
       - created_at
       - message
       title: CreatePhoneNumberResponse
+    DataExportStatusOut:
+      properties:
+        status:
+          type: string
+          title: Status
+        download_url:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - status
+      title: DataExportStatusOut
+    DataExportTriggerOut:
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          title: Job Id
+      type: object
+      required:
+      - job_id
+      title: DataExportTriggerOut
     DeleteBoardItemsResponse:
       properties:
         items_deleted:

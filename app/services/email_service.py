@@ -83,7 +83,16 @@ class EmailService:
     ) -> bool:
         """
         Send an email using SendGrid API.
+
+        In staging, emails are logged to the console instead of actually
+        sent — avoids real mail going out from a non-production environment.
         """
+        if settings.ENVIRONMENT == "staging":
+            logger.info(
+                "[STAGING EMAIL] to=%s cc=%s subject=%s\n%s",
+                to_email, cc_emails or [], subject, html_body,
+            )
+            return True
         try:
             if not self.sg_client:
                 logger.error("SendGrid client is not configured. Missing SENDGRID_API_KEY.")
@@ -129,6 +138,31 @@ class EmailService:
             return self._send_email(to_email=email, subject=subject, html_body=html_body)
         except Exception as e:
             logger.error(f"Error sending invite email to {email}: {str(e)}")
+            return False
+
+    def send_data_export_ready_email(
+        self, email: str, download_url: str, workspace_name: str
+    ) -> bool:
+        """Notify the workspace admin that their GDPR data export is ready for download."""
+        try:
+            subject = f"Your data export for {workspace_name} is ready"
+            body = f"""
+            <html>
+            <body>
+                <h2>Your Data Export is Ready</h2>
+                <p>Hello,</p>
+                <p>The data export you requested for <strong>{workspace_name}</strong> has finished processing.</p>
+                <p><a href="{download_url}" style="background-color: #28a745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Export</a></p>
+                <p>Or copy and paste this link into your browser:</p>
+                <p>{download_url}</p>
+                <p><strong>This link will expire in 24 hours.</strong></p>
+                <p>Best regards,<br>The Voice Agent Team</p>
+            </body>
+            </html>
+            """
+            return self._send_email(to_email=email, subject=subject, html_body=body)
+        except Exception as e:
+            logger.error(f"Error sending data export ready email to {email}: {str(e)}")
             return False
 
     def send_generic_email(
