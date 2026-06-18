@@ -44,8 +44,114 @@ _URL_SECRET_PARAM_RE = re.compile(
     r"(?i)([?&])(token|key|api_key|apikey|client_secret|access_token|auth_token|password|secret)=([^&\s\"']+)",
 )
 
-# Phase 3 (HIPAA): populate with clinical-term and diagnosis-code patterns.
-_HIPAA_PATTERNS: list[tuple[str, re.Pattern[str]]] = []
+# Phase 3 (HIPAA): clinical-term and diagnosis-code patterns.
+# Applied only when the call flow has hipaa_compliance=True.
+_HIPAA_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # ── ICD-10-CM / ICD-10-PCS diagnosis codes ──────────────────────────────
+    # With clinical context (e.g. "diagnosis: J45.20", "dx E11.65")
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(?:diagnosis|icd[-\s]?10(?:\s*code)?|dx)[:\s]+"
+            r"[A-Z]\d{2}\.?\d{0,4}[A-Z0-9]?\b"
+        ),
+    ),
+    # Standalone ICD-10 with decimal required (e.g. J45.20, E11.65)
+    # Decimal requirement prevents false positives on generic codes.
+    (
+        REDACTED,
+        re.compile(
+            r"\b[A-Z]\d{2}\.\d{1,4}[A-Z0-9]?\b"
+        ),
+    ),
+    # ── CPT procedure codes (contextual prefix only) ────────────────────────
+    # "CPT: 99213" or "procedure code 29881" — bare 5-digit matches excluded
+    # to avoid false positives on zip codes, room numbers, etc.
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(?:CPT|procedure\s+code)[:\s]*\d{5}\b"
+        ),
+    ),
+    # ── Medical Record Numbers (MRN) ────────────────────────────────────────
+    # Labels: "MRN: 123456", "MRN# 123456", "mrn 12345678"
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\bMRN[#:\s]?\s*\d{5,15}\b"
+        ),
+    ),
+    # ── National Provider Identifier (NPI) ──────────────────────────────────
+    # Exactly 10 digits, commonly preceded by "NPI"
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\bNPI[#:\s]?\s*\d{10}\b"
+        ),
+    ),
+    # ── DEA numbers ─────────────────────────────────────────────────────────
+    # 2 letters (prefix) + 7 digits
+    (
+        REDACTED,
+        re.compile(
+            r"\b[ABDFGHJKLMNPRSTUabcdfghjklmnprstuvw]{2}\d{7}\b"
+        ),
+    ),
+    # ── US Health Plan Beneficiary Numbers ───────────────────────────────────
+    # Alphanumeric, 9-15 chars, often with leading letter(s)
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(?:health\s*(?:plan|insurance)\s*(?:ID|number|member|beneficiary)"
+            r"|member\s*ID|subscriber\s*ID|policy\s*number)"
+            r"[\s:#]*\w{6,20}\b"
+        ),
+    ),
+    # ── Labeled clinical data ───────────────────────────────────────────────
+    # "Diagnosis: XYZ", "Medication: abc", "Allergy: peanuts"
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(diagnosis|diagnosed|procedure|medication|medications"
+            r"|prescription|dosage|dose|allergy|allergies|condition"
+            r"|chief_complaint|vitals|blood_pressure|heart_rate"
+            r"|o2_saturation|temperature|chief complaint)"
+            r"[\s:=]+"
+            r"[^\n]{2,80}",
+        ),
+    ),
+    # ── PHI in labeled format ───────────────────────────────────────────────
+    # "Patient: John Smith", "DOB: 01/15/1985", "SSN: 123-45-6789"
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(patient|member|beneficiary|insured|subscriber)"
+            r"[\s:=]+"
+            r"[A-Z][a-z]+(?:\s+[A-Z][a-z'\-]+){0,2}",
+        ),
+    ),
+    # ── Date of Birth (DOB) in common formats ───────────────────────────────
+    # "DOB: 01/15/1985", "DOB 1985-01-15", "date of birth: Jan 15, 1985"
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(DOB|date\s+of\s+birth)[\s:=]*"
+            r"(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}"
+            r"|\d{4}[/\-]\d{1,2}[/\-]\d{1,2}"
+            r"|[A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4})",
+        ),
+    ),
+    # ── Test / Lab results ──────────────────────────────────────────────────
+    # "Lab: CBC 12.5 g/dL", "Result: Positive"
+    (
+        REDACTED,
+        re.compile(
+            r"(?i)\b(lab\s*result|test\s*result|lab|result)"
+            r"[\s:=]+"
+            r"[^\n]{2,60}",
+         ),
+     ),
+]
 
 # Do not treat digit runs after Stripe/Twilio-style ID prefixes as phone numbers.
 _PHONE_ID_PREFIX_EXCLUSION = (

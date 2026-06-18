@@ -8,9 +8,6 @@ same pattern as GoogleSttService and VertexGeminiService.
 # Apply the following lifecycle condition to the bucket via Terraform or gcloud:
 #   condition: { age: 90, matchesPrefix: ["recordings/"] }
 #   action: { type: "Delete" }
-
-# Sprint 5: use CMEK encryption key for HIPAA tenants (customer-managed encryption).
-# Wire the key ARN via GCS_CMEK_KEY_NAME env var and pass kms_key_name to blob.rewrite().
 """
 
 from __future__ import annotations
@@ -41,9 +38,14 @@ def upload_recording(
     file_bytes: bytes,
     metadata: dict,
     content_type: str = "audio/ogg; codecs=opus",
+    *,
+    kms_key_name: Optional[str] = None,
 ) -> str:
     """
     Upload an Opus recording to GCS and set custom metadata.
+
+    When *kms_key_name* is provided (HIPAA flows) the object is encrypted with
+    the tenant's Customer-Managed Encryption Key (CMEK) via Cloud KMS.
 
     Returns the full GCS path (key) after a successful upload.
     Raises on any GCS error — caller is responsible for error handling.
@@ -52,13 +54,19 @@ def upload_recording(
 
     client = _get_gcs_client()
     bucket = client.bucket(settings.GCS_RECORDINGS_BUCKET)
-    blob = bucket.blob(key)
+    blob = bucket.blob(key, kms_key_name=kms_key_name)
 
     # Custom metadata: callId, workspaceId, agentId, duration
     blob.metadata = {str(k): str(v) for k, v in metadata.items() if v is not None}
     blob.upload_from_string(file_bytes, content_type=content_type)
 
-    logger.info("GCS upload complete: gs://%s/%s (%d bytes)", settings.GCS_RECORDINGS_BUCKET, key, len(file_bytes))
+    if kms_key_name:
+        logger.info(
+            "GCS CMEK upload complete: gs://%s/%s (%d bytes) kms=%s",
+            settings.GCS_RECORDINGS_BUCKET, key, len(file_bytes), kms_key_name,
+        )
+    else:
+        logger.info("GCS upload complete: gs://%s/%s (%d bytes)", settings.GCS_RECORDINGS_BUCKET, key, len(file_bytes))
     return key
 
 
@@ -87,6 +95,32 @@ def get_object_size(key: str) -> Optional[int]:
     return blob.size if blob else None
 
 
+def set_bucket_default_kms_key(kms_key_name: str) -> None:
+    """
+    Set the GCS recordings bucket's default Cloud KMS key for CMEK encryption.
+
+    Once set, every new object written to the bucket — including recordings
+    uploaded directly by LiveKit — is encrypted with this key automatically,
+    without any application-level changes to the upload path.
+
+    Requires the GCS service account to have the Cloud KMS CryptoKey Encrypter/
+    Decrypter role on the specified key.
+
+    Raises on any GCS or KMS API error; caller is responsible for error handling.
+    """
+    from google.cloud import storage  # type: ignore
+
+    client = _get_gcs_client()
+    bucket = client.get_bucket(settings.GCS_RECORDINGS_BUCKET)
+    bucket.default_kms_key_name = kms_key_name
+    bucket.patch()
+    logger.info(
+        "GCS bucket %s default KMS key set to %s",
+        settings.GCS_RECORDINGS_BUCKET,
+        kms_key_name,
+    )
+
+
 def generate_signed_url(
     gcs_path: str,
     expiry_seconds: int = settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
@@ -96,8 +130,6 @@ def generate_signed_url(
 
     Requires a service account with roles/storage.objectViewer.
     Uses service account credentials from GOOGLE_APPLICATION_CREDENTIALS (ADC).
-
-    # Sprint 5: for HIPAA tenants, ensure the bucket uses CMEK encryption.
     """
     import google.auth  # type: ignore
     from google.auth.transport import requests as google_requests  # type: ignore

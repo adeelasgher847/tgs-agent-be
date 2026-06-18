@@ -6518,7 +6518,9 @@ paths:
 
 
         URL expires in {GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS} seconds (default
-        3600).'
+        3600).
+
+        For HIPAA-flagged flows, readonly and config roles receive 403.'
       operationId: get_recording_api_v1_recordings__call_id__get
       security:
       - HTTPBearer: []
@@ -7095,6 +7097,157 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/audit-events:
+    get:
+      tags:
+      - audit-events
+      summary: List Audit Events
+      description: Return paginated audit events for the authenticated workspace.
+        Admin role required.
+      operationId: list_audit_events_api_v2_audit_events_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: action
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: actor_api_key_prefix
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAuditEvents'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/audit-events/{event_id}:
+    get:
+      tags:
+      - audit-events
+      summary: Get Audit Event
+      description: Return a single audit event including old_value and new_value.
+        Admin role required.
+      operationId: get_audit_event_api_v2_audit_events__event_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/audit-events/export:
+    post:
+      tags:
+      - audit-events
+      summary: Export Audit Events
+      description: "Stream all matching audit events as CSV.\n\nColumns: id, event_type,\
+        \ resource_type, resource_id, actor,\n         ip_address, created_at, old_value,\
+        \ new_value.\nAdmin role required."
+      operationId: export_audit_events_api_v2_audit_events_export_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: action
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: actor_api_key_prefix
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/batch-calls:
     post:
       tags:
@@ -7595,13 +7748,38 @@ paths:
             schema:
               $ref: '#/components/schemas/BrandingConfigUpsert'
         required: true
+  /api/v2/flows/{flow_id}/settings:
+    put:
+      tags:
+      - hipaa
+      summary: Update Flow Hipaa Settings
+      description: "Toggle HIPAA compliance on a call flow.  Admin role required.\n\
+        \nWhen enabled:\n  - all call session log entries are DLP-redacted before\
+        \ Cloud Logging\n  - GCS recordings use the workspace kms_key_name (CMEK)\n\
+        \  - recording access is restricted to admin and manager roles"
+      operationId: update_flow_hipaa_settings_api_v2_flows__flow_id__settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HipaaSettingsUpdate'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/BrandingConfigOut'
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -7610,19 +7788,62 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
-  /api/v2/workspace/pricing:
+  /api/v2/workspace/hipaa-status:
+    get:
+      tags:
+      - hipaa
+      summary: Get Hipaa Status
+      description: Return workspace-level HIPAA status summary.
+      operationId: get_hipaa_status_api_v2_workspace_hipaa_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/kms-key:
+    put:
+      tags:
+      - hipaa
+      summary: Update Kms Key
+      description: 'Register or update the workspace Cloud KMS key for CMEK recording
+        encryption.
+
+
+        Validates that the key exists and the service account has encrypt/decrypt
+
+        permissions before persisting.  Admin role required.'
+      operationId: update_kms_key_api_v2_workspace_kms_key_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KmsKeyUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+   /api/v2/workspace/pricing:
     get:
       tags:
       - Workspace Settings
       summary: Get Pricing Config
       description: Get the current pricing configuration for the workspace.
       operationId: get_pricing_config_api_v2_workspace_pricing_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
+      schema:
                 $ref: '#/components/schemas/PricingConfigOut'
       security:
       - HTTPBearer: []
@@ -7632,27 +7853,8 @@ paths:
       summary: Upsert Pricing Config
       description: Upsert the pricing configuration for the workspace.
       operationId: upsert_pricing_config_api_v2_workspace_pricing_put
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PricingConfigUpsert'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PricingConfigOut'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
+      schema:
+                $ref: '#/components/schemas/PricingConfigUpsert'
   /api/v2/workspace/usage:
     get:
       tags:
@@ -8427,6 +8629,62 @@ components:
       required:
       - status
       title: AppointmentStatusUpdate
+    AuditEventOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        tenant_id:
+          type: string
+          format: uuid
+          title: Tenant Id
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+        actor_api_key_prefix:
+          type: string
+          nullable: true
+        action:
+          type: string
+          title: Action
+        resource_type:
+          type: string
+          nullable: true
+        resource_id:
+          type: string
+          format: uuid
+          nullable: true
+        old_value:
+          nullable: true
+        new_value:
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+        user_agent:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      - timestamp
+      - tenant_id
+      - user_id
+      - actor_api_key_prefix
+      - action
+      - resource_type
+      - resource_id
+      - old_value
+      - new_value
+      - ip_address
+      - user_agent
+      title: AuditEventOut
     AvailableSlot:
       properties:
         slot_start:
@@ -10461,6 +10719,15 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    HipaaSettingsUpdate:
+      properties:
+        hipaa_compliance:
+          type: boolean
+          title: Hipaa Compliance
+      type: object
+      required:
+      - hipaa_compliance
+      title: HipaaSettingsUpdate
     ImportTwilioPhoneNumberRequest:
       properties:
         phone_number:
@@ -11239,6 +11506,15 @@ components:
           nullable: true
       type: object
       title: KbUpdate
+    KmsKeyUpdate:
+      properties:
+        kms_key_name:
+          type: string
+          title: Kms Key Name
+      type: object
+      required:
+      - kms_key_name
+      title: KmsKeyUpdate
     KnowledgeBaseDocumentList:
       properties:
         documents:
@@ -11702,6 +11978,33 @@ components:
       - max_duration_seconds
       - created_at
       title: NumberConfigurationResponse
+    PaginatedAuditEvents:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AuditEventOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        has_next:
+          type: boolean
+          title: Has Next
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      - has_next
+      title: PaginatedAuditEvents
     PaginatedBatchCallRecords:
       properties:
         items:
