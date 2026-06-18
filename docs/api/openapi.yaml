@@ -613,6 +613,69 @@ paths:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_list_InviteOut__'
       security: *id001
+  /api/v1/workspace/allowed-domains:
+    get:
+      tags:
+      - Workspace — Allowed Domains
+      summary: List domains whitelisted for the Web SDK
+      operationId: list_allowed_domains_api_v1_workspace_allowed_domains_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_list_AllowedDomainOut__'
+      security: *id001
+    post:
+      tags:
+      - Workspace — Allowed Domains
+      summary: Whitelist a domain for the Web SDK
+      operationId: create_allowed_domain_api_v1_workspace_allowed_domains_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AllowedDomainCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllowedDomainOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security: *id001
+  /api/v1/workspace/allowed-domains/{domain_id}:
+    delete:
+      tags:
+      - Workspace — Allowed Domains
+      summary: Remove a whitelisted domain
+      operationId: delete_allowed_domain_api_v1_workspace_allowed_domains__domain_id__delete
+      security: *id001
+      parameters:
+      - name: domain_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Domain Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workspace:
     post:
       tags:
@@ -1345,6 +1408,42 @@ paths:
       responses:
         '204':
           description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/call-flows/{flow_id}/settings:
+    put:
+      tags:
+      - Call Flows
+      summary: Update Call Flow Settings
+      description: Toggle Web SDK public access for a flow. Requires admin or owner
+        role.
+      operationId: update_call_flow_settings_api_v1_call_flows__flow_id__settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallFlowSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -4365,6 +4464,30 @@ paths:
                 $ref: '#/components/schemas/SuccessResponse_dict_'
       security:
       - HTTPBearer: []
+  /api/v1/sdk/public-call-token:
+    post:
+      tags:
+      - Web SDK — Public
+      summary: Public Call Token
+      operationId: public_call_token_api_v1_sdk_public_call_token_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicCallTokenRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/crm-config:
     get:
       tags:
@@ -8242,6 +8365,40 @@ components:
       additionalProperties: false
       type: object
       title: AgentUpdate
+    AllowedDomainCreate:
+      properties:
+        domain:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Domain
+          examples:
+          - https://app.example.com
+      additionalProperties: false
+      type: object
+      required:
+      - domain
+      title: AllowedDomainCreate
+      description: Request body for ``POST /api/v1/workspace/allowed-domains``.
+    AllowedDomainOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        domain:
+          type: string
+          title: Domain
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+      type: object
+      required:
+      - id
+      - domain
+      - createdAt
+      title: AllowedDomainOut
     ApiKeyCreate:
       properties:
         name:
@@ -9653,6 +9810,17 @@ components:
       - direction
       - agentId
       title: CallFlowCreate
+    CallFlowSettingsUpdate:
+      properties:
+        public_access:
+          type: boolean
+          title: Public Access
+      additionalProperties: false
+      type: object
+      required:
+      - public_access
+      title: CallFlowSettingsUpdate
+      description: Request body for ``PUT /api/v1/call-flows/{id}/settings``.
     CallFlowUpdate:
       properties:
         name:
@@ -12592,6 +12760,22 @@ components:
       type: object
       title: ProviderUpdate
       description: Schema for updating a provider
+    PublicCallTokenRequest:
+      properties:
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        agent_id:
+          type: string
+          format: uuid
+          title: Agent Id
+      additionalProperties: false
+      type: object
+      required:
+      - flow_id
+      - agent_id
+      title: PublicCallTokenRequest
     PurchasePhoneNumberRequest:
       properties:
         phone_number:
@@ -15041,6 +15225,25 @@ components:
       required:
       - data
       title: SuccessResponse[list]
+    SuccessResponse_list_AllowedDomainOut__:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/AllowedDomainOut'
+          type: array
+          title: Data
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[list[AllowedDomainOut]]
     SuccessResponse_list_ApiKeyOut__:
       properties:
         data:

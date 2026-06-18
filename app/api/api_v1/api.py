@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.api_v1.endpoints import (
     accept_invite,
+    allowed_domains,
     api_keys,
     billing,
     gemini,
@@ -33,6 +34,7 @@ from app.routers.recruitment_dashboard import router as recruitment_dashboard_ro
 from app.routers.resumes import router as resume_router
 from app.routers.resume_interviews import router as resume_interviews_router
 from app.routers.scheduled_calls import router as scheduled_calls_router
+from app.routers.sdk import router as sdk_router
 from app.routers.tts_audio import router as tts_audio_router
 from app.routers.tts import router as tts_router
 from app.routers.voice import router as voice_router
@@ -53,9 +55,10 @@ api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
-# Invite sub-routes must be registered BEFORE workspace.router so that
-# /workspace/invite and /workspace/invitations take priority over /workspace/{workspace_id}.
+# Invite/allowed-domains sub-routes must be registered BEFORE workspace.router so
+# that their literal paths take priority over /workspace/{workspace_id}.
 api_router.include_router(workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"])
+api_router.include_router(allowed_domains.router, prefix="/workspace", tags=["Workspace — Allowed Domains"])
 api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
@@ -108,6 +111,7 @@ api_router.include_router(
     include_in_schema=False,
 )
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
+api_router.include_router(sdk_router, prefix="/sdk", tags=["Web SDK — Public"])
 api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Configuration"])
 api_router.include_router(
     clickup_oauth_router,

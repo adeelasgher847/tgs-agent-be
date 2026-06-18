@@ -5,6 +5,7 @@ Mirrors the auth-mocking pattern from tests/api/test_agents.py.
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -17,7 +18,9 @@ from app.models.agent import Agent
 from app.models.call_flow import CallFlow
 from app.models.call_session import CallSession
 from app.models.prompt_version import PromptVersion
+from app.models.role import Role
 from app.models.tenant import Tenant
+from app.models.user import User, user_tenant_association
 
 _API_KEY = "test-callflows-key"
 
@@ -91,6 +94,51 @@ def authed_client(client: TestClient, auth_tenant: Tenant):
         side_effect=_resolve,
     ):
         yield client
+
+
+def _make_jwt_user(db, tenant_id: uuid.UUID, role_name: str) -> User:
+    role = db.query(Role).filter(Role.name == role_name).first()
+    if role is None:
+        role = Role(name=role_name, description=role_name)
+        db.add(role)
+        db.commit()
+        db.refresh(role)
+
+    user = User(
+        email=f"{role_name}-{uuid.uuid4().hex[:8]}@example.com",
+        first_name=role_name.title(),
+        last_name="User",
+        hashed_password="",
+        current_tenant_id=tenant_id,
+    )
+    db.add(user)
+    db.flush()
+    db.execute(
+        user_tenant_association.insert().values(
+            user_id=user.id, tenant_id=tenant_id, role_id=role.id, is_creator=False
+        )
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@contextmanager
+def _jwt_auth_ctx(workspace: Workspace, user_id: uuid.UUID):
+    """Patch the JWT auth branch to attach the given workspace/user — bypasses
+    real token verification while still exercising the real DB-backed role
+    check inside require_admin_or_owner."""
+
+    async def _jwt_auth(request):
+        _attach_workspace_context(
+            request, workspace=workspace, auth_method=AUTH_METHOD_JWT, user_id=user_id,
+        )
+        return True
+
+    with patch(
+        "app.middleware.api_key_middleware._try_jwt_auth", side_effect=_jwt_auth
+    ):
+        yield
 
 
 def _create_body(agent_id: uuid.UUID, **overrides) -> dict:
@@ -444,6 +492,69 @@ class TestDeleteCallFlow:
         )
         assert resp.status_code == 409, resp.text
         assert resp.json()["error"]["code"] == "flow_has_active_calls"
+
+
+@pytest.mark.usefixtures("db")
+class TestUpdateCallFlowSettings:
+    def test_admin_can_enable_public_access(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        created = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id),
+            headers=_headers(auth_tenant),
+        ).json()
+        assert created["publicAccess"] is False
+
+        admin = _make_jwt_user(db, auth_tenant.id, "admin")
+        workspace = Workspace.from_tenant(auth_tenant)
+
+        with _jwt_auth_ctx(workspace, admin.id):
+            resp = authed_client.put(
+                f"/api/v1/call-flows/{created['id']}/settings",
+                json={"public_access": True},
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["publicAccess"] is True
+
+        row = db.query(CallFlow).filter(CallFlow.id == uuid.UUID(created["id"])).first()
+        assert row.public_access is True
+
+    def test_member_role_forbidden(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        created = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id),
+            headers=_headers(auth_tenant),
+        ).json()
+
+        member = _make_jwt_user(db, auth_tenant.id, "member")
+        workspace = Workspace.from_tenant(auth_tenant)
+
+        with _jwt_auth_ctx(workspace, member.id):
+            resp = authed_client.put(
+                f"/api/v1/call-flows/{created['id']}/settings",
+                json={"public_access": True},
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert resp.status_code == 403, resp.text
+
+    def test_api_key_forbidden(self, authed_client, auth_tenant, test_agent):
+        """ApiKeyPrincipal has no role — require_admin_or_owner rejects it outright."""
+        created = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id),
+            headers=_headers(auth_tenant),
+        ).json()
+
+        resp = authed_client.put(
+            f"/api/v1/call-flows/{created['id']}/settings",
+            json={"public_access": True},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 403, resp.text
 
 
 @pytest.mark.usefixtures("db")
