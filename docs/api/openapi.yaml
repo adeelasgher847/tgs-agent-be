@@ -7836,7 +7836,7 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
-   /api/v2/workspace/pricing:
+  /api/v2/workspace/pricing:
     get:
       tags:
       - Workspace Settings
