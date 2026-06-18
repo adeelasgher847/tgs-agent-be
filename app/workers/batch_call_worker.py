@@ -455,6 +455,32 @@ async def startup_recover_callbacks(ctx: dict) -> None:
 
 # ── WorkerSettings ────────────────────────────────────────────────────────────
 
+async def purge_old_audit_logs(ctx: dict) -> None:
+    """
+    Daily cron: delete auditlog rows older than 90 days.
+
+    Sets the session GUC app.bypass_audit_delete = 'true' so the no_delete_audit
+    trigger allows the DELETE to proceed (application-code deletes remain blocked).
+    """
+    from sqlalchemy import text
+
+    from app.db.session import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            db.execute(text("SET LOCAL app.bypass_audit_delete = 'true'"))
+            result = db.execute(
+                text(
+                    "DELETE FROM auditlog "
+                    "WHERE timestamp < NOW() - INTERVAL '90 days'"
+                )
+            )
+            db.commit()
+            logger.info("audit_log retention: deleted %d rows older than 90 days", result.rowcount)
+    except Exception as exc:
+        logger.error("audit_log retention job failed: %s", exc, exc_info=True)
+
+
 class WorkerSettings:
     """
     ARQ WorkerSettings consumed by `arq app.workers.batch_call_worker.WorkerSettings`.
@@ -477,6 +503,7 @@ class WorkerSettings:
         retry_webhook_delivery,
         kb_ingestion_task,
         execute_callback,
+        purge_old_audit_logs,
         # poll_pending_callbacks kept for manual/admin invocation; not in cron_jobs
         poll_pending_callbacks,
     ]
@@ -509,6 +536,8 @@ try:
     WorkerSettings.cron_jobs = [
         # Batch job recovery: re-enqueue orphaned pending batch jobs every 60 s
         _arq.cron(poll_pending_batch_jobs, second={0}, run_at_startup=True),
+        # Audit log 90-day retention: runs once per day at 03:00 UTC
+        _arq.cron(purge_old_audit_logs, hour={3}, minute={0}, second={0}),
         # Callback recovery is handled by WorkerSettings.on_startup (startup_recover_callbacks),
         # not a periodic cron — no polling loop needed for correctness.
     ]

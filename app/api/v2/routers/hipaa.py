@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from app.models.call_flow import CallFlow
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services import gcs_recording_service
+from app.services.audit_service import log_audit_event
 from app.utils.response import create_success_response
 
 flows_router = APIRouter(prefix="/flows", tags=["hipaa"])
@@ -119,24 +120,6 @@ async def _validate_kms_key(kms_key_name: str) -> None:
         ) from exc
 
 
-def _emit_audit_event(
-    *,
-    tenant_id: uuid.UUID,
-    flow_id: uuid.UUID,
-    action: str,
-    old_value: bool,
-    new_value: bool,
-    user_id: uuid.UUID,
-) -> None:
-    logger.info(
-        "AUDIT action=%s flow_id=%s tenant_id=%s old_value=%s new_value=%s user_id=%s",
-        action,
-        flow_id,
-        tenant_id,
-        old_value,
-        new_value,
-        user_id,
-    )
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -146,6 +129,7 @@ def _emit_audit_event(
 async def update_flow_hipaa_settings(
     flow_id: uuid.UUID,
     body: HipaaSettingsUpdate,
+    request: Request,
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -180,13 +164,16 @@ async def update_flow_hipaa_settings(
         db.commit()
         db.refresh(flow)
 
-        _emit_audit_event(
+        log_audit_event(
+            db,
+            request=request,
             tenant_id=tenant_id,
-            flow_id=flow_id,
-            action="flow.hipaa_updated",
-            old_value=old_value,
-            new_value=new_value,
-            user_id=user.id,
+            action="hipaa_flag.updated",
+            resource_type="call_flow",
+            resource_id=flow_id,
+            old_value={"hipaa_compliance": old_value},
+            new_value={"hipaa_compliance": new_value},
+            actor_user_id=user.id,
         )
 
     return create_success_response(
@@ -221,6 +208,7 @@ async def get_hipaa_status(
 @workspace_router.put("/kms-key")
 async def update_kms_key(
     body: KmsKeyUpdate,
+    request: Request,
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -253,11 +241,15 @@ async def update_kms_key(
             exc,
         )
 
-    logger.info(
-        "AUDIT action=workspace.kms_key_updated tenant_id=%s kms_key=%s user_id=%s",
-        tenant_id,
-        body.kms_key_name,
-        user.id,
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="workspace.kms_key_updated",
+        resource_type="workspace",
+        resource_id=tenant_id,
+        new_value={"kms_key_name": body.kms_key_name},
+        actor_user_id=user.id,
     )
 
     return create_success_response(

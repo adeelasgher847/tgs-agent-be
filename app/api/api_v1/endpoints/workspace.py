@@ -34,6 +34,7 @@ from app.services.integration_service import (
     store_make_secret,
     store_n8n_secret,
 )
+from app.services.audit_service import log_audit_event
 from app.utils.response import create_success_response
 
 router = APIRouter()
@@ -112,9 +113,11 @@ async def _parse_update_name_body(request: Request) -> WorkspaceUpdateName:
     responses={**_COMMON_ERROR_RESPONSES, 201: {"description": "Workspace created — flat body: {id, name, createdAt}"}},
 )
 def create_workspace(
+    request: Request,
     payload: WorkspaceCreate = Depends(_parse_create_body),
-    _: Workspace = Depends(get_workspace_api_key),
+    authed: Workspace = Depends(get_workspace_api_key),
     repo: WorkspaceRepository = Depends(_repository),
+    db: Session = Depends(get_db),
 ):
     """Create a new workspace. Name must be unique among active workspaces (3–50 chars)."""
     try:
@@ -136,6 +139,15 @@ def create_workspace(
         logger.error("Workspace create DB error: %s", exc, exc_info=True)
         raise _DB_ERROR
 
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=authed.id,
+        action="workspace.created",
+        resource_type="workspace",
+        resource_id=tenant.id,
+        new_value={"name": tenant.name},
+    )
     return WorkspaceCreatedOut.model_validate(tenant)
 
 
@@ -179,9 +191,11 @@ def get_workspace_by_id(
     responses=_COMMON_ERROR_RESPONSES,
 )
 def update_workspace_name(
+    request: Request,
     payload: WorkspaceUpdateName = Depends(_parse_update_name_body),
     authed: Workspace = Depends(get_workspace_api_key),
     repo: WorkspaceRepository = Depends(_repository),
+    db: Session = Depends(get_db),
 ):
     """Update the name of the authenticated workspace. 409 on duplicate name."""
     try:
@@ -192,6 +206,7 @@ def update_workspace_name(
                 detail="Workspace not found",
             )
 
+        old_name = tenant.name
         if tenant.name != payload.name:
             existing = repo.find_by_name(payload.name)
             if existing is not None and existing.id != tenant.id:
@@ -212,6 +227,16 @@ def update_workspace_name(
         logger.error("Workspace update DB error: %s", exc, exc_info=True)
         raise _DB_ERROR
 
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=authed.id,
+        action="workspace.updated",
+        resource_type="workspace",
+        resource_id=authed.id,
+        old_value={"name": old_name},
+        new_value={"name": payload.name},
+    )
     return create_success_response(
         WorkspaceOut.model_validate(tenant),
         "Workspace name updated successfully",
@@ -323,8 +348,10 @@ def generate_n8n_integration_secret(
 )
 def soft_delete_workspace(
     workspace_id: uuid.UUID,
+    request: Request,
     authed: Workspace = Depends(get_workspace_api_key),
     repo: WorkspaceRepository = Depends(_repository),
+    db: Session = Depends(get_db),
 ):
     _ensure_same_workspace(workspace_id, authed.id)
 
@@ -335,6 +362,7 @@ def soft_delete_workspace(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Workspace not found",
             )
+        old_name = tenant.name
         repo.soft_delete(tenant)
     except HTTPException:
         raise
@@ -342,4 +370,13 @@ def soft_delete_workspace(
         logger.error("Workspace delete DB error: %s", exc, exc_info=True)
         raise _DB_ERROR
 
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=authed.id,
+        action="workspace.deleted",
+        resource_type="workspace",
+        resource_id=workspace_id,
+        old_value={"name": old_name},
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

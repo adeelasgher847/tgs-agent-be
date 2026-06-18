@@ -7097,6 +7097,157 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/audit-events:
+    get:
+      tags:
+      - audit-events
+      summary: List Audit Events
+      description: Return paginated audit events for the authenticated workspace.
+        Admin role required.
+      operationId: list_audit_events_api_v2_audit_events_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: action
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: actor_api_key_prefix
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAuditEvents'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/audit-events/{event_id}:
+    get:
+      tags:
+      - audit-events
+      summary: Get Audit Event
+      description: Return a single audit event including old_value and new_value.
+        Admin role required.
+      operationId: get_audit_event_api_v2_audit_events__event_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEventOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/audit-events/export:
+    post:
+      tags:
+      - audit-events
+      summary: Export Audit Events
+      description: "Stream all matching audit events as CSV.\n\nColumns: id, event_type,\
+        \ resource_type, resource_id, actor,\n         ip_address, created_at, old_value,\
+        \ new_value.\nAdmin role required."
+      operationId: export_audit_events_api_v2_audit_events_export_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: action
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: actor_api_key_prefix
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/batch-calls:
     post:
       tags:
@@ -8413,6 +8564,62 @@ components:
       required:
       - status
       title: AppointmentStatusUpdate
+    AuditEventOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+        tenant_id:
+          type: string
+          format: uuid
+          title: Tenant Id
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+        actor_api_key_prefix:
+          type: string
+          nullable: true
+        action:
+          type: string
+          title: Action
+        resource_type:
+          type: string
+          nullable: true
+        resource_id:
+          type: string
+          format: uuid
+          nullable: true
+        old_value:
+          nullable: true
+        new_value:
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+        user_agent:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      - timestamp
+      - tenant_id
+      - user_id
+      - actor_api_key_prefix
+      - action
+      - resource_type
+      - resource_id
+      - old_value
+      - new_value
+      - ip_address
+      - user_agent
+      title: AuditEventOut
     AvailableSlot:
       properties:
         slot_start:
@@ -11675,6 +11882,33 @@ components:
       - max_duration_seconds
       - created_at
       title: NumberConfigurationResponse
+    PaginatedAuditEvents:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AuditEventOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        has_next:
+          type: boolean
+          title: Has Next
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      - has_next
+      title: PaginatedAuditEvents
     PaginatedBatchCallRecords:
       properties:
         items:
