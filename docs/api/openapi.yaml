@@ -7669,6 +7669,7 @@ paths:
                 $ref: '#/components/schemas/WorkspaceUsageOut'
       security:
       - HTTPBearer: []
+      
 components:
   schemas:
     AccountSnapshot:
