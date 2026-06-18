@@ -9,10 +9,11 @@ from app.models.transcript_message import TranscriptMessage
 from app.models.call_session import CallSession
 from app.routers.general_websocket import broadcast_transcript_update
 from app.core.logger import logger
+from app.services.dlp_service import redact_phi_if_hipaa
 
 class TranscriptService:
     """Service for managing transcript messages"""
-    
+
     @staticmethod
     def add_message(
         db: Session,
@@ -25,10 +26,14 @@ class TranscriptService:
         confidence: Optional[float] = None,
         duration: Optional[float] = None,
         response_time: Optional[float] = None,
-        metadata: Optional[dict] = None
+        metadata: Optional[dict] = None,
+        hipaa_enabled: bool = False,
     ) -> TranscriptMessage:
         """Add a new message to the transcript"""
-        
+
+        # Redact PHI before persistence when the flow is HIPAA-enabled
+        message = redact_phi_if_hipaa(message, hipaa_enabled=hipaa_enabled)
+
         # Get the next sequence number for this call session
         last_message = db.query(TranscriptMessage).filter(
             TranscriptMessage.call_session_id == call_session_id
@@ -112,7 +117,8 @@ class TranscriptService:
         confidence: Optional[float] = None,
         duration: Optional[float] = None,
         response_time: Optional[float] = None,
-        metadata: Optional[dict] = None
+        metadata: Optional[dict] = None,
+        hipaa_enabled: bool = False,
     ) -> Optional[TranscriptMessage]:
         """Add a message and broadcast the updated conversation to WebSocket"""
         
@@ -145,7 +151,8 @@ class TranscriptService:
             confidence=confidence,
             duration=duration,
             response_time=response_time,
-            metadata=metadata
+            metadata=metadata,
+            hipaa_enabled=hipaa_enabled,
         )
         
         # Get the complete conversation

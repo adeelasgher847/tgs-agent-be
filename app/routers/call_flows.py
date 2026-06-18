@@ -15,6 +15,7 @@ from app.models.knowledge_base_document import KnowledgeBase
 from app.models.user import User
 from app.schemas.call_flow import CallFlowCreate, CallFlowUpdate
 from app.schemas.knowledge_base import FlowKbUpdate
+from app.services.audit_service import log_audit_event
 from app.services.call_flow_service import call_flow_service
 from app.utils.response import create_success_response
 
@@ -48,10 +49,22 @@ def _error_response(
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_call_flow(
     body: CallFlowCreate,
+    request: Request,
     principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
-    result = call_flow_service.create_flow(db, _workspace_id(principal), body)
+    tid = _workspace_id(principal)
+    result = call_flow_service.create_flow(db, tid, body)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.created",
+        resource_type="call_flow",
+        resource_id=result.get("id") if isinstance(result, dict) else None,
+        new_value=body.model_dump(exclude_none=True),
+        actor_user_id=principal.id if isinstance(principal, User) else None,
+    )
     return JSONResponse(status_code=status.HTTP_201_CREATED, content=result)
 
 
@@ -89,12 +102,25 @@ def get_call_flow(
 def update_call_flow(
     flow_id: uuid.UUID,
     body: CallFlowUpdate,
+    request: Request,
     principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
-    return call_flow_service.update_flow(
-        db, flow_id, _workspace_id(principal), body
+    tid = _workspace_id(principal)
+    old_flow = call_flow_service.get_flow(db, flow_id, tid)
+    result = call_flow_service.update_flow(db, flow_id, tid, body)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        old_value=old_flow if isinstance(old_flow, dict) else None,
+        new_value=body.model_dump(exclude_none=True),
+        actor_user_id=principal.id if isinstance(principal, User) else None,
     )
+    return result
 
 
 @router.delete("/{flow_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -104,8 +130,10 @@ def delete_call_flow(
     principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
+    tid = _workspace_id(principal)
+    old_flow = call_flow_service.get_flow(db, flow_id, tid)
     try:
-        call_flow_service.delete_flow(db, flow_id, _workspace_id(principal))
+        call_flow_service.delete_flow(db, flow_id, tid)
     except HTTPException as exc:
         if exc.status_code == status.HTTP_409_CONFLICT:
             return _error_response(
@@ -115,6 +143,16 @@ def delete_call_flow(
                 error_code="flow_has_active_calls",
             )
         raise
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.deleted",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        old_value=old_flow if isinstance(old_flow, dict) else None,
+        actor_user_id=principal.id if isinstance(principal, User) else None,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

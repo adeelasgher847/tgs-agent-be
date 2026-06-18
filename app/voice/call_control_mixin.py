@@ -489,6 +489,11 @@ class CallControlMixin:
                     )
                     return
 
+            hipaa_enabled = bool(
+                getattr(self, "call_flow", None)
+                and getattr(self.call_flow, "hipaa_compliance", False)
+            )
+
             added = await transcript_service.add_and_broadcast_message(
                 db=self.db,
                 call_session_id=self.call_session.id,
@@ -498,7 +503,8 @@ class CallControlMixin:
                 agent_id=self.agent.id if self.agent else None,
                 user_id=self.call_session.user_id,
                 confidence=confidence,
-                metadata=message_metadata
+                metadata=message_metadata,
+                hipaa_enabled=hipaa_enabled,
             )
             if added is None:
                 return

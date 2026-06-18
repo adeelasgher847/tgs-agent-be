@@ -8,9 +8,11 @@ from sqlalchemy.orm.attributes import flag_modified
 from fastapi import HTTPException
 
 from app.core.logger import logger
+from app.models.call_flow import CallFlow
 from app.models.call_log import CallLog
 from app.models.call_session import CallSession
 from app.services.agent_service import agent_service
+from app.services.dlp_service import redact_phi_if_hipaa
 from app.services.model_service import ModelService
 from app.services.transcript_service import transcript_service
 from app.utils.response import create_success_response
@@ -398,12 +400,27 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             elif raw_o:
                 success_eval_llm = raw_o[:400]
 
+        # Determine whether this call flow is HIPAA-enabled so analysis text
+        # can be redacted before persistence.
+        hipaa_enabled = False
+        if call_session.call_flow_id:
+            flow = db.query(CallFlow).filter(
+                CallFlow.id == call_session.call_flow_id,
+                CallFlow.is_deleted.is_(False),
+            ).first()
+            if flow:
+                hipaa_enabled = bool(flow.hipaa_compliance)
+
+        def _redact(text: str) -> str:
+            return redact_phi_if_hipaa(text, hipaa_enabled=hipaa_enabled)
+
         analysis_data: Dict[str, Any] = {
-            "summary": display_summary,
-            "sentiment": sentiment_result["content"].strip(),
-            "caller_name": caller_name,
-            "success_evaluation": success_eval_llm
-            or "unclear — could not classify outcome from transcript",
+            "summary": _redact(display_summary),
+            "sentiment": _redact(sentiment_result["content"].strip()),
+            "caller_name": _redact(caller_name),
+            "success_evaluation": _redact(
+                success_eval_llm or "unclear — could not classify outcome from transcript"
+            ),
         }
 
         if recommendations_result:
@@ -418,17 +435,17 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
 
                 match = re.match(r"^\d+\.\s*(.+)$", line)
                 if match:
-                    recommendations_list.append(match.group(1).strip())
+                    recommendations_list.append(_redact(match.group(1).strip()))
                 elif line.startswith("- ") or line.startswith("* "):
-                    recommendations_list.append(line[2:].strip())
+                    recommendations_list.append(_redact(line[2:].strip()))
                 elif len(line) > 20 and not recommendations_list:
-                    recommendations_list.append(line)
+                    recommendations_list.append(_redact(line))
 
             if not recommendations_list:
-                recommendations_list = [recommendations_text]
+                recommendations_list = [_redact(recommendations_text)]
 
             analysis_data["recommendations"] = recommendations_list
-            analysis_data["recommendations_text"] = recommendations_text
+            analysis_data["recommendations_text"] = _redact(recommendations_text)
         elif agent_prompt:
             analysis_data["recommendations"] = [
                 "Unable to generate recommendations at this time."

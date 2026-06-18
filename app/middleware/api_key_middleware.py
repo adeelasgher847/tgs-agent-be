@@ -145,12 +145,14 @@ def _attach_workspace_context(
     auth_method: str,
     user_id: Optional[uuid.UUID] = None,
     api_key_id: Optional[uuid.UUID] = None,
+    api_key_prefix: Optional[str] = None,
 ) -> None:
     request.state.workspace = workspace
     request.state.workspace_id = workspace.id
     request.state.auth_method = auth_method
     request.state.user_id = user_id
     request.state.api_key_id = api_key_id
+    request.state.api_key_prefix = api_key_prefix
 
 
 def _workspace_from_api_key_payload(payload: dict) -> Optional[Workspace]:
@@ -356,6 +358,7 @@ async def _try_api_key_auth(request: Request) -> bool:
         workspace=workspace,
         auth_method=AUTH_METHOD_API_KEY,
         api_key_id=uuid.UUID(payload["api_key_id"]),
+        api_key_prefix=raw_key[:8],
     )
     return True
 

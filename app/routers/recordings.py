@@ -21,25 +21,68 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_tenant
 from app.core.config import settings
 from app.core.logger import logger
+from app.core.request_auth import ApiKeyPrincipal
+from app.models.call_flow import CallFlow
 from app.models.call_session import CallSession
+from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.recording import RecordingResponse
 from app.services.recording_config_service import get_recording_enabled_for_call
+from app.services.role_service import get_user_role_in_tenant
 from app.utils.response import create_success_response
 
 router = APIRouter()
+
+# Roles that are blocked from accessing recordings on HIPAA-flagged flows
+_HIPAA_BLOCKED_ROLES = frozenset({"readonly", "config"})
+
+
+def _enforce_hipaa_recording_access(
+    principal: Union[User, ApiKeyPrincipal],
+    call_session: CallSession,
+    db: Session,
+) -> None:
+    """Raise 403 if the caller is a low-privilege JWT user accessing a HIPAA-flow recording."""
+    # API key callers (machine-to-machine) are not role-restricted
+    if isinstance(principal, ApiKeyPrincipal):
+        return
+
+    # Resolve the flow's HIPAA flag
+    if call_session.call_flow_id is None:
+        return
+
+    flow = (
+        db.query(CallFlow)
+        .filter(CallFlow.id == call_session.call_flow_id)
+        .first()
+    )
+    if flow is None or not flow.hipaa_compliance:
+        return
+
+    # HIPAA flow — check caller's role
+    user: User = principal
+    if user.current_tenant_id is None:
+        return
+
+    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
+    if role and role.name in _HIPAA_BLOCKED_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Access to HIPAA-protected recordings requires admin or manager role",
+        )
 
 
 @router.get("/{call_id}", response_model=SuccessResponse[RecordingResponse])
 async def get_recording(
     call_id: uuid.UUID,
-    principal: Union[object] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[RecordingResponse]:
     """
     Return a signed GCS URL for the call recording.
 
     URL expires in {GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS} seconds (default 3600).
+    For HIPAA-flagged flows, readonly and config roles receive 403.
     """
     tenant_id = principal.current_tenant_id
 
@@ -51,6 +94,9 @@ async def get_recording(
     )
     if session is None:
         raise HTTPException(status_code=404, detail="Recording not found")
+
+    # HIPAA RBAC gate — must run before returning any data
+    _enforce_hipaa_recording_access(principal, session, db)
 
     # Check recording was enabled for this call's number
     if not get_recording_enabled_for_call(db, session):

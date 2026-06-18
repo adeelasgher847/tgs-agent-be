@@ -22,6 +22,7 @@ from app.api.deps import get_db, get_workspace, require_tenant
 from app.core.request_auth import ApiKeyPrincipal
 from app.core.workspace import Workspace
 from app.models.user import User
+from app.services.audit_service import log_audit_event
 from app.schemas.webhook import (
     PaginatedWebhookDeliveries,
     WebhookDeliveryOut,
@@ -71,7 +72,9 @@ def _webhook_service_write(
 @router.post("", response_model=WebhookEndpointOut, status_code=status.HTTP_201_CREATED)
 def create_webhook_endpoint(
     body: WebhookEndpointCreate,
+    request: Request,
     workspace: Workspace = Depends(get_workspace),
+    db: Session = Depends(get_db),
     svc=Depends(_webhook_service_write),
 ) -> WebhookEndpointOut:
     """
@@ -84,6 +87,15 @@ def create_webhook_endpoint(
         workspace_id=workspace.id,
         url=str(body.url),
         raw_secret=body.secret,
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=workspace.id,
+        action="webhook_endpoint.created",
+        resource_type="webhook_endpoint",
+        resource_id=endpoint.id,
+        new_value={"url": str(body.url)},
     )
     return WebhookEndpointOut.model_validate(endpoint)
 
@@ -105,11 +117,21 @@ def list_webhook_endpoints(
 @router.delete("/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_webhook_endpoint(
     endpoint_id: uuid.UUID,
+    request: Request,
     workspace: Workspace = Depends(get_workspace),
+    db: Session = Depends(get_db),
     svc=Depends(_webhook_service_write),
 ) -> None:
     """Remove a webhook endpoint and all its delivery logs."""
     svc.delete_endpoint(workspace.id, endpoint_id)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=workspace.id,
+        action="webhook_endpoint.deleted",
+        resource_type="webhook_endpoint",
+        resource_id=endpoint_id,
+    )
 
 
 # ── POST /webhooks/{endpoint_id}/test ────────────────────────────────────────
