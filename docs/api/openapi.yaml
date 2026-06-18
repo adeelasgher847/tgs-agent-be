@@ -6518,7 +6518,9 @@ paths:
 
 
         URL expires in {GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS} seconds (default
-        3600).'
+        3600).
+
+        For HIPAA-flagged flows, readonly and config roles receive 403.'
       operationId: get_recording_api_v1_recordings__call_id__get
       security:
       - HTTPBearer: []
@@ -7567,6 +7569,92 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/settings:
+    put:
+      tags:
+      - hipaa
+      summary: Update Flow Hipaa Settings
+      description: "Toggle HIPAA compliance on a call flow.  Admin role required.\n\
+        \nWhen enabled:\n  - all call session log entries are DLP-redacted before\
+        \ Cloud Logging\n  - GCS recordings use the workspace kms_key_name (CMEK)\n\
+        \  - recording access is restricted to admin and manager roles"
+      operationId: update_flow_hipaa_settings_api_v2_flows__flow_id__settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HipaaSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/hipaa-status:
+    get:
+      tags:
+      - hipaa
+      summary: Get Hipaa Status
+      description: Return workspace-level HIPAA status summary.
+      operationId: get_hipaa_status_api_v2_workspace_hipaa_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/kms-key:
+    put:
+      tags:
+      - hipaa
+      summary: Update Kms Key
+      description: 'Register or update the workspace Cloud KMS key for CMEK recording
+        encryption.
+
+
+        Validates that the key exists and the service account has encrypt/decrypt
+
+        permissions before persisting.  Admin role required.'
+      operationId: update_kms_key_api_v2_workspace_kms_key_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KmsKeyUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
 components:
   schemas:
     AccountSnapshot:
@@ -10328,6 +10416,15 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    HipaaSettingsUpdate:
+      properties:
+        hipaa_compliance:
+          type: boolean
+          title: Hipaa Compliance
+      type: object
+      required:
+      - hipaa_compliance
+      title: HipaaSettingsUpdate
     ImportTwilioPhoneNumberRequest:
       properties:
         phone_number:
@@ -11106,6 +11203,15 @@ components:
           nullable: true
       type: object
       title: KbUpdate
+    KmsKeyUpdate:
+      properties:
+        kms_key_name:
+          type: string
+          title: Kms Key Name
+      type: object
+      required:
+      - kms_key_name
+      title: KmsKeyUpdate
     KnowledgeBaseDocumentList:
       properties:
         documents:
