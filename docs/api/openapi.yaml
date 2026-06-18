@@ -7748,6 +7748,80 @@ paths:
             schema:
               $ref: '#/components/schemas/BrandingConfigUpsert'
         required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingConfigOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/pricing:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Pricing Config
+      description: Get the current pricing configuration for the workspace.
+      operationId: get_pricing_config_api_v2_workspace_pricing_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingConfigOut'
+      security:
+      - HTTPBearer: []
+    put:
+      tags:
+      - Workspace Settings
+      summary: Upsert Pricing Config
+      description: Upsert the pricing configuration for the workspace.
+      operationId: upsert_pricing_config_api_v2_workspace_pricing_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricingConfigUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingConfigOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/usage:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Workspace Usage
+      description: Get the usage statistics for the current billing cycle.
+      operationId: get_workspace_usage_api_v2_workspace_usage_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceUsageOut'
+      security:
+      - HTTPBearer: []
   /api/v2/flows/{flow_id}/settings:
     put:
       tags:
@@ -7786,8 +7860,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
   /api/v2/workspace/hipaa-status:
     get:
       tags:
@@ -7836,42 +7908,6 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
-  /api/v2/workspace/pricing:
-    get:
-      tags:
-      - Workspace Settings
-      summary: Get Pricing Config
-      description: Get the current pricing configuration for the workspace.
-      operationId: get_pricing_config_api_v2_workspace_pricing_get
-      schema:
-                $ref: '#/components/schemas/PricingConfigOut'
-      security:
-      - HTTPBearer: []
-    put:
-      tags:
-      - Workspace Settings
-      summary: Upsert Pricing Config
-      description: Upsert the pricing configuration for the workspace.
-      operationId: upsert_pricing_config_api_v2_workspace_pricing_put
-      schema:
-                $ref: '#/components/schemas/PricingConfigUpsert'
-  /api/v2/workspace/usage:
-    get:
-      tags:
-      - Workspace Settings
-      summary: Get Workspace Usage
-      description: Get the usage statistics for the current billing cycle.
-      operationId: get_workspace_usage_api_v2_workspace_usage_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WorkspaceUsageOut'
-      security:
-      - HTTPBearer: []
-      
 components:
   schemas:
     AccountSnapshot:
