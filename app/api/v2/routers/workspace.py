@@ -1,3 +1,4 @@
+from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,6 @@ from app.schemas.workspace import (
     PricingConfigOut,
     WorkspaceUsageOut,
 )
-from __future__ import annotations
 
 import uuid
 from typing import Optional
