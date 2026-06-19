@@ -16260,7 +16260,7 @@ components:
         minutes_included:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
-          title: Minutes Included
+          nullable: true
         overage_minutes:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
