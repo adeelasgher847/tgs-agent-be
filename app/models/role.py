@@ -11,5 +11,3 @@ class Role(Base):
     name = Column(String, unique=True, index=True, nullable=False)
     description = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    role = Column(String, nullable=True)
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
