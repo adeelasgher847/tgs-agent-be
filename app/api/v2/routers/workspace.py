@@ -12,7 +12,23 @@ from app.schemas.workspace import (
     PricingConfigOut,
     WorkspaceUsageOut,
 )
+from __future__ import annotations
 
+import uuid
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.api.deps import get_db, require_admin
+from app.core.logger import logger
+from app.models.user import User
+from app.services.account_deletion_service import delete_workspace_account
+from app.services.audit_service import log_audit_event
+from app.services.data_export_service import create_export_job, get_export_job
+
+router = APIRouter(prefix="/workspace", tags=["workspace-gdpr"])
 
 v2_router = APIRouter()
 
@@ -157,23 +173,7 @@ request body on DELETE, which would silently turn the confirmation-phrase
 check into a 400 (body missing) or, with a looser body-parsing path, a
 bypass. POST has no such ambiguity.
 """
-from __future__ import annotations
 
-import uuid
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
-from app.api.deps import get_db, require_admin
-from app.core.logger import logger
-from app.models.user import User
-from app.services.account_deletion_service import delete_workspace_account
-from app.services.audit_service import log_audit_event
-from app.services.data_export_service import create_export_job, get_export_job
-
-router = APIRouter(prefix="/workspace", tags=["workspace-gdpr"])
 
 _DELETE_CONFIRMATION_PHRASE = "DELETE MY ACCOUNT"
 
