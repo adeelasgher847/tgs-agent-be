@@ -55,3 +55,58 @@ class WorkspaceOut(_WorkspaceBase):
         if isinstance(v, Decimal):
             return float(v)
         return float(v)
+
+
+class BrandingConfigUpsert(BaseModel):
+    """Request body for PUT /api/v2/workspace/branding"""
+    logo_url: Any | None = None  # Will be validated as HttpUrl below
+    primary_colour: str = Field(..., pattern=r"^#[0-9A-Fa-f]{6}$")
+    display_name: str
+
+    @field_validator("logo_url")
+    @classmethod
+    def _validate_logo_url(cls, v: Any) -> Any:
+        if v is None:
+            return v
+        from pydantic import HttpUrl
+        from pydantic_core import Url
+        if isinstance(v, str):
+            if not v.startswith("https://"):
+                raise ValueError("logo_url must be an HTTPS URL")
+            return v
+        if isinstance(v, Url):
+            if v.scheme != "https":
+                raise ValueError("logo_url must be an HTTPS URL")
+            return str(v)
+        return v
+
+class BrandingConfigOut(BaseModel):
+    """Response shape for branding config"""
+    logo_url: str | None = None
+    primary_colour: str | None = None
+    display_name: str | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PricingConfigUpsert(BaseModel):
+    """Request body for PUT /api/v2/workspace/pricing"""
+    per_minute_rate: Decimal
+    markup_percent: Decimal = Field(..., ge=0, le=500)
+
+
+class PricingConfigOut(BaseModel):
+    """Response shape for pricing config"""
+    per_minute_rate: Decimal
+    markup_percent: Decimal
+    effective_client_rate: Decimal
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceUsageOut(BaseModel):
+    """Response shape for cycle usage"""
+    minutes_used_this_cycle: Decimal
+    minutes_included: Decimal | None
+    overage_minutes: Decimal
+    overage_cost: Decimal

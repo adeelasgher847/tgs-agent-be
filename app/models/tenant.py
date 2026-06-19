@@ -46,7 +46,6 @@ class Tenant(Base):
     parent_workspace = relationship("Tenant", remote_side=[id], backref="sub_accounts")
     branding_config = relationship("BrandingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     pricing_config = relationship("PricingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
-    rbac_roles = relationship("Role", back_populates="tenant", cascade="all, delete-orphan")
     usage_record = relationship("UsageRecord", back_populates="tenant", cascade="all, delete-orphan")
 
     __table_args__ = (

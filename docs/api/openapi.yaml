@@ -7843,6 +7843,108 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/branding:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Branding Config
+      description: Get the current branding configuration for the workspace.
+      operationId: get_branding_config_api_v2_workspace_branding_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingConfigOut'
+      security:
+      - HTTPBearer: []
+    put:
+      tags:
+      - Workspace Settings
+      summary: Upsert Branding Config
+      description: Upsert the branding configuration for the workspace.
+      operationId: upsert_branding_config_api_v2_workspace_branding_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrandingConfigUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandingConfigOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/pricing:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Pricing Config
+      description: Get the current pricing configuration for the workspace.
+      operationId: get_pricing_config_api_v2_workspace_pricing_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingConfigOut'
+      security:
+      - HTTPBearer: []
+    put:
+      tags:
+      - Workspace Settings
+      summary: Upsert Pricing Config
+      description: Upsert the pricing configuration for the workspace.
+      operationId: upsert_pricing_config_api_v2_workspace_pricing_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricingConfigUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingConfigOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/usage:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Workspace Usage
+      description: Get the usage statistics for the current billing cycle.
+      operationId: get_workspace_usage_api_v2_workspace_usage_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceUsageOut'
+      security:
+      - HTTPBearer: []
   /api/v2/flows/{flow_id}/settings:
     put:
       tags:
@@ -9323,6 +9425,37 @@ components:
       - bindings
       - total
       title: BoundAgentBindingList
+    BrandingConfigOut:
+      properties:
+        logo_url:
+          type: string
+          nullable: true
+        primary_colour:
+          type: string
+          nullable: true
+        display_name:
+          type: string
+          nullable: true
+      type: object
+      title: BrandingConfigOut
+      description: Response shape for branding config
+    BrandingConfigUpsert:
+      properties:
+        logo_url:
+          nullable: true
+        primary_colour:
+          type: string
+          pattern: ^#[0-9A-Fa-f]{6}$
+          title: Primary Colour
+        display_name:
+          type: string
+          title: Display Name
+      type: object
+      required:
+      - primary_colour
+      - display_name
+      title: BrandingConfigUpsert
+      description: Request body for PUT /api/v2/workspace/branding
     BusinessHoursOut:
       properties:
         id:
@@ -12588,6 +12721,49 @@ components:
       - id
       - created_at
       title: PlanOut
+    PricingConfigOut:
+      properties:
+        per_minute_rate:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Per Minute Rate
+        markup_percent:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Markup Percent
+        effective_client_rate:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Effective Client Rate
+      type: object
+      required:
+      - per_minute_rate
+      - markup_percent
+      - effective_client_rate
+      title: PricingConfigOut
+      description: Response shape for pricing config
+    PricingConfigUpsert:
+      properties:
+        per_minute_rate:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Per Minute Rate
+        markup_percent:
+          anyOf:
+          - type: number
+            maximum: 500.0
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Markup Percent
+      type: object
+      required:
+      - per_minute_rate
+      - markup_percent
+      title: PricingConfigUpsert
+      description: Request body for PUT /api/v2/workspace/pricing
     ProcessingStatusEnum:
       type: string
       enum:
@@ -16384,6 +16560,32 @@ components:
       title: WorkspaceOut
       description: Full (non-internal) workspace projection. Hides ``deleted_at``,
         ``schema_name`` etc.
+    WorkspaceUsageOut:
+      properties:
+        minutes_used_this_cycle:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Minutes Used This Cycle
+        minutes_included:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
+        overage_minutes:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Overage Minutes
+        overage_cost:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Overage Cost
+      type: object
+      required:
+      - minutes_used_this_cycle
+      - minutes_included
+      - overage_minutes
+      - overage_cost
+      title: WorkspaceUsageOut
+      description: Response shape for cycle usage
   securitySchemes:
     HTTPBearer:
       type: http

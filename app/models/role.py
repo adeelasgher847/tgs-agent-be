@@ -13,12 +13,3 @@ class Role(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     role = Column(String, nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
-
-    tenant = relationship("Tenant", back_populates="rbac_roles")
-
-    __table_args__ = (
-        CheckConstraint(
-            "role IN ('admin', 'manager', 'config_only', 'read_only', 'billing_only')",
-            name="chk_role_role",
-        ),
-    )
