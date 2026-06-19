@@ -77,6 +77,15 @@ class TestCreateAllowedDomain:
         assert body["domain"] == "https://app.example.com"
         assert "id" in body and "createdAt" in body
 
+    def test_create_normalizes_path_before_storing(self, authed_client, auth_tenant):
+        resp = authed_client.post(
+            "/api/v1/workspace/allowed-domains",
+            json={"domain": "https://example.com/some-path"},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["domain"] == "https://example.com"
+
     def test_rejects_non_https(self, authed_client, auth_tenant):
         resp = authed_client.post(
             "/api/v1/workspace/allowed-domains",

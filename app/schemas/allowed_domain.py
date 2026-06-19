@@ -23,7 +23,10 @@ class AllowedDomainCreate(BaseModel):
             raise ValueError(
                 "domain must be a valid HTTPS URL, e.g. https://app.example.com"
             )
-        return v
+
+        from app.core.origin import normalize_origin
+
+        return normalize_origin(v)
 
 
 class AllowedDomainOut(BaseModel):

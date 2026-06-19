@@ -24,5 +24,13 @@ class TestIsLocalhostOrigin:
         assert is_localhost_origin("http://localhost:5173") is True
         assert is_localhost_origin("http://localhost") is True
 
+    def test_ipv4_loopback(self):
+        assert is_localhost_origin("http://127.0.0.1:3000") is True
+        assert is_localhost_origin("http://127.0.0.1") is True
+
+    def test_ipv6_loopback(self):
+        assert is_localhost_origin("http://[::1]:3000") is True
+        assert is_localhost_origin("http://[::1]") is True
+
     def test_non_localhost(self):
         assert is_localhost_origin("https://app.example.com") is False

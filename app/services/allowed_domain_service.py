@@ -7,7 +7,6 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.origin import normalize_origin
 from app.models.allowed_domain import AllowedDomain
 from app.schemas.allowed_domain import AllowedDomainCreate, AllowedDomainOut
 
@@ -43,7 +42,7 @@ class AllowedDomainService:
 
         domain = AllowedDomain(
             workspace_id=workspace_id,
-            domain=normalize_origin(body.domain),
+            domain=body.domain,
         )
         db.add(domain)
         db.commit()

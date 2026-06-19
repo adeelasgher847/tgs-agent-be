@@ -19,6 +19,9 @@ def normalize_origin(value: str) -> str:
     return f"{scheme}://{netloc}"
 
 
+_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
 def is_localhost_origin(value: str) -> bool:
     parsed = urlsplit(value.strip())
-    return (parsed.hostname or "").lower() == "localhost"
+    return (parsed.hostname or "").lower() in _LOCALHOST_HOSTS
