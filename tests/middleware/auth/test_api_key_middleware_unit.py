@@ -86,6 +86,10 @@ def _app() -> FastAPI:
     def public_api_keys():
         return {"ok": True}
 
+    @mini.post("/api/v1/sdk/public-call-token")
+    def public_sdk_token():
+        return {"ok": True}
+
     @mini.get("/health")
     def health():
         return {"ok": True}
@@ -175,6 +179,10 @@ class TestSkipPaths:
 
     def test_health_no_auth(self, client):
         resp = client.get("/health")
+        assert resp.status_code == 200
+
+    def test_sdk_public_call_token_no_auth(self, client):
+        resp = client.post("/api/v1/sdk/public-call-token")
         assert resp.status_code == 200
 
     def test_v2_health_no_auth(self, client):

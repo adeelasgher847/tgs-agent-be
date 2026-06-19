@@ -248,6 +248,10 @@ class Settings(BaseSettings):
     API_RATE_LIMIT: int = 60   # requests per window per identity
     API_RATE_WINDOW: int = 60  # seconds
 
+    # Public Web SDK token endpoint — per-IP, no auth required (BE1 ticket)
+    PUBLIC_TOKEN_RATE_LIMIT: int = 20
+    PUBLIC_TOKEN_RATE_WINDOW: int = 60  # seconds
+
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

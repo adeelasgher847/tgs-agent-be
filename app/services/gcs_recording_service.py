@@ -121,6 +121,30 @@ def set_bucket_default_kms_key(kms_key_name: str) -> None:
     )
 
 
+def delete_workspace_recordings(workspace_id: uuid.UUID) -> int:
+    """
+    Delete every recording object under recordings/{workspace_id}/ in GCS.
+
+    Used by the GDPR account-deletion flow. Best-effort: caller decides
+    whether a failure here should block the (otherwise irreversible) erasure
+    response. Returns the number of objects deleted.
+    """
+    client = _get_gcs_client()
+    bucket = client.bucket(settings.GCS_RECORDINGS_BUCKET)
+    prefix = f"{settings.GCS_RECORDINGS_PREFIX}/{workspace_id}/"
+
+    deleted = 0
+    for blob in client.list_blobs(bucket, prefix=prefix):
+        blob.delete()
+        deleted += 1
+
+    logger.info(
+        "GCS workspace recordings deleted: workspace=%s prefix=%s count=%d",
+        workspace_id, prefix, deleted,
+    )
+    return deleted
+
+
 def generate_signed_url(
     gcs_path: str,
     expiry_seconds: int = settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,

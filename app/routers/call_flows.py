@@ -13,7 +13,7 @@ from app.core.request_auth import ApiKeyPrincipal
 from app.models.call_flow import CallFlow
 from app.models.knowledge_base_document import KnowledgeBase
 from app.models.user import User
-from app.schemas.call_flow import CallFlowCreate, CallFlowUpdate
+from app.schemas.call_flow import CallFlowCreate, CallFlowSettingsUpdate, CallFlowUpdate
 from app.schemas.knowledge_base import FlowKbUpdate
 from app.services.audit_service import log_audit_event
 from app.services.call_flow_service import call_flow_service
@@ -118,6 +118,32 @@ def update_call_flow(
         resource_id=flow_id,
         old_value=old_flow if isinstance(old_flow, dict) else None,
         new_value=body.model_dump(exclude_none=True),
+        actor_user_id=principal.id if isinstance(principal, User) else None,
+    )
+    return result
+
+
+@router.put("/{flow_id}/settings")
+def update_call_flow_settings(
+    flow_id: uuid.UUID,
+    body: CallFlowSettingsUpdate,
+    request: Request,
+    principal: User = Depends(require_admin_or_owner),
+    db: Session = Depends(get_db),
+):
+    """Toggle Web SDK public access for a flow. Requires admin or owner role."""
+    tid = _workspace_id(principal)
+    old_flow = call_flow_service.get_flow(db, flow_id, tid)
+    result = call_flow_service.update_settings(db, flow_id, tid, body)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.settings_updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        old_value={"public_access": old_flow.get("publicAccess")} if isinstance(old_flow, dict) else None,
+        new_value={"public_access": body.public_access},
         actor_user_id=principal.id if isinstance(principal, User) else None,
     )
     return result

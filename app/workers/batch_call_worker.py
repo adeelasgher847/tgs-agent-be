@@ -259,6 +259,30 @@ async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
         db.close()
 
 
+# ── GDPR data export task ───────────────────────────────────────────────────
+
+
+async def run_data_export_job(ctx: dict, export_job_id: str) -> None:
+    """
+    ARQ job: build the workspace data-export ZIP, upload it to GCS, and
+    email the signed download URL to the workspace admin.
+    """
+    from app.db.session import SessionLocal
+    from app.models.data_export_job import DataExportJob
+    from app.services.data_export_service import run_export_job
+
+    jid = uuid.UUID(export_job_id)
+    db = SessionLocal()
+    try:
+        job = db.get(DataExportJob, jid)
+        if job is None:
+            logger.warning("run_data_export_job: DataExportJob %s not found", export_job_id)
+            return
+        run_export_job(db, job)
+    finally:
+        db.close()
+
+
 # ── Smart Callback tasks (ARQ-based replacement for APScheduler polling) ─────
 
 
@@ -504,6 +528,7 @@ class WorkerSettings:
         kb_ingestion_task,
         execute_callback,
         purge_old_audit_logs,
+        run_data_export_job,
         # poll_pending_callbacks kept for manual/admin invocation; not in cron_jobs
         poll_pending_callbacks,
     ]

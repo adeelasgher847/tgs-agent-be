@@ -29,7 +29,9 @@ class AuditLog(Base):
     )
     tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), nullable=True)
-    actor_api_key_prefix = Column(String(8), nullable=True)
+    # 16 chars, not 8: room for the 8-char API key prefix this column
+    # normally stores, plus the 9-char '[DELETED]' GDPR anonymization value.
+    actor_api_key_prefix = Column(String(16), nullable=True)
     action = Column(String(128), nullable=False, index=True)
     resource_type = Column(String(64), nullable=True)
     resource_id = Column(UUID(as_uuid=True), nullable=True)
