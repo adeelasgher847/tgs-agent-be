@@ -501,7 +501,7 @@ def get_workspace_usage(
     ).scalar() or Decimal("0")
     
     minutes_used_this_cycle = Decimal(str(usage_sum))
-    minutes_included = Decimal("0")
+    minutes_included = None
     
     overage_minutes = max(Decimal("0"), minutes_used_this_cycle - minutes_included)
     

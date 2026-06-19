@@ -107,6 +107,6 @@ class PricingConfigOut(BaseModel):
 class WorkspaceUsageOut(BaseModel):
     """Response shape for cycle usage"""
     minutes_used_this_cycle: Decimal
-    minutes_included: Decimal
+    minutes_included: Decimal | None
     overage_minutes: Decimal
     overage_cost: Decimal
