@@ -7975,8 +7975,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v2/workspace/account:
-    delete:
+  /api/v2/workspace/account/delete:
+    post:
       tags:
       - workspace-gdpr
       summary: Delete Account
@@ -7986,7 +7986,7 @@ paths:
         GCS recordings, anonymizes audit log actor fields, and soft-deletes the
 
         workspace. Requires an exact, case-sensitive confirmation phrase.'
-      operationId: delete_account_api_v2_workspace_account_delete
+      operationId: delete_account_api_v2_workspace_account_delete_post
       requestBody:
         content:
           application/json:
