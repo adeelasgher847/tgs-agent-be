@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     op.execute('ALTER TABLE role DROP CONSTRAINT IF EXISTS chk_role_role')
-    op.execute('DROP TABLE IF EXISTS rbac_roles CASCADE')
+    op.execute('DROP TABLE IF EXISTS rbacrole CASCADE')
 
 
 def downgrade() -> None:
