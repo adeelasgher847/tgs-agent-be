@@ -183,7 +183,15 @@ class TestDeleteWorkspaceAccount:
         pg_session.commit()
         pg_session.refresh(kb)
 
-        chunk = KbChunk(kb_id=kb.id, content="secret content", chunk_metadata={})
+        # Non-null embedding: proves the wipe erases the pgvector column too,
+        # not just the text — there is no separate Pinecone/external vector
+        # store to clean up (see account_deletion_service module docstring).
+        chunk = KbChunk(
+            kb_id=kb.id,
+            content="secret content",
+            chunk_metadata={},
+            embedding=[0.1] * 1536,
+        )
         pg_session.add(chunk)
 
         batch_job = BatchJob(workspace_id=tenant.id, agent_id=agent.id, status="completed")
@@ -261,8 +269,8 @@ class TestDeleteWorkspaceAccount:
 
 
 class TestAccountDeletionHttp:
-    """Exercises the real DELETE /api/v2/workspace/account endpoint with a
-    genuine JWT admin session against Postgres."""
+    """Exercises the real POST /api/v2/workspace/account/delete endpoint with
+    a genuine JWT admin session against Postgres."""
 
     def _admin_token_and_tenant(self, pg_session):
         from app.core.security import create_user_token
@@ -289,9 +297,8 @@ class TestAccountDeletionHttp:
     def test_wrong_phrase_returns_400(self, pg_client, pg_session):
         token, tenant = self._admin_token_and_tenant(pg_session)
 
-        resp = pg_client.request(
-            "DELETE",
-            "/api/v2/workspace/account",
+        resp = pg_client.post(
+            "/api/v2/workspace/account/delete",
             headers={"Authorization": f"Bearer {token}"},
             json={"confirmation": "nope"},
         )

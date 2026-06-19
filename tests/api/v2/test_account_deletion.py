@@ -2,11 +2,14 @@
 Tests for the GDPR right-to-erasure endpoint.
 
 Coverage:
-  - DELETE /workspace/account: wrong confirmation phrase -> 400, service untouched
-  - DELETE /workspace/account: case-sensitive mismatch -> 400
-  - DELETE /workspace/account: missing body field -> 400
-  - DELETE /workspace/account: exact phrase -> 204, audits then calls the wipe service
+  - POST /workspace/account/delete: wrong confirmation phrase -> 400, service untouched
+  - POST /workspace/account/delete: case-sensitive mismatch -> 400
+  - POST /workspace/account/delete: missing body field -> 400
+  - POST /workspace/account/delete: exact phrase -> 204, audits then calls the wipe service
   - Admin RBAC required
+
+POST (not DELETE-with-body) because proxies/load balancers aren't guaranteed
+to forward a body on DELETE — see app/api/v2/routers/workspace.py docstring.
 """
 from __future__ import annotations
 
@@ -51,8 +54,8 @@ class TestDeleteAccount:
 
         with patch("app.api.v2.routers.workspace.delete_workspace_account") as mock_delete:
             client = _build_app(db)
-            resp = client.request(
-                "DELETE", "/workspace/account", json={"confirmation": "delete my account please"}
+            resp = client.post(
+                "/workspace/account/delete", json={"confirmation": "delete my account please"}
             )
 
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
@@ -63,8 +66,8 @@ class TestDeleteAccount:
 
         with patch("app.api.v2.routers.workspace.delete_workspace_account") as mock_delete:
             client = _build_app(db)
-            resp = client.request(
-                "DELETE", "/workspace/account", json={"confirmation": "delete my account"}
+            resp = client.post(
+                "/workspace/account/delete", json={"confirmation": "delete my account"}
             )
 
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
@@ -74,7 +77,7 @@ class TestDeleteAccount:
         db = MagicMock()
         client = _build_app(db)
 
-        resp = client.request("DELETE", "/workspace/account", json={})
+        resp = client.post("/workspace/account/delete", json={})
 
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
 
@@ -86,8 +89,8 @@ class TestDeleteAccount:
             patch("app.api.v2.routers.workspace.log_audit_event") as mock_audit,
         ):
             client = _build_app(db)
-            resp = client.request(
-                "DELETE", "/workspace/account", json={"confirmation": _CORRECT_PHRASE}
+            resp = client.post(
+                "/workspace/account/delete", json={"confirmation": _CORRECT_PHRASE}
             )
 
         assert resp.status_code == status.HTTP_204_NO_CONTENT, resp.text
@@ -113,7 +116,7 @@ class TestDeleteAccount:
             ),
         ):
             client = _build_app(db)
-            client.request("DELETE", "/workspace/account", json={"confirmation": _CORRECT_PHRASE})
+            client.post("/workspace/account/delete", json={"confirmation": _CORRECT_PHRASE})
 
         assert call_order == ["audit", "delete"]
 
@@ -124,6 +127,6 @@ class TestDeleteAccount:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
 
         client = _build_app(db, admin_override=_forbidden)
-        resp = client.request("DELETE", "/workspace/account", json={"confirmation": _CORRECT_PHRASE})
+        resp = client.post("/workspace/account/delete", json={"confirmation": _CORRECT_PHRASE})
 
         assert resp.status_code == status.HTTP_403_FORBIDDEN

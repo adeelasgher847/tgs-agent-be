@@ -35,6 +35,7 @@ def create_app() -> FastAPI:
     from app.middleware.api_key_middleware import ApiKeyMiddleware
     from app.middleware.body_limit_middleware import BodyLimitMiddleware
     from app.middleware.pii_logging_middleware import PiiLoggingMiddleware
+    from app.middleware.public_sdk_cors_middleware import PublicSdkCorsMiddleware
     from app.middleware.rate_limit_middleware import RateLimitMiddleware
     from app.middleware.request_id_middleware import RequestIdMiddleware
 
@@ -188,7 +189,11 @@ def create_app() -> FastAPI:
     # Middleware stack (add_middleware is LIFO — LAST added = OUTERMOST on request)
     #
     # Incoming (outer → inner):
-    #   CORS → RequestId → BodyLimit → PiiLogging → ApiKey → RateLimit → handler
+    #   PublicSdkCors → CORS → RequestId → BodyLimit → PiiLogging → ApiKey → RateLimit → handler
+    #
+    # PublicSdkCors only acts on /api/v1/sdk/public-call-token (reflects Origin
+    # dynamically for the allowed_domains whitelist); every other path passes
+    # through it untouched and is governed by the static CORS config below.
     # -------------------------------------------------------------------------
     _allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 
@@ -204,6 +209,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    _app.add_middleware(PublicSdkCorsMiddleware)
 
     # -------------------------------------------------------------------------
     # Routes

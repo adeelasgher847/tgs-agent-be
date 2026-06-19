@@ -16,7 +16,15 @@ from app.models.prompt_version import PromptVersion
 from app.repositories.call_flow_repository import CallFlowRepository
 from app.repositories.prompt_version_repository import PromptVersionRepository
 from app.schemas.agent import agent_to_out
-from app.schemas.call_flow import CallFlowCreate, CallFlowListResponse, CallFlowListItem, CallFlowOut, AgentRef, CallFlowUpdate
+from app.schemas.call_flow import (
+    CallFlowCreate,
+    CallFlowListResponse,
+    CallFlowListItem,
+    CallFlowOut,
+    AgentRef,
+    CallFlowSettingsUpdate,
+    CallFlowUpdate,
+)
 from app.schemas.prompt_version import PromptVersionOut
 from app.utils.gemini_prompt_sanitizer import sanitize_prompt_for_gemini
 
@@ -146,6 +154,7 @@ class CallFlowService:
             prompt_versions=[self._version_to_out(v) for v in versions],
             flow_data=flow.flow_data,
             settings=flow.settings,
+            public_access=flow.public_access,
             created_at=flow.created_at,
             updated_at=flow.updated_at,
         )
@@ -167,6 +176,7 @@ class CallFlowService:
             current_prompt_id=flow.current_prompt_id,
             flow_data=flow.flow_data,
             settings=flow.settings,
+            public_access=flow.public_access,
             created_at=flow.created_at,
             updated_at=flow.updated_at,
         )
@@ -297,6 +307,24 @@ class CallFlowService:
         if scalar_updates:
             flow = repo.update(flow, scalar_updates)
 
+        db.commit()
+        db.refresh(flow)
+        if flow.agent is None:
+            flow.agent = db.execute(
+                select(Agent).where(Agent.id == flow.agent_id)
+            ).scalar_one_or_none()
+        return self._flow_to_out(db, flow)
+
+    def update_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: CallFlowSettingsUpdate,
+    ) -> dict:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        repo = CallFlowRepository(db)
+        flow = repo.update(flow, {"public_access": body.public_access})
         db.commit()
         db.refresh(flow)
         if flow.agent is None:

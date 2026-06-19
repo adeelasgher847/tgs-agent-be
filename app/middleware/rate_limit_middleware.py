@@ -63,6 +63,12 @@ _LOGIN_POST_PATHS: frozenset[str] = frozenset({
     "/api/v1/users/login/google",
 })
 
+# Public, unauthenticated Web SDK token endpoint — strict per-IP cap (20/min)
+# since there's no API key/JWT identity to bucket on otherwise.
+_PUBLIC_TOKEN_POST_PATHS: frozenset[str] = frozenset({
+    "/api/v1/sdk/public-call-token",
+})
+
 
 def _should_skip(path: str) -> bool:
     if path in _SKIP_EXACT:
@@ -80,6 +86,13 @@ def _is_auth_sensitive_post(scope: Scope) -> bool:
         return False
     path = scope.get("path", "")
     return path in _AUTH_SENSITIVE_POST_PATHS
+
+
+def _is_public_token_post(scope: Scope) -> bool:
+    if scope.get("method") != "POST":
+        return False
+    path = scope.get("path", "")
+    return path in _PUBLIC_TOKEN_POST_PATHS
 
 
 def _sha256(raw: str) -> str:
@@ -211,6 +224,16 @@ class RateLimitMiddleware:
             auth_key = f"auth:{path}:{_client_host(scope)}"
             allowed, retry_after = await _check_rate_limit(
                 auth_key, settings.LOGIN_RATE_LIMIT, settings.LOGIN_RATE_WINDOW
+            )
+            if not allowed:
+                await self._send_rate_limited(scope, receive, send, retry_after)
+                return
+
+        # Public Web SDK token endpoint — no auth, so this is the only per-IP cap.
+        if _is_public_token_post(scope):
+            token_key = f"public_token:{path}:{_client_host(scope)}"
+            allowed, retry_after = await _check_rate_limit(
+                token_key, settings.PUBLIC_TOKEN_RATE_LIMIT, settings.PUBLIC_TOKEN_RATE_WINDOW
             )
             if not allowed:
                 await self._send_rate_limited(scope, receive, send, retry_after)

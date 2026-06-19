@@ -61,6 +61,9 @@ _SKIP_PREFIXES = (
     "/api/v1/billing/webhook",
     "/api/v1/voice/",
     "/api/v1/stream/",
+    # Public Web SDK endpoints — security enforced via flow.public_access +
+    # allowed_domains Origin check inside the handler, not API credentials.
+    "/api/v1/sdk/",
     "/health",
     # v2 public endpoints — no auth required
     "/api/v2/health",

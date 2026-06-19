@@ -43,6 +43,10 @@ def _make_app(limit: int = 5, window: int = 60) -> FastAPI:
     def register():
         return {"ok": True}
 
+    @mini.post("/api/v1/sdk/public-call-token")
+    def public_call_token():
+        return {"ok": True}
+
     return mini
 
 
@@ -133,6 +137,37 @@ class TestAuthSensitive:
 
         assert resp.status_code == 429
         assert resp.json()["error"]["code"] == "rate_limit_exceeded"
+
+
+class TestPublicTokenEndpoint:
+    def test_exceeding_20_per_minute_returns_429(self):
+        app = _make_app()
+        pipe_cls = _fake_redis_pipeline([21])  # count > 20 default limit
+
+        mock_r = MagicMock()
+        mock_r.pipeline.return_value = pipe_cls()
+        mock_r.zremrangebyscore = AsyncMock()
+
+        with patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post("/api/v1/sdk/public-call-token")
+
+        assert resp.status_code == 429
+        assert resp.json()["error"]["code"] == "rate_limit_exceeded"
+
+    def test_within_20_per_minute_passes(self):
+        app = _make_app()
+        pipe_cls = _fake_redis_pipeline([5])
+
+        mock_r = MagicMock()
+        mock_r.pipeline.return_value = pipe_cls()
+        mock_r.zremrangebyscore = AsyncMock()
+
+        with patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post("/api/v1/sdk/public-call-token")
+
+        assert resp.status_code == 200
 
 
 class TestAllowed:

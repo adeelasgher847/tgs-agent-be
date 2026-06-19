@@ -4,7 +4,13 @@ v2 GDPR data subject rights router.
 Endpoints (admin role required for all):
   POST   /api/v2/workspace/data-export             — trigger async export, returns 202 {job_id}
   GET    /api/v2/workspace/data-export/{job_id}     — export job status + signed download URL
-  DELETE /api/v2/workspace/account                  — irreversible hard delete + PII wipe
+  POST   /api/v2/workspace/account/delete           — irreversible hard delete + PII wipe
+
+Account deletion is a POST action endpoint rather than DELETE-with-body:
+proxies/load balancers (nginx, AWS ALB) are not guaranteed to forward a
+request body on DELETE, which would silently turn the confirmation-phrase
+check into a 400 (body missing) or, with a looser body-parsing path, a
+bypass. POST has no such ambiguity.
 """
 from __future__ import annotations
 
@@ -142,11 +148,11 @@ def get_data_export_status(
     return DataExportStatusOut(status=job.status, download_url=download_url)
 
 
-# ── DELETE /workspace/account ─────────────────────────────────────────────────
+# ── POST /workspace/account/delete ────────────────────────────────────────────
 
 
-@router.delete(
-    "/account",
+@router.post(
+    "/account/delete",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )

@@ -4,6 +4,13 @@ GDPR right-to-erasure: irreversible workspace account deletion.
 Per ticket technical notes, the PII wipe runs as a single transaction of raw
 SQL UPDATE/DELETE statements (no ORM) for clarity and auditability — the SQL
 below is the literal, reviewable list of every column this operation touches.
+
+Vector embeddings: RAG embeddings live exclusively in Postgres via pgvector
+(KbChunk.embedding, see app/models/knowledge_base_chunk.py) — there is no
+Pinecone or other external vector store in this codebase (rag_service.py
+replaced the old Pinecone backend). The `DELETE FROM kbchunk` below removes
+the embedding column along with the rest of the row, so no separate
+vector-store erasure step is needed for GDPR compliance.
 """
 from __future__ import annotations
 
