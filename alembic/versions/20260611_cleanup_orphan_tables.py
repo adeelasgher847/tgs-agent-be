@@ -24,7 +24,6 @@ depends_on = None
 _ORPHAN_TABLES = [
     "branding_configs",
     "pricing_configs",
-    "rbac_roles",
     "knowledge_bases",
     "kb_files",
     "kb_chunks",

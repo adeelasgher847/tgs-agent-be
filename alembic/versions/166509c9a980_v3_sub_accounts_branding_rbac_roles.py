@@ -63,28 +63,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id')
     )
 
-    # 4. Create rbac_roles table
-    op.create_table(
-        'rbac_roles',
-        sa.Column('id', sa.UUID(), nullable=False),
-        sa.Column('workspace_id', sa.UUID(), sa.ForeignKey('tenant.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('user_id', sa.UUID(), sa.ForeignKey('user.id', ondelete='CASCADE'), nullable=False),
-        sa.Column('role', sa.String(), nullable=False),
-        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-        sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True),
-        sa.PrimaryKeyConstraint('id')
-    )
+    # 4. Add RBAC assignment columns to the existing 'role' table
+    op.add_column('role', sa.Column('role', sa.String(), nullable=True))
+    op.add_column('role', sa.Column('deleted_at', sa.DateTime(timezone=True), nullable=True))
     op.create_check_constraint(
-        'chk_rbac_roles_role',
-        'rbac_roles',
+        'chk_role_role',
+        'role',
         "role IN ('admin', 'manager', 'config_only', 'read_only', 'billing_only')"
-    )
-    op.create_index(
-        'uq_rbac_roles_workspace_user_active', 
-        'rbac_roles', 
-        ['workspace_id', 'user_id'], 
-        unique=True, 
-        postgresql_where=sa.text("deleted_at IS NULL")
     )
 
     # 5. Create usage_records table (Distinct from the old 'usagerecord')
@@ -104,7 +89,17 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Use PostgreSQL conditional drop execution to bypass missing tables safely
     op.execute("DROP TABLE IF EXISTS usage_records CASCADE;")
-    op.execute("DROP TABLE IF EXISTS rbac_roles CASCADE;")
+    # Remove RBAC columns from the 'role' table
+    try:
+        op.drop_index('uq_role_workspace_user_active', table_name='role')
+    except Exception:
+        pass
+    try:
+        op.drop_constraint('chk_role_role', table_name='role', type_='check')
+    except Exception:
+        pass
+    op.drop_column('role', 'deleted_at')
+    op.drop_column('role', 'role')
     op.execute("DROP TABLE IF EXISTS pricing_configs CASCADE;")
     op.execute("DROP TABLE IF EXISTS branding_configs CASCADE;")
     
