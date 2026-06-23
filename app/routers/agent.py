@@ -5,9 +5,8 @@ from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListRespo
 from app.api.deps import (
     get_db,
     get_current_user_jwt,
-    require_member_or_admin,
-    require_tenant,
-    require_admin_or_owner,
+    require_config,
+    require_readonly,
 )
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.schemas.base import SuccessResponse
@@ -31,8 +30,7 @@ router = APIRouter()
 def create_agent(
     agent_in: AgentCreate,
     request: Request,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
+    admin_user: User = Depends(require_config),
     db: Session = Depends(get_db)
 ):
     """Create a new agent"""
@@ -57,8 +55,7 @@ def create_agent(
 @router.get("/{agent_id}", response_model=SuccessResponse[AgentOut])
 def get_agent(
     agent_id: uuid.UUID,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
     """Get a specific agent by ID"""
@@ -76,8 +73,7 @@ def list_agents(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Records per page"),
     search: Optional[str] = Query(None, description="Search by name"),
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
     """Get agents with pagination and search"""
@@ -90,8 +86,7 @@ def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
     request: Request,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
+    admin_user: User = Depends(require_config),
     db: Session = Depends(get_db)
 ):
     """Update an agent"""
@@ -116,8 +111,7 @@ def update_agent(
 def delete_agent(
     agent_id: uuid.UUID,
     request: Request,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    admin_user: User = Depends(require_admin_or_owner),    # ← Second middleware: admin validation
+    admin_user: User = Depends(require_config),
     db: Session = Depends(get_db)
 ):
     """Delete an agent"""
@@ -140,8 +134,7 @@ def delete_agent(
 @router.get("/search/{search_term}", response_model=SuccessResponse[list[AgentOut]])
 def search_agents(
     search_term: str,
-    tenant_user: User = Depends(require_tenant),  # ← First middleware: tenant validation
-    user: User = Depends(require_member_or_admin),    # ← Second middleware: admin validation
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
     """Search agents by name"""
@@ -162,7 +155,7 @@ def get_voice_options(
 @router.get("/{agent_id}/model-config")
 def get_agent_model_config(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
     """
@@ -187,7 +180,7 @@ def get_agent_model_config(
 @router.get("/{agent_id}/inbound-knowledge-snapshot", response_model=SuccessResponse[dict])
 def get_inbound_knowledge_snapshot(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -212,7 +205,7 @@ def get_inbound_knowledge_snapshot(
 @router.get("/{agent_id}/talk")
 async def get_talk_to_assistant_link(
     agent_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
     """
@@ -256,8 +249,7 @@ async def get_talk_to_assistant_link(
 )
 async def design_agent_prompt(
     request: PromptEngineerRequest,
-    tenant_user: User = Depends(require_tenant),
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     """

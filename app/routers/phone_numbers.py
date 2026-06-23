@@ -20,7 +20,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_admin, require_config, require_readonly
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.phone_number import (
@@ -58,7 +58,7 @@ async def search_phone_numbers(
     type: str = Query(default="local", description="Number type: local | toll_free | mobile"),
     areaCode: Optional[str] = Query(default=None, description="Area code to filter by e.g. 02"),
     limit: int = Query(default=20, ge=1, le=100),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
 ) -> SuccessResponse[PhoneNumberSearchResponse]:
     """Search available Twilio phone numbers by country, type and area code."""
     try:
@@ -90,7 +90,7 @@ async def search_phone_numbers(
 @router.post("/purchase", response_model=SuccessResponse[PurchasePhoneNumberResponse])
 async def purchase_phone_number(
     request: PurchasePhoneNumberRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[PurchasePhoneNumberResponse]:
     """
@@ -126,7 +126,7 @@ async def purchase_phone_number(
 
 @router.get("/", response_model=SuccessResponse[PhoneNumberWithBindingList])
 async def get_phone_numbers(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[PhoneNumberWithBindingList]:
     """List all phone numbers for the workspace with binding status and agent name."""
@@ -146,7 +146,7 @@ async def get_phone_numbers(
 @router.post("/", response_model=SuccessResponse[CreatePhoneNumberResponse])
 async def create_phone_number(
     request: CreatePhoneNumberRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[CreatePhoneNumberResponse]:
     """Register a number already in the platform's Twilio account."""
@@ -202,7 +202,7 @@ async def create_phone_number(
 @router.post("/import", response_model=SuccessResponse[ImportTwilioPhoneNumberResponse])
 async def import_twilio_phone_number(
     request: ImportTwilioPhoneNumberRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[ImportTwilioPhoneNumberResponse]:
     """Import a Twilio number with custom Account SID / Auth Token (BYO Twilio account)."""
@@ -245,7 +245,7 @@ async def get_available_phone_numbers_legacy(
     voice_enabled: bool = Query(default=True),
     sms_enabled: bool = Query(default=True),
     limit: int = Query(default=20, ge=1, le=100),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
 ):
     """Legacy search endpoint — use GET /search instead."""
     try:
@@ -270,7 +270,7 @@ async def purchase_phone_number_legacy(
     phone_number: str = Query(...),
     webhook_url: Optional[str] = Query(default=None),
     status_callback_url: Optional[str] = Query(default=None),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Legacy purchase endpoint — use POST /purchase instead (this route now saves to DB)."""
@@ -293,7 +293,7 @@ async def purchase_phone_number_legacy(
 
 
 @router.get("/twilio/account-info", include_in_schema=False)
-async def get_twilio_account_info(user: User = Depends(require_tenant)):
+async def get_twilio_account_info(user: User = Depends(require_readonly)):
     try:
         return create_success_response(
             {"account_info": twilio_service.get_account_info()},
@@ -306,7 +306,7 @@ async def get_twilio_account_info(user: User = Depends(require_tenant)):
 @router.get("/available-number", include_in_schema=False)
 async def get_owned_phone_numbers(
     limit: int = Query(default=50, ge=1, le=100),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
 ):
     try:
         owned = twilio_service.list_owned_numbers(limit=limit)
@@ -325,7 +325,7 @@ async def get_owned_phone_numbers(
 @router.get("/{phone_number_id}", response_model=SuccessResponse[PhoneNumberResponse])
 async def get_phone_number(
     phone_number_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[PhoneNumberResponse]:
     pn = phone_number_service.get_phone_number_by_id(db, phone_number_id, user.current_tenant_id)
@@ -340,7 +340,7 @@ async def get_phone_number(
 async def update_phone_number(
     phone_number_id: uuid.UUID,
     request: PhoneNumberUpdate,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[PhoneNumberResponse]:
     pn = phone_number_service.update_phone_number(
@@ -354,7 +354,7 @@ async def update_phone_number(
 @router.delete("/{phone_number_id}", response_model=SuccessResponse[dict])
 async def delete_phone_number(
     phone_number_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[dict]:
     ok = phone_number_service.delete_phone_number(db, phone_number_id, user.current_tenant_id)
@@ -377,7 +377,7 @@ async def delete_phone_number(
 async def upsert_number_configuration(
     phone_number_id: uuid.UUID,
     request: NumberConfigurationRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[NumberConfigurationResponse]:
     """Update or create the per-number configuration (recording, duration, hours)."""
@@ -401,7 +401,7 @@ async def upsert_number_configuration(
 )
 async def get_number_configuration(
     phone_number_id: uuid.UUID,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[NumberConfigurationResponse]:
     """Retrieve the per-number configuration."""

@@ -28,7 +28,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_constraint(None, 'tenant', type_='foreignkey')
+    op.drop_constraint('tenant_parent_workspace_id_fkey', 'tenant', type_='foreignkey')
     op.drop_index('idx_tenants_parent_workspace_id', table_name='tenant')
     op.drop_column('tenant', 'workspace_type')
     op.drop_column('tenant', 'parent_workspace_id')

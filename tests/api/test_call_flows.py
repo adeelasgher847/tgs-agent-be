@@ -521,19 +521,20 @@ class TestUpdateCallFlowSettings:
         row = db.query(CallFlow).filter(CallFlow.id == uuid.UUID(created["id"])).first()
         assert row.public_access is True
 
-    def test_member_role_forbidden(
+    def test_non_admin_role_forbidden(
         self, authed_client, auth_tenant, test_agent, db
     ):
+        """config_only is one tier below admin — still must not toggle public_access."""
         created = authed_client.post(
             "/api/v1/call-flows",
             json=_create_body(test_agent.id),
             headers=_headers(auth_tenant),
         ).json()
 
-        member = _make_jwt_user(db, auth_tenant.id, "member")
+        config_user = _make_jwt_user(db, auth_tenant.id, "config_only")
         workspace = Workspace.from_tenant(auth_tenant)
 
-        with _jwt_auth_ctx(workspace, member.id):
+        with _jwt_auth_ctx(workspace, config_user.id):
             resp = authed_client.put(
                 f"/api/v1/call-flows/{created['id']}/settings",
                 json={"public_access": True},

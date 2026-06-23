@@ -42,8 +42,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 TENANT_TZ = "Asia/Karachi"
-# Fixed Monday so business-hours weekday matches the date regardless of "today"
-MONDAY = date(2026, 6, 8)
+# Calculate MONDAY dynamically so it is always in the future relative to the test execution time
+_today = datetime.now(timezone.utc).date()
+_days_ahead = 0 - _today.weekday()
+if _days_ahead <= 0:
+    _days_ahead += 7
+MONDAY = _today + timedelta(days=_days_ahead)
 
 
 @pytest.fixture()

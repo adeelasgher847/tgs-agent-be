@@ -139,7 +139,10 @@ def create_app() -> FastAPI:
             for item in schema_obj:
                 _patch_binary_formats(item)
 
-    _WORKSPACE_API_KEY_SECURITY = [{"ApiKeyAuth": [], "WorkspaceId": []}]
+    _WORKSPACE_API_KEY_SECURITY = [
+        {"ApiKeyAuth": [], "WorkspaceId": []},
+        {"HTTPBearer": []}
+    ]
 
     def custom_openapi():
         if _app.openapi_schema:
@@ -165,6 +168,12 @@ def create_app() -> FastAPI:
             "in": "header",
             "name": "x-workspace-id",
             "description": "Workspace (tenant) UUID. Required alongside x-api-key.",
+        }
+        schemes["HTTPBearer"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Enter your JWT token.",
         }
 
         paths = openapi_schema.get("paths", {})

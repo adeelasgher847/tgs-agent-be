@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin_or_owner
+from app.api.deps import get_db, require_admin
 from app.middleware.api_key_middleware import invalidate_api_key_cache_by_hash
 from app.models.user import User
 from app.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyOut
@@ -30,7 +30,7 @@ router = APIRouter()
 )
 def create_workspace_api_key(
     body: ApiKeyCreate,
-    user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Create a workspace API key. The raw secret is returned exactly once."""
@@ -49,7 +49,7 @@ def create_workspace_api_key(
 
 @router.get("/", response_model=SuccessResponse[list[ApiKeyOut]])
 def list_workspace_api_keys(
-    user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """List API keys for the current workspace (masked — no raw secrets)."""
@@ -63,7 +63,7 @@ def list_workspace_api_keys(
 @router.delete("/{key_id}", response_model=SuccessResponse[ApiKeyOut])
 async def revoke_workspace_api_key(
     key_id: uuid.UUID,
-    user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Revoke an API key (``is_active=false``) and purge its Redis cache entry."""

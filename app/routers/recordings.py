@@ -28,13 +28,10 @@ from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.recording import RecordingResponse
 from app.services.recording_config_service import get_recording_enabled_for_call
-from app.services.role_service import get_user_role_in_tenant
+from app.services import role_service
 from app.utils.response import create_success_response
 
 router = APIRouter()
-
-# Roles that are blocked from accessing recordings on HIPAA-flagged flows
-_HIPAA_BLOCKED_ROLES = frozenset({"readonly", "config"})
 
 
 def _enforce_hipaa_recording_access(
@@ -64,8 +61,8 @@ def _enforce_hipaa_recording_access(
     if user.current_tenant_id is None:
         return
 
-    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-    if role and role.name in _HIPAA_BLOCKED_ROLES:
+    role_name = role_service.get_membership_role_name(db, user.id, user.current_tenant_id)
+    if not role_service.has_rank(role_name, role_service.MANAGER):
         raise HTTPException(
             status_code=403,
             detail="Access to HIPAA-protected recordings requires admin or manager role",

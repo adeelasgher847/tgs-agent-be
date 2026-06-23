@@ -38,11 +38,15 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         and "code" in exc.detail
         and "message" in exc.detail
     ):
+        extras = {
+            k: v for k, v in exc.detail.items() if k not in ("code", "message")
+        }
         payload = build_api_error_payload(
             exc.status_code,
             exc.detail["message"],
             error_code=exc.detail["code"],
             request_id=request_id,
+            extras=extras or None,
         )
     else:
         payload = build_api_error_payload(

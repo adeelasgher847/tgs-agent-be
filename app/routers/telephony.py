@@ -13,7 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_config, require_readonly
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.phone_number import (
@@ -33,7 +33,7 @@ router = APIRouter()
 
 @router.get("/bindings", response_model=SuccessResponse[BoundAgentBindingList])
 async def list_bound_agents(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[BoundAgentBindingList]:
     """List phone number ↔ agent bindings for this workspace (bound rows only)."""
@@ -57,7 +57,7 @@ async def list_bound_agents(
 @router.post("/external", response_model=SuccessResponse[RegisterExternalNumberResponse])
 async def register_external_number(
     request: RegisterExternalNumberRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[RegisterExternalNumberResponse]:
     """
@@ -90,7 +90,7 @@ async def register_external_number(
 @router.post("/bind", response_model=SuccessResponse[BindingStatusResponse])
 async def bind_number(
     request: BindNumberRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[BindingStatusResponse]:
     """
@@ -122,7 +122,7 @@ async def bind_number(
 @router.post("/unbind", response_model=SuccessResponse[BindingStatusResponse])
 async def unbind_number(
     request: UnbindNumberRequest,
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[BindingStatusResponse]:
     """

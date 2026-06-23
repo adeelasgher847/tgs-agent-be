@@ -11,7 +11,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import String, cast, func, text as sa_text
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin_or_owner, require_tenant
+from app.api.deps import (
+    get_db,
+    require_admin_or_owner,
+    require_config_or_api_key,
+    require_readonly_or_api_key,
+)
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.call_flow import CallFlow
@@ -214,7 +219,7 @@ def create_knowledge_base(
 async def list_knowledge_bases(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    user=Depends(require_tenant),
+    user=Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     workspace_id = user.current_tenant_id
@@ -257,7 +262,7 @@ async def list_knowledge_bases(
 @router.get("/{kb_id}", response_model=SuccessResponse[KbDetail])
 def get_knowledge_base(
     kb_id: uuid.UUID,
-    user=Depends(require_tenant),
+    user=Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     workspace_id = user.current_tenant_id
@@ -371,7 +376,7 @@ def delete_kb_file(
 async def upload_kb_file(
     kb_id: uuid.UUID,
     file: UploadFile = File(...),
-    user=Depends(require_tenant),
+    user=Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """
@@ -449,7 +454,7 @@ async def upload_kb_file(
 async def ingest_kb_text(
     kb_id: uuid.UUID,
     payload: KbTextIngestRequest,
-    user=Depends(require_tenant),
+    user=Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """
@@ -499,7 +504,7 @@ async def ingest_kb_text(
 def get_file_status(
     kb_id: uuid.UUID,
     file_id: uuid.UUID,
-    user=Depends(require_tenant),
+    user=Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     workspace_id = user.current_tenant_id
@@ -530,7 +535,7 @@ async def search_knowledge_base(
     kb_id: uuid.UUID,
     q: str = Query(..., min_length=1, description="Search query text"),
     limit: int = Query(default=5, ge=1, le=25),
-    user=Depends(require_tenant),
+    user=Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     """
@@ -599,7 +604,7 @@ async def search_knowledge_base(
 
 @router.get("/documents", response_model=SuccessResponse[KnowledgeBaseDocumentList])
 def list_documents(
-    user=Depends(require_tenant),
+    user=Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     workspace_id = user.current_tenant_id
@@ -629,7 +634,7 @@ def list_documents(
 )
 async def ingest_text_document(
     request: KnowledgeBaseIngestTextRequest,
-    user=Depends(require_tenant),
+    user=Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Legacy endpoint: ingest normalized text into the workspace's Auto-Ingest KB."""
@@ -676,7 +681,7 @@ async def ingest_text_document(
 )
 def retrieve_preview(
     request: KnowledgeBaseRetrievePreviewRequest,
-    user=Depends(require_tenant),
+    user=Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     workspace_id = user.current_tenant_id
@@ -719,7 +724,7 @@ def retrieve_preview(
 @router.delete("/documents/{document_id}", response_model=SuccessResponse[dict])
 def delete_document(
     document_id: uuid.UUID,
-    user=Depends(require_tenant),
+    user=Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     workspace_id = user.current_tenant_id

@@ -254,16 +254,20 @@ def _mock_tenant(wid: uuid.UUID):
 
 @contextmanager
 def _auth_ctx(wid: uuid.UUID):
-    from app.api.deps import require_tenant
+    from app.api.deps import require_tenant, require_readonly_or_api_key, require_config_or_api_key
     import app.middleware.api_key_middleware as auth_mw
     from app.main import app as _app
 
-    _app.dependency_overrides[require_tenant] = lambda: _mock_tenant(wid)
+    mock_user = _mock_tenant(wid)
+    overridden = [require_tenant, require_readonly_or_api_key, require_config_or_api_key]
+    for dep in overridden:
+        _app.dependency_overrides[dep] = lambda: mock_user
     with patch.object(auth_mw, "_try_jwt_auth", new=AsyncMock(return_value=True)):
         try:
             yield
         finally:
-            _app.dependency_overrides.pop(require_tenant, None)
+            for dep in overridden:
+                _app.dependency_overrides.pop(dep, None)
 
 
 def test_search_endpoint_returns_results(client, db, workspace_id):

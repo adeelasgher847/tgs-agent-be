@@ -30,8 +30,11 @@ def _sha256(raw: str) -> str:
 
 
 def _app() -> FastAPI:
+    from app.middleware.request_id_middleware import RequestIdMiddleware
+
     mini = FastAPI()
     mini.add_middleware(ApiKeyMiddleware)
+    mini.add_middleware(RequestIdMiddleware)
 
     @mini.get("/api/v1/data")
     def data_endpoint():

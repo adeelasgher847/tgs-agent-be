@@ -432,10 +432,11 @@ class TestDbEncryptionModule:
         assert not ciphertext.startswith("eyJ")
         with patch("app.core.db_encryption.settings") as mock_settings:
             mock_settings.ELEVENLABS_ENCRYPTION_KEY = "test-enc-key"
-            assert (
-                decrypt_stored_elevenlabs_key(ciphertext, db=mock_db)
-                == "roundtrip-secret"
-            )
+            with patch("app.core.db_encryption.is_pgcrypto_ciphertext", return_value=True):
+                assert (
+                    decrypt_stored_elevenlabs_key(ciphertext, db=mock_db)
+                    == "roundtrip-secret"
+                )
 
 
 # ────────────────────────────────────── migration file checks ────────────────

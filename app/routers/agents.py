@@ -13,8 +13,10 @@ from sqlalchemy.orm import Session
 from app.api.deps import (
     get_current_user_jwt,
     get_db,
-    require_member_or_admin,
-    require_tenant,
+    require_config_or_api_key,
+    require_readonly_or_api_key,
+    require_readonly,
+    require_config,
 )
 from app.core.error_responses import build_api_error_payload
 from app.core.request_auth import ApiKeyPrincipal
@@ -93,7 +95,7 @@ def _serialize_out(agent) -> dict[str, Any]:
 def create_agent(
     agent_in: AgentCreate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Create agent (JWT or API key). Returns ticket-shaped JSON."""
@@ -124,7 +126,7 @@ def create_agent(
 )
 def get_agent(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Get agent by id (404 if missing or other workspace)."""
@@ -140,7 +142,7 @@ def list_agents(
         None, ge=1, le=100, include_in_schema=False, description="Deprecated alias for pageSize"
     ),
     search: Optional[str] = Query(None, description="Search by name"),
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Paginated list: ``{ data, total, page, pageSize }``."""
@@ -159,7 +161,7 @@ def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Update mutable fields (JWT or API key)."""
@@ -195,7 +197,7 @@ def update_agent(
 def delete_agent(
     agent_id: uuid.UUID,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Soft delete; 409 if an active phone number is bound."""
@@ -221,7 +223,7 @@ def delete_agent(
 @router.get("/search/{search_term}", response_model=SuccessResponse[list])
 def search_agents(
     search_term: str,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """Search agents by name (dashboard JWT)."""
@@ -242,7 +244,7 @@ def get_voice_options(
 @router.get("/{agent_id}/model-config")
 def get_agent_model_config(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db)
 ):
     """
@@ -269,7 +271,7 @@ def get_agent_model_config(
 @router.get("/{agent_id}/inbound-knowledge-snapshot", response_model=SuccessResponse[dict])
 def get_inbound_knowledge_snapshot(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     """
@@ -294,7 +296,7 @@ def get_inbound_knowledge_snapshot(
 @router.get("/{agent_id}/talk")
 async def get_talk_to_assistant_link(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db)
 ):
     """
@@ -332,7 +334,7 @@ async def get_talk_to_assistant_link(
 )
 async def design_agent_prompt(
     request: PromptEngineerRequest,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     """

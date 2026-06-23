@@ -17,27 +17,31 @@ def create_required_roles():
     db: Session = SessionLocal()
     
     try:
-        # Define required roles
+        # Canonical RBAC roles (admin > manager > config_only > read_only,
+        # billing_only outside the chain) — see docs/rbac-matrix.md.
+        # 'owner' and 'member' were retired in migration 9f3a2c7e5d41: the
+        # workspace creator is tracked via user_tenant_association.is_creator
+        # instead of a role name.
         required_roles = [
-            {
-                "name": "owner",
-                "description": "Owner role with full access to tenant"
-            },
             {
                 "name": "admin",
                 "description": "Administrator role with full access"
             },
             {
-                "name": "member",
-                "description": "Regular member role with limited access"
+                "name": "manager",
+                "description": "Full operational access; cannot manage members or billing"
             },
             {
-                "name": "config",
+                "name": "config_only",
                 "description": "Configure workspace settings; cannot manage users"
             },
             {
-                "name": "readonly",
+                "name": "read_only",
                 "description": "Read-only access; blocked from mutating endpoints"
+            },
+            {
+                "name": "billing_only",
+                "description": "Access limited to billing endpoints (usage, pricing)"
             },
         ]
         

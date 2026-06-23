@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin
+from app.api.deps import get_db, require_admin, require_billing
 from app.models.branding_configs import BrandingConfig
 from app.models.pricing_configs import PricingConfig
 from app.models.usage_record import UsageRecord
@@ -12,6 +12,8 @@ from app.schemas.workspace import (
     PricingConfigUpsert,
     PricingConfigOut,
     WorkspaceUsageOut,
+    MemberRoleUpdate,
+    MemberRoleOut,
 )
 
 import uuid
@@ -23,7 +25,9 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin
 from app.core.logger import logger
-from app.models.user import User
+from app.models.role import Role
+from app.models.user import User, user_tenant_association
+from app.services import rbac_cache_service, role_service
 from app.services.account_deletion_service import delete_workspace_account
 from app.services.audit_service import log_audit_event
 from app.services.data_export_service import create_export_job, get_export_job
@@ -71,7 +75,7 @@ def upsert_branding_config(
 
 @v2_router.get("/pricing", response_model=PricingConfigOut)
 def get_pricing_config(
-    user=Depends(require_admin),
+    user=Depends(require_billing),
     db: Session = Depends(get_db),
 ):
     """Get the current pricing configuration for the workspace."""
@@ -128,7 +132,7 @@ def upsert_pricing_config(
 
 @v2_router.get("/usage", response_model=WorkspaceUsageOut)
 def get_workspace_usage(
-    user=Depends(require_admin),
+    user=Depends(require_billing),
     db: Session = Depends(get_db),
 ):
     """Get the usage statistics for the current billing cycle."""
@@ -159,6 +163,106 @@ def get_workspace_usage(
         overage_minutes=overage_minutes,
         overage_cost=overage_cost
     )
+
+
+@v2_router.put("/members/{user_id}/role", response_model=MemberRoleOut)
+def update_member_role(
+    user_id: uuid.UUID,
+    payload: MemberRoleUpdate,
+    request: Request,
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Assign a member's role within the current workspace. Admin only.
+
+    A caller cannot lower their own role below their current rank (self
+    targeting `user_id` == the caller's id with a role that outranks
+    nothing they currently hold returns 400) — this only ever fires against
+    one's own row; an admin may freely set any role on *other* members,
+    including the workspace creator (whose `is_creator` override means
+    they remain admin-equivalent regardless of what's stored here).
+    """
+    tenant_id = user.current_tenant_id
+
+    if payload.role not in role_service.CANONICAL_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Invalid role '{payload.role}'. Must be one of: "
+                f"{', '.join(role_service.CANONICAL_ROLES)}"
+            ),
+        )
+
+    if user_id == user.id:
+        # Re-read fresh (uncached) — this is a security-critical precondition
+        # check and must not act on a possibly-stale cached role.
+        actor_role = role_service.get_membership_role_name(db, user.id, tenant_id)
+        actor_rank = role_service.ROLE_RANK.get(actor_role, 0)
+        new_rank = role_service.ROLE_RANK.get(payload.role, 0)
+        if new_rank < actor_rank:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Cannot self-demote from '{actor_role}' to "
+                    f"'{payload.role}' — assign a role of equal or higher rank."
+                ),
+            )
+
+    membership = db.execute(
+        user_tenant_association.select().where(
+            user_tenant_association.c.user_id == user_id,
+            user_tenant_association.c.tenant_id == tenant_id,
+        )
+    ).first()
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User is not a member of this workspace",
+        )
+
+    role = db.query(Role).filter(Role.name == payload.role).first()
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Canonical role '{payload.role}' missing from role table",
+        )
+
+    old_role_name = membership.role_id
+    db.execute(
+        user_tenant_association.update()
+        .where(
+            user_tenant_association.c.user_id == user_id,
+            user_tenant_association.c.tenant_id == tenant_id,
+        )
+        .values(role_id=role.id)
+    )
+    db.commit()
+
+    # Invalidate immediately so the next request re-resolves from the DB
+    # instead of serving the stale role for up to the 60s TTL.
+    rbac_cache_service.invalidate(user_id, tenant_id)
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="workspace.member_role_updated",
+        resource_type="user_tenant_association",
+        resource_id=user_id,
+        old_value={"role_id": str(old_role_name) if old_role_name else None},
+        new_value={"role": payload.role},
+        actor_user_id=user.id,
+    )
+
+    return MemberRoleOut(
+        user_id=user_id,
+        workspace_id=tenant_id,
+        role="owner" if membership.is_creator else payload.role
+    )
+
+
+
 """
 v2 GDPR data subject rights router.
 

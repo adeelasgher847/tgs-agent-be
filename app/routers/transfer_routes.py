@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_member_or_admin, require_tenant
+from app.api.deps import get_db, require_config, require_readonly
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.transfer_route import (
@@ -22,8 +22,7 @@ router = APIRouter()
 
 @router.get("/", response_model=SuccessResponse[TransferRouteListResponse])
 def list_transfer_routes(
-    user: User = Depends(require_tenant),
-    _: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     rows = transfer_route_service.list_for_tenant(db, user.current_tenant_id)
@@ -37,8 +36,7 @@ def list_transfer_routes(
 @router.post("/", response_model=SuccessResponse[TransferRouteOut], status_code=status.HTTP_201_CREATED)
 def create_transfer_route(
     body: TransferRouteCreate,
-    user: User = Depends(require_tenant),
-    _: User = Depends(require_member_or_admin),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     row = transfer_route_service.create(db, user.current_tenant_id, body)
@@ -52,8 +50,7 @@ def create_transfer_route(
 @router.get("/{route_id}", response_model=SuccessResponse[TransferRouteOut])
 def get_transfer_route(
     route_id: uuid.UUID,
-    user: User = Depends(require_tenant),
-    _: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     row = transfer_route_service.get(db, route_id, user.current_tenant_id)
@@ -66,8 +63,7 @@ def get_transfer_route(
 def update_transfer_route(
     route_id: uuid.UUID,
     body: TransferRouteUpdate,
-    user: User = Depends(require_tenant),
-    _: User = Depends(require_member_or_admin),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     row = transfer_route_service.update(db, route_id, user.current_tenant_id, body)
@@ -77,8 +73,7 @@ def update_transfer_route(
 @router.delete("/{route_id}", response_model=SuccessResponse[dict])
 def delete_transfer_route(
     route_id: uuid.UUID,
-    user: User = Depends(require_tenant),
-    _: User = Depends(require_member_or_admin),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     transfer_route_service.soft_delete(db, route_id, user.current_tenant_id)

@@ -43,22 +43,48 @@ def _mock_admin(tenant_id: uuid.UUID):
 
 @contextmanager
 def _auth_ctx(workspace_id: uuid.UUID):
-    """Override both require_tenant and require_admin_or_owner."""
-    from app.api.deps import require_tenant, require_admin_or_owner
+    """Override every dependency a KB route might use to bypass auth entirely."""
+    from app.api.deps import (
+        require_tenant,
+        require_admin_or_owner,
+        require_config_or_api_key,
+        require_readonly_or_api_key,
+    )
     import app.middleware.api_key_middleware as auth_mw
 
     mock_user = _mock_admin(workspace_id)
-    app.dependency_overrides[require_tenant] = lambda: mock_user
-    app.dependency_overrides[require_admin_or_owner] = lambda: mock_user
+    overridden = [
+        require_tenant,
+        require_admin_or_owner,
+        require_config_or_api_key,
+        require_readonly_or_api_key,
+    ]
+    for dep in overridden:
+        app.dependency_overrides[dep] = lambda: mock_user
     with patch.object(auth_mw, "_try_jwt_auth", new=AsyncMock(return_value=True)):
         try:
             yield
         finally:
-            app.dependency_overrides.pop(require_tenant, None)
-            app.dependency_overrides.pop(require_admin_or_owner, None)
+            for dep in overridden:
+                app.dependency_overrides.pop(dep, None)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="module", autouse=True)
+def _drop_partial_unique_indexes(db):
+    from sqlalchemy import text
+    for index_name in (
+        "uq_agent_single_inbound_per_tenant",
+        "uq_agent_single_follow_up_per_tenant",
+    ):
+        try:
+            db.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+        except Exception:
+            pass
+    db.commit()
+    yield
+
 
 @pytest.fixture()
 def workspace_id(db) -> uuid.UUID:

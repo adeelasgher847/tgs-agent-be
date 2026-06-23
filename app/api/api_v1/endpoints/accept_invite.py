@@ -102,21 +102,32 @@ def accept_invite(
         db.commit()
         db.refresh(user)
     
-    # Add user to tenant with member role (default for invited users)
-    member_role = db.query(Role).filter(Role.name == "member").first()
-    if not member_role:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Member role not found. Please contact administrator."
-        )
-    
+    # Determine the role to assign to the user (either invited role_id or default read_only)
+    target_role_id = invite.role_id
+    if not target_role_id:
+        from app.services.role_service import READ_ONLY
+        role_obj = db.query(Role).filter(Role.name == READ_ONLY).first()
+        if not role_obj:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Default read_only role not found. Please contact administrator."
+            )
+        target_role_id = role_obj.id
+    else:
+        role_obj = db.query(Role).filter(Role.id == target_role_id).first()
+        if not role_obj:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Selected invitation role not found. Please contact administrator."
+            )
+
     # Insert into user_tenant_association table
     default_product_id = get_default_product_id(db)
     db.execute(
         user_tenant_association.insert().values(
             user_id=user.id,
             tenant_id=invite.tenant_id,
-            role_id=member_role.id,
+            role_id=target_role_id,
             product_id=default_product_id
         )
     )
@@ -135,8 +146,9 @@ def accept_invite(
         user_id=user.id,
         email=user.email,
         tenant_id=invite.tenant_id,
-        role="member"
+        role=role_obj.name
     )
+
     
     # Create refresh token
     rt_value = create_refresh_token_value()

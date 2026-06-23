@@ -599,6 +599,7 @@ paths:
       security: &id001
       - ApiKeyAuth: []
         WorkspaceId: []
+      - HTTPBearer: []
   /api/v1/workspace/invitations:
     get:
       tags:
@@ -871,30 +872,37 @@ paths:
         '429':
           description: Rate limit exceeded (60 req / 60 s per API key)
       security: *id001
-  /api/v1/roles/{role_id}:
+  /api/v1/roles/:
     get:
       tags:
       - roles
-      summary: Get Role
-      description: Get a specific role by ID
-      operationId: get_role_api_v1_roles__role_id__get
+      summary: Get Roles
+      description: Get all roles
+      operationId: get_roles_api_v1_roles__get
       security:
       - HTTPBearer: []
       parameters:
-      - name: role_id
-        in: path
-        required: true
+      - name: skip
+        in: query
+        required: false
         schema:
-          type: string
-          format: uuid
-          title: Role Id
+          type: integer
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 100
+          title: Limit
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse_RoleOut_'
+                $ref: '#/components/schemas/SuccessResponse_List_RoleOut__'
         '422':
           description: Validation Error
           content:
@@ -7945,6 +7953,55 @@ paths:
                 $ref: '#/components/schemas/WorkspaceUsageOut'
       security:
       - HTTPBearer: []
+  /api/v2/workspace/members/{user_id}/role:
+    put:
+      tags:
+      - Workspace Settings
+      summary: Update Member Role
+      description: 'Assign a member''s role within the current workspace. Admin only.
+
+
+        A caller cannot lower their own role below their current rank (self
+
+        targeting `user_id` == the caller''s id with a role that outranks
+
+        nothing they currently hold returns 400) — this only ever fires against
+
+        one''s own row; an admin may freely set any role on *other* members,
+
+        including the workspace creator (whose `is_creator` override means
+
+        they remain admin-equivalent regardless of what''s stored here).'
+      operationId: update_member_role_api_v2_workspace_members__user_id__role_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberRoleUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberRoleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/settings:
     put:
       tags:
@@ -11147,6 +11204,10 @@ components:
           type: string
           format: email
           title: Email
+        role_id:
+          type: string
+          format: uuid
+          nullable: true
       type: object
       required:
       - email
@@ -11175,6 +11236,10 @@ components:
           type: string
           format: uuid
           title: Invited By
+        role_id:
+          type: string
+          format: uuid
+          nullable: true
       type: object
       required:
       - id
@@ -12053,6 +12118,36 @@ components:
       - hybrid
       title: MatchMode
       description: How to combine LLM judgement with deterministic rules.
+    MemberRoleOut:
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        workspace_id:
+          type: string
+          format: uuid
+          title: Workspace Id
+        role:
+          type: string
+          title: Role
+      type: object
+      required:
+      - user_id
+      - workspace_id
+      - role
+      title: MemberRoleOut
+      description: Response shape after a member's role is updated
+    MemberRoleUpdate:
+      properties:
+        role:
+          type: string
+          title: Role
+      type: object
+      required:
+      - role
+      title: MemberRoleUpdate
+      description: Request body for PUT /api/v2/workspace/members/{user_id}/role
     ModelCreate:
       properties:
         model_name:
@@ -14736,6 +14831,25 @@ components:
       required:
       - data
       title: SuccessResponse[List[PlanOut]]
+    SuccessResponse_List_RoleOut__:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/RoleOut'
+          type: array
+          title: Data
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[List[RoleOut]]
     SuccessResponse_List_UserSubscriptionSummary__:
       properties:
         data:
@@ -15139,22 +15253,6 @@ components:
       required:
       - data
       title: SuccessResponse[ResumeInterviewTrelloCallMediaResponse]
-    SuccessResponse_RoleOut_:
-      properties:
-        data:
-          $ref: '#/components/schemas/RoleOut'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[RoleOut]
     SuccessResponse_SingleCallResponse_:
       properties:
         data:
@@ -16590,6 +16688,8 @@ components:
     HTTPBearer:
       type: http
       scheme: bearer
+      bearerFormat: JWT
+      description: Enter your JWT token.
     ApiKeyAuth:
       type: apiKey
       in: header
