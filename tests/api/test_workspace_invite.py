@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import require_admin
+from app.api.deps import require_admin_or_api_key
 from app.core.security import create_user_token
 from app.core.workspace import Workspace
 from app.main import app
@@ -86,15 +86,16 @@ def authed_client(client: TestClient, admin_user: User, workspace_tenant: Tenant
     async def _fake_load(wid):
         return workspace
 
-    app.dependency_overrides[require_admin] = lambda: admin_user
+    app.dependency_overrides[require_admin_or_api_key] = lambda: admin_user
     with patch("app.middleware.api_key_middleware._load_workspace", side_effect=_fake_load), patch(
         "app.api.api_v1.endpoints.workspace_invites.email_service.send_invite_email",
         return_value=True,
     ):
         client.headers.update({"Authorization": f"Bearer {token}"})
         yield client
-    app.dependency_overrides.pop(require_admin, None)
+    app.dependency_overrides.pop(require_admin_or_api_key, None)
     client.headers.pop("Authorization", None)
+
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +162,9 @@ class TestDuplicateInvite:
         assert resp2.status_code == 409
         assert "pending" in resp2.json()["error"]["message"].lower()
 
-    def test_invalid_email_returns_422(self, authed_client):
+    def test_invalid_email_returns_400(self, authed_client):
         resp = authed_client.post("/api/v1/workspace/invite", json={"email": "not-an-email"})
-        assert resp.status_code == 422
+        assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +242,135 @@ class TestExpiredInviteToken:
 
         db.refresh(invite)
         assert invite.status == "expired"
+
+
+# ---------------------------------------------------------------------------
+# API Key authentication for invite endpoints
+# ---------------------------------------------------------------------------
+
+class TestInviteWithApiKey:
+    def test_invite_with_api_key_resolves_creator(self, client, db, admin_user, workspace_tenant):
+        from app.models.user import user_tenant_association
+        # Link admin_user as creator in db
+        db.execute(
+            user_tenant_association.insert().values(
+                user_id=admin_user.id,
+                tenant_id=workspace_tenant.id,
+                is_creator=True,
+            )
+        )
+        db.commit()
+
+        api_key_payload = {
+            "api_key_id": str(uuid.uuid4()),
+            "tenant_id": str(workspace_tenant.id),
+            "key_is_active": True,
+            "workspace": {
+                "id": str(workspace_tenant.id),
+                "name": workspace_tenant.name,
+                "schema_name": workspace_tenant.schema_name,
+                "status": "active",
+                "credits": 10.0,
+                "stripe_customer_id": None,
+                "stripe_subscription_id": None,
+            },
+        }
+
+        async def _resolve(_key_hash, _workspace_id):
+            return api_key_payload
+
+        email = f"api-invited-{uuid.uuid4().hex[:6]}@example.com"
+        headers = {"x-api-key": "testkey", "x-workspace-id": str(workspace_tenant.id)}
+
+        with patch(
+            "app.middleware.api_key_middleware._resolve_api_key",
+            side_effect=_resolve,
+        ), patch(
+            "app.api.api_v1.endpoints.workspace_invites.email_service.send_invite_email",
+            return_value=True,
+        ):
+            resp = client.post(
+                "/api/v1/workspace/invite",
+                json={"email": email},
+                headers=headers,
+            )
+            assert resp.status_code == 201, resp.text
+            assert resp.json()["data"]["email"] == email
+
+            # Check GET works too
+            resp_get = client.get("/api/v1/workspace/invitations", headers=headers)
+            assert resp_get.status_code == 200, resp_get.text
+            emails = [item["email"] for item in resp_get.json()["data"]]
+            assert email in emails
+
+
+# ---------------------------------------------------------------------------
+# Test Specifying Role during Invite
+# ---------------------------------------------------------------------------
+
+class TestRoleBasedInvitations:
+    def test_invite_with_role_id_success(self, authed_client, db, admin_user):
+        from app.models.role import Role
+        # Get manager role ID
+        manager_role = db.query(Role).filter(Role.name == "manager").first()
+        assert manager_role is not None
+
+        email = f"invited-manager-{uuid.uuid4().hex[:6]}@example.com"
+        resp = authed_client.post(
+            "/api/v1/workspace/invite",
+            json={"email": email, "role_id": str(manager_role.id)}
+        )
+        assert resp.status_code == 201, resp.text
+        data = resp.json()["data"]
+        assert data["role_id"] == str(manager_role.id)
+
+        # Check in DB
+        invite = db.query(Invite).filter(Invite.email == email).first()
+        assert invite is not None
+        assert invite.role_id == manager_role.id
+
+    def test_invite_with_invalid_role_id_returns_404(self, authed_client):
+        email = f"invited-invalid-{uuid.uuid4().hex[:6]}@example.com"
+        resp = authed_client.post(
+            "/api/v1/workspace/invite",
+            json={"email": email, "role_id": str(uuid.uuid4())}
+        )
+        assert resp.status_code == 404, resp.text
+
+    def test_accept_invite_assigns_correct_role(self, client, db, admin_user):
+        from app.models.role import Role
+        from app.models.user import user_tenant_association
+
+        manager_role = db.query(Role).filter(Role.name == "manager").first()
+        assert manager_role is not None
+
+        token = secrets.token_urlsafe(32)
+        email = f"accept-role-{uuid.uuid4().hex[:6]}@example.com"
+        invite = Invite(
+            email=email,
+            tenant_id=admin_user.current_tenant_id,
+            invited_by=admin_user.id,
+            role_id=manager_role.id,
+            token=token,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="pending",
+        )
+        db.add(invite)
+        db.commit()
+
+        resp = client.post(f"/api/v1/accept-invite/accept-invite?token={token}&password=secret123")
+        assert resp.status_code == 200, resp.text
+
+
+        # Verify that the accepted user has the manager role in this tenant
+        accepted_user = db.query(User).filter(User.email == email).first()
+        assert accepted_user is not None
+
+        assoc = db.query(user_tenant_association).filter(
+            user_tenant_association.c.user_id == accepted_user.id,
+            user_tenant_association.c.tenant_id == admin_user.current_tenant_id
+        ).first()
+        assert assoc is not None
+        assert assoc.role_id == manager_role.id
+
+

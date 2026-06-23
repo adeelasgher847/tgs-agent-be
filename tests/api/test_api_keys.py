@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import require_admin_or_owner
+from app.api.deps import require_admin
 from app.main import app
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -45,9 +45,9 @@ def admin_user(db, workspace) -> User:
 
 @pytest.fixture
 def authed_client(client: TestClient, admin_user: User):
-    app.dependency_overrides[require_admin_or_owner] = lambda: admin_user
+    app.dependency_overrides[require_admin] = lambda: admin_user
     yield client
-    app.dependency_overrides.pop(require_admin_or_owner, None)
+    app.dependency_overrides.pop(require_admin, None)
 
 
 @pytest.mark.usefixtures("db")
@@ -120,4 +120,4 @@ class TestApiKeyEndpoints:
             json={"name": ""},
             headers={"Authorization": "Bearer fake"},
         )
-        assert resp.status_code == 422
+        assert resp.status_code == 400

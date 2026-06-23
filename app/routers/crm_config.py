@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import List
 import uuid
 
-from app.api.deps import get_db, require_tenant, require_owner, get_current_user_jwt
+from app.api.deps import get_db, require_config, require_readonly, require_admin, get_current_user_jwt
 from app.models.user import User
 from app.models.plan import Plan
 from app.models.tenant import Tenant
@@ -31,7 +31,7 @@ crm_config_service = CRMConfigService()
 @router.post("", response_model=SuccessResponse[CRMConfigOut])
 async def create_crm_config(
     crm_config_data: CRMConfigCreate,
-    user: User = Depends(require_owner),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db)
 ):
     """
@@ -134,7 +134,7 @@ async def create_crm_config(
 async def update_crm_config(
     crm_config_id: str,
     update_data: CRMConfigUpdate,
-    user: User = Depends(require_owner),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db)
 ):
     """
@@ -213,7 +213,7 @@ async def update_crm_config(
 @router.delete("/{crm_config_id}", response_model=SuccessResponse[dict],include_in_schema=False)
 async def delete_crm_config(
     crm_config_id: str,
-    user: User = Depends(require_owner),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db)
 ):
     """
@@ -258,7 +258,7 @@ async def delete_crm_config(
 
 @router.get("", response_model=SuccessResponse[list[CRMConfigOut]])
 async def get_all_crm_configs(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
     """
@@ -336,7 +336,7 @@ def get_current_user_subscriptions(
 def start_plan_checkout(
     stripe_price_id: str = Query(..., description="Stripe Price ID of the plan to purchase"),
     current_user: User = Depends(get_current_user_jwt),
-    owner_user: User = Depends(require_owner),
+    owner_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """

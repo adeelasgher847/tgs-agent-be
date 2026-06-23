@@ -110,3 +110,15 @@ class WorkspaceUsageOut(BaseModel):
     minutes_included: Decimal | None
     overage_minutes: Decimal
     overage_cost: Decimal
+
+
+class MemberRoleUpdate(BaseModel):
+    """Request body for PUT /api/v2/workspace/members/{user_id}/role"""
+    role: str
+
+
+class MemberRoleOut(BaseModel):
+    """Response shape after a member's role is updated"""
+    user_id: uuid.UUID
+    workspace_id: uuid.UUID
+    role: str

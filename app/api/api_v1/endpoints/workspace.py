@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, get_workspace_api_key, require_tenant
+from app.api.deps import get_db, get_workspace_api_key, require_tenant, require_config
 from app.core.request_auth import get_workspace_from_request
 from app.core.config import settings
 from app.core.logger import logger
@@ -269,7 +269,7 @@ def update_workspace_name(
 )
 def generate_make_integration_secret(
     request: Request,
-    _user=Depends(require_tenant),
+    _user=Depends(require_config),
     db: Session = Depends(get_db),
 ):
     """Generate or rotate the Make.com webhook secret for the authenticated workspace."""
@@ -317,7 +317,7 @@ def generate_make_integration_secret(
 )
 def generate_n8n_integration_secret(
     request: Request,
-    _user=Depends(require_tenant),
+    _user=Depends(require_config),
     db: Session = Depends(get_db),
 ):
     """Generate or rotate the n8n webhook secret for the authenticated workspace."""

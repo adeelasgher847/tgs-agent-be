@@ -25,6 +25,8 @@ from app.models.refresh_token import RefreshToken
 from app.schemas.auth import TokenResponse, RoleInfo
 from app.services.role_service import is_admin_in_tenant, get_user_role_in_tenant
 from app.services.role_service import get_user_product_in_tenant
+from app.services import role_service
+from app.services import rbac_cache_service
 import uuid
 
 security = HTTPBearer()
@@ -45,8 +47,14 @@ def get_active_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[User]:
 
 
 def _reject_readonly_on_write(request: Request, role_name: str) -> None:
-    """Block readonly role from mutating HTTP methods (GET remains allowed)."""
-    if request.method in _WRITE_METHODS and role_name == "readonly":
+    """Block read_only role from mutating HTTP methods (GET remains allowed).
+
+    Superseded by the rank-based require_* dependencies below (which reject
+    read_only on every method, not just writes) — kept for the handful of
+    unit tests that exercise it directly and for require_write_access, which
+    nothing in this codebase still depends on at the route level.
+    """
+    if request.method in _WRITE_METHODS and role_name == "read_only":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Read-only access cannot modify resources",
@@ -352,72 +360,137 @@ def get_optional_tenant_user(
         return None
 
 
-def require_admin(
-    user: User = Depends(require_write_access),
-    db: Session = Depends(get_db)
-) -> User:
-    """Ensure user is an admin in their current tenant."""
+def _forbidden(role_required: str, user_role: Optional[str]) -> HTTPException:
+    """Structured 403 per the RBAC matrix: detail.code/role_required/user_role/message."""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": "forbidden",
+            "role_required": role_required,
+            "user_role": user_role or "none",
+            "message": f"This action requires {role_required} role.",
+        },
+    )
+
+
+def _not_a_member() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You are not a member of this tenant",
+    )
+
+
+def _resolve_effective_role(user: User, db: Session) -> Optional[str]:
+    """Cached effective role for the user's current tenant (None = not a member)."""
     if not user.current_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
+            detail="No tenant selected. Please set a current tenant.",
         )
-    
-    if not is_admin_in_tenant(db, user.id, user.current_tenant_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required for this operation"
-        )
-    
-    # Ensure tenants relationship is loaded
-    if not hasattr(user, 'tenants') or user.tenants is None:
+    return rbac_cache_service.get_effective_role(db, user.id, user.current_tenant_id)
+
+
+def _attach_tenants(user: User, db: Session) -> User:
+    if not hasattr(user, "tenants") or user.tenants is None:
         user.tenants = db.query(Tenant).join(user_tenant_association).filter(
             user_tenant_association.c.user_id == user.id
         ).all()
-    
     return user
 
 
-def require_member(
-    user: User = Depends(require_write_access),
+def _require_rank(required: str):
+    """Build a dependency that passes when the caller's effective role outranks
+    ``required`` in the admin > manager > config_only > read_only chain."""
+
+    def _dependency(
+        user: User = Depends(require_user_tenant),
+        db: Session = Depends(get_db),
+    ) -> User:
+        role_name = _resolve_effective_role(user, db)
+        if role_name is None:
+            raise _not_a_member()
+        if not role_service.has_rank(role_name, required):
+            raise _forbidden(required, role_name)
+        return _attach_tenants(user, db)
+
+    _dependency.__name__ = f"require_{required}"
+    return _dependency
+
+
+# ─────────────────────────────────────────── canonical RBAC dependencies ──
+# admin > manager > config_only > read_only. billing_only sits outside this
+# chain (see require_billing) — see docs/rbac-matrix.md for the full matrix.
+require_admin = _require_rank(role_service.ADMIN)
+require_manager = _require_rank(role_service.MANAGER)
+require_config = _require_rank(role_service.CONFIG_ONLY)
+require_readonly = _require_rank(role_service.READ_ONLY)
+
+
+def _require_rank_or_api_key(required: str):
+    """Like _require_rank, but lets API-key (M2M) principals through untiered.
+
+    ApiKeyPrincipal has no per-user role at all — it's a workspace-bound
+    credential, not a member — and several existing v1 routes (call-flows,
+    knowledge-base, allowed-domains) are exercised by both a dashboard JWT
+    user and machine-to-machine API key callers today. Rejecting
+    ApiKeyPrincipal here (as the plain rank dependencies do, via
+    require_user_tenant) would silently break those M2M integrations.
+    """
+
+    def _dependency(
+        principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+        db: Session = Depends(get_db),
+    ) -> Union[User, ApiKeyPrincipal]:
+        if isinstance(principal, ApiKeyPrincipal):
+            return principal
+        role_name = _resolve_effective_role(principal, db)
+        if role_name is None:
+            raise _not_a_member()
+        if not role_service.has_rank(role_name, required):
+            raise _forbidden(required, role_name)
+        return principal
+
+    _dependency.__name__ = f"require_{required}_or_api_key"
+    return _dependency
+
+
+require_config_or_api_key = _require_rank_or_api_key(role_service.CONFIG_ONLY)
+require_readonly_or_api_key = _require_rank_or_api_key(role_service.READ_ONLY)
+require_admin_or_api_key = _require_rank_or_api_key(role_service.ADMIN)
+
+
+
+def require_billing(
+    user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db),
 ) -> User:
-    """Ensure user is a tenant member; readonly may not use write HTTP methods."""
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant.",
-        )
-
-    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-    if not role:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a member of this tenant",
-        )
-
+    """billing_only, manager, and admin may call billing endpoints; config_only
+    and read_only may not (billing_only is not part of the linear rank chain)."""
+    role_name = _resolve_effective_role(user, db)
+    if role_name is None:
+        raise _not_a_member()
+    if not role_service.can_access_billing(role_name):
+        raise _forbidden(role_service.BILLING_ONLY, role_name)
     return user
 
 
-def require_member_or_admin(
-    user: User = Depends(require_write_access),
-    db: Session = Depends(get_db),
-) -> User:
-    """Ensure user is a tenant member; readonly may not use write HTTP methods."""
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant.",
-        )
-
-    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-    if not role:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a member of this tenant",
-        )
-
-    return user
+# Legacy aliases — 'owner' and 'member' role *names* were retired in migration
+# 9f3a2c7e5d41 (owner collapses into admin via is_creator; member becomes
+# config_only), but ~80 existing call sites across the app (TalentSync resume/
+# job/interview routers, CRM config, etc.) still import these names directly.
+# Keeping them bound to the new rank-based dependencies avoids touching every
+# one of those call sites while giving them correct hierarchy + caching +
+# owner-override behavior for free.
+#
+# Known intentional behavior change: require_owner previously passed only the
+# literal workspace creator; it now passes any admin-tier user, because the
+# ticket's 5-role model has no creator-exclusive tier. Flagged in the RBAC
+# matrix doc for the handful of routes that used require_owner specifically
+# (scheduled_calls, inbound_crm, crm_config, clickup_oauth).
+require_owner = require_admin
+require_admin_or_owner = require_admin
+require_member = require_readonly
+require_member_or_admin = require_readonly
 
 
 def require_active_workspace(
@@ -463,117 +536,6 @@ def require_active_tenant(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Tenant is {workspace.status}. Please contact support.",
-        )
-
-    return user
-
-
-def require_owner(
-    user: User = Depends(require_write_access),
-    db: Session = Depends(get_db)
-) -> User:
-    """Ensure user is owner (only) in their current tenant."""
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
-        )
-    
-    # Get user's role in the current tenant
-    from app.services.role_service import get_user_role_in_tenant
-    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-    
-    if not role:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a member of this tenant"
-        )
-    
-    # Check if user is owner (only)
-    if role.name != "owner":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Owner access required for this operation"
-        )
-    
-    return user
-
-
-def require_admin_or_owner(
-    user: User = Depends(require_write_access),
-    db: Session = Depends(get_db)
-) -> User:
-    """Ensure user is admin or owner in their current tenant."""
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant."
-        )
-    
-    # Get user's role in the current tenant
-    from app.services.role_service import get_user_role_in_tenant
-    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-    
-    if not role:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a member of this tenant"
-        )
-    
-    # Check if user is admin or owner
-    if role.name not in ["admin", "owner"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin or Owner access required for this operation"
-        )
-
-    return user
-
-
-# Roles that may configure workspace settings (but not manage users)
-_CONFIG_ROLES = frozenset({"owner", "admin", "config"})
-
-# All roles grant at least read access; readonly is the floor
-_ANY_ROLE = frozenset({"owner", "admin", "member", "config", "readonly"})
-
-
-def require_config(
-    user: User = Depends(require_write_access),
-    db: Session = Depends(get_db),
-) -> User:
-    """Ensure user has config-level access (owner, admin, or config role)."""
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant.",
-        )
-
-    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-    if not role or role.name not in _CONFIG_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Config, Admin, or Owner access required for this operation",
-        )
-
-    return user
-
-
-def require_readonly(
-    user: User = Depends(require_user_tenant),
-    db: Session = Depends(get_db),
-) -> User:
-    """Ensure user is a tenant member with at least readonly access."""
-    if not user.current_tenant_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tenant selected. Please set a current tenant.",
-        )
-
-    role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-    if not role or role.name not in _ANY_ROLE:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not a member of this tenant",
         )
 
     return user

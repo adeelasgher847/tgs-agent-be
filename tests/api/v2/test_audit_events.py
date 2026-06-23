@@ -382,13 +382,19 @@ class TestCallFlowAuditIntegration:
     """
 
     def _build_call_flow_app(self, db_override, principal):
-        from app.api.deps import get_db, require_tenant
+        from app.api.deps import (
+            get_db,
+            require_tenant,
+            require_config_or_api_key,
+            require_readonly_or_api_key,
+        )
         from app.routers.call_flows import router
 
         mini = FastAPI()
         register_exception_handlers(mini)
         mini.include_router(router)
-        mini.dependency_overrides[require_tenant] = lambda: principal
+        for dep in (require_tenant, require_config_or_api_key, require_readonly_or_api_key):
+            mini.dependency_overrides[dep] = lambda: principal
         mini.dependency_overrides[get_db] = lambda: db_override
         return TestClient(mini, raise_server_exceptions=False)
 

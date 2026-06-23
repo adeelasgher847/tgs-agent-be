@@ -72,7 +72,7 @@ class TestErrorEnvelope:
 
     def test_validation_error_envelope(self):
         resp = self.client.post("/validate", json={})
-        assert resp.status_code == 422
+        assert resp.status_code == 400
         _assert_envelope(resp.json(), "validation_error")
 
     def test_404_envelope(self):

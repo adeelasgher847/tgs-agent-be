@@ -5,6 +5,7 @@ import sqlite3
 from unittest.mock import MagicMock
 
 # Rime TTS is validated at app startup; tests must not depend on a developer .env file.
+os.environ["RATE_LIMIT_ENABLED"] = "False"
 os.environ.setdefault("RIME_API_KEY", "test-rime-key-for-pytest")
 os.environ.setdefault(
     "ELEVENLABS_ENCRYPTION_KEY",
@@ -146,6 +147,13 @@ def db():
         db.commit()
         db.refresh(user_role)
 
+        manager_role = Role(name="manager", description="Manager role")
+        config_role = Role(name="config_only", description="Config only role")
+        readonly_role = Role(name="read_only", description="Read only role")
+        billing_role = Role(name="billing_only", description="Billing only role")
+        db.add_all([manager_role, config_role, readonly_role, billing_role])
+        db.commit()
+
         test_tenant = Tenant(name="Test Tenant", schema_name="test_tenant_schema")
         db.add(test_tenant)
         db.commit()
@@ -163,6 +171,69 @@ def db():
 
         test_user.tenants.append(test_tenant)
         test_user.current_tenant_id = test_tenant.id
+        db.commit()
+
+        # Seed catalog data for Schema v2 validations in unit tests
+        from app.models.provider import Provider
+        from app.models.model import Model
+        from app.models.stt_provider import STTProvider
+        from app.models.stt_model import STTModel
+        from app.models.tts_provider import TTSProvider
+        from app.models.tts_voice import TTSVoice
+
+        # Seed LLM Providers and Models
+        openai_p = Provider(name="openai", is_active=True)
+        gemini_p = Provider(name="gemini", is_active=True)
+        groq_p = Provider(name="groq", is_active=True)
+        db.add_all([openai_p, gemini_p, groq_p])
+        db.commit()
+
+        db.add_all([
+            Model(provider_id=openai_p.id, model_name="gpt-4o-mini", archive=False),
+            Model(provider_id=openai_p.id, model_name="gpt-4o", archive=False),
+            Model(provider_id=openai_p.id, model_name="gpt-4.1", archive=False),
+            Model(provider_id=openai_p.id, model_name="gpt-4.1-mini", archive=False),
+            Model(provider_id=openai_p.id, model_name="gpt-4-turbo", archive=False),
+            Model(provider_id=gemini_p.id, model_name="gemini-2.5-flash", archive=False),
+            Model(provider_id=gemini_p.id, model_name="gemini-2.0-flash-001", archive=False),
+            Model(provider_id=gemini_p.id, model_name="gemini-2.0-flash", archive=False),
+            Model(provider_id=gemini_p.id, model_name="gemini-1.5-pro", archive=False),
+            Model(provider_id=gemini_p.id, model_name="gemini-1.5-flash", archive=False),
+            Model(provider_id=gemini_p.id, model_name="claude-3-5-sonnet", archive=False),
+            Model(provider_id=gemini_p.id, model_name="claude-3-haiku", archive=False),
+            Model(provider_id=groq_p.id, model_name="llama-3.1-70b-versatile", archive=False),
+            Model(provider_id=groq_p.id, model_name="llama-3.1-8b-instant", archive=False),
+        ])
+        db.commit()
+
+        # Seed STT Providers and Models
+        stt_deepgram = STTProvider(slug="deepgram", display_name="Deepgram", is_active=True)
+        stt_google = STTProvider(slug="google", display_name="Google Cloud STT", is_active=True)
+        db.add_all([stt_deepgram, stt_google])
+        db.commit()
+
+        db.add_all([
+            STTModel(provider_id=stt_deepgram.id, external_model_id="nova-3", display_name="Nova-3", language_code="en", is_active=True),
+            STTModel(provider_id=stt_google.id, external_model_id="chirp-3", display_name="Chirp-3", language_code="en", is_active=True),
+        ])
+        db.commit()
+
+        # Seed TTS Providers and Voices
+        tts_eleven = TTSProvider(slug="elevenlabs", display_name="ElevenLabs", is_active=True)
+        tts_rime = TTSProvider(slug="rime", display_name="Rime", is_active=True)
+        tts_cartesia = TTSProvider(slug="cartesia", display_name="Cartesia", is_active=True)
+        db.add_all([tts_eleven, tts_rime, tts_cartesia])
+        db.commit()
+
+        db.add_all([
+            TTSVoice(provider_id=tts_eleven.id, external_voice_id="21m00Tcm4TlvDq8ikWAM", display_name="Rachel", language_code="en", is_active=True),
+            TTSVoice(provider_id=tts_eleven.id, external_voice_id="voice-1", display_name="Voice 1", language_code="en", is_active=True),
+            TTSVoice(provider_id=tts_eleven.id, external_voice_id="EXAVITQu4vr4xnSDxMaL", display_name="Rachel 2", language_code="en", is_active=True),
+            TTSVoice(provider_id=tts_eleven.id, external_voice_id="vY", display_name="Voice Y", language_code="en", is_active=True),
+            TTSVoice(provider_id=tts_eleven.id, external_voice_id="vZ", display_name="Voice Z", language_code="en", is_active=True),
+            TTSVoice(provider_id=tts_rime.id, external_voice_id="rime-voice-1", display_name="Rime Voice 1", language_code="en", is_active=True),
+            TTSVoice(provider_id=tts_cartesia.id, external_voice_id="cartesia-voice-1", display_name="Cartesia Voice 1", language_code="en", is_active=True),
+        ])
         db.commit()
 
         yield db
@@ -233,7 +304,7 @@ def pg_engine():
     _pg_test_schema = None
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def pg_auth_middleware(pg_engine):
     """
     Point ApiKeyMiddleware async lookups at the same isolated Postgres schema
@@ -301,7 +372,7 @@ def pg_session(pg_session_factory):
         session.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def pg_client(pg_engine, pg_auth_middleware, pg_session_factory):
     """
     Session-scoped TestClient wired to the Postgres test schema.

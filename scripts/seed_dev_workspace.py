@@ -47,13 +47,15 @@ SEED_ADMIN_PASSWORD = "dev-password-change-me"
 SEED_ADMIN_FIRST = "Dev"
 SEED_ADMIN_LAST = "Admin"
 
-# Canonical role names — must match values in the role table
+# Canonical role names — must match values in the role table.
+# 'owner' and 'member' were retired in migration 9f3a2c7e5d41: the workspace
+# creator is tracked via user_tenant_association.is_creator instead.
 _ALL_ROLES = [
-    ("owner",    "Owner role with full access to tenant"),
-    ("admin",    "Administrator role with full access"),
-    ("member",   "Regular member role with limited access"),
-    ("config",   "Configure workspace settings; cannot manage users"),
-    ("readonly", "Read-only access; blocked from mutating endpoints"),
+    ("admin",        "Administrator role with full access"),
+    ("manager",      "Full operational access; cannot manage members or billing"),
+    ("config_only",  "Configure workspace settings; cannot manage users"),
+    ("read_only",    "Read-only access; blocked from mutating endpoints"),
+    ("billing_only", "Access limited to billing endpoints (usage, pricing)"),
 ]
 
 

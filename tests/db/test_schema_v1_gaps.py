@@ -107,8 +107,8 @@ class TestIndexes:
         assert "ix_apikey_key_hash_tenant_id" in names
 
     def test_user_email_unique(self):
-        col = _column(User, "email")
-        assert col.unique is True
+        names = self._index_names(User)
+        assert "uq_user_email_active" in names
 
 
 # ------------------------------------------------------------------- created_at

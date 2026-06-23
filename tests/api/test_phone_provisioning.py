@@ -95,11 +95,24 @@ def authed_client(client: TestClient, phone_tenant: Tenant):
     async def _resolve(_key_hash, _workspace_id):
         return payload
 
+    from app.main import app
+    from app.models.user import User
+    from app.api.deps import require_config, require_readonly, require_admin
+
+    mock_user = User(current_tenant_id=phone_tenant.id)
+    app.dependency_overrides[require_config] = lambda: mock_user
+    app.dependency_overrides[require_readonly] = lambda: mock_user
+    app.dependency_overrides[require_admin] = lambda: mock_user
+
     with patch(
         "app.middleware.api_key_middleware._resolve_api_key",
         side_effect=_resolve,
     ):
         yield client
+
+    app.dependency_overrides.pop(require_config, None)
+    app.dependency_overrides.pop(require_readonly, None)
+    app.dependency_overrides.pop(require_admin, None)
 
 
 # ---------------------------------------------------------------------------

@@ -17,8 +17,12 @@ class Invite(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
+    role_id = Column(UUID(as_uuid=True), ForeignKey('role.id'), nullable=True)
+
     tenant = relationship("Tenant")
     inviter = relationship("User", foreign_keys=[invited_by])
+    role = relationship("Role")
+
 
     __table_args__ = (
         Index("ix_invite_email_tenant_id", "email", "tenant_id"),

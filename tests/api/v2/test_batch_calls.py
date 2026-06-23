@@ -228,10 +228,12 @@ class TestCreateBatchJob:
         with pytest.raises(_HTTPException) as exc_info:
             asyncio.run(
                 create_batch_job(
+                    request=MagicMock(),
                     file=mock_file,
                     agent_id=AGENT_ID,
                     scheduled_at=None,
                     workspace=mock_workspace,
+                    db=MagicMock(),
                     svc=mock_svc,
                 )
             )
@@ -269,10 +271,12 @@ class TestCreateBatchJob:
         with pytest.raises(_HTTPException) as exc_info:
             asyncio.run(
                 create_batch_job(
+                    request=MagicMock(),
                     file=mock_file,
                     agent_id=AGENT_ID,
                     scheduled_at=None,
                     workspace=mock_workspace,
+                    db=MagicMock(),
                     svc=mock_svc,
                 )
             )
@@ -326,10 +330,12 @@ class TestCreateBatchJob:
 
         result = asyncio.run(
             create_batch_job(
+                request=MagicMock(),
                 file=mock_file,
                 agent_id=AGENT_ID,
                 scheduled_at=None,
                 workspace=mock_workspace,
+                db=MagicMock(),
                 svc=mock_svc,
             )
         )

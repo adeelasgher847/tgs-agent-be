@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.api_v1.endpoints.workspace import v2_router
+from app.api.v2.routers.workspace import v2_router
 from app.api.deps import require_admin, get_db
 
 @pytest.fixture

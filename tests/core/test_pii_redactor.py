@@ -360,19 +360,18 @@ class TestSafeErrorMessage:
 class TestBuildApiErrorPayload:
     def test_structure(self):
         payload = build_api_error_payload(404, "Agent not found")
-        assert payload["error_code"] == "NOT_FOUND"
-        assert payload["message"] == "Agent not found"
-        assert payload["status_code"] == 404
+        assert payload["error"]["code"] == "not_found"
+        assert payload["error"]["message"] == "Agent not found"
 
     def test_pii_in_detail_redacted(self):
         payload = build_api_error_payload(400, "Invalid user bob@example.com")
-        assert REDACTED in payload["message"]
-        assert "bob@example.com" not in payload["message"]
+        assert REDACTED in payload["error"]["message"]
+        assert "bob@example.com" not in payload["error"]["message"]
 
     def test_500_never_leaks_exception_text(self):
         payload = build_api_error_payload(500, "user@leak.com timeout")
-        assert "leak.com" not in payload["message"]
-        assert payload["error_code"] == "INTERNAL_ERROR"
+        assert "leak.com" not in payload["error"]["message"]
+        assert payload["error"]["code"] == "internal_error"
 
 
 class TestCallInitiateErrorPayload:
@@ -393,8 +392,8 @@ class TestCallInitiateErrorPayload:
         payload = build_call_initiate_error_payload(
             500, "call to +14155552671 failed", req
         )
-        assert payload["detail"] == payload["message"]
-        assert "+14155552671" not in payload["message"]
+        assert payload["detail"] == payload["error"]["message"]
+        assert "+14155552671" not in payload["error"]["message"]
         assert payload["board_id"] == "b1"
         assert payload["monday_item_id"] == "m1"
 
@@ -408,23 +407,29 @@ class TestExceptionHandlers:
         import asyncio
         from unittest.mock import MagicMock
 
-        request = MagicMock()
-        request.method = "GET"
-        request.url.path = "/test"
+        class MockRequest:
+            method = "GET"
+            url = MagicMock(path="/test")
+            state = MagicMock(request_id="rid")
+
+        request = MockRequest()
         exc = HTTPException(status_code=400, detail="Bad email user@leak.com")
         response = asyncio.run(http_exception_handler(request, exc))
         body = response.body.decode()
         assert "user@leak.com" not in body
         assert REDACTED in body
-        assert "error_code" in body
+        assert "code" in body
 
     def test_http_exception_500_generic_message(self):
         import asyncio
         from unittest.mock import MagicMock
 
-        request = MagicMock()
-        request.method = "GET"
-        request.url.path = "/test"
+        class MockRequest:
+            method = "GET"
+            url = MagicMock(path="/test")
+            state = MagicMock(request_id="rid")
+
+        request = MockRequest()
         exc = HTTPException(status_code=500, detail="DB error for user@leak.com")
         response = asyncio.run(http_exception_handler(request, exc))
         body = response.body.decode()
@@ -450,22 +455,25 @@ class TestExceptionHandlers:
 
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post("/items", json={"email": "not-an-email"})
-        assert resp.status_code == 422
+        assert resp.status_code == 400
         data = resp.json()
-        assert data["error_code"] == "VALIDATION_ERROR"
-        assert data["message"] == "Request validation failed"
+        assert data["error"]["code"] == "validation_error"
+        assert data["error"]["message"] == "Request validation failed"
         assert "not-an-email" not in str(data)
 
     def test_unhandled_exception_safe(self):
         import asyncio
         from unittest.mock import MagicMock
 
-        request = MagicMock()
-        request.method = "POST"
-        request.url.path = "/test"
+        class MockRequest:
+            method = "POST"
+            url = MagicMock(path="/test")
+            state = MagicMock(request_id="rid")
+
+        request = MockRequest()
         response = asyncio.run(
             unhandled_exception_handler(request, RuntimeError("user@secret.com"))
         )
         data = response.body.decode()
         assert "user@secret.com" not in data
-        assert "INTERNAL_ERROR" in data
+        assert "internal_error" in data

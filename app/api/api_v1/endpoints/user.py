@@ -181,13 +181,15 @@ def login(
         
         # Check if user has a role in this tenant
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
-        
-        if role:
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_tenant_id)
+        if disp:
             role_info = RoleInfo(
-                id=role.id,
-                name=role.name,
-                description=role.description
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
             )
+        if role:
             current_role = role.name
         product = get_user_product_in_tenant(db, user.id, current_tenant_id)
         if product:
@@ -376,12 +378,15 @@ def google_login(
     current_role = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
-        if role:
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_tenant_id)
+        if disp:
             role_info = RoleInfo(
-                id=role.id,
-                name=role.name,
-                description=role.description
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
             )
+        if role:
             current_role = role.name
 
     # Issue tokens (provider-based; no password needed)
@@ -450,8 +455,15 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_role: Optional[str] = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_tenant_id)
+        if disp:
+            role_info = RoleInfo(
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
+            )
         if role:
-            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
             current_role = role.name
 
     def _cache_matches_context(cached_payload: dict) -> bool:
@@ -760,10 +772,15 @@ def get_user_profile(
     # Get role information for the current tenant
     role_info = None
     if user.current_tenant_id:
-        from app.services.role_service import get_user_role_in_tenant
         role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-        if role:
-            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, user.current_tenant_id)
+        if disp:
+            role_info = RoleInfo(
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
+            )
 
     # Create user profile response
     user_profile = UserProfile(
@@ -831,10 +848,15 @@ def update_user_profile(
     # Get role information for the current tenant
     role_info = None
     if current_user.current_tenant_id:
-        from app.services.role_service import get_user_role_in_tenant
         role = get_user_role_in_tenant(db, current_user.id, current_user.current_tenant_id)
-        if role:
-            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, current_user.id, current_user.current_tenant_id)
+        if disp:
+            role_info = RoleInfo(
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
+            )
 
     # Create updated user profile response
     user_profile = UserProfile(
@@ -886,11 +908,13 @@ def get_tenant_members(
         # Get role information for this user in the current tenant
         role = get_user_role_in_tenant(db, user.id, current_user.current_tenant_id)
         role_info = None
-        if role:
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_user.current_tenant_id)
+        if disp:
             role_info = RoleInfo(
-                id=role.id,
-                name=role.name,
-                description=role.description
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
             )
         
         member = TenantMember(

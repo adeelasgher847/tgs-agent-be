@@ -654,18 +654,16 @@ class TestHipaaFlowSettings:
         db, flow = self._make_db_with_flow(hipaa_compliance=False, baa_on_file=True)
         client = _build_hipaa_app(db)
 
-        with patch("app.api.v2.routers.hipaa.logger") as mock_logger:
+        with patch("app.api.v2.routers.hipaa.log_audit_event") as mock_log_audit:
             client.put(f"/flows/{FLOW_ID}/settings", json={"hipaa_compliance": True})
 
-        # Check that logger.info was called with the audit action
-        info_calls = mock_logger.info.call_args_list
-        audit_calls = [c for c in info_calls if "flow.hipaa_updated" in str(c)]
-        assert len(audit_calls) == 1, f"Expected audit event, got: {info_calls}"
-
-        # Verify old/new values are in the args
-        audit_args = audit_calls[0][0]  # positional args tuple
-        assert False in audit_args  # old_value=False
-        assert True in audit_args   # new_value=True
+        mock_log_audit.assert_called_once()
+        kwargs = mock_log_audit.call_args.kwargs
+        assert kwargs["action"] == "hipaa_flag.updated"
+        assert kwargs["resource_type"] == "call_flow"
+        assert kwargs["resource_id"] == FLOW_ID
+        assert kwargs["old_value"] == {"hipaa_compliance": False}
+        assert kwargs["new_value"] == {"hipaa_compliance": True}
 
     def test_no_change_skips_commit(self):
         db, flow = self._make_db_with_flow(hipaa_compliance=True, baa_on_file=True)
@@ -805,7 +803,7 @@ class TestKmsKeyUpdate:
         assert resp.status_code == 200
         assert resp.json()["data"]["kms_key_name"] == self._VALID_KEY
         assert tenant.kms_key_name == self._VALID_KEY
-        db.commit.assert_called_once()
+        assert db.commit.call_count == 2
         mock_set_bucket.assert_called_once_with(self._VALID_KEY)
 
     def test_bucket_default_kms_failure_does_not_break_response(self):
@@ -855,7 +853,8 @@ class TestKmsKeyUpdate:
 class TestRecordingHipaaRbac:
     """
     GET /api/v1/recordings/{call_id}
-    HIPAA flows: 403 for readonly/config roles, 200 for admin/owner/member.
+    HIPAA flows: 403 for read_only/config_only roles, 200 for admin/manager
+    (and the workspace creator, via is_creator — see require_admin in deps.py).
     """
 
     def _setup_recording_app(
@@ -884,10 +883,6 @@ class TestRecordingHipaaRbac:
         flow.id = flow_id
         flow.hipaa_compliance = hipaa_compliance
 
-        # Mock role
-        role = MagicMock()
-        role.name = role_name
-
         db = MagicMock()
 
         def _query(model):
@@ -915,13 +910,13 @@ class TestRecordingHipaaRbac:
         mini.dependency_overrides[require_tenant] = lambda: user
         mini.dependency_overrides[get_db] = lambda: db
 
-        return TestClient(mini, raise_server_exceptions=False), role
+        return TestClient(mini, raise_server_exceptions=False)
 
-    @pytest.mark.parametrize("role_name", ["readonly", "config"])
+    @pytest.mark.parametrize("role_name", ["read_only", "config_only"])
     def test_blocked_role_on_hipaa_flow_returns_403(self, role_name: str):
-        client, role = self._setup_recording_app(hipaa_compliance=True, role_name=role_name)
+        client = self._setup_recording_app(hipaa_compliance=True, role_name=role_name)
 
-        with patch("app.routers.recordings.get_user_role_in_tenant", return_value=role):
+        with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
             with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
                 with patch("app.services.gcs_recording_service.generate_signed_url"):
                     resp = client.get(f"/{CALL_ID}")
@@ -931,11 +926,11 @@ class TestRecordingHipaaRbac:
         message = resp.json()["error"]["message"]
         assert "HIPAA" in message or "admin" in message.lower()
 
-    @pytest.mark.parametrize("role_name", ["admin", "owner", "member"])
+    @pytest.mark.parametrize("role_name", ["admin", "manager"])
     def test_allowed_role_on_hipaa_flow_returns_200(self, role_name: str):
-        client, role = self._setup_recording_app(hipaa_compliance=True, role_name=role_name)
+        client = self._setup_recording_app(hipaa_compliance=True, role_name=role_name)
 
-        with patch("app.routers.recordings.get_user_role_in_tenant", return_value=role):
+        with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
             with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
                 with patch("app.services.gcs_recording_service.generate_signed_url", return_value="https://signed.url"):
                     with patch("app.services.gcs_recording_service.get_object_size", return_value=1024):
@@ -943,12 +938,12 @@ class TestRecordingHipaaRbac:
 
         assert resp.status_code == 200
 
-    @pytest.mark.parametrize("role_name", ["readonly", "config"])
+    @pytest.mark.parametrize("role_name", ["read_only", "config_only"])
     def test_blocked_role_on_non_hipaa_flow_returns_200(self, role_name: str):
         """HIPAA RBAC gate only applies when hipaa_compliance=True."""
-        client, role = self._setup_recording_app(hipaa_compliance=False, role_name=role_name)
+        client = self._setup_recording_app(hipaa_compliance=False, role_name=role_name)
 
-        with patch("app.routers.recordings.get_user_role_in_tenant", return_value=role):
+        with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
             with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
                 with patch("app.services.gcs_recording_service.generate_signed_url", return_value="https://signed.url"):
                     with patch("app.services.gcs_recording_service.get_object_size", return_value=512):

@@ -465,9 +465,14 @@ def test_within_business_hours_dispatches_call():
 
     svc = CallbackSchedulerService()
 
-    with patch("app.services.callback_scheduler_service.datetime") as mock_dt:
+    with (
+        patch("app.services.callback_scheduler_service.datetime") as mock_dt,
+        patch.object(svc, "_dispatch_call") as mock_dispatch,
+    ):
         mock_dt.utcnow.return_value = open_dt
         svc._dispatch_and_advance(db, schedule)
+
+    mock_dispatch.assert_called_once_with(db, schedule, agent)
 
     # Schedule must be marked executed
     assert schedule.status == "executed"
@@ -476,7 +481,7 @@ def test_within_business_hours_dispatches_call():
     add_calls = [
         call_args[0][0]
         for call_args in db.add.call_args_list
-        if isinstance(call_args[0][0], CallbackSchedule)
+        if isinstance(call_args[0][0], CallbackSchedule) and call_args[0][0] is not schedule
     ]
     assert len(add_calls) == 1, "Expected one chained CallbackSchedule to be added"
     assert add_calls[0].attempt_number == 2
@@ -535,16 +540,21 @@ def test_exhaustion_at_max_attempts():
 
     svc = CallbackSchedulerService()
 
-    with patch("app.services.callback_scheduler_service.datetime") as mock_dt:
+    with (
+        patch("app.services.callback_scheduler_service.datetime") as mock_dt,
+        patch.object(svc, "_dispatch_call") as mock_dispatch,
+    ):
         mock_dt.utcnow.return_value = open_dt
         svc._dispatch_and_advance(db, schedule)
+
+    mock_dispatch.assert_called_once_with(db, schedule, agent)
 
     # Final schedule must be exhausted, no new record added
     assert schedule.status == "exhausted"
     chained = [
         call_args[0][0]
         for call_args in db.add.call_args_list
-        if isinstance(call_args[0][0], CallbackSchedule)
+        if isinstance(call_args[0][0], CallbackSchedule) and call_args[0][0] is not schedule
     ]
     assert len(chained) == 0, "No chained schedule should be created after exhaustion"
 

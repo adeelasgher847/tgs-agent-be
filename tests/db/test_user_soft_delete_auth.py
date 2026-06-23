@@ -3,10 +3,10 @@
 Covers:
 1. Soft-deleted user cannot log in.
 2. Soft-deleted user cannot use refresh token.
-3. require_config allows owner/admin/config; blocks member/readonly.
+3. require_config allows admin/manager/config_only; blocks read_only/billing_only.
 4. require_readonly allows any tenant member; blocks non-members.
-5. init_roles includes config and readonly.
-6. Migration file for roles exists with correct chain.
+5. init_roles includes the 5 canonical roles.
+6. Migration files for roles exist with correct chains.
 """
 from __future__ import annotations
 
@@ -24,10 +24,9 @@ from app.api.deps import (
     require_config,
     require_readonly,
     require_write_access,
-    _CONFIG_ROLES,
-    _ANY_ROLE,
     _reject_readonly_on_write,
 )
+from app.services import role_service
 from app.core.security import create_user_token
 from app.core.security import (
     get_password_hash,
@@ -94,14 +93,14 @@ class TestReadonlyWriteGuard:
         request = MagicMock()
         request.method = "POST"
         with pytest.raises(HTTPException) as exc_info:
-            _reject_readonly_on_write(request, "readonly")
+            _reject_readonly_on_write(request, "read_only")
         assert exc_info.value.status_code == 403
         assert "read-only" in exc_info.value.detail.lower()
 
     def test_readonly_get_allowed(self):
         request = MagicMock()
         request.method = "GET"
-        _reject_readonly_on_write(request, "readonly")
+        _reject_readonly_on_write(request, "read_only")
 
     def test_admin_post_allowed(self):
         request = MagicMock()
@@ -117,7 +116,7 @@ class TestRequireWriteAccessUnit:
         user.id = uuid.uuid4()
         user.current_tenant_id = uuid.uuid4()
         role = MagicMock()
-        role.name = "readonly"
+        role.name = "read_only"
         with patch(
             "app.api.deps.get_user_role_in_tenant", return_value=role
         ):
@@ -132,7 +131,7 @@ class TestRequireWriteAccessUnit:
         user.id = uuid.uuid4()
         user.current_tenant_id = uuid.uuid4()
         role = MagicMock()
-        role.name = "readonly"
+        role.name = "read_only"
         with patch(
             "app.api.deps.get_user_role_in_tenant", return_value=role
         ):
@@ -260,59 +259,71 @@ class TestSoftDeleteUserLookup:
         assert active_user.id in user_ids, "Active user must be included"
 
 
-# ---------------------------------------------------------- RBAC role sets
+# ---------------------------------------------------------- RBAC role hierarchy
 
-class TestRoleSets:
-    def test_config_roles_set(self):
-        assert _CONFIG_ROLES == {"owner", "admin", "config"}
+class TestRoleHierarchy:
+    def test_canonical_roles(self):
+        assert role_service.CANONICAL_ROLES == (
+            "admin", "manager", "config_only", "read_only", "billing_only",
+        )
 
-    def test_any_role_set(self):
-        assert "readonly" in _ANY_ROLE
-        assert "member" in _ANY_ROLE
-        assert "owner" in _ANY_ROLE
+    def test_rank_order(self):
+        assert (
+            role_service.ROLE_RANK["admin"]
+            > role_service.ROLE_RANK["manager"]
+            > role_service.ROLE_RANK["config_only"]
+            > role_service.ROLE_RANK["read_only"]
+        )
 
-    def test_readonly_not_in_config_roles(self):
-        assert "readonly" not in _CONFIG_ROLES
+    def test_billing_only_has_no_rank(self):
+        # Not part of the linear chain — has_rank() treats it (and any
+        # unrecognized name) as rank 0.
+        assert "billing_only" not in role_service.ROLE_RANK
 
-    def test_member_not_in_config_roles(self):
-        assert "member" not in _CONFIG_ROLES
+    def test_admin_and_manager_inherit_into_billing(self):
+        assert role_service.can_access_billing("admin")
+        assert role_service.can_access_billing("manager")
+        assert role_service.can_access_billing("billing_only")
+
+    def test_config_only_and_read_only_excluded_from_billing(self):
+        assert not role_service.can_access_billing("config_only")
+        assert not role_service.can_access_billing("read_only")
+        assert not role_service.can_access_billing(None)
 
 
 # ---------------------------------------------------------- RBAC unit tests
 
 class TestRequireConfigUnit:
-    def _make_user(self, tenant_id=None) -> User:
-        u = User()
-        u.id = uuid.uuid4()
-        u.current_tenant_id = tenant_id or uuid.uuid4()
-        u.deleted_at = None
-        return u
-
-    def _mock_role(self, name: str) -> MagicMock:
-        r = MagicMock()
-        r.name = name
-        return r
-
     def test_admin_allowed(self):
-        assert "admin" in _CONFIG_ROLES
+        assert role_service.has_rank("admin", role_service.CONFIG_ONLY)
 
-    def test_config_allowed(self):
-        assert "config" in _CONFIG_ROLES
+    def test_manager_allowed(self):
+        assert role_service.has_rank("manager", role_service.CONFIG_ONLY)
 
-    def test_owner_allowed(self):
-        assert "owner" in _CONFIG_ROLES
+    def test_config_only_allowed(self):
+        assert role_service.has_rank("config_only", role_service.CONFIG_ONLY)
 
-    def test_readonly_rejected(self):
-        assert "readonly" not in _CONFIG_ROLES
+    def test_read_only_rejected(self):
+        assert not role_service.has_rank("read_only", role_service.CONFIG_ONLY)
 
-    def test_member_rejected(self):
-        assert "member" not in _CONFIG_ROLES
+    def test_billing_only_rejected(self):
+        assert not role_service.has_rank("billing_only", role_service.CONFIG_ONLY)
+
+    def test_none_rejected(self):
+        assert not role_service.has_rank(None, role_service.CONFIG_ONLY)
 
 
 class TestRequireReadonlyUnit:
-    def test_all_roles_allowed(self):
-        for role in ("owner", "admin", "member", "config", "readonly"):
-            assert role in _ANY_ROLE, f"'{role}' should be in _ANY_ROLE"
+    def test_all_chain_roles_allowed(self):
+        for role in ("admin", "manager", "config_only", "read_only"):
+            assert role_service.has_rank(role, role_service.READ_ONLY), (
+                f"'{role}' should satisfy require_readonly"
+            )
+
+    def test_billing_only_rejected(self):
+        # billing_only is intentionally outside the chain — it does not get
+        # blanket read access via require_readonly.
+        assert not role_service.has_rank("billing_only", role_service.READ_ONLY)
 
 
 # ---------------------------------------------------------- init_roles check
@@ -335,7 +346,7 @@ class TestInitRoles:
 
         # We read the source directly to check role names
         src = path.read_text()
-        for role_name in ("owner", "admin", "member", "config", "readonly"):
+        for role_name in role_service.CANONICAL_ROLES:
             assert f'"{role_name}"' in src or f"'{role_name}'" in src, (
                 f"init_roles.py must include role '{role_name}'"
             )
@@ -386,3 +397,40 @@ class TestRoleMigrationFile:
         assert "config" in src
         assert "readonly" in src
         assert "ON CONFLICT" in src, "Insertion must be idempotent (ON CONFLICT DO NOTHING)"
+
+
+class TestRbacCanonicalRolesMigrationFile:
+    """The RBAC hardening migration — canonical 5-tier roles, owner/member
+    retirement, user_tenant_association uniqueness."""
+
+    _PATH = (
+        "alembic", "versions", "9f3a2c7e5d41_rbac_canonical_roles_and_constraints.py",
+    )
+
+    def _load(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent.parent.joinpath(*self._PATH)
+        spec = importlib.util.spec_from_file_location("rbac_roles_migration", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod, path
+
+    def test_migration_exists_and_chains_from_latest_head(self):
+        mod, _ = self._load()
+        assert mod.down_revision == "8b1bbaf10244"
+        assert callable(mod.upgrade)
+        assert callable(mod.downgrade)
+
+    def test_migration_inserts_manager_and_billing_only(self):
+        _, path = self._load()
+        src = path.read_text()
+        assert "manager" in src
+        assert "billing_only" in src
+        assert "ON CONFLICT" in src
+
+    def test_migration_adds_unique_constraint(self):
+        _, path = self._load()
+        src = path.read_text()
+        assert "uq_user_tenant_association_user_tenant" in src

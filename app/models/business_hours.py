@@ -15,10 +15,10 @@ class BusinessHours(Base):
     day_of_week = Column(Integer, nullable=False)       # Internal: 0=Monday … 6=Sunday
     open_time = Column(Time, nullable=True)             # None when is_closed=True
     close_time = Column(Time, nullable=True)
-    is_closed = Column(Boolean, nullable=False, server_default="false")
-    timezone = Column(String(60), nullable=False, server_default="UTC")
-    slot_duration_minutes = Column(Integer, nullable=False, server_default="30")
-    is_deleted = Column(Boolean, nullable=False, server_default="false")
+    is_closed = Column(Boolean, nullable=False, server_default="false", default=False)
+    timezone = Column(String(60), nullable=False, server_default="UTC", default="UTC")
+    slot_duration_minutes = Column(Integer, nullable=False, server_default="30", default=30)
+    is_deleted = Column(Boolean, nullable=False, server_default="false", default=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

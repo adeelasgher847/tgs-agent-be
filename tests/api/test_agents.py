@@ -179,7 +179,7 @@ class TestCreateAgent:
         assert body["status"] == "active"
         assert "createdAt" in body
         assert body["ttsModel"] == {
-            "provider": "11labs",
+            "provider": "elevenlabs",
             "voiceId": "EXAVITQu4vr4xnSDxMaL",
             "language": "en",
         }
@@ -272,7 +272,7 @@ class TestCreateAgent:
         assert resp.status_code == 201, resp.text
         out = resp.json()
         assert "elevenLabsApiKey" not in out
-        assert out["ttsModel"]["provider"] == "11labs_byo"
+        assert out["ttsModel"]["provider"] == "elevenlabs_byo"
 
         agent = db.query(Agent).filter(Agent.id == uuid.UUID(out["id"])).first()
         assert agent is not None
@@ -640,6 +640,19 @@ class TestAuth:
         db.add(jwt_user)
         db.commit()
         db.refresh(jwt_user)
+
+        from app.models.user import user_tenant_association
+        from app.models.role import Role
+        admin_role = db.query(Role).filter(Role.name == "admin").first()
+        db.execute(
+            user_tenant_association.insert().values(
+                user_id=jwt_user.id,
+                tenant_id=auth_tenant.id,
+                role_id=admin_role.id if admin_role else None,
+                is_creator=True,
+            )
+        )
+        db.commit()
 
         workspace = Workspace.from_tenant(auth_tenant)
 
