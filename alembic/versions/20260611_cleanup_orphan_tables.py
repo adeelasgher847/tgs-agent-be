@@ -13,6 +13,7 @@ This migration performs the actual cleanup:
 from __future__ import annotations
 
 from alembic import op
+from sqlalchemy import inspect
 
 revision: str = "20260611_cleanup_orphan_tables"
 down_revision: str = "20260611_add_kb_ids_callflow"
@@ -40,10 +41,18 @@ def upgrade() -> None:
         op.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
 
     # The old subscription-quota `usagerecord` (subscription_id, month, year,
-    # calls_used, agents_created) conflicts with the rename target. Drop it first,
-    # then rename the billing-audit `usage_records` → `usagerecord`.
-    op.execute("DROP TABLE IF EXISTS usagerecord CASCADE")
-    op.execute("ALTER TABLE IF EXISTS usage_records RENAME TO usagerecord")
+    # calls_used, agents_created) conflicts with the rename target. Drop it
+    # first, then rename the billing-audit `usage_records` → `usagerecord` —
+    # but only if 20260611_rename_tables_base_class's own attempt at this
+    # same rename hasn't already completed it for real. That migration's
+    # docstring notes it "was stamped as applied without executing" in every
+    # real deployment, which is why this migration exists at all — but on a
+    # fresh install (or any environment where it actually executes), doing
+    # this unconditionally would drop the just-renamed `usagerecord` table
+    # and have nothing left to rename into its place.
+    if inspect(op.get_bind()).has_table("usage_records"):
+        op.execute("DROP TABLE IF EXISTS usagerecord CASCADE")
+        op.execute("ALTER TABLE usage_records RENAME TO usagerecord")
 
 
 def downgrade() -> None:

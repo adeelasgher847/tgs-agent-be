@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 from typing import Optional
 
 class Settings(BaseSettings):
@@ -373,6 +374,46 @@ class Settings(BaseSettings):
     RECRUIT_MATCH_LLM_TEMPERATURE: float = 0.12
     RECRUIT_MATCH_LLM_MAX_TOKENS: int = 600
     RECRUIT_MATCH_MAX_PROMPT_CHARS: int = 14000
+
+    # ------------------------------------------------------------------
+    # On-premise / BYO (Bring Your Own) provider configuration.
+    # Lets a self-hosted Docker Compose deployment pick its LLM/TTS/telephony
+    # vendor via env vars instead of per-tenant DB rows. Values are deployment-
+    # wide defaults; existing per-tenant DB config (if any) still wins.
+    # See docs/on-premise/README.md for the full reference.
+    # ------------------------------------------------------------------
+
+    # BYO LLM — 'google' (Gemini/Vertex) | 'openai' | 'azure_openai'
+    LLM_PROVIDER: str = "google"
+    # Override the OpenAI SDK base URL to point at Azure OpenAI or any
+    # Ollama/vLLM/LiteLLM OpenAI-compatible endpoint. Leave blank for api.openai.com.
+    OPENAI_BASE_URL: str = ""
+    # Required when LLM_PROVIDER=azure_openai (Azure OpenAI's REST API version, e.g. "2024-10-21").
+    OPENAI_API_VERSION: str = ""
+
+    # BYO TTS — 'rime' | 'elevenlabs'
+    TTS_PROVIDER: str = "elevenlabs"
+    # Generic TTS key — auto-applied to RIME_API_KEY/ELEVENLABS_API_KEY below
+    # (whichever TTS_PROVIDER selects) when that provider-specific var is unset.
+    TTS_API_KEY: str = ""
+
+    # BYO telephony — 'twilio' | 'sip'
+    TELEPHONY_PROVIDER: str = "twilio"
+    # Generic SIP trunk credentials, used when TELEPHONY_PROVIDER=sip.
+    SIP_TRUNK_URI: str = ""
+    SIP_USERNAME: str = ""
+    SIP_PASSWORD: str = ""
+
+    @model_validator(mode="after")
+    def _apply_byo_tts_api_key(self) -> "Settings":
+        """Mirror the generic TTS_API_KEY into the provider-specific key that
+        TTS_PROVIDER selects, when that specific key was not already set."""
+        if self.TTS_API_KEY:
+            if self.TTS_PROVIDER == "rime" and not self.RIME_API_KEY:
+                self.RIME_API_KEY = self.TTS_API_KEY
+            elif self.TTS_PROVIDER == "elevenlabs" and not self.ELEVENLABS_API_KEY:
+                self.ELEVENLABS_API_KEY = self.TTS_API_KEY
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -105,9 +105,11 @@ async def embed_chunks(
     - 1-second sleep between every batch of 100 chunks
     - Exponential back-off (1 s, 2 s, 4 s, 8 s, 16 s) on HTTP 429
     """
-    from openai import AsyncOpenAI, RateLimitError
+    from openai import RateLimitError
 
-    client = AsyncOpenAI(api_key=api_key)
+    from app.core.openai_client import get_async_openai_client
+
+    client = get_async_openai_client(api_key)
     all_embeddings: List[List[float]] = []
 
     for batch_start in range(0, len(chunks), batch_size):

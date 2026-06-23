@@ -24,6 +24,9 @@ email-validator==2.3.0
 stripe==15.1.0
 fastapi-limiter==0.1.6
 redis>=4.6,<9.0
+# redis-py's async path needs asyncio.timeout (py>=3.11.3) or this fallback —
+# distroless/python3-debian12's bundled interpreter is pinned at 3.11.2.
+async-timeout>=4.0.3
 websockets==16.0
 aiohttp==3.13.5
 google-genai==2.3.0
