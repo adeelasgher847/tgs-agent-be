@@ -8002,6 +8002,250 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Workspace Settings
+      summary: Create Member Role
+      operationId: create_member_role_api_v2_workspace_members__user_id__role_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberRoleUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberRoleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/sub-accounts:
+    post:
+      tags:
+      - Workspace Settings
+      summary: Create Sub Account
+      operationId: create_sub_account_api_v2_workspace_sub_accounts_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: x-api-key
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: x-workspace-id
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubAccountCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubAccountCreateOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Workspace Settings
+      summary: List Sub Accounts
+      operationId: list_sub_accounts_api_v2_workspace_sub_accounts_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Page Size
+      - name: x-api-key
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: x-workspace-id
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubAccountListOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/sub-accounts/{sub_id}:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Sub Account
+      operationId: get_sub_account_api_v2_workspace_sub_accounts__sub_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sub_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Sub Id
+      - name: x-api-key
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: x-workspace-id
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubAccountOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Workspace Settings
+      summary: Update Sub Account
+      operationId: update_sub_account_api_v2_workspace_sub_accounts__sub_id__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sub_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Sub Id
+      - name: x-api-key
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: x-workspace-id
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubAccountUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubAccountOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Workspace Settings
+      summary: Delete Sub Account
+      operationId: delete_sub_account_api_v2_workspace_sub_accounts__sub_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sub_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Sub Id
+      - name: x-api-key
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: x-workspace-id
+        in: header
+        required: false
+        schema:
+          type: string
+          nullable: true
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/settings:
     put:
       tags:
@@ -14115,6 +14359,118 @@ components:
       type: object
       title: SttSettingsJsonSchema
       description: Optional STT tuning stored on ``agent.stt_settings_json``.
+    SubAccountCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 50
+          minLength: 3
+          title: Name
+        contact_email:
+          type: string
+          format: email
+          title: Contact Email
+      type: object
+      required:
+      - name
+      - contact_email
+      title: SubAccountCreate
+    SubAccountCreateOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        contact_email:
+          type: string
+          nullable: true
+        status:
+          type: string
+          title: Status
+        api_key_prefix:
+          type: string
+          nullable: true
+        usage_this_cycle_minutes:
+          type: number
+          title: Usage This Cycle Minutes
+        api_key:
+          type: string
+          title: Api Key
+      type: object
+      required:
+      - id
+      - name
+      - status
+      - usage_this_cycle_minutes
+      - api_key
+      title: SubAccountCreateOut
+    SubAccountListOut:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/SubAccountOut'
+          type: array
+          title: Data
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+      type: object
+      required:
+      - data
+      - total
+      - page
+      - page_size
+      title: SubAccountListOut
+    SubAccountOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        contact_email:
+          type: string
+          nullable: true
+        status:
+          type: string
+          title: Status
+        api_key_prefix:
+          type: string
+          nullable: true
+        usage_this_cycle_minutes:
+          type: number
+          title: Usage This Cycle Minutes
+      type: object
+      required:
+      - id
+      - name
+      - status
+      - usage_this_cycle_minutes
+      title: SubAccountOut
+    SubAccountUpdate:
+      properties:
+        name:
+          type: string
+          maxLength: 50
+          minLength: 3
+          nullable: true
+        contact_email:
+          type: string
+          format: email
+          nullable: true
+      type: object
+      title: SubAccountUpdate
     SuccessResponse_ApiKeyCreated_:
       properties:
         data:
@@ -16679,7 +17035,6 @@ components:
       type: object
       required:
       - minutes_used_this_cycle
-      - minutes_included
       - overage_minutes
       - overage_cost
       title: WorkspaceUsageOut
