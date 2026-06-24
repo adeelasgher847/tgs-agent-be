@@ -69,16 +69,12 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
     )
 
-    op.create_index(
-        "ix_businessknowledge_tenant_id",
-        "businessknowledge",
-        ["tenant_id"],
-    )
-    op.create_index(
-        "ix_businessknowledge_agent_id",
-        "businessknowledge",
-        ["agent_id"],
-    )
+    # tenant_id/agent_id columns above already declare index=True, which
+    # creates ix_businessknowledge_tenant_id/ix_businessknowledge_agent_id
+    # as part of create_table — these explicit calls were redundant and
+    # failed with DuplicateTable the first time this migration ever ran
+    # against a genuinely fresh database (every prior environment inherited
+    # an already-migrated DB, so this never surfaced before).
 
 
 def downgrade() -> None:

@@ -67,8 +67,18 @@ def create_app() -> FastAPI:
             get_rime_api_key()
             logger.info("Rime TTS API key configured")
         except (ValueError, RuntimeError) as exc:
-            logger.error("Rime TTS misconfigured: %s", exc)
-            raise
+            # Rime is always seeded as an available platform provider for the
+            # multi-tenant SaaS deployment (any tenant's agent can pick it),
+            # so cloud environments enforce this eagerly. On-premise/BYO
+            # deployments pick exactly one TTS_PROVIDER and may not have a
+            # Rime account at all — only hard-fail there if Rime is actually
+            # the configured provider. Mirrors the LiveKit check below.
+            env = settings.ENVIRONMENT.lower()
+            if env in ("staging", "production") and settings.TTS_PROVIDER == "rime":
+                logger.error("Rime TTS misconfigured: %s", exc)
+                raise
+            else:
+                logger.warning("Rime TTS not configured: %s — fine if TTS_PROVIDER is not 'rime'", exc)
 
         if settings.LIVEKIT_ENABLED:
             from app.core.secret_manager import get_livekit_credentials

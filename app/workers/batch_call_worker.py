@@ -537,11 +537,20 @@ class WorkerSettings:
     # (arq_cron is not yet defined at class-body evaluation time).
     cron_jobs = []
 
-    @staticmethod
-    def redis_settings():
-        import arq  # type: ignore
+    # arq's `get_kwargs()` reads WorkerSettings.__dict__ directly — bypassing
+    # the descriptor protocol entirely — so redis_settings must be a plain
+    # value here, not a @staticmethod/@property (those show up in __dict__ as
+    # the raw descriptor object, not its return value, and crash create_pool
+    # with "'staticmethod' object has no attribute 'host'"). Verified by
+    # actually running the worker against this exact pattern.
+    import arq as _arq_module  # type: ignore
 
-        return arq.connections.RedisSettings.from_dsn(settings.REDIS_URL)
+    redis_settings = _arq_module.connections.RedisSettings.from_dsn(settings.REDIS_URL)
+    del _arq_module
+
+    # Default is 3600s; lowered so `arq ... --check` (used by the Docker Compose
+    # healthcheck) reflects liveness within the container's start_period.
+    health_check_interval = 30
 
     max_jobs = 50
     job_timeout = 300  # seconds

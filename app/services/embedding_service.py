@@ -40,9 +40,9 @@ def embed_text_for_rag(text: str) -> list[float]:
 
 
 def _embed_openai_ada002(text: str) -> list[float]:
-    from openai import OpenAI
+    from app.core.openai_client import get_openai_client
 
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = get_openai_client()
     resp = client.embeddings.create(
         model="text-embedding-ada-002",
         input=text,

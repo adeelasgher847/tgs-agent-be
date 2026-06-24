@@ -3,8 +3,8 @@ OpenAI Service Module
 Handles all OpenAI-related operations including text generation and chat completions
 """
 
-from openai import OpenAI
 from app.core.config import settings
+from app.core.openai_client import get_openai_client
 from typing import List, Dict, Optional, Any
 import time
 import json
@@ -26,7 +26,7 @@ class OpenAIService:
         
         # Return existing client or create new one for this API key
         if key_to_use not in self._clients:
-            self._clients[key_to_use] = OpenAI(api_key=key_to_use)
+            self._clients[key_to_use] = get_openai_client(key_to_use)
         
         return self._clients[key_to_use]
 
