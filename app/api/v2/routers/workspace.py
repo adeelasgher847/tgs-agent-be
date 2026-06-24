@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin, require_billing,get_admin_workspace,get_current_workspace
+from app.api.deps import get_db, require_admin, require_billing, get_current_workspace
 from app.models.branding_configs import BrandingConfig
 from app.models.pricing_configs import PricingConfig
 import secrets
@@ -457,7 +457,8 @@ def delete_account(
 def create_sub_account(
     payload: SubAccountCreate,
     request: Request,
-    workspace = Depends(get_admin_workspace),
+    user: User = Depends(require_admin),
+    workspace=Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ):
     if workspace.workspace_type != "agency":
@@ -507,7 +508,8 @@ def list_sub_accounts(
     request: Request,
     page: int = 1,
     page_size: int = 50,
-    workspace = Depends(get_admin_workspace),
+    user: User = Depends(require_admin),
+    workspace=Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ):
     if workspace.workspace_type != "agency":
@@ -560,7 +562,8 @@ def list_sub_accounts(
 def get_sub_account(
     sub_id: uuid.UUID,
     request: Request,
-    workspace = Depends(get_admin_workspace),
+    user: User = Depends(require_admin),
+    workspace=Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ):
     sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
@@ -589,7 +592,8 @@ def update_sub_account(
     sub_id: uuid.UUID,
     payload: SubAccountUpdate,
     request: Request,
-    workspace = Depends(get_admin_workspace),
+    user: User = Depends(require_admin),
+    workspace=Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ):
     sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
@@ -610,7 +614,8 @@ def update_sub_account(
 def delete_sub_account(
     sub_id: uuid.UUID,
     request: Request,
-    workspace = Depends(get_admin_workspace),
+    user: User = Depends(require_admin),
+    workspace=Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ):
     sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()

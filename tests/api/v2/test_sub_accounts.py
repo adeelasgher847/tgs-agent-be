@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_db, require_admin, get_admin_workspace
+from app.api.deps import get_db, require_admin, get_current_workspace
 from app.core.exception_handlers import register_exception_handlers
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -42,14 +42,15 @@ def _client(db, workspace: Tenant, admin_user: User = None, override_get_admin=T
     mini = FastAPI()
     register_exception_handlers(mini)
     mini.include_router(v2_router, prefix="/workspace")
-    
+
     if admin_user:
         mini.dependency_overrides[require_admin] = lambda: admin_user
-    
+
     if override_get_admin:
-        async def mock_get_admin_workspace():
+        mini.dependency_overrides[require_admin] = lambda: User(email="admin@test.com", is_active=True)
+        async def mock_get_current_workspace():
             return workspace
-        mini.dependency_overrides[get_admin_workspace] = mock_get_admin_workspace
+        mini.dependency_overrides[get_current_workspace] = mock_get_current_workspace
 
     mini.dependency_overrides[get_db] = lambda: db
     return TestClient(mini, raise_server_exceptions=False)
@@ -107,11 +108,11 @@ def test_rbac_enforcement(db, agency_workspace):
     mini = FastAPI()
     register_exception_handlers(mini)
     mini.include_router(v2_router, prefix="/workspace")
-    
-    async def mock_get_admin_workspace_fail():
+
+    async def mock_require_admin_fail():
         raise HTTPException(status_code=403, detail="Workspace context does not match user tenant.")
-    
-    mini.dependency_overrides[get_admin_workspace] = mock_get_admin_workspace_fail
+
+    mini.dependency_overrides[require_admin] = mock_require_admin_fail
     mini.dependency_overrides[get_db] = lambda: db
     client = TestClient(mini, raise_server_exceptions=False)
 
