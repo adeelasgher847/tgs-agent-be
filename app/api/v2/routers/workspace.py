@@ -2,9 +2,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin, require_billing
+from app.api.deps import get_db, require_admin, require_billing,get_admin_workspace,get_current_workspace
 from app.models.branding_configs import BrandingConfig
 from app.models.pricing_configs import PricingConfig
+import secrets
+import hashlib
+from app.models.api_key import Apikey
+from app.models.tenant import Tenant
 from app.models.usage_record import UsageRecord
 from app.schemas.workspace import (
     BrandingConfigUpsert,
@@ -14,6 +18,11 @@ from app.schemas.workspace import (
     WorkspaceUsageOut,
     MemberRoleUpdate,
     MemberRoleOut,
+    SubAccountCreate,
+    SubAccountUpdate,
+    SubAccountOut,
+    SubAccountCreateOut,
+    SubAccountListOut,
 )
 
 import uuid
@@ -440,3 +449,190 @@ def delete_account(
     delete_workspace_account(db, tenant_id)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+# ── Sub-Accounts CRUD ─────────────────────────────────────────────────────────
+
+
+@v2_router.post("/sub-accounts", response_model=SubAccountCreateOut, status_code=201)
+def create_sub_account(
+    payload: SubAccountCreate,
+    request: Request,
+    workspace = Depends(get_admin_workspace),
+    db: Session = Depends(get_db),
+):
+    if workspace.workspace_type != "agency":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only agency workspaces can create sub-accounts.")
+
+    # Create Tenant
+    new_tenant = Tenant(
+        name=payload.name,
+        schema_name=f"sub_{uuid.uuid4().hex[:8]}",
+        parent_workspace_id=workspace.id,
+        workspace_type="sub_account",
+        contact_email=payload.contact_email,
+        status="active"
+    )
+    db.add(new_tenant)
+    db.flush()
+
+    # Generate API key
+    raw_key = secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    api_key_prefix = raw_key[:8]
+
+    new_api_key = Apikey(
+        tenant_id=new_tenant.id,
+        name="Sub-Account Default Key",
+        key_prefix=api_key_prefix,
+        key_hash=key_hash,
+        is_active=True
+    )
+    db.add(new_api_key)
+    db.commit()
+    db.refresh(new_tenant)
+
+    # We return usage as 0 for new
+    return SubAccountCreateOut(
+        id=new_tenant.id,
+        name=new_tenant.name,
+        contact_email=new_tenant.contact_email,
+        status=new_tenant.status,
+        api_key_prefix=api_key_prefix,
+        usage_this_cycle_minutes=0.0,
+        api_key=raw_key
+    )
+
+@v2_router.get("/sub-accounts", response_model=SubAccountListOut)
+def list_sub_accounts(
+    request: Request,
+    page: int = 1,
+    page_size: int = 50,
+    workspace = Depends(get_admin_workspace),
+    db: Session = Depends(get_db),
+):
+    if workspace.workspace_type != "agency":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only agency workspaces have sub-accounts.")
+
+    query = db.query(Tenant).filter(Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None))
+    total = query.count()
+    sub_accounts = query.order_by(Tenant.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    # Fetch usage for all
+    from sqlalchemy import func
+    from datetime import datetime
+    
+    tenant_ids = [sa.id for sa in sub_accounts]
+    usages = {}
+    if tenant_ids:
+        usage_res = db.query(
+            UsageRecord.workspace_id, func.sum(UsageRecord.billable_minutes)
+        ).filter(
+            UsageRecord.workspace_id.in_(tenant_ids),
+            UsageRecord.recorded_at >= func.date_trunc('month', func.now())
+        ).group_by(UsageRecord.workspace_id).all()
+        usages = {wid: float(mins) for wid, mins in usage_res if mins is not None}
+
+    # Fetch api key prefix for each
+    key_res = db.query(Apikey.tenant_id, Apikey.key_prefix).filter(
+        Apikey.tenant_id.in_(tenant_ids), Apikey.is_active.is_(True)
+    ).all()
+    prefixes = {t_id: prefix for t_id, prefix in key_res}
+
+    data = []
+    for sa in sub_accounts:
+        data.append(SubAccountOut(
+            id=sa.id,
+            name=sa.name,
+            contact_email=sa.contact_email,
+            status=sa.status,
+            api_key_prefix=prefixes.get(sa.id),
+            usage_this_cycle_minutes=usages.get(sa.id, 0.0)
+        ))
+
+    return SubAccountListOut(
+        data=data,
+        total=total,
+        page=page,
+        page_size=page_size
+    )
+
+@v2_router.get("/sub-accounts/{sub_id}", response_model=SubAccountOut)
+def get_sub_account(
+    sub_id: uuid.UUID,
+    request: Request,
+    workspace = Depends(get_admin_workspace),
+    db: Session = Depends(get_db),
+):
+    sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
+    if not sa:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sub-account not found")
+        
+    from sqlalchemy import func
+    usage_sum = db.query(func.sum(UsageRecord.billable_minutes)).filter(
+        UsageRecord.workspace_id == sa.id,
+        UsageRecord.recorded_at >= func.date_trunc('month', func.now())
+    ).scalar() or 0.0
+
+    key = db.query(Apikey).filter(Apikey.tenant_id == sa.id, Apikey.is_active.is_(True)).first()
+    
+    return SubAccountOut(
+        id=sa.id,
+        name=sa.name,
+        contact_email=sa.contact_email,
+        status=sa.status,
+        api_key_prefix=key.key_prefix if key else None,
+        usage_this_cycle_minutes=float(usage_sum)
+    )
+
+@v2_router.put("/sub-accounts/{sub_id}", response_model=SubAccountOut)
+def update_sub_account(
+    sub_id: uuid.UUID,
+    payload: SubAccountUpdate,
+    request: Request,
+    workspace = Depends(get_admin_workspace),
+    db: Session = Depends(get_db),
+):
+    sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
+    if not sa:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sub-account not found")
+        
+    if payload.name is not None:
+        sa.name = payload.name
+    if payload.contact_email is not None:
+        sa.contact_email = payload.contact_email
+        
+    db.commit()
+    db.refresh(sa)
+    
+    return get_sub_account(sub_id, request, workspace, db)
+
+@v2_router.delete("/sub-accounts/{sub_id}", status_code=204)
+def delete_sub_account(
+    sub_id: uuid.UUID,
+    request: Request,
+    workspace = Depends(get_admin_workspace),
+    db: Session = Depends(get_db),
+):
+    sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
+    if not sa:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sub-account not found")
+        
+    from app.models.call_session import CallSession
+    active_calls = db.query(CallSession).filter(CallSession.tenant_id == sa.id, CallSession.status == "in-progress").count()
+    if active_calls > 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cannot delete sub-account with active calls.")
+        
+    from sqlalchemy.sql import func
+    sa.deleted_at = func.now()
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@v2_router.post("/members/{user_id}/role", response_model=MemberRoleOut)
+def create_member_role(
+    user_id: uuid.UUID,
+    payload: MemberRoleUpdate,
+    request: Request,
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return update_member_role(user_id, payload, request, user, db)

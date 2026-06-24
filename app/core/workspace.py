@@ -26,6 +26,9 @@ class Workspace:
     credits: float
     stripe_customer_id: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
+    parent_workspace_id: Optional[uuid.UUID] = None
+    workspace_type: str = "standalone"
+    contact_email: Optional[str] = None
 
     @classmethod
     def from_tenant(cls, tenant: Tenant) -> Workspace:
@@ -37,6 +40,9 @@ class Workspace:
             credits=float(tenant.credits or 0),
             stripe_customer_id=tenant.stripe_customer_id,
             stripe_subscription_id=tenant.stripe_subscription_id,
+            parent_workspace_id=tenant.parent_workspace_id,
+            workspace_type=tenant.workspace_type,
+            contact_email=tenant.contact_email,
         )
 
     @classmethod
@@ -55,6 +61,9 @@ class Workspace:
             credits=credits,
             stripe_customer_id=data.get("stripe_customer_id"),
             stripe_subscription_id=data.get("stripe_subscription_id"),
+            parent_workspace_id=uuid.UUID(str(data["parent_workspace_id"])) if data.get("parent_workspace_id") else None,
+            workspace_type=str(data.get("workspace_type", "standalone")),
+            contact_email=data.get("contact_email"),
         )
 
     def to_cache_dict(self) -> dict[str, Any]:
@@ -66,6 +75,9 @@ class Workspace:
             "credits": self.credits,
             "stripe_customer_id": self.stripe_customer_id,
             "stripe_subscription_id": self.stripe_subscription_id,
+            "parent_workspace_id": str(self.parent_workspace_id) if self.parent_workspace_id else None,
+            "workspace_type": self.workspace_type,
+            "contact_email": self.contact_email,
         }
 
     @property

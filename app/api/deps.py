@@ -426,6 +426,44 @@ require_config = _require_rank(role_service.CONFIG_ONLY)
 require_readonly = _require_rank(role_service.READ_ONLY)
 
 
+async def get_admin_workspace(
+    request: Request,
+    workspace: Workspace = Depends(get_current_workspace),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    db: Session = Depends(get_db),
+) -> Workspace:
+    """Sub-account API endpoints: requires BOTH a valid M2M API key (resolving target workspace)
+    AND a valid admin JWT (ensuring caller is an admin in their current tenant)."""
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer token required to perform agency operations.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    try:
+        user_id = uuid.UUID(payload.get("user_id"))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="Invalid user ID format")
+
+    user = get_active_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    role_name = rbac_cache_service.get_effective_role(db, user.id, workspace.id)
+    if role_name is None:
+        raise _not_a_member()
+
+    if not role_service.has_rank(role_name, role_service.ADMIN):
+        raise _forbidden(role_service.ADMIN, role_name)
+
+    return workspace
+
+
 def _require_rank_or_api_key(required: str):
     """Like _require_rank, but lets API-key (M2M) principals through untiered.
 
