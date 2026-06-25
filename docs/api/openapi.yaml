@@ -6796,14 +6796,30 @@ paths:
       summary: Hubspot Connect
       description: 'Redirect to HubSpot''s OAuth consent page. Scopes: contacts read/write.'
       operationId: hubspot_connect_api_v1_integrations_hubspot_connect_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: json
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Return the authorization URL as JSON instead of redirecting
+          default: false
+          title: Json
+        description: Return the authorization URL as JSON instead of redirecting
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema: {}
-      security:
-      - HTTPBearer: []
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/integrations/hubspot/callback:
     get:
       tags:
