@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_tenant
+from app.api.deps import get_db, require_tenant, require_admin
 from app.core.config import settings
 from app.core.logger import logger
 from app.schemas.base import SuccessResponse
@@ -33,9 +33,9 @@ def _tenant_id(principal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
-@router.get("/connect")
+@router.get("/connect",include_in_schema=False)
 async def hubspot_connect(
-    principal=Depends(require_tenant),
+    principal=Depends(require_admin),
 ):
     """Redirect to HubSpot's OAuth consent page. Scopes: contacts read/write."""
     tenant_id = _tenant_id(principal)
@@ -44,7 +44,7 @@ async def hubspot_connect(
     return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
 
 
-@router.get("/callback")
+@router.get("/callback",include_in_schema=False)
 async def hubspot_callback(
     code: str = Query(...),
     state: str = Query(...),

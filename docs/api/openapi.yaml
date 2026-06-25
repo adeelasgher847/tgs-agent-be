@@ -6789,58 +6789,6 @@ paths:
                 $ref: '#/components/schemas/IntegrationListResponse'
       security:
       - HTTPBearer: []
-  /api/v1/integrations/hubspot/connect:
-    get:
-      tags:
-      - HubSpot Integration
-      summary: Hubspot Connect
-      description: 'Redirect to HubSpot''s OAuth consent page. Scopes: contacts read/write.'
-      operationId: hubspot_connect_api_v1_integrations_hubspot_connect_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-      security:
-      - HTTPBearer: []
-  /api/v1/integrations/hubspot/callback:
-    get:
-      tags:
-      - HubSpot Integration
-      summary: Hubspot Callback
-      description: 'HubSpot OAuth callback. No auth dependency — this is a top-level
-        browser
-
-        redirect from HubSpot, which cannot carry our JWT/API-key headers. The
-
-        connecting tenant is recovered from the signed `state` param instead.'
-      operationId: hubspot_callback_api_v1_integrations_hubspot_callback_get
-      parameters:
-      - name: code
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Code
-      - name: state
-        in: query
-        required: true
-        schema:
-          type: string
-          title: State
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/integrations/hubspot:
     delete:
       tags:
