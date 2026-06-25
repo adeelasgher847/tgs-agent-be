@@ -216,6 +216,48 @@ def decrypt_stored_webhook_secret(
         raise
 
 
+def encrypt_hubspot_token(plaintext: str, db: Session) -> str:
+    """Encrypt *plaintext* HubSpot OAuth token using pgp_sym_encrypt; return base64 ciphertext.
+
+    Raises ``ValueError`` if ``HUBSPOT_TOKEN_ENCRYPTION_KEY`` is not configured.
+    """
+    key = settings.HUBSPOT_TOKEN_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "HUBSPOT_TOKEN_ENCRYPTION_KEY is not configured — "
+            "cannot encrypt HubSpot OAuth token."
+        )
+    result = _pgcrypto_scalar(
+        db,
+        "SELECT encode(pgp_sym_encrypt(:pt, :key), 'base64')",
+        {"pt": plaintext, "key": key},
+    )
+    return result  # type: ignore[return-value]
+
+
+def decrypt_hubspot_token(ciphertext: str, db: Session) -> str:
+    """Decrypt base64 ciphertext produced by :func:`encrypt_hubspot_token`.
+
+    Raises ``ValueError`` if ``HUBSPOT_TOKEN_ENCRYPTION_KEY`` is not configured or
+    if the ciphertext is corrupt / encrypted with a different key.
+    """
+    key = settings.HUBSPOT_TOKEN_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "HUBSPOT_TOKEN_ENCRYPTION_KEY is not configured — "
+            "cannot decrypt HubSpot OAuth token."
+        )
+    try:
+        result = _pgcrypto_scalar(
+            db,
+            "SELECT pgp_sym_decrypt(decode(:ct, 'base64'), :key)",
+            {"ct": ciphertext, "key": key},
+        )
+        return result or ""  # type: ignore[return-value]
+    except Exception as exc:
+        raise ValueError(f"HubSpot token decryption failed: {exc}") from exc
+
+
 def decrypt_stored_elevenlabs_key(
     ciphertext: str,
     *,

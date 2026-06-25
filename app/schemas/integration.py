@@ -25,8 +25,9 @@ class N8nTriggerResponse(BaseModel):
 class IntegrationItem(BaseModel):
     name: str
     connected: bool
-    webhook_url: str
+    webhook_url: Optional[str] = None
     last_triggered_at: Optional[datetime] = None
+    connected_at: Optional[datetime] = None
 
 
 class IntegrationListResponse(BaseModel):
