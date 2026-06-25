@@ -43,14 +43,22 @@ def _client(db, workspace: Tenant, admin_user: User = None, override_get_admin=T
     register_exception_handlers(mini)
     mini.include_router(v2_router, prefix="/workspace")
 
-    if admin_user:
-        mini.dependency_overrides[require_admin] = lambda: admin_user
-
     if override_get_admin:
-        mini.dependency_overrides[require_admin] = lambda: User(email="admin@test.com", is_active=True)
+        # Create a real DB user tied to this workspace to reflect true DB state
+        if admin_user is None:
+            admin_user = User(email=f"admin_{uuid.uuid4().hex[:8]}@test.com", current_tenant_id=workspace.id, first_name="A", last_name="B", hashed_password="X")
+            db.add(admin_user)
+            db.commit()
+            db.refresh(admin_user)
+            admin_user.tenants.append(workspace)
+            db.commit()
+            
+        mini.dependency_overrides[require_admin] = lambda: admin_user
         async def mock_get_current_workspace():
             return workspace
         mini.dependency_overrides[get_current_workspace] = mock_get_current_workspace
+    elif admin_user:
+        mini.dependency_overrides[require_admin] = lambda: admin_user
 
     mini.dependency_overrides[get_db] = lambda: db
     return TestClient(mini, raise_server_exceptions=False)
@@ -102,6 +110,39 @@ def test_sub_accounts_crud(db, agency_workspace):
     res = client.delete(f"/workspace/sub-accounts/{sub_id}")
     assert res.status_code == 204
 
+def test_cross_workspace_isolation(db, agency_workspace):
+    # Setup Agency B
+    agency_b = Tenant(
+        name=f"agency-b-{uuid.uuid4().hex[:8]}",
+        schema_name=f"s_{uuid.uuid4().hex[:8]}",
+        workspace_type="agency",
+        status="active",
+    )
+    db.add(agency_b)
+    db.commit()
+    db.refresh(agency_b)
+    
+    # Sub account of Agency A
+    sub_a = Tenant(
+        name=f"sub-a-{uuid.uuid4().hex[:8]}",
+        schema_name=f"s_{uuid.uuid4().hex[:8]}",
+        workspace_type="standalone",
+        parent_workspace_id=agency_workspace.id,
+        status="active",
+    )
+    db.add(sub_a)
+    db.commit()
+    db.refresh(sub_a)
+
+    # Client acting as Agency B
+    client_b = _client(db, agency_b)
+    
+    # Try to access Sub A using Agency B's client context
+    res = client_b.get(f"/workspace/sub-accounts/{sub_a.id}")
+    assert res.status_code == 404
+    # Our exception handler wraps errors under {"error": {"message": ...}}
+    assert "Sub-account not found" in res.json()["error"]["message"]
+
 def test_rbac_enforcement(db, agency_workspace):
     from app.api.v2.routers.workspace import v2_router
 
@@ -121,7 +162,7 @@ def test_rbac_enforcement(db, agency_workspace):
     assert "Workspace context does not match" in res.json()["error"]["message"]
 
 def test_create_member_role_post_alias(db, agency_workspace):
-    user = User(email=f"test{uuid.uuid4().hex[:8]}@x.com", is_active=True, current_tenant_id=agency_workspace.id)
+    user = User(email=f"test{uuid.uuid4().hex[:8]}@x.com", current_tenant_id=agency_workspace.id, first_name="A", last_name="B", hashed_password="X")
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -129,7 +170,7 @@ def test_create_member_role_post_alias(db, agency_workspace):
     client = _client(db, agency_workspace, admin_user=user, override_get_admin=False)
     
     with patch("app.api.v2.routers.workspace.update_member_role") as mock_update:
-        mock_update.return_value = {"role": "manager", "user_id": str(user.id)}
+        mock_update.return_value = {"role": "manager", "user_id": str(user.id), "workspace_id": str(agency_workspace.id)}
         res = client.post(f"/workspace/members/{user.id}/role", json={"role": "manager"})
         
     assert res.status_code == 200

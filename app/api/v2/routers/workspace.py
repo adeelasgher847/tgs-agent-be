@@ -521,16 +521,17 @@ def list_sub_accounts(
 
     # Fetch usage for all
     from sqlalchemy import func
-    from datetime import datetime
+    from datetime import datetime, timezone
     
     tenant_ids = [sa.id for sa in sub_accounts]
     usages = {}
     if tenant_ids:
+        first_of_month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         usage_res = db.query(
             UsageRecord.workspace_id, func.sum(UsageRecord.billable_minutes)
         ).filter(
             UsageRecord.workspace_id.in_(tenant_ids),
-            UsageRecord.recorded_at >= func.date_trunc('month', func.now())
+            UsageRecord.recorded_at >= first_of_month
         ).group_by(UsageRecord.workspace_id).all()
         usages = {wid: float(mins) for wid, mins in usage_res if mins is not None}
 
@@ -566,14 +567,21 @@ def get_sub_account(
     workspace=Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ):
+    return _fetch_sub_account_out(sub_id, workspace, db)
+
+
+def _fetch_sub_account_out(sub_id: uuid.UUID, workspace, db: Session) -> SubAccountOut:
+    """Shared logic used by get_sub_account and update_sub_account."""
     sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
     if not sa:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sub-account not found")
         
     from sqlalchemy import func
+    from datetime import datetime, timezone
+    first_of_month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     usage_sum = db.query(func.sum(UsageRecord.billable_minutes)).filter(
         UsageRecord.workspace_id == sa.id,
-        UsageRecord.recorded_at >= func.date_trunc('month', func.now())
+        UsageRecord.recorded_at >= first_of_month
     ).scalar() or 0.0
 
     key = db.query(Apikey).filter(Apikey.tenant_id == sa.id, Apikey.is_active.is_(True)).first()
@@ -608,7 +616,7 @@ def update_sub_account(
     db.commit()
     db.refresh(sa)
     
-    return get_sub_account(sub_id, request, workspace, db)
+    return _fetch_sub_account_out(sub_id, workspace, db)
 
 @v2_router.delete("/sub-accounts/{sub_id}", status_code=204)
 def delete_sub_account(
@@ -618,7 +626,7 @@ def delete_sub_account(
     workspace=Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ):
-    sa = db.query(Tenant).filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
+    sa = db.query(Tenant).with_for_update().filter(Tenant.id == sub_id, Tenant.parent_workspace_id == workspace.id, Tenant.deleted_at.is_(None)).first()
     if not sa:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sub-account not found")
         
