@@ -179,3 +179,18 @@ def get_rime_api_key() -> str:
             "RIME_API_KEY is not set. Add it to your .env file for local development."
         )
     return env_key.strip()
+
+
+def get_sso_encryption_key() -> bytes:
+    """Return the Fernet key for encrypting SSO OIDC client secrets."""
+    env = settings.ENVIRONMENT.lower()
+    if env in ("production", "staging"):
+        key_str = _fetch_from_secret_manager("SSO_ENCRYPTION_KEY")
+        if not key_str:
+            raise RuntimeError(f"SSO_ENCRYPTION_KEY not found in Secret Manager for env {env}")
+    else:
+        key_str = getattr(settings, "SSO_ENCRYPTION_KEY", "") or ""
+        if not key_str:
+            raise ValueError("SSO_ENCRYPTION_KEY not configured in .env")
+            
+    return key_str.encode("utf-8")
