@@ -35,15 +35,12 @@ def _tenant_id(principal) -> uuid.UUID:
 
 @router.get("/connect")
 async def hubspot_connect(
-    json: bool = Query(False, description="Return the authorization URL as JSON instead of redirecting"),
     principal=Depends(require_tenant),
 ):
     """Redirect to HubSpot's OAuth consent page. Scopes: contacts read/write."""
     tenant_id = _tenant_id(principal)
     state = hubspot_service.build_oauth_state(tenant_id)
     auth_url = hubspot_service.build_authorization_url(state)
-    if json:
-        return {"url": auth_url}
     return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
 
 
