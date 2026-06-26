@@ -79,8 +79,6 @@ class Settings(BaseSettings):
     # Reads transparently handle legacy JWT-encrypted secrets for backwards compat.
     # In production/staging load from Secret Manager; never commit a real value.
     WEBHOOK_SECRET_ENCRYPTION_KEY: str = ""
-    # Symmetric encryption key for OIDC client secrets (Fernet).
-    SSO_ENCRYPTION_KEY: str = ""
     # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
     # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
     ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
