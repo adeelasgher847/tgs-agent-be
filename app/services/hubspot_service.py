@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
@@ -291,8 +292,68 @@ async def disconnect(db: Session, tenant_id: uuid.UUID) -> bool:
 # ─── Contact lookup (CRM Search API, Redis-cached) ────────────────────────────
 
 
+def normalize_to_e164(phone: str) -> str:
+    """Normalize phone number to E.164 format if possible.
+    E.164 format: +[country_code][subscriber_number] up to 15 digits total.
+    """
+    if not phone:
+        return ""
+    # Strip any leading/trailing whitespace
+    phone = phone.strip()
+    
+    # Check if it has a leading '+'
+    has_plus = phone.startswith("+")
+    
+    # Extract only digits
+    digits = "".join(c for c in phone if c.isdigit())
+    
+    if not digits:
+        return phone
+        
+    if has_plus:
+        return f"+{digits}"
+        
+    # If no leading '+', handle common cases:
+    # 10 digits: assume US number, prepend +1
+    if len(digits) == 10:
+        return f"+1{digits}"
+    # 11 digits starting with 1: prepend +
+    elif len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    # Otherwise, just prepend '+'
+    else:
+        return f"+{digits}"
+
+
+def _get_phone_search_values(phone: str) -> list[str]:
+    """Generate a list of unique exact-match phone number variations for lookup."""
+    values = set()
+    digits = "".join(c for c in phone if c.isdigit())
+    
+    normalized = normalize_to_e164(phone)
+    if normalized:
+        values.add(normalized)
+        
+    stripped = phone.strip()
+    if stripped:
+        values.add(stripped)
+        
+    if digits:
+        values.add(digits)
+        # If it's a US number with country code, add the 10-digit national number
+        if len(digits) == 11 and digits.startswith("1"):
+            values.add(digits[1:])
+        # If it's a 10-digit number, also add with country code '1' (without '+')
+        elif len(digits) == 10:
+            values.add(f"1{digits}")
+            
+    return sorted(list(values))
+
+
 def _contact_cache_key(tenant_id: uuid.UUID, phone: str) -> str:
-    return f"hubspot:contact:{tenant_id}:{phone}"
+    # Hash the phone number to avoid storing PII in plaintext in Redis keys.
+    phone_hash = hashlib.sha256(phone.encode("utf-8")).hexdigest()
+    return f"hubspot:contact:{tenant_id}:{phone_hash}"
 
 
 def _contact_dict_from_hubspot(raw: dict) -> dict:
@@ -311,28 +372,46 @@ def _contact_dict_from_hubspot(raw: dict) -> dict:
 
 
 async def search_contact_by_phone(access_token: str, phone: str) -> Optional[dict]:
+    search_vals = _get_phone_search_values(phone)
+    if not search_vals:
+        return None
+
+    # Construct filter groups to search both `phone` and `mobilephone` fields
+    # against all exact-match variations (joined with OR logic).
+    filter_groups = []
+    for val in search_vals:
+        filter_groups.append({
+            "filters": [
+                {
+                    "propertyName": "phone",
+                    "operator": "EQ",
+                    "value": val,
+                }
+            ]
+        })
+        filter_groups.append({
+            "filters": [
+                {
+                    "propertyName": "mobilephone",
+                    "operator": "EQ",
+                    "value": val,
+                }
+            ]
+        })
+
     response = await _request_with_backoff(
         "POST",
         SEARCH_CONTACTS_URL,
         headers={"Authorization": f"Bearer {access_token}"},
         json={
-            "filterGroups": [
-                {
-                    "filters": [
-                        {
-                            "propertyName": "phone",
-                            "operator": "CONTAINS_TOKEN",
-                            "value": phone,
-                        }
-                    ]
-                }
-            ],
+            "filterGroups": filter_groups,
             "properties": [
                 "firstname",
                 "lastname",
                 "email",
                 "company",
                 "phone",
+                "mobilephone",
                 "notes_last_contacted",
                 "lastmodifieddate",
             ],
@@ -348,8 +427,10 @@ async def get_contact_for_phone(
     db: Session, tenant_id: uuid.UUID, phone: str
 ) -> Optional[dict]:
     """Look up a contact by phone, Redis-cached for 5 minutes. Fails open on any error."""
+    # Normalize phone numbers to E.164 format if possible before lookup/caching.
+    normalized_phone = normalize_to_e164(phone)
     redis_client = get_redis()
-    cache_key = _contact_cache_key(tenant_id, phone)
+    cache_key = _contact_cache_key(tenant_id, normalized_phone)
 
     if redis_client is not None:
         try:
@@ -363,7 +444,7 @@ async def get_contact_for_phone(
         access_token = await get_valid_access_token(db, tenant_id)
         if not access_token:
             return None
-        raw_contact = await search_contact_by_phone(access_token, phone)
+        raw_contact = await search_contact_by_phone(access_token, normalized_phone)
     except Exception:
         logger.warning(
             "HubSpot contact search failed for tenant=%s (failing open)",
@@ -425,14 +506,17 @@ async def get_crm_context_block_for_call(db: Session, call_session: CallSession)
         context_block = ""
 
     try:
-        updated_metadata = dict(call_session.call_metadata or {})
-        updated_metadata["hubspot_crm_context"] = context_block
-        call_session.call_metadata = updated_metadata
-        flag_modified(call_session, "call_metadata")
-        db.add(call_session)
-        db.commit()
+        # Use a nested transaction savepoint to isolate database flushing.
+        # This keeps the helper fail-open and avoids committing the main transaction
+        # during prompt generation.
+        with db.begin_nested():
+            updated_metadata = dict(call_session.call_metadata or {})
+            updated_metadata["hubspot_crm_context"] = context_block
+            call_session.call_metadata = updated_metadata
+            flag_modified(call_session, "call_metadata")
+            db.add(call_session)
+            db.flush()
     except Exception:
-        db.rollback()
         logger.warning(
             "Failed to cache HubSpot CRM context on call_session (non-critical)",
             exc_info=True,

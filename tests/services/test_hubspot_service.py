@@ -373,7 +373,40 @@ class TestCrmContextBlock:
         assert "Company: Acme Corp" in block
         assert "Last interaction: 2026-06-01" in block
         assert call_session.call_metadata["hubspot_crm_context"] == block
-        db.commit.assert_called_once()
+        db.flush.assert_called_once()
+        db.commit.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_fails_open_on_flush_error(self):
+        # Mocks a failure in the db.flush() call to test that context generation
+        # fails open and still returns the context block without throwing.
+        db = MagicMock()
+        db.flush.side_effect = Exception("Flush failed")
+        # To support db.begin_nested() mock context manager
+        nested_mock = MagicMock()
+        db.begin_nested.return_value = nested_mock
+        nested_mock.__enter__ = MagicMock()
+        nested_mock.__exit__ = MagicMock()
+
+        call_session = _call_session(metadata={})
+        contact = {
+            "id": "1",
+            "name": "Ada Lovelace",
+            "company": "Acme Corp",
+            "last_interaction_date": "2026-06-01",
+        }
+
+        with (
+            patch("app.services.hubspot_service.tenant_has_hubspot_connected", return_value=True),
+            patch(
+                "app.services.hubspot_service.get_contact_for_phone",
+                new=AsyncMock(return_value=contact),
+            ),
+        ):
+            block = await hubspot_service.get_crm_context_block_for_call(db, call_session)
+
+        assert "CRM CONTEXT: Caller name: Ada Lovelace" in block
+        db.flush.assert_called_once()
 
     @pytest.mark.anyio
     async def test_not_connected_returns_empty_block(self):
@@ -612,3 +645,28 @@ class TestBackoff:
 
         assert response.status_code == 429
         assert mock_client.request.await_count == hubspot_service._MAX_RETRIES + 1
+
+
+class TestPhoneNormalization:
+    def test_normalize_to_e164(self):
+        # Already E.164
+        assert hubspot_service.normalize_to_e164("+15550001111") == "+15550001111"
+        # US formats
+        assert hubspot_service.normalize_to_e164("5550001111") == "+15550001111"
+        assert hubspot_service.normalize_to_e164("15550001111") == "+15550001111"
+        assert hubspot_service.normalize_to_e164("+1 (555) 000-1111") == "+15550001111"
+        # International format
+        assert hubspot_service.normalize_to_e164("+44 7123 456789") == "+447123456789"
+        assert hubspot_service.normalize_to_e164("447123456789") == "+447123456789"
+        # Non-numeric / weird formats
+        assert hubspot_service.normalize_to_e164("") == ""
+        assert hubspot_service.normalize_to_e164("abc") == "abc"
+
+    def test_get_phone_search_values(self):
+        # Test exact match search variations generated for a formatted US phone number
+        vals = hubspot_service._get_phone_search_values("+1 (555) 000-1111")
+        # E.164 (+15550001111), raw digits (15550001111), US national digits (5550001111), raw stripped input
+        assert "+15550001111" in vals
+        assert "15550001111" in vals
+        assert "5550001111" in vals
+        assert "+1 (555) 000-1111" in vals

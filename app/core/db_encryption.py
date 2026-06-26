@@ -230,7 +230,18 @@ _HUBSPOT_AESGCM_PREFIX = "gcm1:"
 
 
 def _hubspot_aes_key() -> bytes:
-    """Derive a 32-byte AES-256 key from HUBSPOT_TOKEN_ENCRYPTION_KEY (any length/format)."""
+    """Derive a 32-byte AES-256 key from HUBSPOT_TOKEN_ENCRYPTION_KEY.
+
+    SECURITY NOTE:
+      For secure AES-256-GCM encryption, HUBSPOT_TOKEN_ENCRYPTION_KEY must be configured
+      as a randomly generated 32-byte secret (typically represented as a 64-character
+      hex string, e.g. generated via `secrets.token_hex(32)`).
+
+    BACKWARD COMPATIBILITY:
+      We derive the key using hashlib.sha256 to ensure that any key length/format can
+      be safely resolved, and to preserve 100% backward compatibility for already
+      connected HubSpot workspaces encrypted under older/existing settings keys.
+    """
     key = settings.HUBSPOT_TOKEN_ENCRYPTION_KEY
     if not key:
         raise ValueError(
