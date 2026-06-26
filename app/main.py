@@ -21,7 +21,6 @@ def create_app() -> FastAPI:
 
     from app.api.api_v1.api import api_router
     from app.api.v2.api import v2_router
-    from app.routers.sso_auth import router as sso_auth_router
     from app.db.async_session import dispose_async_db, init_async_db
     from app.routers.api_docs import router as api_docs_router
     from app.routers.health import router as health_router
@@ -245,7 +244,6 @@ def create_app() -> FastAPI:
     _app.include_router(api_router, prefix="/api/v1")
     _app.include_router(health_router)
     _app.include_router(v2_router, prefix="/api/v2")
-    _app.include_router(sso_auth_router, tags=["SSO Authentication"])  # SSO browser-facing redirects and callbacks
 
     # -------------------------------------------------------------------------
     # v2 Swagger — filtered to /api/v2/ routes only.
