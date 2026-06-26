@@ -425,7 +425,6 @@ require_manager = _require_rank(role_service.MANAGER)
 require_config = _require_rank(role_service.CONFIG_ONLY)
 require_readonly = _require_rank(role_service.READ_ONLY)
 
-
 def _require_rank_or_api_key(required: str):
     """Like _require_rank, but lets API-key (M2M) principals through untiered.
 

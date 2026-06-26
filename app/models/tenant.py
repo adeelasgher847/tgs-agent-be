@@ -26,6 +26,7 @@ class Tenant(Base):
         nullable=False, 
         server_default="standalone"
     )
+    contact_email = Column(String, nullable=True)
     
     # Relationships
     users = relationship("User", secondary="user_tenant_association", back_populates="tenants") 

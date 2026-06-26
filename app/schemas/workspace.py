@@ -4,9 +4,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class WorkspaceCreate(BaseModel):
@@ -107,9 +107,37 @@ class PricingConfigOut(BaseModel):
 class WorkspaceUsageOut(BaseModel):
     """Response shape for cycle usage"""
     minutes_used_this_cycle: Decimal
-    minutes_included: Decimal | None
+    minutes_included: Optional[Decimal] = None
     overage_minutes: Decimal
     overage_cost: Decimal
+
+class SubAccountCreate(BaseModel):
+    name: str = Field(..., min_length=3, max_length=50)
+    contact_email: EmailStr
+
+class SubAccountUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=3, max_length=50)
+    contact_email: Optional[EmailStr] = None
+
+class SubAccountOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    contact_email: Optional[str] = None
+    status: str
+    api_key_prefix: Optional[str] = None
+    usage_this_cycle_minutes: float
+
+    class Config:
+        orm_mode = True
+
+class SubAccountCreateOut(SubAccountOut):
+    api_key: str
+
+class SubAccountListOut(BaseModel):
+    data: list[SubAccountOut]
+    total: int
+    page: int
+    page_size: int
 
 
 class MemberRoleUpdate(BaseModel):
