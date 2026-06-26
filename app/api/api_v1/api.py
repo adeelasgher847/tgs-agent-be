@@ -16,6 +16,7 @@ from app.api.api_v1.endpoints import (
     workspace,
     workspace_invites,
 )
+from app.routers.sso import router as sso_router
 from app.routers.agents import router as agent_router
 from app.routers.call_flows import router as call_flows_router
 from app.routers.folders import router as folders_router
@@ -59,6 +60,7 @@ api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
 # that their literal paths take priority over /workspace/{workspace_id}.
 api_router.include_router(workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"])
 api_router.include_router(allowed_domains.router, prefix="/workspace", tags=["Workspace — Allowed Domains"])
+api_router.include_router(sso_router, prefix="/workspace/sso", tags=["SSO"])
 api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
