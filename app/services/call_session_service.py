@@ -277,6 +277,23 @@ class CallSessionService:
                     except Exception as sync_exc:  # pragma: no cover
                         logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
 
+                # HubSpot post-call write-back: create a Call engagement with the
+                # transcript summary once the call has actually completed. Fire-and-forget
+                # (fail open) — see app/services/hubspot_service.py::schedule_hubspot_writeback.
+                if status == "completed":
+                    try:
+                        from app.services.hubspot_service import (
+                            schedule_hubspot_writeback,
+                            tenant_has_hubspot_connected,
+                        )
+
+                        if tenant_has_hubspot_connected(db, call_session.tenant_id):
+                            schedule_hubspot_writeback(call_session.id)
+                    except Exception as hubspot_exc:  # pragma: no cover
+                        logger.warning(
+                            "HubSpot write-back schedule failed (non-critical): %s", hubspot_exc
+                        )
+
                 # Smart Callback: schedule a retry for missed outbound calls.
                 # maybe_schedule_callback writes the CallbackSchedule row (sync).
                 # _fire_callback_enqueue then submits the ARQ job on the current

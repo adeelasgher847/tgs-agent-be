@@ -6789,6 +6789,55 @@ paths:
                 $ref: '#/components/schemas/IntegrationListResponse'
       security:
       - HTTPBearer: []
+  /api/v1/integrations/hubspot:
+    delete:
+      tags:
+      - HubSpot Integration
+      summary: Hubspot Disconnect
+      description: Revoke the token at HubSpot and delete the workspaceintegration
+        row.
+      operationId: hubspot_disconnect_api_v1_integrations_hubspot_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_HubSpotDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/hubspot/contact:
+    get:
+      tags:
+      - HubSpot Integration
+      summary: Hubspot Get Contact
+      description: CRM Search API lookup by phone. Redis-cached for 5 minutes per
+        phone number.
+      operationId: hubspot_get_contact_api_v1_integrations_hubspot_contact_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: phone
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Phone number to search for (E.164 or local format)
+          title: Phone
+        description: Phone number to search for (E.164 or local format)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_HubSpotContactOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/calls/history:
     get:
       tags:
@@ -11340,6 +11389,40 @@ components:
       required:
       - hipaa_compliance
       title: HipaaSettingsUpdate
+    HubSpotContactOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        company:
+          type: string
+          nullable: true
+        last_interaction_date:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      title: HubSpotContactOut
+    HubSpotDisconnectResponse:
+      properties:
+        disconnected:
+          type: boolean
+          title: Disconnected
+        provider:
+          type: string
+          title: Provider
+          default: hubspot
+      type: object
+      required:
+      - disconnected
+      title: HubSpotDisconnectResponse
     ImportTwilioPhoneNumberRequest:
       properties:
         phone_number:
@@ -11420,8 +11503,12 @@ components:
           title: Connected
         webhook_url:
           type: string
-          title: Webhook Url
+          nullable: true
         last_triggered_at:
+          type: string
+          format: date-time
+          nullable: true
+        connected_at:
           type: string
           format: date-time
           nullable: true
@@ -11429,7 +11516,6 @@ components:
       required:
       - name
       - connected
-      - webhook_url
       title: IntegrationItem
     IntegrationListResponse:
       properties:
@@ -14871,6 +14957,38 @@ components:
       required:
       - data
       title: SuccessResponse[ForgotPasswordResponse]
+    SuccessResponse_HubSpotContactOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/HubSpotContactOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[HubSpotContactOut]
+    SuccessResponse_HubSpotDisconnectResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/HubSpotDisconnectResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[HubSpotDisconnectResponse]
     SuccessResponse_ImportTwilioPhoneNumberResponse_:
       properties:
         data:

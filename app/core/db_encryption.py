@@ -13,14 +13,22 @@ used by the Twilio credentials.
 
 If the key is missing or empty the encrypt call raises ``ValueError`` so that
 the application fails loudly rather than silently storing plaintext.
+
+HubSpot tokens (below) are the one exception: pgcrypto's ``pgp_sym_encrypt``
+is OpenPGP symmetric encryption and has no GCM mode, so it cannot satisfy a
+literal AES-256-GCM requirement. Those two helpers perform AES-256-GCM in
+Python via ``cryptography`` instead of pgcrypto SQL.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
+import os
 from contextlib import contextmanager
 
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -214,6 +222,90 @@ def decrypt_stored_webhook_secret(
             exc,
         )
         raise
+
+
+# Tags new-format ciphertext unambiguously so decrypt never has to guess between
+# AES-256-GCM and the legacy pgp_sym_encrypt format below — no byte-sniffing heuristic.
+_HUBSPOT_AESGCM_PREFIX = "gcm1:"
+
+
+def _hubspot_aes_key() -> bytes:
+    """Derive a 32-byte AES-256 key from HUBSPOT_TOKEN_ENCRYPTION_KEY.
+
+    SECURITY NOTE:
+      For secure AES-256-GCM encryption, HUBSPOT_TOKEN_ENCRYPTION_KEY must be configured
+      as a randomly generated 32-byte secret (typically represented as a 64-character
+      hex string, e.g. generated via `secrets.token_hex(32)`).
+
+    BACKWARD COMPATIBILITY:
+      We derive the key using hashlib.sha256 to ensure that any key length/format can
+      be safely resolved, and to preserve 100% backward compatibility for already
+      connected HubSpot workspaces encrypted under older/existing settings keys.
+    """
+    key = settings.HUBSPOT_TOKEN_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "HUBSPOT_TOKEN_ENCRYPTION_KEY is not configured — "
+            "cannot encrypt/decrypt HubSpot OAuth token."
+        )
+    return hashlib.sha256(key.encode("utf-8")).digest()
+
+
+def encrypt_hubspot_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+    """Encrypt *plaintext* HubSpot OAuth token with AES-256-GCM.
+
+    Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
+    encryption has no GCM mode). ``db`` is accepted only for parity with the other
+    encrypt_* helpers in this module; it is unused here.
+
+    Raises ``ValueError`` if ``HUBSPOT_TOKEN_ENCRYPTION_KEY`` is not configured.
+    """
+    key = _hubspot_aes_key()
+    nonce = os.urandom(12)  # 96-bit nonce, the standard size for AES-GCM
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return _HUBSPOT_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+
+
+def decrypt_hubspot_token(ciphertext: str, db: Session) -> str:
+    """Decrypt a HubSpot OAuth token written by :func:`encrypt_hubspot_token`.
+
+    Handles two formats so workspaces connected before the AES-256-GCM migration
+    don't need to reconnect:
+      - ``gcm1:``-prefixed: AES-256-GCM (current format).
+      - Unprefixed: legacy pgp_sym_encrypt base64 (pgcrypto), written before this
+        migration — decrypted via the same SQL path as the ElevenLabs/webhook keys.
+
+    Raises ``ValueError`` if ``HUBSPOT_TOKEN_ENCRYPTION_KEY`` is not configured or
+    if the ciphertext is corrupt / encrypted with a different key.
+    """
+    if not ciphertext:
+        raise ValueError("ciphertext is empty")
+
+    if ciphertext.startswith(_HUBSPOT_AESGCM_PREFIX):
+        key = _hubspot_aes_key()
+        try:
+            raw = base64.b64decode(ciphertext[len(_HUBSPOT_AESGCM_PREFIX):])
+            nonce, body = raw[:12], raw[12:]
+            return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
+        except Exception as exc:
+            raise ValueError(f"HubSpot token decryption failed: {exc}") from exc
+
+    # Legacy pgp_sym_encrypt ciphertext (pre-AES-256-GCM migration).
+    key = settings.HUBSPOT_TOKEN_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "HUBSPOT_TOKEN_ENCRYPTION_KEY is not configured — "
+            "cannot decrypt HubSpot OAuth token."
+        )
+    try:
+        result = _pgcrypto_scalar(
+            db,
+            "SELECT pgp_sym_decrypt(decode(:ct, 'base64'), :key)",
+            {"ct": ciphertext, "key": key},
+        )
+        return result or ""  # type: ignore[return-value]
+    except Exception as exc:
+        raise ValueError(f"HubSpot token decryption failed: {exc}") from exc
 
 
 def decrypt_stored_elevenlabs_key(

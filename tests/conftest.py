@@ -15,6 +15,10 @@ os.environ.setdefault(
     "WEBHOOK_SECRET_ENCRYPTION_KEY",
     "test-webhook-encryption-key-for-pytest-only",
 )
+os.environ.setdefault(
+    "HUBSPOT_TOKEN_ENCRYPTION_KEY",
+    "test-hubspot-encryption-key-for-pytest-only",
+)
 
 # Mock google submodules recursively to avoid ImportError in unit tests.
 # Live Google STT integration tests set RUN_GOOGLE_STT_INTEGRATION=1 to skip mocks.

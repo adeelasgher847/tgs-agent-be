@@ -48,6 +48,7 @@ from app.routers.internal_stt import router as internal_stt_router
 from app.routers.business_knowledge import router as business_knowledge_router
 from app.routers.recordings import router as recordings_router
 from app.routers.integrations import router as integrations_router
+from app.routers.hubspot_integration import router as hubspot_integration_router
 from app.routers.call_history import router as call_history_router
 from app.routers.call_history import batch_router as batch_call_metrics_router
 
@@ -156,5 +157,10 @@ api_router.include_router(
 )
 api_router.include_router(recordings_router, prefix="/recordings", tags=["Call Recordings"])
 api_router.include_router(integrations_router, prefix="/integrations", tags=["Integrations"])
+api_router.include_router(
+    hubspot_integration_router,
+    prefix="/integrations/hubspot",
+    tags=["HubSpot Integration"],
+)
 api_router.include_router(call_history_router, prefix="/calls", tags=["Call History Analytics"])
 api_router.include_router(batch_call_metrics_router, prefix="/batch-calls", tags=["Batch Call Analytics"])

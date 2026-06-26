@@ -44,7 +44,7 @@ def _embed_openai_ada002(text: str) -> list[float]:
 
     client = get_openai_client()
     resp = client.embeddings.create(
-        model="text-embedding-ada-002",
+        model=settings.RAG_EMBEDDING_MODEL,
         input=text,
     )
     return resp.data[0].embedding

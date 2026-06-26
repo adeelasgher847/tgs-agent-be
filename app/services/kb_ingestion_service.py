@@ -18,7 +18,7 @@ from typing import IO, List
 from app.core.config import settings
 from app.core.logger import logger
 
-EMBEDDING_MODEL = "text-embedding-ada-002"
+EMBEDDING_MODEL = settings.RAG_EMBEDDING_MODEL
 EMBEDDING_DIM = 1536
 CHUNK_MAX_TOKENS = 800
 CHUNK_OVERLAP_TOKENS = 100
@@ -67,6 +67,9 @@ def chunk_text(
 ) -> List[str]:
     import tiktoken
 
+    if not text or not text.strip():
+        return []
+
     enc = tiktoken.get_encoding("cl100k_base")
     tokens = enc.encode(text)
     if not tokens:
@@ -79,7 +82,7 @@ def chunk_text(
     while start < total:
         end = min(start + max_tokens, total)
         chunk_tokens = tokens[start:end]
-        if len(chunk_tokens) >= min_tokens:
+        if len(chunk_tokens) >= min_tokens or not chunks:
             chunks.append(enc.decode(chunk_tokens))
         elif chunks:
             # Append under-minimum tail to the previous chunk (avoids orphan slivers)
