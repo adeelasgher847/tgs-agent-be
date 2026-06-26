@@ -69,6 +69,10 @@ _SKIP_PREFIXES = (
     "/api/v2/health",
     "/api/v2/docs",
     "/api/v2/openapi.json",
+    # In-call Stripe payment webhook — Stripe sends requests without our API key;
+    # authentication is performed by verifying the Stripe-Signature header with
+    # stripe.webhooks.construct_event() inside the endpoint handler.
+    "/api/v1/payments/stripe-webhook",
 )
 
 def _get_redis() -> Optional[aioredis.Redis]:

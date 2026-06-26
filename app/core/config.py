@@ -225,9 +225,14 @@ class Settings(BaseSettings):
     # Stripe settings
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
-    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""          # Billing/subscription webhook secret
+    STRIPE_INCALL_WEBHOOK_SECRET: str = ""  # In-call payment webhook secret (separate endpoint)
     STRIPE_PRICE_ID_FREE: str = ""
     STRIPE_PRICE_ID_PRO: str = ""
+
+    # In-call payment page URL — returned to the agent as the caller-facing payment link.
+    # Format: "{PAYMENT_PAGE_BASE_URL}/pay/{payment_intent_id}?client_secret={client_secret}"
+    PAYMENT_PAGE_BASE_URL: str = "https://pay.yourdomain.com"
     
     # Billing settings
     FREE_PLAN_AGENT_LIMIT: int = 2

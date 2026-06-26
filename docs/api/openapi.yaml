@@ -7216,6 +7216,106 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/payments/session:
+    post:
+      tags:
+      - In-Call Payments
+      summary: Create an in-call payment session
+      description: Creates a Stripe PaymentIntent and returns a payment URL the agent
+        can share with the caller. The `agent_context` field contains the ready-made
+        sentence to inject into the agent's prompt.
+      operationId: create_payment_session_api_v1_payments_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CreatePaymentSessionResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/payments/stripe-webhook:
+    post:
+      tags:
+      - In-Call Payments
+      summary: Stripe webhook for in-call payment events
+      description: Receives `payment_intent.succeeded` and `payment_intent.payment_failed`
+        events from Stripe. Signature is verified with STRIPE_INCALL_WEBHOOK_SECRET.
+        Returns 204 on success, 403 on invalid signature.
+      operationId: stripe_payment_webhook_api_v1_payments_stripe_webhook_post
+      responses:
+        '204':
+          description: Successful Response
+  /api/v1/payments:
+    get:
+      tags:
+      - In-Call Payments
+      summary: List payment records for the workspace
+      operationId: list_payment_records_api_v1_payments_get
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: per_page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          title: Per Page
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_PaginatedPaymentResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/payments/{payment_intent_id}:
+    get:
+      tags:
+      - In-Call Payments
+      summary: Get a single payment record by PaymentIntent ID
+      operationId: get_payment_record_api_v1_payments__payment_intent_id__get
+      parameters:
+      - name: payment_intent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Payment Intent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_PaymentRecordOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /health:
     get:
       summary: Health Check
@@ -11296,6 +11396,68 @@ components:
       - partially qualified
       - rejected
       title: CandidateStatusEnum
+    CreatePaymentSessionRequest:
+      properties:
+        call_id:
+          type: string
+          format: uuid
+          nullable: true
+        amount_cents:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Amount Cents
+          description: Amount in the smallest currency unit (e.g. cents for USD).
+          examples:
+          - 5000
+        currency:
+          type: string
+          maxLength: 3
+          minLength: 3
+          title: Currency
+          description: Three-letter ISO 4217 currency code (lowercase).
+          default: usd
+          examples:
+          - usd
+        description:
+          type: string
+          maxLength: 1000
+          title: Description
+          description: Free-text description shown to the payer.
+          default: ''
+          examples:
+          - Service fee for call session
+      type: object
+      required:
+      - amount_cents
+      title: CreatePaymentSessionRequest
+      description: Body for POST /api/v1/payments/session.
+    CreatePaymentSessionResponse:
+      properties:
+        payment_intent_id:
+          type: string
+          title: Payment Intent Id
+          description: Stripe PaymentIntent ID (pi_...).
+        client_secret:
+          type: string
+          title: Client Secret
+          description: Stripe client_secret for client-side confirmation.
+        payment_url:
+          type: string
+          title: Payment Url
+          description: URL for the caller-facing payment page. Pass this to the agent
+            prompt so it can direct the caller.
+        agent_context:
+          type: string
+          title: Agent Context
+          description: Ready-to-use sentence to inject into the agent's prompt context.
+      type: object
+      required:
+      - payment_intent_id
+      - client_secret
+      - payment_url
+      - agent_context
+      title: CreatePaymentSessionResponse
+      description: Response from POST /api/v1/payments/session.
     CreatePhoneNumberRequest:
       properties:
         phone_number:
@@ -12892,6 +13054,34 @@ components:
       - page
       - page_size
       title: PaginatedBatchJobs
+    PaginatedPaymentResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/PaymentRecordOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        per_page:
+          type: integer
+          title: Per Page
+        pages:
+          type: integer
+          title: Pages
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - per_page
+      - pages
+      title: PaginatedPaymentResponse
+      description: Paginated list of payment records.
     PaginatedWebhookDeliveries:
       properties:
         items:
@@ -12930,6 +13120,63 @@ components:
       - READY
       - FAILED
       title: ParseStatusEnum
+    PaymentRecordOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        workspace_id:
+          type: string
+          format: uuid
+          title: Workspace Id
+        call_id:
+          type: string
+          format: uuid
+          nullable: true
+        payment_intent_id:
+          type: string
+          title: Payment Intent Id
+        amount_cents:
+          type: integer
+          title: Amount Cents
+        currency:
+          type: string
+          title: Currency
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+          title: Status
+        card_last4:
+          type: string
+          nullable: true
+        card_brand:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          title: Created At
+        updated_at:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      - workspace_id
+      - call_id
+      - payment_intent_id
+      - amount_cents
+      - currency
+      - description
+      - status
+      - card_last4
+      - card_brand
+      - created_at
+      - updated_at
+      title: PaymentRecordOut
+      description: Serialised PaymentRecord for list/detail responses.
     PendingCountByCrm:
       properties:
         crm_type:
@@ -15119,6 +15366,22 @@ components:
       required:
       - data
       title: SuccessResponse[CallSessionStats]
+    SuccessResponse_CreatePaymentSessionResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CreatePaymentSessionResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CreatePaymentSessionResponse]
     SuccessResponse_CreatePhoneNumberResponse_:
       properties:
         data:
@@ -15569,6 +15832,38 @@ components:
       required:
       - data
       title: SuccessResponse[NumberConfigurationResponse]
+    SuccessResponse_PaginatedPaymentResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/PaginatedPaymentResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[PaginatedPaymentResponse]
+    SuccessResponse_PaymentRecordOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/PaymentRecordOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[PaymentRecordOut]
     SuccessResponse_PendingCountResponse_:
       properties:
         data:
