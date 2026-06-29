@@ -81,3 +81,7 @@ from app.models.allowed_domain import AllowedDomain  # noqa: F401
 
 # Third-party CRM integrations (HubSpot OAuth, etc.)
 from app.models.workspace_integration import WorkspaceIntegration  # noqa: F401
+
+# SSO configuration
+from app.models.sso_config import SsoConfig  # noqa: F401
+
