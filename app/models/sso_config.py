@@ -18,8 +18,6 @@ class SsoConfig(Base):
     oidc_client_secret is Fernet-encrypted at rest (see app.core.sso_crypto).
     """
 
-    __tablename__ = "sso_configs"
-
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id = Column(
         UUID(as_uuid=True),
