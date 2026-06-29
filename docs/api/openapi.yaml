@@ -677,6 +677,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/workspace/sso:
+    get:
+      tags:
+      - SSO
+      summary: Get Sso Config
+      description: Get the current SSO configuration.
+      operationId: get_sso_config_api_v1_workspace_sso_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoConfigOut'
+      security: *id001
+    post:
+      tags:
+      - SSO
+      summary: Upsert Sso Config
+      description: Create or update the SSO configuration for the current workspace.
+      operationId: upsert_sso_config_api_v1_workspace_sso_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SsoConfigUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoConfigOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security: *id001
+    delete:
+      tags:
+      - SSO
+      summary: Disable Sso
+      description: Disable SSO for the current workspace (sets is_active=false).
+      operationId: disable_sso_api_v1_workspace_sso_delete
+      responses:
+        '204':
+          description: Successful Response
+      security: *id001
+  /api/v1/workspace/sso/test:
+    post:
+      tags:
+      - SSO
+      summary: Test Sso Connection
+      description: Test IdP connectivity (e.g. discovery URL or SAML endpoint).
+      operationId: test_sso_connection_api_v1_workspace_sso_test_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SsoTestResult'
+      security: *id001
   /api/v1/workspace:
     post:
       tags:
@@ -8456,6 +8522,131 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /auth/saml/{workspace_slug}/metadata:
+    get:
+      tags:
+      - SSO Authentication
+      summary: Saml Metadata
+      operationId: saml_metadata_auth_saml__workspace_slug__metadata_get
+      parameters:
+      - name: workspace_slug
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workspace Slug
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /auth/saml/{workspace_slug}/login:
+    get:
+      tags:
+      - SSO Authentication
+      summary: Saml Login
+      operationId: saml_login_auth_saml__workspace_slug__login_get
+      parameters:
+      - name: workspace_slug
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workspace Slug
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /auth/saml/{workspace_slug}/callback:
+    post:
+      tags:
+      - SSO Authentication
+      summary: Saml Callback
+      operationId: saml_callback_auth_saml__workspace_slug__callback_post
+      parameters:
+      - name: workspace_slug
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workspace Slug
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /auth/oidc/{workspace_slug}/login:
+    get:
+      tags:
+      - SSO Authentication
+      summary: Oidc Login
+      operationId: oidc_login_auth_oidc__workspace_slug__login_get
+      parameters:
+      - name: workspace_slug
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workspace Slug
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /auth/oidc/{workspace_slug}/callback:
+    get:
+      tags:
+      - SSO Authentication
+      summary: Oidc Callback
+      operationId: oidc_callback_auth_oidc__workspace_slug__callback_get
+      parameters:
+      - name: workspace_slug
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workspace Slug
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AccountDeletionRequest:
@@ -14404,6 +14595,111 @@ components:
       - crm_type
       - message
       title: SingleCallResponse
+    SsoConfigOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        workspace_id:
+          type: string
+          format: uuid
+          title: Workspace Id
+        protocol:
+          type: string
+          title: Protocol
+        idp_entity_id:
+          type: string
+          nullable: true
+        idp_sso_url:
+          type: string
+          nullable: true
+        idp_x509_certificate_truncated:
+          type: string
+          nullable: true
+        oidc_client_id:
+          type: string
+          nullable: true
+        oidc_client_secret:
+          type: string
+          title: Oidc Client Secret
+          default: '***'
+        oidc_discovery_url:
+          type: string
+          nullable: true
+        is_active:
+          type: boolean
+          title: Is Active
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - id
+      - workspace_id
+      - protocol
+      - idp_entity_id
+      - idp_sso_url
+      - idp_x509_certificate_truncated
+      - oidc_client_id
+      - oidc_discovery_url
+      - is_active
+      - created_at
+      - updated_at
+      title: SsoConfigOut
+      description: Safe response containing the SSO configuration with secrets masked.
+    SsoConfigUpsert:
+      properties:
+        protocol:
+          type: string
+          enum:
+          - saml
+          - oidc
+          title: Protocol
+        idp_entity_id:
+          type: string
+          nullable: true
+        idp_sso_url:
+          type: string
+          nullable: true
+        idp_x509_certificate:
+          type: string
+          nullable: true
+        oidc_client_id:
+          type: string
+          nullable: true
+        oidc_client_secret:
+          type: string
+          nullable: true
+        oidc_discovery_url:
+          type: string
+          nullable: true
+        is_active:
+          type: boolean
+          title: Is Active
+          default: false
+      type: object
+      required:
+      - protocol
+      title: SsoConfigUpsert
+      description: Payload for creating or updating an SSO configuration.
+    SsoTestResult:
+      properties:
+        success:
+          type: boolean
+          title: Success
+        error:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - success
+      title: SsoTestResult
     SttModelSchema:
       properties:
         provider:
