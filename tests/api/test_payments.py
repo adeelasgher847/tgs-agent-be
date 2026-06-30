@@ -421,3 +421,58 @@ def test_get_payment_detail_not_found(db):
     """Should return 404 for a PaymentIntent ID that does not exist."""
     resp = client.get("/api/v1/payments/pi_nonexistent_abc123", headers=_auth_headers())
     assert resp.status_code == 404
+
+
+# ===========================================================================
+# 12. POST /payments/session — dynamic context injection
+# ===========================================================================
+
+def test_create_payment_session_injects_metadata(db, mock_stripe_intent):
+    """Creating a payment session must inject the payment page url as a prompt addendum in the CallSession metadata."""
+    from app.models.call_session import CallSession
+    from datetime import datetime
+
+    # Seed a CallSession first
+    call_session = CallSession(
+        user_id=uuid.uuid4(),
+        agent_id=uuid.uuid4(),
+        tenant_id=_FAKE_WORKSPACE_ID,
+        start_time=datetime.utcnow(),
+        status="active",
+        call_type="inbound",
+        call_metadata={}
+    )
+    db.add(call_session)
+    db.commit()
+    db.refresh(call_session)
+
+    with patch(
+        "app.services.stripe_service.stripe.PaymentIntent.create",
+        return_value=mock_stripe_intent,
+    ):
+        resp = client.post(
+            "/api/v1/payments/session",
+            headers=_auth_headers(),
+            json={
+                "call_id": str(call_session.id),
+                "amount_cents": 5000,
+                "currency": "usd",
+                "description": "Consultation fee",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+
+    # Retrieve and verify CallSession metadata
+    db.expire(call_session)
+    db.refresh(call_session)
+    metadata = call_session.call_metadata or {}
+    vdc = metadata.get("voice_dynamic_context") or {}
+    assert "system_prompt_addendum" in vdc
+    assert data["payment_url"] in vdc["system_prompt_addendum"]
+    assert "Ask them to complete the payment" in vdc["system_prompt_addendum"]
+
+    # Cleanup seeded call_session
+    db.delete(call_session)
+    db.commit()

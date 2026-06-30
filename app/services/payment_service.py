@@ -100,6 +100,23 @@ class PaymentService:
             "Ask them to complete the payment."
         )
 
+        # Inject context into CallSession's metadata if call_id is provided
+        if call_id:
+            try:
+                from app.models.call_session import CallSession
+                call_session = db.query(CallSession).filter(CallSession.id == call_id).first()
+                if call_session:
+                    current_metadata = dict(call_session.call_metadata or {})
+                    vdc = dict(current_metadata.get("voice_dynamic_context") or {})
+                    vdc["system_prompt_addendum"] = agent_context
+                    current_metadata["voice_dynamic_context"] = vdc
+                    call_session.call_metadata = current_metadata
+                    db.add(call_session)
+                    db.commit()
+                    logger.info("Injected payment agent_context into CallSession %s metadata", call_id)
+            except Exception as e:
+                logger.error("Failed to inject payment context into CallSession: %s", e, exc_info=True)
+
         response = CreatePaymentSessionResponse(
             payment_intent_id=payment_intent_id,
             client_secret=client_secret,

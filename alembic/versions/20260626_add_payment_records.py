@@ -80,7 +80,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("idx_paymentrecord_workspace_created", table_name="paymentrecord")
     op.drop_index("uq_paymentrecord_payment_intent_id", table_name="paymentrecord")
-    op.drop_index("ix_paymentrecord_payment_intent_id", table_name="paymentrecord")
     op.drop_index("ix_paymentrecord_call_id", table_name="paymentrecord")
     op.drop_index("ix_paymentrecord_workspace_id", table_name="paymentrecord")
     op.drop_index("ix_paymentrecord_id", table_name="paymentrecord")

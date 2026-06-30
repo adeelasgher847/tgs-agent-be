@@ -46,6 +46,7 @@ _SKIP_PREFIXES = (
     "/api/v1/billing/webhook",
     "/api/v1/voice/",
     "/api/v1/stream/",
+    "/api/v1/payments/stripe-webhook",
 )
 
 # Unauthenticated POST endpoints targeted by bots (per-path, per-IP stricter limit).
