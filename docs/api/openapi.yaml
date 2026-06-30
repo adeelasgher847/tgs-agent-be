@@ -14877,6 +14877,11 @@ components:
         is_active:
           type: boolean
           title: Is Active
+        allowed_email_domains:
+          items:
+            type: string
+          type: array
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -14930,6 +14935,11 @@ components:
           type: boolean
           title: Is Active
           default: false
+        allowed_email_domains:
+          items:
+            type: string
+          type: array
+          nullable: true
       type: object
       required:
       - protocol
