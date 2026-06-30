@@ -127,8 +127,9 @@ class SubAccountOut(BaseModel):
     api_key_prefix: Optional[str] = None
     usage_this_cycle_minutes: float
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }
 
 class SubAccountCreateOut(SubAccountOut):
     api_key: str
