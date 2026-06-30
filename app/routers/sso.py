@@ -30,6 +30,7 @@ def upsert_sso_config(
         
     config.protocol = payload.protocol
     config.is_active = payload.is_active
+    config.allowed_email_domains = payload.allowed_email_domains
     
     if payload.protocol == 'saml':
         config.idp_entity_id = payload.idp_entity_id
@@ -122,6 +123,7 @@ def _to_out(config: SsoConfig) -> SsoConfigOut:
         oidc_client_secret="***",
         oidc_discovery_url=config.oidc_discovery_url,
         is_active=config.is_active,
+        allowed_email_domains=config.allowed_email_domains,
         created_at=config.created_at,
         updated_at=config.updated_at
     )

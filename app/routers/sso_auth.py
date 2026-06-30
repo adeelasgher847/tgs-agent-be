@@ -3,6 +3,8 @@
 import secrets
 import json
 import base64
+import time
+import hmac
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
@@ -20,6 +22,23 @@ from app.api.deps import issue_tokens_for_user
 from app.core.config import settings
 
 router = APIRouter()
+
+_OIDC_DISCOVERY_CACHE: dict[str, tuple[float, dict]] = {}
+
+async def _fetch_oidc_discovery(url: str) -> dict:
+    now = time.time()
+    if url in _OIDC_DISCOVERY_CACHE:
+        expiry, data = _OIDC_DISCOVERY_CACHE[url]
+        if now < expiry:
+            return data
+            
+    async with httpx.AsyncClient() as hc:
+        res = await hc.get(url)
+        res.raise_for_status()
+        data = res.json()
+        
+    _OIDC_DISCOVERY_CACHE[url] = (now + 3600.0, data)  # cache for 1 hour
+    return data
 
 def get_tenant_by_slug(db: Session, slug: str) -> Tenant:
     tenant = db.query(Tenant).filter(Tenant.workspace_slug == slug, Tenant.deleted_at.is_(None)).first()
@@ -101,8 +120,19 @@ def saml_login(
     req = prepare_saml_req(request, config, workspace_slug)
     auth = OneLogin_Saml2_Auth(req, get_saml_settings(config, workspace_slug))
     
-    sso_built_url = auth.login()
-    return Response(status_code=302, headers={"Location": sso_built_url})
+    relay_state = secrets.token_urlsafe(32)
+    sso_built_url = auth.login(return_to=relay_state)
+    
+    res = Response(status_code=302, headers={"Location": sso_built_url})
+    res.set_cookie(
+        key="saml_state",
+        value=relay_state,
+        httponly=True,
+        max_age=300,
+        samesite="lax",
+        secure=settings.ENVIRONMENT.lower() in ("staging", "production")
+    )
+    return res
 
 
 @router.post("/auth/saml/{workspace_slug}/callback")
@@ -116,6 +146,12 @@ async def saml_callback(
     
     form_data = await request.form()
     
+    # CSRF check using RelayState parameter from IdP and saml_state cookie
+    relay_state_from_idp = form_data.get("RelayState", "")
+    cookie_state = request.cookies.get("saml_state", "")
+    if not relay_state_from_idp or not hmac.compare_digest(relay_state_from_idp, cookie_state):
+        raise HTTPException(status_code=400, detail="Invalid RelayState — CSRF check failed")
+        
     req = prepare_saml_req(request, config, workspace_slug)
     req['post_data'] = dict(form_data)
     
@@ -142,6 +178,7 @@ async def saml_callback(
         samesite="lax",
         secure=settings.ENVIRONMENT.lower() in ("staging", "production")
     )
+    res.delete_cookie("saml_state")
     return res
 
 
@@ -161,10 +198,12 @@ async def oidc_login(
     )
     
     # We need to fetch the authorization endpoint from discovery URL
-    async with httpx.AsyncClient() as hc:
-        res = await hc.get(config.oidc_discovery_url)
-        res.raise_for_status()
-        discovery_data = res.json()
+    try:
+        discovery_data = await _fetch_oidc_discovery(config.oidc_discovery_url)
+    except Exception as exc:
+        from app.core.logger import logger
+        logger.error("Failed to fetch OIDC discovery document: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="Failed to retrieve OIDC discovery document")
         
     authorization_endpoint = discovery_data.get('authorization_endpoint')
     if not authorization_endpoint:
@@ -209,10 +248,12 @@ async def oidc_callback(
     base_url = settings.WEBHOOK_BASE_URL.rstrip('/')
     redirect_uri = f"{base_url}/auth/oidc/{workspace_slug}/callback"
     
-    async with httpx.AsyncClient() as hc:
-        res = await hc.get(config.oidc_discovery_url)
-        res.raise_for_status()
-        discovery_data = res.json()
+    try:
+        discovery_data = await _fetch_oidc_discovery(config.oidc_discovery_url)
+    except Exception as exc:
+        from app.core.logger import logger
+        logger.error("Failed to fetch OIDC discovery document: %s", exc, exc_info=True)
+        raise HTTPException(status_code=502, detail="Failed to retrieve OIDC discovery document")
         
     token_endpoint = discovery_data.get('token_endpoint')
     

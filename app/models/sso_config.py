@@ -39,6 +39,13 @@ class SsoConfig(Base):
     oidc_discovery_url = Column(Text, nullable=True)
 
     is_active = Column(Boolean, nullable=False, default=False, server_default="false")
+    
+    # Allowed email domains for auto-provisioning (e.g. ["acme.com", "acme.org"])
+    allowed_email_domains = Column(
+        postgresql_JSONB := __import__("sqlalchemy.dialects.postgresql", fromlist=["JSONB"]).JSONB,
+        nullable=True,
+        server_default="[]"
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)

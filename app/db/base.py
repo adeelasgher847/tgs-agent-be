@@ -85,3 +85,5 @@ from app.models.workspace_integration import WorkspaceIntegration  # noqa: F401
 # SSO configuration
 from app.models.sso_config import SsoConfig  # noqa: F401
 
+# In-call Stripe payment records
+from app.models.payment_record import PaymentRecord  # noqa: F401

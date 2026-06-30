@@ -1414,6 +1414,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         try:
             from datetime import datetime, timezone
             import json
+
+            # Refresh call session from database to capture any dynamic metadata updates (e.g. payment_url injection)
+            if self.call_session and self.db:
+                try:
+                    self.db.refresh(self.call_session)
+                except Exception as exc:
+                    logger.warning("Failed to refresh call session in streaming turn: %s", exc)
             
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting (inbound pickup only)
             if is_greeting:
