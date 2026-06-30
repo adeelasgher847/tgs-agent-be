@@ -84,7 +84,18 @@ class Settings(BaseSettings):
     # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
     # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
     ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
-    
+
+    # HubSpot CRM OAuth (app/services/hubspot_service.py).
+    # client_id/client_secret kept here as local-dev fallbacks only — in
+    # staging/production they are read from Secret Manager (see
+    # app/core/secret_manager.py::get_hubspot_oauth_credentials).
+    HUBSPOT_CLIENT_ID: str = ""
+    HUBSPOT_CLIENT_SECRET: str = ""
+    HUBSPOT_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/hubspot/callback
+    # Symmetric encryption key for workspaceintegration.access_token / refresh_token
+    # (pgp_sym_encrypt) — same scheme as ELEVENLABS_ENCRYPTION_KEY above.
+    HUBSPOT_TOKEN_ENCRYPTION_KEY: str = ""
+
     # Google Cloud Speech-to-Text Configuration
     GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file for Vertex AI + STT
     GOOGLE_CLOUD_PROJECT_ID: str = ""
@@ -296,7 +307,7 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL: str = "text-embedding-3-small"
     # Fallback embedding model/provider used when the primary embedding call fails.
     RAG_FALLBACK_EMBEDDING_PROVIDER: str = "gemini"
-    RAG_FALLBACK_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    RAG_FALLBACK_EMBEDDING_MODEL: str = "gemini-embedding-002"
     RAG_TOP_K: int = 5
     RAG_SCORE_THRESHOLD: float = 0.4
     # Hard cap for the size of the rendered context block injected into prompts.

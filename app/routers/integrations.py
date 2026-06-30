@@ -298,6 +298,10 @@ async def list_integrations(
     make_secret = get_make_secret(tenant)
     n8n_secret = get_n8n_secret(tenant)
 
+    from app.services import hubspot_service
+
+    hubspot_connected, hubspot_connected_at = hubspot_service.get_connection_status(db, tenant.id)
+
     integrations = [
         IntegrationItem(
             name="make",
@@ -310,6 +314,11 @@ async def list_integrations(
             connected=bool(n8n_secret),
             webhook_url=f"{base_url}/api/v1/integrations/n8n/trigger",
             last_triggered_at=get_last_triggered_at(tenant, "n8n"),
+        ),
+        IntegrationItem(
+            name="hubspot",
+            connected=hubspot_connected,
+            connected_at=hubspot_connected_at,
         ),
     ]
 

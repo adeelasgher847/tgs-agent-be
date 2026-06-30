@@ -181,6 +181,44 @@ def get_rime_api_key() -> str:
     return env_key.strip()
 
 
+@lru_cache(maxsize=1)
+def _load_hubspot_production_credentials() -> Tuple[str, str]:
+    """Fetch HubSpot OAuth app credentials from Secret Manager (cached after first call)."""
+    client_id = _fetch_from_secret_manager("HUBSPOT_CLIENT_ID") or settings.HUBSPOT_CLIENT_ID
+    client_secret = _fetch_from_secret_manager("HUBSPOT_CLIENT_SECRET") or settings.HUBSPOT_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "HubSpot OAuth credentials unavailable. Set GCP_PROJECT_ID and Secret Manager "
+            "secrets (HUBSPOT_CLIENT_ID, HUBSPOT_CLIENT_SECRET) or the equivalent env vars."
+        )
+    return client_id, client_secret
+
+
+def get_hubspot_oauth_credentials() -> Tuple[str, str]:
+    """
+    Return (client_id, client_secret) appropriate for the current environment.
+
+    - production/staging → GCP Secret Manager with env-var fallback
+    - development         → env-var / .env values
+
+    Raises RuntimeError in staging/production when credentials are absent,
+    ValueError in development.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        return _load_hubspot_production_credentials()
+
+    client_id = settings.HUBSPOT_CLIENT_ID
+    client_secret = settings.HUBSPOT_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise ValueError(
+            "HubSpot OAuth credentials not configured. Set HUBSPOT_CLIENT_ID and "
+            "HUBSPOT_CLIENT_SECRET in your .env file for local development."
+        )
+    return client_id, client_secret
+
+
 def get_sso_encryption_key() -> bytes:
     """Return the Fernet key for encrypting SSO OIDC client secrets."""
     env = settings.ENVIRONMENT.lower()

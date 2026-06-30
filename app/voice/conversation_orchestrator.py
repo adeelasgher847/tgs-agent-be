@@ -501,6 +501,37 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 else:
                     system_prompt = system_prompt + "\n\n" + kb_context_block
 
+            # HubSpot CRM context injection: fetched once at call start (Redis-cached
+            # contact lookup) and cached on call_session.call_metadata, so every later
+            # turn (the prompt is rebuilt each turn) is a cheap in-memory dict read.
+            # Fails open on timeout/error — never blocks the call.
+            crm_context_block = ""
+            if self._h.call_session and self._h.db:
+                try:
+                    from app.services.hubspot_service import get_crm_context_block_for_call
+
+                    crm_context_block = await asyncio.wait_for(
+                        get_crm_context_block_for_call(self._h.db, self._h.call_session),
+                        timeout=0.6,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "HubSpot CRM context lookup timed out; proceeding without CRM context"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "HubSpot CRM context lookup failed; proceeding without context: %s", exc
+                    )
+
+            if crm_context_block:
+                anchor = "# CONVERSATION STATE"
+                if anchor in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        anchor, crm_context_block + "\n\n" + anchor, 1
+                    )
+                else:
+                    system_prompt = system_prompt + "\n\n" + crm_context_block
+
             from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
 
             llm_runtime = resolve_llm_runtime(self._h.agent)

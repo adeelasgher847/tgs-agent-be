@@ -64,6 +64,7 @@ _SKIP_PREFIXES = (
     # Public Web SDK endpoints — security enforced via flow.public_access +
     # allowed_domains Origin check inside the handler, not API credentials.
     "/api/v1/sdk/",
+    "/api/v1/integrations/hubspot/callback",
     "/health",
     # v2 public endpoints — no auth required
     "/api/v2/health",

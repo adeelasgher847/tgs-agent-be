@@ -79,6 +79,9 @@ from app.models.data_export_job import DataExportJob  # noqa: F401
 # Web SDK — public call-token domain whitelist
 from app.models.allowed_domain import AllowedDomain  # noqa: F401
 
+# Third-party CRM integrations (HubSpot OAuth, etc.)
+from app.models.workspace_integration import WorkspaceIntegration  # noqa: F401
+
 # SSO configuration
 from app.models.sso_config import SsoConfig  # noqa: F401
 
