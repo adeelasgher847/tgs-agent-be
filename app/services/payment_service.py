@@ -64,11 +64,10 @@ class PaymentService:
         client_secret: str = intent.client_secret
 
         # Build the payment URL — no separate hosted page; just a deep-link
-        # the caller opens that contains the client_secret.
+        # the caller opens to complete the payment.
         payment_url = (
             f"{settings.PAYMENT_PAGE_BASE_URL.rstrip('/')}"
             f"/pay/{payment_intent_id}"
-            f"?client_secret={client_secret}"
         )
 
         # Persist a pending PaymentRecord

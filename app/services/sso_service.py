@@ -26,6 +26,18 @@ def find_or_create_user(db: Session, email: str, workspace_id: uuid.UUID) -> tup
     """
     email = email.lower().strip()
     
+    # Validate allowed email domains
+    config = db.query(SsoConfig).filter(SsoConfig.workspace_id == workspace_id).first()
+    if config and config.allowed_email_domains:
+        email_domain = email.split("@", 1)[-1].lower()
+        allowed_domains = [d.lower().strip() for d in config.allowed_email_domains if d.strip()]
+        if allowed_domains and email_domain not in allowed_domains:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=403,
+                detail=f"Email domain @{email_domain} is not permitted for this workspace",
+            )
+    
     # 1. Look for existing user
     user = db.query(User).filter(User.email == email, User.deleted_at.is_(None)).first()
     
@@ -38,7 +50,6 @@ def find_or_create_user(db: Session, email: str, workspace_id: uuid.UUID) -> tup
             first_name="SSO",
             last_name="User",
             hashed_password=get_password_hash(uuid.uuid4().hex),  # Random unusable password
-            is_verified=True,  # SSO implies verified
         )
         db.add(user)
         db.flush()
@@ -50,7 +61,7 @@ def find_or_create_user(db: Session, email: str, workspace_id: uuid.UUID) -> tup
     # Check if association exists
     assoc = db.execute(
         text("SELECT 1 FROM user_tenant_association WHERE user_id = :uid AND tenant_id = :tid"),
-        {"uid": user.id, "tid": workspace_id}
+        {"uid": str(user.id), "tid": str(workspace_id)}
     ).fetchone()
     
     if not assoc:

@@ -71,7 +71,7 @@ def create_payment_session(
         logger.error("create_payment_session failed: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Stripe error: {exc}",
+            detail="Payment service unavailable. Please try again.",
         )
     return create_success_response(
         response,

@@ -17,8 +17,6 @@ from app.db.base_class import Base
 class PaymentRecord(Base):
     """Tracks Stripe PaymentIntent state for in-call payments."""
 
-    __tablename__ = "paymentrecord"
-
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
 
     # Workspace that owns this payment record

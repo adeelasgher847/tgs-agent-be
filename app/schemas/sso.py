@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class SsoConfigUpsert(BaseModel):
@@ -19,6 +19,20 @@ class SsoConfigUpsert(BaseModel):
     oidc_discovery_url: Optional[str] = None
     
     is_active: bool = False
+    
+    # Allowed email domains for auto-provisioning
+    allowed_email_domains: Optional[list[str]] = None
+
+    @field_validator("oidc_discovery_url")
+    @classmethod
+    def validate_oidc_discovery_url(cls, v: Optional[str]) -> Optional[str]:
+        if v:
+            from app.utils.ssrf import assert_public_url, SSRFBlockedError
+            try:
+                assert_public_url(v)
+            except SSRFBlockedError as exc:
+                raise ValueError(str(exc))
+        return v
 
 
 class SsoConfigOut(BaseModel):
@@ -36,6 +50,7 @@ class SsoConfigOut(BaseModel):
     oidc_discovery_url: Optional[str]
     
     is_active: bool
+    allowed_email_domains: Optional[list[str]] = None
     created_at: datetime
     updated_at: Optional[datetime]
 

@@ -191,7 +191,7 @@ def test_create_payment_session(db, mock_stripe_intent):
     assert data["payment_intent_id"] == mock_stripe_intent.id
     assert data["client_secret"] == mock_stripe_intent.client_secret
     assert mock_stripe_intent.id in data["payment_url"]
-    assert "client_secret" in data["payment_url"]
+    assert "client_secret" not in data["payment_url"]
     assert "Ask them to complete the payment" in data["agent_context"]
 
     # DB record should be created
