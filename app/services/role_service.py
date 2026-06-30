@@ -16,6 +16,7 @@ MANAGER = "manager"
 CONFIG_ONLY = "config_only"
 READ_ONLY = "read_only"
 BILLING_ONLY = "billing_only"
+OWNER = "owner"
 
 CANONICAL_ROLES = (ADMIN, MANAGER, CONFIG_ONLY, READ_ONLY, BILLING_ONLY)
 
@@ -27,11 +28,12 @@ ROLE_RANK = {
     CONFIG_ONLY: 2,
     MANAGER: 3,
     ADMIN: 4,
+    OWNER: 4,
 }
 
-# admin/manager outrank billing_only and inherit into it; config_only/read_only
+# admin/manager/owner outrank billing_only and inherit into it; config_only/read_only
 # do not get billing access even though they outrank nothing here.
-BILLING_ALLOWED_ROLES = frozenset({ADMIN, MANAGER, BILLING_ONLY})
+BILLING_ALLOWED_ROLES = frozenset({ADMIN, MANAGER, BILLING_ONLY, OWNER})
 
 
 def has_rank(role_name: Optional[str], required: str) -> bool:
