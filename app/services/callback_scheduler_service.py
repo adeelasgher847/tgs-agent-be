@@ -359,12 +359,10 @@ class CallbackSchedulerService:
         import json as _json
 
         from fastapi.responses import JSONResponse as _JSONResponse
-        from starlette.requests import Request as _Request
 
-        from app.core.config import settings
         from app.db.session import SessionLocal
         from app.schemas.twilio import CallInitiateRequest
-        from app.services import voice_call_service as _vcs
+        from app.services.voice_call_service import initiate_call
 
         logger.info(
             "callback_dispatch agent_id=%s phone=%s attempt=%d",
@@ -372,13 +370,6 @@ class CallbackSchedulerService:
             schedule.phone_number,
             schedule.attempt_number,
         )
-
-        # ── Require webhook secret (same auth path as batch calls) ────────────
-        secret = settings.N8N_WEBHOOK_SECRET
-        if not secret:
-            raise RuntimeError(
-                "N8N_WEBHOOK_SECRET must be configured for smart callback dispatch"
-            )
 
         # ── Load the original call to inherit tenant/user context ─────────────
         original = db.get(CallSession, schedule.original_call_id)
@@ -394,25 +385,6 @@ class CallbackSchedulerService:
             user_id=str(original.user_id),
         )
 
-        # ── Build a minimal fake Starlette request (same pattern as batch calls) ─
-        secret_bytes = secret.encode("latin-1")
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/internal/callback",
-            "query_string": b"",
-            "headers": [
-                (b"x-n8n-webhook-secret", secret_bytes),
-                (b"content-type", b"application/json"),
-            ],
-            "state": {},
-        }
-
-        async def _receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        fake_request = _Request(scope, receive=_receive)
-
         # ── Run async initiate_call in a fresh event loop ─────────────────────
         # APScheduler thread has no running loop, so new_event_loop() is safe.
         dispatch_db = SessionLocal()
@@ -422,11 +394,12 @@ class CallbackSchedulerService:
             asyncio.set_event_loop(loop)
             try:
                 result = loop.run_until_complete(
-                    _vcs.initiate_call(
+                    initiate_call(
                         call_request=call_request,
-                        http_request=fake_request,
-                        user=None,
                         db=dispatch_db,
+                        is_system_call=True,
+                        tenant_id=original.tenant_id,
+                        user_id=original.user_id,
                     )
                 )
             finally:
@@ -580,12 +553,10 @@ class CallbackSchedulerService:
         import json as _json
 
         from fastapi.responses import JSONResponse as _JSONResponse
-        from starlette.requests import Request as _Request
 
-        from app.core.config import settings
         from app.db.session import SessionLocal
         from app.schemas.twilio import CallInitiateRequest
-        from app.services import voice_call_service as _vcs
+        from app.services.voice_call_service import initiate_call
 
         logger.info(
             "callback_dispatch_async agent_id=%s phone=%s attempt=%d",
@@ -593,12 +564,6 @@ class CallbackSchedulerService:
             schedule.phone_number,
             schedule.attempt_number,
         )
-
-        secret = settings.N8N_WEBHOOK_SECRET
-        if not secret:
-            raise RuntimeError(
-                "N8N_WEBHOOK_SECRET must be configured for smart callback dispatch"
-            )
 
         original = db.get(CallSession, schedule.original_call_id)
         if original is None:
@@ -613,30 +578,14 @@ class CallbackSchedulerService:
             user_id=str(original.user_id),
         )
 
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/internal/callback",
-            "query_string": b"",
-            "headers": [
-                (b"x-n8n-webhook-secret", secret.encode("latin-1")),
-                (b"content-type", b"application/json"),
-            ],
-            "state": {},
-        }
-
-        async def _receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        fake_request = _Request(scope, receive=_receive)
-
         dispatch_db = SessionLocal()
         try:
-            result = await _vcs.initiate_call(
+            result = await initiate_call(
                 call_request=call_request,
-                http_request=fake_request,
-                user=None,
                 db=dispatch_db,
+                is_system_call=True,
+                tenant_id=original.tenant_id,
+                user_id=original.user_id,
             )
         finally:
             dispatch_db.close()

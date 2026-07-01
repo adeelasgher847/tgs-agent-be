@@ -47,6 +47,10 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         # ---- startup ----
         logger.info("Application startup initiated")
+
+        from app.core.observability import setup_tracing
+        setup_tracing(app)
+
         try:
             init_async_db()
             logger.info("Async DB pool initialized")

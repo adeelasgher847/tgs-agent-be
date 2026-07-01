@@ -512,7 +512,6 @@ class WorkerSettings:
     Environment requirements:
       REDIS_URL       — Redis connection string (already used by rate limiter)
       DATABASE_URL    — PostgreSQL sync URL (already in Settings)
-      N8N_WEBHOOK_SECRET — used by the fake-request auth bridge in BatchCallWorkerService
 
     To start the worker:
         arq app.workers.batch_call_worker.WorkerSettings

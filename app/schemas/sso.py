@@ -23,6 +23,13 @@ class SsoConfigUpsert(BaseModel):
     # Allowed email domains for auto-provisioning
     allowed_email_domains: Optional[list[str]] = None
 
+    @field_validator("allowed_email_domains")
+    @classmethod
+    def validate_allowed_email_domains(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is not None:
+            return [d.lower().strip() for d in v if d.strip()]
+        return v
+
     @field_validator("oidc_discovery_url")
     @classmethod
     def validate_oidc_discovery_url(cls, v: Optional[str]) -> Optional[str]:
@@ -33,6 +40,7 @@ class SsoConfigUpsert(BaseModel):
             except SSRFBlockedError as exc:
                 raise ValueError(str(exc))
         return v
+
 
 
 class SsoConfigOut(BaseModel):

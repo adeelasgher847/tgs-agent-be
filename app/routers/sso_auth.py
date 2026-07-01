@@ -213,16 +213,20 @@ async def oidc_login(
     redirect_uri = f"{base_url}/auth/oidc/{workspace_slug}/callback"
     
     state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
     uri, state = client.create_authorization_url(
         authorization_endpoint,
         redirect_uri=redirect_uri,
         scope='openid email profile',
-        state=state
+        state=state,
+        nonce=nonce
     )
     
     res = Response(status_code=302, headers={"Location": uri})
     res.set_cookie(key="oidc_state", value=state, httponly=True, max_age=300)
+    res.set_cookie(key="oidc_nonce", value=nonce, httponly=True, max_age=300)
     return res
+
 
 
 @router.get("/auth/oidc/{workspace_slug}/callback")
@@ -236,9 +240,13 @@ async def oidc_callback(
     
     state = request.query_params.get('state')
     cookie_state = request.cookies.get('oidc_state')
+    cookie_nonce = request.cookies.get('oidc_nonce')
     
     if not state or state != cookie_state:
         raise HTTPException(status_code=400, detail="Invalid state parameter.")
+        
+    if not cookie_nonce:
+        raise HTTPException(status_code=400, detail="Missing OIDC nonce parameter.")
         
     code = request.query_params.get('code')
     if not code:
@@ -289,6 +297,11 @@ async def oidc_callback(
     if not userinfo or 'email' not in userinfo:
         raise HTTPException(status_code=401, detail="Email claim missing from IdP response.")
         
+    # Verify nonce claim in the ID token
+    token_nonce = userinfo.get('nonce')
+    if not token_nonce or token_nonce != cookie_nonce:
+        raise HTTPException(status_code=400, detail="Invalid OIDC nonce.")
+        
     email = userinfo['email']
     user, role_info = find_or_create_user(db, email, tenant.id)
     token_resp = issue_tokens_for_user(db, user, tenant.id, role_info)
@@ -303,4 +316,6 @@ async def oidc_callback(
         secure=settings.ENVIRONMENT.lower() in ("staging", "production")
     )
     res.delete_cookie("oidc_state")
+    res.delete_cookie("oidc_nonce")
     return res
+

@@ -43,33 +43,6 @@ from app.services.voice_call_service import initiate_call as initiate_call_servi
 router = APIRouter()
 
 
-def _build_internal_request(webhook_secret: str) -> Request:
-    """
-    Build a minimal Starlette Request for internal outbound call dispatch.
-
-    Mirrors the pattern in batch_call_worker_service._build_fake_request so that
-    verify_n8n_webhook_secret_async resolves to True and initiate_call uses the
-    tenant_id from the body rather than requiring a JWT user.
-    """
-    from starlette.types import Scope
-
-    scope: Scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/internal/integration",
-        "query_string": b"",
-        "headers": [
-            (b"x-n8n-webhook-secret", webhook_secret.encode("latin-1")),
-            (b"content-type", b"application/json"),
-        ],
-        "state": {},
-    }
-
-    async def _receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    return Request(scope, receive=_receive)
-
 
 def _rate_limit_response(retry_after: float) -> JSONResponse:
     retry_dt = datetime.fromtimestamp(retry_after, tz=timezone.utc)
@@ -146,17 +119,14 @@ async def make_trigger(
         jd_context=body.variables,
     )
 
-    # 5. Dispatch via shared call service using the established internal dispatch
-    #    pattern (same as batch worker and callback scheduler).
-    #    N8N_WEBHOOK_SECRET must be configured — it is the system's internal dispatch key.
-    if not settings.N8N_WEBHOOK_SECRET:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Integration dispatch is not configured on this server. Contact your administrator.",
-        )
-
-    fake_request = _build_internal_request(settings.N8N_WEBHOOK_SECRET)
-    result = await initiate_call_service(call_request, fake_request, None, db)
+    # 5. Dispatch via shared call service — auth already verified above.
+    result = await initiate_call_service(
+        call_request=call_request,
+        db=db,
+        is_system_call=True,
+        tenant_id=tenant.id,
+        user_id=None,
+    )
 
     # 6. Record last triggered timestamp (best-effort)
     try:
@@ -233,15 +203,14 @@ async def n8n_trigger(
     if not allowed:
         return _rate_limit_response(retry_after)
 
-    # 5. Dispatch via shared call service using internal fake request.
-    if not settings.N8N_WEBHOOK_SECRET:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Integration dispatch is not configured on this server. Contact your administrator.",
-        )
-
-    fake_request = _build_internal_request(settings.N8N_WEBHOOK_SECRET)
-    result = await initiate_call_service(body, fake_request, None, db)
+    # 5. Dispatch via shared call service — auth already verified above.
+    result = await initiate_call_service(
+        call_request=body,
+        db=db,
+        is_system_call=True,
+        tenant_id=tenant.id,
+        user_id=None,
+    )
 
     # 6. Record last triggered (best-effort)
     try:

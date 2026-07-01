@@ -99,19 +99,6 @@ def _mock_settings(*, livekit_enabled: bool = True, max_concurrent: int = 10):
     return s
 
 
-def _mock_http_request():
-    req = MagicMock()
-    req.headers = {}
-    req.state = MagicMock()
-    req.state.request_id = "test-req-id"
-    return req
-
-
-def _mock_user():
-    u = MagicMock()
-    u.current_tenant_id = _TENANT_ID
-    u.id = _USER_ID
-    return u
 
 
 # ---------------------------------------------------------------------------
@@ -150,10 +137,6 @@ async def _run(
 
     with (
         patch(
-            "app.services.voice_call_service.verify_n8n_webhook_secret_async",
-            AsyncMock(return_value=False),
-        ),
-        patch(
             "app.services.voice_call_service.agent_service",
             MagicMock(get_agent_by_id=MagicMock(return_value=_agent(status=agent_status))),
         ),
@@ -189,7 +172,14 @@ async def _run(
             MagicMock(return_value=("AC_test", "token_test")),
         ),
     ):
-        result = await initiate_call(req, _mock_http_request(), _mock_user(), db)
+        result = await initiate_call(
+            call_request=req,
+            db=db,
+            is_system_call=False,
+            tenant_id=_TENANT_ID,
+            user_id=_USER_ID,
+            request_id="test-req-id",
+        )
 
     return result, mock_livekit, twilio_call, db
 
@@ -434,10 +424,6 @@ class TestLivekitRoomCreationFailure:
 
         with (
             patch(
-                "app.services.voice_call_service.verify_n8n_webhook_secret_async",
-                AsyncMock(return_value=False),
-            ),
-            patch(
                 "app.services.voice_call_service.agent_service",
                 MagicMock(get_agent_by_id=MagicMock(return_value=_agent())),
             ),
@@ -580,4 +566,10 @@ async def _run_direct(req):
     """Thin wrapper used by tests that need to inject specific mocks directly."""
     from app.services.voice_call_service import initiate_call
 
-    return await initiate_call(req, _mock_http_request(), _mock_user(), _db())
+    return await initiate_call(
+        call_request=req,
+        db=_db(),
+        is_system_call=False,
+        tenant_id=_TENANT_ID,
+        user_id=_USER_ID,
+    )

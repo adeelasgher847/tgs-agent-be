@@ -1,17 +1,288 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import model_validator
+"""
+app/core/config.py — Application settings.
+
+Flat env-var fields remain on `Settings` for full backwards compatibility
+(60+ call sites use `settings.FLAT_NAME`).  Eight domain sub-models are
+assembled by a model_validator and exposed as grouped views:
+
+    settings.db.url          # same value as settings.DATABASE_URL
+    settings.auth.secret_key # same value as settings.SECRET_KEY
+    settings.twilio.account_sid
+    settings.llm.openai_api_key
+    settings.tts.provider
+    settings.crm.hubspot_client_id
+    settings.server.environment
+    settings.redis.url
+"""
+
+from __future__ import annotations
+
 from typing import Optional
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# ---------------------------------------------------------------------------
+# Domain sub-models
+# Each field carries a validation_alias matching the canonical env-var name so
+# the sub-model can also be instantiated directly from a flat env dict via
+# SubModel.model_validate(os.environ).  populate_by_name=True allows
+# construction by the Python field name as well (used in the Settings validator
+# below and in tests).
+# ---------------------------------------------------------------------------
+
+class DbSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    url: str = Field(
+        default="postgresql+psycopg2://postgres:admin@localhost:5432/voiceagent",
+        validation_alias="DATABASE_URL",
+    )
+    pool_size: int = Field(default=10, validation_alias="DATABASE_POOL_SIZE")
+    max_overflow: int = Field(default=20, validation_alias="DATABASE_MAX_OVERFLOW")
+    pool_timeout: int = Field(default=30, validation_alias="DATABASE_POOL_TIMEOUT")
+    statement_timeout: int = Field(default=30000, validation_alias="DATABASE_STATEMENT_TIMEOUT")
+
+
+class AuthSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    secret_key: str = Field(default="", validation_alias="SECRET_KEY")
+    algorithm: str = Field(default="", validation_alias="ALGORITHM")
+    access_token_expire_minutes: int = Field(default=15, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+    refresh_token_expire_days: int = Field(default=7, validation_alias="REFRESH_TOKEN_EXPIRE_DAYS")
+    password_reset_token_expire_minutes: int = Field(
+        default=30, validation_alias="PASSWORD_RESET_TOKEN_EXPIRE_MINUTES"
+    )
+    webhook_secret_encryption_key: str = Field(
+        default="", validation_alias="WEBHOOK_SECRET_ENCRYPTION_KEY"
+    )
+    sso_encryption_key: str = Field(default="", validation_alias="SSO_ENCRYPTION_KEY")
+    google_client_id: str = Field(default="", validation_alias="GOOGLE_CLIENT_ID")
+    google_client_secret: str = Field(default="", validation_alias="GOOGLE_CLIENT_SECRET")
+
+
+class TwilioSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    account_sid: str = Field(default="", validation_alias="TWILIO_ACCOUNT_SID")
+    auth_token: str = Field(default="", validation_alias="TWILIO_AUTH_TOKEN")
+    phone_number: str = Field(default="", validation_alias="TWILIO_PHONE_NUMBER")
+    allow_unauthenticated_webhooks: bool = Field(
+        default=False, validation_alias="ALLOW_UNAUTHENTICATED_WEBHOOKS"
+    )
+    test_account_sid: str = Field(default="", validation_alias="TWILIO_TEST_ACCOUNT_SID")
+    test_auth_token: str = Field(default="", validation_alias="TWILIO_TEST_AUTH_TOKEN")
+    edge: Optional[str] = Field(default="umatilla", validation_alias="TWILIO_EDGE")
+
+
+class LlmSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    # OpenAI
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(default="", validation_alias="OPENAI_BASE_URL")
+    openai_api_version: str = Field(default="", validation_alias="OPENAI_API_VERSION")
+    # Gemini / Vertex
+    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+    google_application_credentials: str = Field(
+        default="", validation_alias="GOOGLE_APPLICATION_CREDENTIALS"
+    )
+    google_cloud_project_id: str = Field(default="", validation_alias="GOOGLE_CLOUD_PROJECT_ID")
+    vertex_ai_location: str = Field(default="us-central1", validation_alias="VERTEX_AI_LOCATION")
+    # Provider selection
+    provider: str = Field(default="google", validation_alias="LLM_PROVIDER")
+    default_model: str = Field(default="gemini-1.5-flash", validation_alias="DEFAULT_LLM_MODEL")
+    default_provider: str = Field(default="gemini", validation_alias="DEFAULT_LLM_PROVIDER")
+    # Voice LLM tuning
+    history_max_turns: int = Field(default=20, validation_alias="VOICE_LLM_HISTORY_MAX_TURNS")
+    default_temperature: float = Field(default=0.3, validation_alias="VOICE_LLM_DEFAULT_TEMPERATURE")
+    fallback_message: str = Field(
+        default="I am sorry, I did not catch that",
+        validation_alias="VOICE_LLM_FALLBACK_MESSAGE",
+    )
+    # Deepgram STT
+    deepgram_api_key: str = Field(default="", validation_alias="DEEPGRAM_API_KEY")
+    deepgram_stt_model: str = Field(default="nova-3", validation_alias="DEEPGRAM_STT_MODEL")
+    deepgram_stt_language: str = Field(default="en", validation_alias="DEEPGRAM_STT_LANGUAGE")
+    deepgram_stt_endpointing_ms: int = Field(
+        default=350, validation_alias="DEEPGRAM_STT_ENDPOINTING_MS"
+    )
+    deepgram_stt_endpointing_ms_extended: int = Field(
+        default=500, validation_alias="DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED"
+    )
+    # Google STT
+    google_stt_language_code: str = Field(
+        default="en-US", validation_alias="GOOGLE_STT_LANGUAGE_CODE"
+    )
+    google_stt_sample_rate: int = Field(default=8000, validation_alias="GOOGLE_STT_SAMPLE_RATE")
+    google_stt_encoding: str = Field(default="MULAW", validation_alias="GOOGLE_STT_ENCODING")
+
+
+class TtsSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider: str = Field(default="elevenlabs", validation_alias="TTS_PROVIDER")
+    api_key: str = Field(default="", validation_alias="TTS_API_KEY")
+    rime_api_key: str = Field(default="", validation_alias="RIME_API_KEY")
+    elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")
+    elevenlabs_encryption_key: str = Field(
+        default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
+    )
+    enable_audio_tags: bool = Field(
+        default=True, validation_alias="ENABLE_ELEVENLABS_AUDIO_TAGS"
+    )
+    cloud_endpoint: str = Field(default="", validation_alias="CLOUD_TTS_ENDPOINT")
+    google_voice_name: str = Field(default="", validation_alias="GOOGLE_TTS_VOICE_NAME")
+    speed_min: float = Field(default=0.25, validation_alias="TTS_SPEED_MIN")
+    speed_max: float = Field(default=2.0, validation_alias="TTS_SPEED_MAX")
+    volume_min: float = Field(default=0.0, validation_alias="TTS_VOLUME_MIN")
+    volume_max: float = Field(default=2.0, validation_alias="TTS_VOLUME_MAX")
+
+
+class CrmSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    # HubSpot
+    hubspot_client_id: str = Field(default="", validation_alias="HUBSPOT_CLIENT_ID")
+    hubspot_client_secret: str = Field(default="", validation_alias="HUBSPOT_CLIENT_SECRET")
+    hubspot_redirect_uri: str = Field(default="", validation_alias="HUBSPOT_REDIRECT_URI")
+    hubspot_token_encryption_key: str = Field(
+        default="", validation_alias="HUBSPOT_TOKEN_ENCRYPTION_KEY"
+    )
+    # Monday.com
+    monday_api_key: str = Field(default="", validation_alias="MONDAY_API_KEY")
+    monday_board_id: str = Field(default="", validation_alias="MONDAY_BOARD_ID")
+    monday_workspace_id: Optional[str] = Field(
+        default=None, validation_alias="MONDAY_WORKSPACE_ID"
+    )
+    # Trello
+    trello_api_key: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_KEY")
+    trello_api_token: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_TOKEN")
+    # SendGrid
+    sendgrid_api_key: str = Field(default="", validation_alias="SENDGRID_API_KEY")
+    sendgrid_sender_email: str = Field(default="", validation_alias="SENDGRID_SENDER_EMAIL")
+    # Stripe
+    stripe_publishable_key: str = Field(default="", validation_alias="STRIPE_PUBLISHABLE_KEY")
+    stripe_secret_key: str = Field(default="", validation_alias="STRIPE_SECRET_KEY")
+    stripe_webhook_secret: str = Field(default="", validation_alias="STRIPE_WEBHOOK_SECRET")
+    stripe_incall_webhook_secret: str = Field(
+        default="", validation_alias="STRIPE_INCALL_WEBHOOK_SECRET"
+    )
+    stripe_price_id_free: str = Field(default="", validation_alias="STRIPE_PRICE_ID_FREE")
+    stripe_price_id_pro: str = Field(default="", validation_alias="STRIPE_PRICE_ID_PRO")
+    payment_page_base_url: str = Field(
+        default="https://pay.yourdomain.com", validation_alias="PAYMENT_PAGE_BASE_URL"
+    )
+    # Billing plan limits
+    free_plan_agent_limit: int = Field(default=2, validation_alias="FREE_PLAN_AGENT_LIMIT")
+    free_plan_monthly_calls: int = Field(default=100, validation_alias="FREE_PLAN_MONTHLY_CALLS")
+    pro_plan_agent_limit: int = Field(default=50, validation_alias="PRO_PLAN_AGENT_LIMIT")
+    pro_plan_monthly_calls: int = Field(default=10000, validation_alias="PRO_PLAN_MONTHLY_CALLS")
+
+
+class ServerSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    host: str = Field(default="0.0.0.0", validation_alias="HOST")
+    port: int = Field(default=8000, validation_alias="PORT")
+    debug: bool = Field(default=False, validation_alias="DEBUG")
+    app_version: str = Field(default="1.0.0", validation_alias="APP_VERSION")
+    environment: str = Field(default="development", validation_alias="ENVIRONMENT")
+    admin_role: str = Field(default="admin", validation_alias="ADMIN_ROLE")
+    allowed_origins: str = Field(
+        default="http://localhost:5173,http://localhost:3000",
+        validation_alias="ALLOWED_ORIGINS",
+    )
+    # API docs (HTTP Basic)
+    api_docs_enabled: bool = Field(default=True, validation_alias="API_DOCS_ENABLED")
+    api_docs_username: str = Field(default="", validation_alias="API_DOCS_USERNAME")
+    api_docs_password: str = Field(default="", validation_alias="API_DOCS_PASSWORD")
+    # Webhooks & URLs
+    webhook_base_url: str = Field(
+        default="https://tgs-agent-be.onrender.com", validation_alias="WEBHOOK_BASE_URL"
+    )
+    n8n_webhook_url: str = Field(default="", validation_alias="N8N_WEBHOOK_URL")
+    n8n_webhook_secret: str = Field(default="", validation_alias="N8N_WEBHOOK_SECRET")
+    frontend_url: str = Field(default="http://localhost:3000", validation_alias="FRONTEND_URL")
+    # GCP infra
+    gcp_project_id: str = Field(default="", validation_alias="GCP_PROJECT_ID")
+    server_region: str = Field(default="us-west-2", validation_alias="SERVER_REGION")
+    # LiveKit
+    livekit_url: str = Field(default="", validation_alias="LIVEKIT_URL")
+    livekit_api_key: str = Field(default="", validation_alias="LIVEKIT_API_KEY")
+    livekit_api_secret: str = Field(default="", validation_alias="LIVEKIT_API_SECRET")
+    livekit_token_ttl: int = Field(default=3600, validation_alias="LIVEKIT_TOKEN_TTL")
+    livekit_room_empty_timeout: int = Field(
+        default=30, validation_alias="LIVEKIT_ROOM_EMPTY_TIMEOUT"
+    )
+    livekit_max_participants: int = Field(
+        default=2, validation_alias="LIVEKIT_MAX_PARTICIPANTS"
+    )
+    livekit_enabled: bool = Field(default=True, validation_alias="LIVEKIT_ENABLED")
+    # GCS recordings
+    gcs_recordings_bucket: str = Field(default="", validation_alias="GCS_RECORDINGS_BUCKET")
+    gcs_recordings_signed_url_expiry_seconds: int = Field(
+        default=3600, validation_alias="GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS"
+    )
+    gcs_recordings_prefix: str = Field(
+        default="recordings", validation_alias="GCS_RECORDINGS_PREFIX"
+    )
+    # GCS knowledge base
+    gcs_kb_bucket: str = Field(default="", validation_alias="GCS_KB_BUCKET")
+    gcs_kb_prefix: str = Field(default="kb-files", validation_alias="GCS_KB_PREFIX")
+    # Concurrency
+    outbound_max_concurrent_per_workspace: int = Field(
+        default=10, validation_alias="OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE"
+    )
+    max_batch_concurrency: int = Field(default=5, validation_alias="MAX_BATCH_CONCURRENCY")
+
+
+class RedisSettings(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    url: str = Field(default="redis://localhost:6379", validation_alias="REDIS_URL")
+    rate_limit_enabled: bool = Field(default=True, validation_alias="RATE_LIMIT_ENABLED")
+    login_rate_limit: int = Field(default=10, validation_alias="LOGIN_RATE_LIMIT")
+    login_rate_window: int = Field(default=60, validation_alias="LOGIN_RATE_WINDOW")
+    webhook_rate_limit: int = Field(default=100, validation_alias="WEBHOOK_RATE_LIMIT")
+    webhook_rate_window: int = Field(default=60, validation_alias="WEBHOOK_RATE_WINDOW")
+    api_rate_limit: int = Field(default=60, validation_alias="API_RATE_LIMIT")
+    api_rate_window: int = Field(default=60, validation_alias="API_RATE_WINDOW")
+    public_token_rate_limit: int = Field(
+        default=20, validation_alias="PUBLIC_TOKEN_RATE_LIMIT"
+    )
+    public_token_rate_window: int = Field(
+        default=60, validation_alias="PUBLIC_TOKEN_RATE_WINDOW"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Main Settings
+# All flat env-var fields are kept so existing callers (settings.DATABASE_URL,
+# settings.OPENAI_API_KEY, …) continue to work without modification.
+# The eight sub-model fields below are populated by _assemble_sub_models after
+# all flat fields have been read from the environment.
+# ---------------------------------------------------------------------------
+
 class Settings(BaseSettings):
-    
+
     ADMIN_ROLE: str = "admin"
-    
+
     DATABASE_URL: str = "postgresql+psycopg2://postgres:admin@localhost:5432/voiceagent"
-    SECRET_KEY: str = "change-me-in-production"
-    ALGORITHM: str = "HS256"
+
+    # Connection pool tuning
+    DATABASE_POOL_SIZE: int = 10
+    DATABASE_MAX_OVERFLOW: int = 20
+    DATABASE_POOL_TIMEOUT: int = 30       # seconds to wait for a connection from the pool
+    DATABASE_STATEMENT_TIMEOUT: int = 30000  # milliseconds; auto-terminates slow queries in PG
+
+    SECRET_KEY: str = ""
+    ALGORITHM: str = ""
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    
+
     # Environment — controls which Twilio credentials are used and Secret Manager behaviour.
     # Values: "development" | "staging" | "production"
     ENVIRONMENT: str = "development"
@@ -21,7 +292,7 @@ class Settings(BaseSettings):
     # They are kept here as fallbacks for local development only.
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
-    TWILIO_PHONE_NUMBER: str = "+13466602410"
+    TWILIO_PHONE_NUMBER: str = ""
     ALLOW_UNAUTHENTICATED_WEBHOOKS: bool = False
 
     # Twilio test credentials — used automatically when ENVIRONMENT="staging".
@@ -31,7 +302,7 @@ class Settings(BaseSettings):
 
     # GCP Secret Manager project ID (required in staging/production).
     GCP_PROJECT_ID: str = ""
-    
+
     # Server Configuration
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -46,7 +317,7 @@ class Settings(BaseSettings):
     # CORS — comma-separated list of allowed origins.
     # Example: "https://app.example.com,https://admin.example.com"
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
-    
+
     # Webhook Configuration
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
     N8N_WEBHOOK_URL: str = ""  # n8n webhook URL for scheduled calls
@@ -54,19 +325,18 @@ class Settings(BaseSettings):
     # Email settings (SendGrid)
     SENDGRID_API_KEY: str = ""
     SENDGRID_SENDER_EMAIL: str = ""
-    # Legacy SMTP settings (no longer used)
-    
+
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
     FRONTEND_URL: str = "http://localhost:3000"
-    
+
     GEMINI_API_KEY: str = ""
     # Default LLM when an agent has no ticket llm_model or legacy model relation.
     DEFAULT_LLM_MODEL: str = "gemini-1.5-flash"
     DEFAULT_LLM_PROVIDER: str = "gemini"
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
-    
+
     # Rime Labs TTS Configuration
     RIME_API_KEY: str = ""
 
@@ -141,7 +411,7 @@ class Settings(BaseSettings):
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
     CLOUD_TTS_ENDPOINT: str = ""  # e.g. https://us-texttospeech.googleapis.com
     GOOGLE_TTS_VOICE_NAME: str = ""  # Optional exact voice name override (e.g. en-US-Chirp3-HD-Achernar)
-    
+
     # Voice Conversation Settings - VAPI-STYLE REAL-TIME STREAMING
     USE_GATHER_APPROACH: bool = False  # Using real-time bidirectional streaming
     USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with Adaptive VAD
@@ -244,25 +514,25 @@ class Settings(BaseSettings):
     # In-call payment page URL — returned to the agent as the caller-facing payment link.
     # Format: "{PAYMENT_PAGE_BASE_URL}/pay/{payment_intent_id}?client_secret={client_secret}"
     PAYMENT_PAGE_BASE_URL: str = "https://pay.yourdomain.com"
-    
+
     # Billing settings
     FREE_PLAN_AGENT_LIMIT: int = 2
     FREE_PLAN_MONTHLY_CALLS: int = 100
     PRO_PLAN_AGENT_LIMIT: int = 50
     PRO_PLAN_MONTHLY_CALLS: int = 10000
-    
+
     # Rate limiting settings
     REDIS_URL: str = "redis://localhost:6379"
     RATE_LIMIT_ENABLED: bool = True
-    
+
     # Login rate limiting — per-IP, stricter than global API limit (enforce_login_rate_limit)
     LOGIN_RATE_LIMIT: int = 10
     LOGIN_RATE_WINDOW: int = 60  # seconds
-    
+
     # Webhook rate limiting (requests per minute)
     WEBHOOK_RATE_LIMIT: int = 100
     WEBHOOK_RATE_WINDOW: int = 60  # seconds
-    
+
     # General API rate limiting — global sliding-window middleware
     API_RATE_LIMIT: int = 60   # requests per window per identity
     API_RATE_WINDOW: int = 60  # seconds
@@ -288,7 +558,7 @@ class Settings(BaseSettings):
     PINECONE_INDEX_HOST: Optional[str] = None
     # Optional: index name; if host is not provided, we can resolve host from this.
     PINECONE_INDEX_NAME: Optional[str] = None
-    
+
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
     TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
     # App deployment region hint for latency diagnostics.
@@ -340,7 +610,7 @@ class Settings(BaseSettings):
     VOICE_SLO_GEN_START_TO_LLM_FIRST_TOKEN_SEC: float = 0.90
     VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC: float = 1.40
     VOICE_SLO_GEN_START_TO_NOW_WARN_SEC: float = 2.00
-    
+
     # Trello — platform-managed inbound call boards (optional)
     TRELLO_PLATFORM_API_KEY: str = ""
     TRELLO_PLATFORM_API_TOKEN: str = ""
@@ -371,7 +641,7 @@ class Settings(BaseSettings):
     GCS_KB_PREFIX: str = "kb-files"
 
     # HIPAA — Google Cloud DLP + CMEK
-    GCP_PROJECT_ID: str = ""  # Required when any flow has hipaa_compliance=True
+    # GCP_PROJECT_ID is declared above (line ~245); no second declaration here.
 
     # Outbound call concurrency — max simultaneous outbound calls per workspace.
     # Counts outbound sessions with status IN (initiated, ringing, connected, in-progress).
@@ -422,6 +692,25 @@ class Settings(BaseSettings):
     SIP_USERNAME: str = ""
     SIP_PASSWORD: str = ""
 
+    # OpenTelemetry distributed tracing
+    OTEL_TRACING_ENABLED: bool = False
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+    OTEL_SERVICE_NAME: str = "tgs-agent-be"
+
+    # ------------------------------------------------------------------
+    # Domain sub-model views (populated by _assemble_sub_models below).
+    # Use settings.db.url, settings.auth.secret_key, etc. in new code;
+    # flat names above remain available for all existing callers.
+    # ------------------------------------------------------------------
+    db: Optional[DbSettings] = None
+    auth: Optional[AuthSettings] = None
+    twilio: Optional[TwilioSettings] = None
+    llm: Optional[LlmSettings] = None
+    tts: Optional[TtsSettings] = None
+    crm: Optional[CrmSettings] = None
+    server: Optional[ServerSettings] = None
+    redis: Optional[RedisSettings] = None
+
     @model_validator(mode="after")
     def _apply_byo_tts_api_key(self) -> "Settings":
         """Mirror the generic TTS_API_KEY into the provider-specific key that
@@ -433,6 +722,148 @@ class Settings(BaseSettings):
                 self.ELEVENLABS_API_KEY = self.TTS_API_KEY
         return self
 
+    @model_validator(mode="after")
+    def _assemble_sub_models(self) -> "Settings":
+        """Build grouped sub-model views from the flat env-var fields above.
+
+        Runs after _apply_byo_tts_api_key so TTS key mirroring is already done
+        before TtsSettings captures elevenlabs_api_key / rime_api_key.
+        """
+        self.db = DbSettings(
+            url=self.DATABASE_URL,
+            pool_size=self.DATABASE_POOL_SIZE,
+            max_overflow=self.DATABASE_MAX_OVERFLOW,
+            pool_timeout=self.DATABASE_POOL_TIMEOUT,
+            statement_timeout=self.DATABASE_STATEMENT_TIMEOUT,
+        )
+        self.auth = AuthSettings(
+            secret_key=self.SECRET_KEY,
+            algorithm=self.ALGORITHM,
+            access_token_expire_minutes=self.ACCESS_TOKEN_EXPIRE_MINUTES,
+            refresh_token_expire_days=self.REFRESH_TOKEN_EXPIRE_DAYS,
+            password_reset_token_expire_minutes=self.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES,
+            webhook_secret_encryption_key=self.WEBHOOK_SECRET_ENCRYPTION_KEY,
+            sso_encryption_key=self.SSO_ENCRYPTION_KEY,
+            google_client_id=self.GOOGLE_CLIENT_ID,
+            google_client_secret=self.GOOGLE_CLIENT_SECRET,
+        )
+        self.twilio = TwilioSettings(
+            account_sid=self.TWILIO_ACCOUNT_SID,
+            auth_token=self.TWILIO_AUTH_TOKEN,
+            phone_number=self.TWILIO_PHONE_NUMBER,
+            allow_unauthenticated_webhooks=self.ALLOW_UNAUTHENTICATED_WEBHOOKS,
+            test_account_sid=self.TWILIO_TEST_ACCOUNT_SID,
+            test_auth_token=self.TWILIO_TEST_AUTH_TOKEN,
+            edge=self.TWILIO_EDGE,
+        )
+        self.llm = LlmSettings(
+            openai_api_key=self.OPENAI_API_KEY,
+            openai_base_url=self.OPENAI_BASE_URL,
+            openai_api_version=self.OPENAI_API_VERSION,
+            gemini_api_key=self.GEMINI_API_KEY,
+            google_application_credentials=self.GOOGLE_APPLICATION_CREDENTIALS,
+            google_cloud_project_id=self.GOOGLE_CLOUD_PROJECT_ID,
+            vertex_ai_location=self.VERTEX_AI_LOCATION,
+            provider=self.LLM_PROVIDER,
+            default_model=self.DEFAULT_LLM_MODEL,
+            default_provider=self.DEFAULT_LLM_PROVIDER,
+            history_max_turns=self.VOICE_LLM_HISTORY_MAX_TURNS,
+            default_temperature=self.VOICE_LLM_DEFAULT_TEMPERATURE,
+            fallback_message=self.VOICE_LLM_FALLBACK_MESSAGE,
+            deepgram_api_key=self.DEEPGRAM_API_KEY,
+            deepgram_stt_model=self.DEEPGRAM_STT_MODEL,
+            deepgram_stt_language=self.DEEPGRAM_STT_LANGUAGE,
+            deepgram_stt_endpointing_ms=self.DEEPGRAM_STT_ENDPOINTING_MS,
+            deepgram_stt_endpointing_ms_extended=self.DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED,
+            google_stt_language_code=self.GOOGLE_STT_LANGUAGE_CODE,
+            google_stt_sample_rate=self.GOOGLE_STT_SAMPLE_RATE,
+            google_stt_encoding=self.GOOGLE_STT_ENCODING,
+        )
+        self.tts = TtsSettings(
+            provider=self.TTS_PROVIDER,
+            api_key=self.TTS_API_KEY,
+            rime_api_key=self.RIME_API_KEY,
+            elevenlabs_api_key=self.ELEVENLABS_API_KEY,
+            elevenlabs_encryption_key=self.ELEVENLABS_ENCRYPTION_KEY,
+            enable_audio_tags=self.ENABLE_ELEVENLABS_AUDIO_TAGS,
+            cloud_endpoint=self.CLOUD_TTS_ENDPOINT,
+            google_voice_name=self.GOOGLE_TTS_VOICE_NAME,
+            speed_min=self.TTS_SPEED_MIN,
+            speed_max=self.TTS_SPEED_MAX,
+            volume_min=self.TTS_VOLUME_MIN,
+            volume_max=self.TTS_VOLUME_MAX,
+        )
+        self.crm = CrmSettings(
+            hubspot_client_id=self.HUBSPOT_CLIENT_ID,
+            hubspot_client_secret=self.HUBSPOT_CLIENT_SECRET,
+            hubspot_redirect_uri=self.HUBSPOT_REDIRECT_URI,
+            hubspot_token_encryption_key=self.HUBSPOT_TOKEN_ENCRYPTION_KEY,
+            monday_api_key=self.MONDAY_API_KEY,
+            monday_board_id=self.MONDAY_BOARD_ID,
+            monday_workspace_id=self.MONDAY_WORKSPACE_ID,
+            trello_api_key=self.TRELLO_PLATFORM_API_KEY,
+            trello_api_token=self.TRELLO_PLATFORM_API_TOKEN,
+            sendgrid_api_key=self.SENDGRID_API_KEY,
+            sendgrid_sender_email=self.SENDGRID_SENDER_EMAIL,
+            stripe_publishable_key=self.STRIPE_PUBLISHABLE_KEY,
+            stripe_secret_key=self.STRIPE_SECRET_KEY,
+            stripe_webhook_secret=self.STRIPE_WEBHOOK_SECRET,
+            stripe_incall_webhook_secret=self.STRIPE_INCALL_WEBHOOK_SECRET,
+            stripe_price_id_free=self.STRIPE_PRICE_ID_FREE,
+            stripe_price_id_pro=self.STRIPE_PRICE_ID_PRO,
+            payment_page_base_url=self.PAYMENT_PAGE_BASE_URL,
+            free_plan_agent_limit=self.FREE_PLAN_AGENT_LIMIT,
+            free_plan_monthly_calls=self.FREE_PLAN_MONTHLY_CALLS,
+            pro_plan_agent_limit=self.PRO_PLAN_AGENT_LIMIT,
+            pro_plan_monthly_calls=self.PRO_PLAN_MONTHLY_CALLS,
+        )
+        self.server = ServerSettings(
+            host=self.HOST,
+            port=self.PORT,
+            debug=self.DEBUG,
+            app_version=self.APP_VERSION,
+            environment=self.ENVIRONMENT,
+            admin_role=self.ADMIN_ROLE,
+            allowed_origins=self.ALLOWED_ORIGINS,
+            api_docs_enabled=self.API_DOCS_ENABLED,
+            api_docs_username=self.API_DOCS_USERNAME,
+            api_docs_password=self.API_DOCS_PASSWORD,
+            webhook_base_url=self.WEBHOOK_BASE_URL,
+            n8n_webhook_url=self.N8N_WEBHOOK_URL,
+            n8n_webhook_secret=self.N8N_WEBHOOK_SECRET,
+            frontend_url=self.FRONTEND_URL,
+            gcp_project_id=self.GCP_PROJECT_ID,
+            server_region=self.SERVER_REGION,
+            livekit_url=self.LIVEKIT_URL,
+            livekit_api_key=self.LIVEKIT_API_KEY,
+            livekit_api_secret=self.LIVEKIT_API_SECRET,
+            livekit_token_ttl=self.LIVEKIT_TOKEN_TTL,
+            livekit_room_empty_timeout=self.LIVEKIT_ROOM_EMPTY_TIMEOUT,
+            livekit_max_participants=self.LIVEKIT_MAX_PARTICIPANTS,
+            livekit_enabled=self.LIVEKIT_ENABLED,
+            gcs_recordings_bucket=self.GCS_RECORDINGS_BUCKET,
+            gcs_recordings_signed_url_expiry_seconds=self.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
+            gcs_recordings_prefix=self.GCS_RECORDINGS_PREFIX,
+            gcs_kb_bucket=self.GCS_KB_BUCKET,
+            gcs_kb_prefix=self.GCS_KB_PREFIX,
+            outbound_max_concurrent_per_workspace=self.OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE,
+            max_batch_concurrency=self.MAX_BATCH_CONCURRENCY,
+        )
+        self.redis = RedisSettings(
+            url=self.REDIS_URL,
+            rate_limit_enabled=self.RATE_LIMIT_ENABLED,
+            login_rate_limit=self.LOGIN_RATE_LIMIT,
+            login_rate_window=self.LOGIN_RATE_WINDOW,
+            webhook_rate_limit=self.WEBHOOK_RATE_LIMIT,
+            webhook_rate_window=self.WEBHOOK_RATE_WINDOW,
+            api_rate_limit=self.API_RATE_LIMIT,
+            api_rate_window=self.API_RATE_WINDOW,
+            public_token_rate_limit=self.PUBLIC_TOKEN_RATE_LIMIT,
+            public_token_rate_window=self.PUBLIC_TOKEN_RATE_WINDOW,
+        )
+        return self
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 
 settings = Settings()

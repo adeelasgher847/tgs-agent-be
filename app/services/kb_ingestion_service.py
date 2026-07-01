@@ -82,7 +82,7 @@ def chunk_text(
     while start < total:
         end = min(start + max_tokens, total)
         chunk_tokens = tokens[start:end]
-        if len(chunk_tokens) >= min_tokens or not chunks:
+        if len(chunk_tokens) >= min_tokens:
             chunks.append(enc.decode(chunk_tokens))
         elif chunks:
             # Append under-minimum tail to the previous chunk (avoids orphan slivers)

@@ -24,6 +24,15 @@ def init_async_db() -> None:
         _async_engine = create_async_engine(
             database_url_to_async(settings.DATABASE_URL),
             pool_pre_ping=True,
+            pool_size=settings.DATABASE_POOL_SIZE,
+            max_overflow=settings.DATABASE_MAX_OVERFLOW,
+            pool_timeout=settings.DATABASE_POOL_TIMEOUT,
+            # asyncpg passes PG session parameters via server_settings, not libpq -c flags
+            connect_args={
+                "server_settings": {
+                    "statement_timeout": str(settings.DATABASE_STATEMENT_TIMEOUT)
+                }
+            },
         )
         _AsyncSessionLocal = async_sessionmaker(
             _async_engine, class_=AsyncSession, expire_on_commit=False

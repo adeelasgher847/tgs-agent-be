@@ -118,7 +118,7 @@ class TestRequireWriteAccessUnit:
         role = MagicMock()
         role.name = "read_only"
         with patch(
-            "app.api.deps.get_user_role_in_tenant", return_value=role
+            "app.api.deps.rbac.get_user_role_in_tenant", return_value=role
         ):
             with pytest.raises(HTTPException) as exc_info:
                 require_write_access(request=request, user=user, db=db)
@@ -133,7 +133,7 @@ class TestRequireWriteAccessUnit:
         role = MagicMock()
         role.name = "read_only"
         with patch(
-            "app.api.deps.get_user_role_in_tenant", return_value=role
+            "app.api.deps.rbac.get_user_role_in_tenant", return_value=role
         ):
             result = require_write_access(request=request, user=user, db=db)
         assert result is user
@@ -153,7 +153,7 @@ class TestGetCurrentUserJwtSoftDelete:
         credentials = MagicMock()
         credentials.credentials = token
 
-        with patch("app.api.deps.get_auth_method", return_value=None):
+        with patch("app.api.deps.auth.get_auth_method", return_value=None):
             with pytest.raises(HTTPException) as exc_info:
                 get_current_user_jwt(
                     request=request,

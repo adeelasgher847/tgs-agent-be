@@ -180,12 +180,6 @@ def _patch_record_triggered():
     )
 
 
-def _patch_build_internal_request():
-    return patch(
-        "app.routers.integrations._build_internal_request",
-        MagicMock(return_value=MagicMock()),
-    )
-
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -334,8 +328,6 @@ class TestN8nTrigger:
             _patch_rate_limit_allow(),
             _patch_initiate_call(),
             _patch_record_triggered(),
-            _patch_build_internal_request(),
-            patch("app.core.config.settings.N8N_WEBHOOK_SECRET", "global-secret"),
         ):
             result = await n8n_trigger(
                 body=body,
@@ -472,8 +464,6 @@ class TestN8nTrigger:
             _patch_rate_limit_allow(),
             _patch_initiate_call(),
             _patch_record_triggered(),
-            _patch_build_internal_request(),
-            patch("app.core.config.settings.N8N_WEBHOOK_SECRET", "global-secret"),
         ):
             result = await n8n_trigger(
                 body=body,
