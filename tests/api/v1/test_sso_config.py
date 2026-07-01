@@ -59,3 +59,18 @@ def test_upsert_saml_config(db):
     # Clean up
     db.delete(fetched)
     db.commit()
+
+
+def test_sso_config_allowed_email_domains_normalization():
+    # Test that the Pydantic schema normalizes domains on write
+    payload = {
+        "protocol": "saml",
+        "idp_entity_id": "https://example.com/saml2",
+        "idp_sso_url": "https://example.com/sso",
+        "idp_x509_certificate": "PEM_DATA",
+        "is_active": True,
+        "allowed_email_domains": ["  Acme.com  ", "Google.com", "   ", "example.ORG"]
+    }
+    config_upsert = SsoConfigUpsert(**payload)
+    assert config_upsert.allowed_email_domains == ["acme.com", "google.com", "example.org"]
+

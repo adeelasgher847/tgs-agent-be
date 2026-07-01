@@ -21,7 +21,6 @@ from typing import Optional
 from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.logger import logger
 from app.models.batch_call_record import BatchCallRecord
 from app.models.batch_job import BatchJob
@@ -122,16 +121,9 @@ class BatchCallWorkerService:
         agent_id: uuid.UUID,
         agent_system_prompt: Optional[str],
     ) -> None:
-        """
-        Dispatch a single batch call record via the existing `initiate_call` path.
-
-        Builds a synthetic Request with the N8N webhook secret so the auth branch
-        in `initiate_call` resolves to the webhook path (no User required).
-        """
+        """Dispatch a single batch call record via the existing `initiate_call` path."""
         from app.schemas.twilio import CallInitiateRequest
-        from app.services import voice_call_service as _vcs
-
-        initiate_call = _vcs.initiate_call
+        from app.services.voice_call_service import initiate_call
 
         # Build prompt with variable substitution (validated at upload time)
         variables: dict = record.variables or {}
@@ -158,22 +150,13 @@ class BatchCallWorkerService:
             batch_prompt_override=prompt_override,
         )
 
-        # Build a minimal fake Starlette Request so initiate_call can read the
-        # N8N webhook secret header and resolve is_webhook=True.
-        secret = settings.N8N_WEBHOOK_SECRET
-        if not secret:
-            raise RuntimeError(
-                "N8N_WEBHOOK_SECRET must be set before batch dispatch can run. "
-                "Set it in your .env or Secret Manager."
-            )
-        fake_request = _build_fake_request(secret)
-
         try:
             result = await initiate_call(
                 call_request=call_request,
-                http_request=fake_request,
-                user=None,
                 db=self._db,
+                is_system_call=True,
+                tenant_id=workspace_id,
+                user_id=None,
             )
         except Exception as exc:
             logger.error("Batch dispatch error for record %s: %s", record.id, exc)
@@ -396,31 +379,3 @@ async def _bill_connected_call(record: BatchCallRecord, db: Session) -> None:
         logger.warning("BillingService.record_call_usage failed: %s", exc)
 
 
-def _build_fake_request(webhook_secret: str):
-    """
-    Build a minimal Starlette Request that satisfies verify_n8n_webhook_secret_async.
-
-    The function only reads the X-N8N-Webhook-Secret header and the body bytes.
-    We provide the header; body resolves to b"".
-    """
-    from starlette.datastructures import Headers
-    from starlette.requests import Request
-    from starlette.types import Scope
-
-    secret_bytes = webhook_secret.encode("latin-1") if webhook_secret else b""
-    scope: Scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/internal/batch",
-        "query_string": b"",
-        "headers": [
-            (b"x-n8n-webhook-secret", secret_bytes),
-            (b"content-type", b"application/json"),
-        ],
-        "state": {},
-    }
-
-    async def _receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    return Request(scope, receive=_receive)

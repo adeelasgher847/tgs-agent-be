@@ -16,8 +16,7 @@ Coverage map
 11.  poll_pending_callbacks does nothing when no unqueued rows exist
 12.  poll_pending_callbacks logs warning and exits when redis pool missing
 13.  dispatch_and_advance_async cancels when agent not found
-14.  _dispatch_call_async raises RuntimeError without N8N_WEBHOOK_SECRET
-15.  _dispatch_call_async raises RuntimeError when original call not found
+14.  _dispatch_call_async raises RuntimeError when original call not found
 
 Mocking strategy
 ----------------
@@ -494,26 +493,7 @@ async def test_dispatch_and_advance_async_agent_not_found():
     db.commit.assert_called_once()
 
 
-# ── 14. _dispatch_call_async raises without N8N_WEBHOOK_SECRET ───────────────
-
-@pytest.mark.asyncio
-async def test_dispatch_call_async_no_webhook_secret():
-    """Missing N8N_WEBHOOK_SECRET must raise RuntimeError before any HTTP call."""
-    schedule = _make_schedule()
-    agent = _make_agent()
-    db = _make_db(schedule=schedule, agent=agent)
-    svc = _svc()
-
-    # _dispatch_call_async does `from app.core.config import settings` locally,
-    # so we must patch the attribute on the config module object.
-    with patch("app.core.config.settings") as mock_settings:
-        mock_settings.N8N_WEBHOOK_SECRET = ""
-
-        with pytest.raises(RuntimeError, match="N8N_WEBHOOK_SECRET"):
-            await svc._dispatch_call_async(db, schedule, agent)
-
-
-# ── 15. _dispatch_call_async raises when original call missing ────────────────
+# ── 14. _dispatch_call_async raises when original call missing ────────────────
 
 @pytest.mark.asyncio
 async def test_dispatch_call_async_original_call_not_found():
@@ -524,11 +504,8 @@ async def test_dispatch_call_async_original_call_not_found():
     db = _make_db(schedule=schedule, agent=agent, original_call=None)
     svc = _svc()
 
-    with patch("app.core.config.settings") as mock_settings:
-        mock_settings.N8N_WEBHOOK_SECRET = "secret"
-
-        with pytest.raises(RuntimeError, match="not found"):
-            await svc._dispatch_call_async(db, schedule, agent)
+    with pytest.raises(RuntimeError, match="not found"):
+        await svc._dispatch_call_async(db, schedule, agent)
 
 
 # ── 16–22. Event-driven enqueue + startup recovery ───────────────────────────

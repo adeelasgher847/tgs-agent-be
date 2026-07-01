@@ -29,8 +29,9 @@ def find_or_create_user(db: Session, email: str, workspace_id: uuid.UUID) -> tup
     # Validate allowed email domains
     config = db.query(SsoConfig).filter(SsoConfig.workspace_id == workspace_id).first()
     if config and config.allowed_email_domains:
-        email_domain = email.split("@", 1)[-1].lower()
+        email_domain = email.split("@", 1)[-1].lower().strip()
         allowed_domains = [d.lower().strip() for d in config.allowed_email_domains if d.strip()]
+
         if allowed_domains and email_domain not in allowed_domains:
             from fastapi import HTTPException
             raise HTTPException(

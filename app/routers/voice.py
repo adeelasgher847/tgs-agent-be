@@ -62,6 +62,7 @@ from app.services.voice_conversation_service import (
 )
 from app.services.voice_language_service import get_agent_voice
 from app.services.voice_analysis_service import voice_analysis_service
+from app.middleware.request_id_middleware import get_request_id
 from app.services.voice_call_service import initiate_call as initiate_call_service
 from app.services.voice_analytics_service import voice_analytics_service
 
@@ -81,8 +82,59 @@ async def initiate_call(
     """
     Initiate an outbound voice call.
     /call/initiate/send is an alias for backward compatibility and direct dispatch.
+
+    Auth is resolved here before delegating to the service:
+    - JWT user present → standard user-initiated call.
+    - No JWT but valid N8N webhook secret → system/webhook call with
+      tenant_id resolved from the request body.
     """
-    return await initiate_call_service(call_request, http_request, user, db)
+    from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
+
+    rid = get_request_id(http_request)
+
+    if user is not None:
+        return await initiate_call_service(
+            call_request=call_request,
+            db=db,
+            is_system_call=False,
+            tenant_id=user.current_tenant_id,
+            user_id=user.id,
+            request_id=rid,
+        )
+
+    # No JWT user — try webhook secret path
+    is_webhook = await verify_n8n_webhook_secret_async(http_request)
+    if not is_webhook:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: JWT token or n8n webhook secret",
+        )
+
+    if not call_request.tenant_id:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tenant_id is required in request body when using webhook secret",
+        )
+    try:
+        tenant_uuid = uuid.UUID(call_request.tenant_id)
+        user_uuid = uuid.UUID(call_request.user_id) if call_request.user_id else None
+    except ValueError:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid UUID format for tenant_id or user_id",
+        )
+
+    return await initiate_call_service(
+        call_request=call_request,
+        db=db,
+        is_system_call=True,
+        tenant_id=tenant_uuid,
+        user_id=user_uuid,
+        request_id=rid,
+    )
 
 
 @router.post("/incoming", response_class=HTMLResponse, include_in_schema=False)

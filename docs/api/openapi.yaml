@@ -102,11 +102,17 @@ paths:
       tags:
       - users
       summary: Refresh Tokens
-      description: "Refresh endpoint:\n1) If access_token is provided and still valid\
-        \ -> return \"still valid\"\n2) If access_token expired but refresh_token\
-        \ valid -> issue new access_token\n   (reuse cached one only if unexpired\
-        \ and same role as current DB state)\n3) If refresh_token invalid/expired\
-        \ -> return 401"
+      description: 'Refresh endpoint with token rotation and replay detection:
+
+        1) If access_token is provided and still valid -> return "still valid" (no
+        rotation)
+
+        2) If refresh_token is revoked or already rotated -> replay attack: revoke
+        all user tokens, 401
+
+        3) If refresh_token valid -> issue new access_token + rotate refresh_token
+
+        4) If refresh_token invalid/expired -> 401'
       operationId: refresh_tokens_api_v1_users_refresh_post
       requestBody:
         content:
@@ -1700,9 +1706,11 @@ paths:
       tags:
       - Voice Calls
       summary: Initiate Call
-      description: 'Initiate an outbound voice call.
-
-        /call/initiate/send is an alias for backward compatibility and direct dispatch.'
+      description: "Initiate an outbound voice call.\n/call/initiate/send is an alias\
+        \ for backward compatibility and direct dispatch.\n\nAuth is resolved here\
+        \ before delegating to the service:\n- JWT user present → standard user-initiated\
+        \ call.\n- No JWT but valid N8N webhook secret → system/webhook call with\n\
+        \  tenant_id resolved from the request body."
       operationId: initiate_call_api_v1_voice_call_initiate_send_post
       requestBody:
         content:
@@ -1730,9 +1738,11 @@ paths:
       tags:
       - Voice Calls
       summary: Initiate Call
-      description: 'Initiate an outbound voice call.
-
-        /call/initiate/send is an alias for backward compatibility and direct dispatch.'
+      description: "Initiate an outbound voice call.\n/call/initiate/send is an alias\
+        \ for backward compatibility and direct dispatch.\n\nAuth is resolved here\
+        \ before delegating to the service:\n- JWT user present → standard user-initiated\
+        \ call.\n- No JWT but valid N8N webhook secret → system/webhook call with\n\
+        \  tenant_id resolved from the request body."
       operationId: initiate_call_api_v1_voice_call_initiate_post
       requestBody:
         content:

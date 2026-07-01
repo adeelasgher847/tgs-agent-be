@@ -107,11 +107,14 @@ class TestRefreshAccessToken:
         p1 = _decode_access_token(r1.json()["data"]["access_token"])
         assert p1.get("tenant_id") == str(t1.id)
 
+        # Token rotation: use the new refresh token returned by the first refresh call
+        rotated_refresh = r1.json()["data"]["refresh_token"]
+
         user.current_tenant_id = t2.id
         db.add(user)
         db.commit()
 
-        r2 = client.post("/api/v1/users/refresh", json={"refresh_token": refresh})
+        r2 = client.post("/api/v1/users/refresh", json={"refresh_token": rotated_refresh})
         assert r2.status_code == 200, r2.text
         p2 = _decode_access_token(r2.json()["data"]["access_token"])
         assert p2.get("tenant_id") == str(t2.id), (

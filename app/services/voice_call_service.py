@@ -3,17 +3,16 @@ from datetime import datetime, timezone
 import uuid
 from typing import Optional
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.error_responses import build_call_initiate_error_payload
-from app.middleware.request_id_middleware import get_request_id
+from app.middleware.request_id_middleware import new_request_id
 from app.core.logger import logger
 from app.models.call_session import CallSession
-from app.models.user import User
 from app.schemas.twilio import (
     CallInitiateRequest,
     CallInitiateResponse,
@@ -27,7 +26,6 @@ from app.services.voice_interview_context_service import (
     build_voice_interview_enrichment,
     parse_optional_uuid,
 )
-from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.utils.response import create_success_response
 from app.routers.general_websocket import broadcast_call_status_update
 
@@ -37,15 +35,17 @@ _ACTIVE_OUTBOUND_STATUSES = ("initiated", "ringing", "connected", "in-progress")
 
 async def initiate_call(
     call_request: CallInitiateRequest,
-    http_request: Request,
-    user: Optional[User],
     db: Session,
+    is_system_call: bool,
+    tenant_id: Optional[uuid.UUID],
+    user_id: Optional[uuid.UUID],
+    request_id: Optional[str] = None,
 ) -> SuccessResponse[CallInitiateResponse] | JSONResponse:
     """
     Outbound call dispatch: LiveKit room → DB record → Twilio call.
 
     Sequence (per ticket BE1-S3):
-      1. Authenticate (JWT or n8n webhook secret)
+      1. Resolve caller identity (auth already handled by the caller)
       2. Validate agent membership in workspace
       3. Check agent.status == "ready" (phone bound)
       4. Validate E.164 on toNumber (schema already enforces this)
@@ -57,7 +57,7 @@ async def initiate_call(
       10. Initiate Twilio call
       11. Return { callId, status: "initiated" }
     """
-    request_id = get_request_id(http_request)
+    request_id = request_id or new_request_id()
 
     def _err(http_status: int, error_code: str, message: str) -> JSONResponse:
         return JSONResponse(
@@ -73,37 +73,14 @@ async def initiate_call(
         )
 
     try:
-        # ── 1. Authentication ──────────────────────────────────────────────
-        is_webhook = await verify_n8n_webhook_secret_async(http_request)
-
-        if is_webhook:
-            if not call_request.tenant_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="tenant_id is required in request body when using webhook secret",
-                )
-            try:
-                tenant_uuid = uuid.UUID(call_request.tenant_id)
-                user_uuid = (
-                    uuid.UUID(call_request.user_id)
-                    if call_request.user_id
-                    else None
-                )
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid UUID format for tenant_id or user_id",
-                )
-            tenant_id_filter = tenant_uuid
-            user_id_filter = user_uuid
-        else:
-            if not user:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required: JWT token or n8n webhook secret",
-                )
-            tenant_id_filter = user.current_tenant_id
-            user_id_filter = user.id
+        # ── 1. Identity resolution (auth already verified by caller) ──────
+        if tenant_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required: JWT token or webhook secret",
+            )
+        tenant_id_filter = tenant_id
+        user_id_filter = user_id
 
         # ── 2. Validate agent ─────────────────────────────────────────────
         try:
