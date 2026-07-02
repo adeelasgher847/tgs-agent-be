@@ -86,6 +86,22 @@ class CallFlowSettingsUpdate(BaseModel):
     public_access: bool = Field(..., alias="public_access")
 
 
+class CallerMemorySettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/caller-memory-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    caller_memory_enabled: bool
+    caller_memory_window: int = Field(..., ge=1, le=10)
+
+
+class CallerMemorySettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    caller_memory_enabled: bool
+    caller_memory_window: int
+
+
 class CallFlowOut(BaseModel):
     """Full flow response including all prompt versions."""
 

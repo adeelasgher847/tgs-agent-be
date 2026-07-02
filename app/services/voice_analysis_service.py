@@ -474,6 +474,8 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             call_session.call_metadata = {}
         call_session.call_metadata["llm_call_analysis"] = analysis_block
         flag_modified(call_session, "call_metadata")
+        # Finalized, HIPAA-redacted summary — powers cross-session caller memory lookups.
+        call_session.transcript_summary = analysis_data["summary"]
         db.add(call_session)
 
         log_row = db.query(CallLog).filter(CallLog.call_session_id == call_session.id).first()

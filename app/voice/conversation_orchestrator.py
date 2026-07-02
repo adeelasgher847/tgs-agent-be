@@ -543,6 +543,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 else:
                     system_prompt = system_prompt + "\n\n" + crm_context_block
 
+            # Cross-session caller memory: fetched once at call start (DB lookup,
+            # 100ms timeout budget, fail-open) and cached on call_session.call_metadata
+            # so every later turn is a cheap in-memory dict read. Injected right after
+            # the KB/CRM context blocks and before conversation history.
+            caller_memory_block = ""
+            if self._h.call_session and self._h.db and flow and flow.caller_memory_enabled:
+                try:
+                    from app.services.caller_memory_service import (
+                        get_caller_memory_context_block_for_call,
+                    )
+
+                    caller_memory_block = await get_caller_memory_context_block_for_call(
+                        self._h.db, self._h.call_session, flow
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "caller_memory lookup failed; proceeding without context: %s", exc
+                    )
+
+            if caller_memory_block:
+                anchor = "# CONVERSATION STATE"
+                if anchor in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        anchor, caller_memory_block + "\n\n" + anchor, 1
+                    )
+                else:
+                    system_prompt = system_prompt + "\n\n" + caller_memory_block
+
             # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
             # in the prompt with tenant-configured HubSpot contact field values.
             # Resolved once per call (Redis/DB-cached) and fails open on timeout/error.

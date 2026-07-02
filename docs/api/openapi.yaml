@@ -8149,6 +8149,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/calls/{call_id}/memory-context:
+    get:
+      tags:
+      - Smart Callback Scheduler
+      summary: 'Debug: view the cached cross-session caller memory context for a call'
+      description: 'Returns the caller-memory context block cached on the call''s
+
+        `call_metadata["caller_memory_context"]` at prompt-build time.
+
+        Returns 404 if the call does not belong to the caller''s tenant.'
+      operationId: get_call_memory_context_api_v2_calls__call_id__memory_context_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: call_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Call Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallMemoryContextResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/ab-test:
     put:
       tags:
@@ -8245,6 +8279,41 @@ paths:
                 additionalProperties: true
                 title: Response Promote Ab Winner Api V2 Flows  Flow Id  Ab Test Winner
                   Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/caller-memory-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure cross-session caller memory on a call flow
+      operationId: update_caller_memory_settings_api_v2_flows__flow_id__caller_memory_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallerMemorySettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallerMemorySettingsResponse'
         '422':
           description: Validation Error
           content:
@@ -11439,6 +11508,15 @@ components:
       - total_cost
       title: CallLogStats
       description: Statistics for call logs dashboard
+    CallMemoryContextResponse:
+      properties:
+        memory_context:
+          type: string
+          title: Memory Context
+      type: object
+      required:
+      - memory_context
+      title: CallMemoryContextResponse
     CallSessionList:
       properties:
         sessions:
@@ -11712,6 +11790,36 @@ components:
       description: 'GET /api/v1/agents/{id}/callback-status response.
 
         Returns live counters alongside the static config.'
+    CallerMemorySettingsResponse:
+      properties:
+        caller_memory_enabled:
+          type: boolean
+          title: Caller Memory Enabled
+        caller_memory_window:
+          type: integer
+          title: Caller Memory Window
+      type: object
+      required:
+      - caller_memory_enabled
+      - caller_memory_window
+      title: CallerMemorySettingsResponse
+    CallerMemorySettingsUpdate:
+      properties:
+        caller_memory_enabled:
+          type: boolean
+          title: Caller Memory Enabled
+        caller_memory_window:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Caller Memory Window
+      additionalProperties: false
+      type: object
+      required:
+      - caller_memory_enabled
+      - caller_memory_window
+      title: CallerMemorySettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/caller-memory-settings``.
     CandidateStatusEnum:
       type: string
       enum:

@@ -30,6 +30,8 @@ from app.schemas.call_flow import (
     CallFlowListItem,
     CallFlowOut,
     AgentRef,
+    CallerMemorySettingsResponse,
+    CallerMemorySettingsUpdate,
     CallFlowSettingsUpdate,
     CallFlowUpdate,
 )
@@ -497,6 +499,32 @@ class CallFlowService:
         rate_b = completed_b / calls_b
         recommended = "a" if rate_a > rate_b else "b"
         return True, recommended
+
+    # ── Cross-session caller memory ─────────────────────────────────────────
+
+    def update_caller_memory_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: CallerMemorySettingsUpdate,
+    ) -> CallerMemorySettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow,
+            {
+                "caller_memory_enabled": body.caller_memory_enabled,
+                "caller_memory_window": body.caller_memory_window,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return CallerMemorySettingsResponse(
+            caller_memory_enabled=flow.caller_memory_enabled,
+            caller_memory_window=flow.caller_memory_window,
+        )
 
     def promote_ab_winner(
         self,

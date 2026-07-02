@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Boolean, Index, CheckConstraint, Numeric
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Boolean, Index, CheckConstraint, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -39,6 +39,10 @@ class CallFlow(Base):
     )
     # Fraction of calls routed to variant A (0.10-0.90)
     ab_split_ratio = Column(Numeric(3, 2), default=0.50, nullable=False, server_default="0.50")
+
+    # Cross-session caller memory: inject summaries of a caller's past calls into the prompt
+    caller_memory_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    caller_memory_window = Column(Integer, default=3, nullable=False, server_default="3")
 
     hipaa_compliance = Column(Boolean, default=False, nullable=False, server_default="false")
     public_access = Column(Boolean, default=False, nullable=False, server_default="false")
@@ -89,5 +93,9 @@ class CallFlow(Base):
         CheckConstraint(
             "ab_split_ratio > 0 AND ab_split_ratio < 1",
             name="ck_callflow_ab_split_ratio",
+        ),
+        CheckConstraint(
+            "caller_memory_window >= 1 AND caller_memory_window <= 10",
+            name="ck_callflow_caller_memory_window",
         ),
     )
