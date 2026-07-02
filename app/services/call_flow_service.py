@@ -5,6 +5,7 @@ import uuid
 from typing import Optional
 
 from fastapi import HTTPException, status
+from scipy.stats import chi2_contingency
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,13 @@ from app.models.prompt_version import PromptVersion
 from app.repositories.call_flow_repository import CallFlowRepository
 from app.repositories.prompt_version_repository import PromptVersionRepository
 from app.schemas.agent import agent_to_out
+from app.schemas.ab_testing import (
+    AbResultsResponse,
+    AbTestResponse,
+    AbTestUpdate,
+    AbTestWinnerUpdate,
+    VariantMetrics,
+)
 from app.schemas.call_flow import (
     CallFlowCreate,
     CallFlowListResponse,
@@ -29,6 +37,8 @@ from app.schemas.prompt_version import PromptVersionOut
 from app.utils.gemini_prompt_sanitizer import sanitize_prompt_for_gemini
 
 _MAX_VERSIONS = 50
+_AB_MIN_CALLS_FOR_SIGNIFICANCE = 30
+_AB_SIGNIFICANCE_P_VALUE = 0.05
 
 
 class CallFlowService:
@@ -366,6 +376,161 @@ class CallFlowService:
             self._version_to_out(v).model_dump(by_alias=True, mode="json")
             for v in versions
         ]
+
+    # ── A/B prompt testing ──────────────────────────────────────────────────
+
+    def update_ab_test(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: AbTestUpdate,
+    ) -> AbTestResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        pv_repo = PromptVersionRepository(db)
+
+        prompt_a = pv_repo.find_by_id(body.prompt_a_id)
+        if prompt_a is None or prompt_a.flow_id != flow.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"prompt_a_id {body.prompt_a_id} does not belong to flow {flow_id}",
+            )
+        prompt_b = pv_repo.find_by_id(body.prompt_b_id)
+        if prompt_b is None or prompt_b.flow_id != flow.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"prompt_b_id {body.prompt_b_id} does not belong to flow {flow_id}",
+            )
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow,
+            {
+                "ab_test_enabled": body.enabled,
+                "ab_prompt_a_id": body.prompt_a_id,
+                "ab_prompt_b_id": body.prompt_b_id,
+                "ab_split_ratio": body.split_ratio,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return AbTestResponse(
+            ab_test_enabled=flow.ab_test_enabled,
+            ab_prompt_a_id=flow.ab_prompt_a_id,
+            ab_prompt_b_id=flow.ab_prompt_b_id,
+            ab_split_ratio=float(flow.ab_split_ratio),
+        )
+
+    def get_ab_results(
+        self, db: Session, flow_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> AbResultsResponse:
+        self._get_flow_or_404(db, flow_id, tenant_id)
+
+        metrics_a = self._variant_metrics(db, flow_id, tenant_id, "a")
+        metrics_b = self._variant_metrics(db, flow_id, tenant_id, "b")
+
+        significance, recommended = self._ab_significance(
+            metrics_a.calls, metrics_a.completed, metrics_b.calls, metrics_b.completed
+        )
+
+        return AbResultsResponse(
+            variant_a=metrics_a,
+            variant_b=metrics_b,
+            statistical_significance=significance,
+            recommended_variant=recommended,
+        )
+
+    def _variant_metrics(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        variant: str,
+    ) -> VariantMetrics:
+        sessions = db.execute(
+            select(CallSession).where(
+                CallSession.call_flow_id == flow_id,
+                CallSession.tenant_id == tenant_id,
+                CallSession.ab_variant == variant,
+            )
+        ).scalars().all()
+
+        calls = len(sessions)
+        completed = sum(1 for s in sessions if s.status == "completed")
+        failed = sum(1 for s in sessions if s.status == "failed")
+        transferred = sum(1 for s in sessions if s.transferred)
+        successes = sum(1 for s in sessions if s.success_evaluation == "success")
+
+        durations = [s.duration for s in sessions if s.duration is not None]
+        avg_duration = sum(durations) / len(durations) if durations else None
+
+        return VariantMetrics(
+            calls=calls,
+            completed=completed,
+            failed=failed,
+            avg_duration=avg_duration,
+            transfer_rate=(transferred / calls) if calls else 0.0,
+            success_rate=(successes / calls) if calls else 0.0,
+        )
+
+    def _ab_significance(
+        self, calls_a: int, completed_a: int, calls_b: int, completed_b: int
+    ) -> tuple[bool, str]:
+        """Chi-squared test on completed-vs-total contingency table.
+
+        Guardrail: fewer than 30 calls on either variant is always inconclusive,
+        regardless of p-value — too few samples for the test to be meaningful.
+        """
+        if calls_a < _AB_MIN_CALLS_FOR_SIGNIFICANCE or calls_b < _AB_MIN_CALLS_FOR_SIGNIFICANCE:
+            return False, "inconclusive"
+
+        contingency = [
+            [completed_a, calls_a - completed_a],
+            [completed_b, calls_b - completed_b],
+        ]
+        _, p_value, _, _ = chi2_contingency(contingency)
+
+        if p_value >= _AB_SIGNIFICANCE_P_VALUE:
+            return False, "inconclusive"
+
+        rate_a = completed_a / calls_a
+        rate_b = completed_b / calls_b
+        recommended = "a" if rate_a > rate_b else "b"
+        return True, recommended
+
+    def promote_ab_winner(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: AbTestWinnerUpdate,
+    ) -> dict:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id, load_relations=True)
+
+        winning_prompt_id = (
+            flow.ab_prompt_a_id if body.variant == "a" else flow.ab_prompt_b_id
+        )
+        if winning_prompt_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Flow {flow_id} has no prompt version assigned to variant '{body.variant}'",
+            )
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow,
+            {
+                "current_prompt_id": winning_prompt_id,
+                "ab_test_enabled": False,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        if flow.agent is None:
+            flow.agent = db.execute(
+                select(Agent).where(Agent.id == flow.agent_id)
+            ).scalar_one_or_none()
+        return self._flow_to_out(db, flow)
 
 
 call_flow_service = CallFlowService()

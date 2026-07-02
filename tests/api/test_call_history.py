@@ -101,6 +101,7 @@ def _call_row(
     duration_seconds=60,
     started_at=None,
     ended_at=None,
+    ab_variant=None,
 ):
     return SimpleNamespace(
         call_id=call_id or uuid.uuid4(),
@@ -113,6 +114,7 @@ def _call_row(
         duration_seconds=duration_seconds,
         started_at=started_at or datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
         ended_at=ended_at or datetime(2026, 6, 1, 10, 1, tzinfo=timezone.utc),
+        ab_variant=ab_variant,
     )
 
 
