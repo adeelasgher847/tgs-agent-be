@@ -12,9 +12,13 @@ Coverage:
   4.  Contact lookup: correct {id, name, email, company, last_interaction_date} shape;
       Redis cache hit/miss/store; fails open on HubSpot error
   5.  CRM context block: cached on call_metadata after first fetch; fails open
-  6.  Post-call write-back: creates a Call engagement with the Gemini summary
+  6.  Post-call write-back: creates a Call engagement with the Gemini summary;
+      skips when write-back disabled; records/clears last_write_back_error
   7.  Disconnect: revokes + deletes; returns False when not connected
   8.  429 backoff: retries with exponential delay, honors Retry-After
+  9.  Field mappings: save/read from extra_metadata; settings toggles with defaults
+  10. Field mapping value resolution + `{prompt_variable}` substitution into the prompt
+  11. Transcript summary caching on call_metadata (Gemini called at most once per call)
 """
 from __future__ import annotations
 
@@ -436,6 +440,18 @@ class TestCrmContextBlock:
 
 
 class TestPostCallWriteback:
+    @staticmethod
+    def _writeback_settings(**overrides):
+        settings = {
+            "connected": True,
+            "connected_at": datetime.now(timezone.utc),
+            "contact_lookup_enabled": True,
+            "write_back_enabled": True,
+            "field_mappings": [],
+        }
+        settings.update(overrides)
+        return settings
+
     @pytest.mark.anyio
     async def test_creates_engagement_with_summary(self):
         db = MagicMock()
@@ -447,10 +463,15 @@ class TestPostCallWriteback:
         call_session.duration = 120
         call_session.call_type = "outbound"
         call_session.status = "completed"
+        call_session.call_metadata = {}
 
         contact = {"id": "contact-1", "name": "Ada Lovelace"}
 
         with (
+            patch(
+                "app.services.hubspot_service.get_integration_settings",
+                return_value=self._writeback_settings(),
+            ),
             patch(
                 "app.services.hubspot_service.get_valid_access_token",
                 new=AsyncMock(return_value="access-token"),
@@ -467,6 +488,9 @@ class TestPostCallWriteback:
                 "app.services.hubspot_service.create_call_engagement",
                 new=AsyncMock(return_value={"id": "engagement-1"}),
             ) as mock_create_engagement,
+            patch(
+                "app.services.hubspot_service.set_last_write_back_error"
+            ) as mock_set_error,
         ):
             await hubspot_service._run_post_call_writeback_async(db, call_session)
 
@@ -477,6 +501,29 @@ class TestPostCallWriteback:
         assert kwargs["duration_seconds"] == 120
         assert "pricing" in kwargs["body_text"]
         assert mock_create_engagement.call_args[0][1] == "contact-1"
+        mock_set_error.assert_called_once_with(db, _TENANT_ID, None)
+
+    @pytest.mark.anyio
+    async def test_skips_when_write_back_disabled(self):
+        """Post-call write-back must not touch HubSpot when write_back_enabled is False."""
+        db = MagicMock()
+        call_session = MagicMock()
+        call_session.tenant_id = _TENANT_ID
+        call_session.customer_phone_number = "+15550001111"
+        call_session.id = _SESSION_ID
+
+        with (
+            patch(
+                "app.services.hubspot_service.get_integration_settings",
+                return_value=self._writeback_settings(write_back_enabled=False),
+            ),
+            patch("app.services.hubspot_service.get_valid_access_token") as mock_token,
+            patch("app.services.hubspot_service.create_call_engagement") as mock_create,
+        ):
+            await hubspot_service._run_post_call_writeback_async(db, call_session)
+
+        mock_token.assert_not_called()
+        mock_create.assert_not_called()
 
     @pytest.mark.anyio
     async def test_skips_when_no_matching_contact(self):
@@ -487,6 +534,10 @@ class TestPostCallWriteback:
         call_session.id = _SESSION_ID
 
         with (
+            patch(
+                "app.services.hubspot_service.get_integration_settings",
+                return_value=self._writeback_settings(),
+            ),
             patch(
                 "app.services.hubspot_service.get_valid_access_token",
                 new=AsyncMock(return_value="access-token"),
@@ -500,6 +551,51 @@ class TestPostCallWriteback:
             await hubspot_service._run_post_call_writeback_async(db, call_session)
 
         mock_create.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_writeback_failure_records_last_write_back_error(self):
+        """A failed HubSpot engagement create must be logged and persisted, never retried."""
+        db = MagicMock()
+        call_session = MagicMock()
+        call_session.id = _SESSION_ID
+        call_session.tenant_id = _TENANT_ID
+        call_session.customer_phone_number = "+15550001111"
+        call_session.start_time = datetime.now(timezone.utc)
+        call_session.duration = 60
+        call_session.call_type = "inbound"
+        call_session.status = "completed"
+        call_session.call_metadata = {}
+
+        contact = {"id": "contact-1", "name": "Ada Lovelace"}
+
+        with (
+            patch(
+                "app.services.hubspot_service.get_integration_settings",
+                return_value=self._writeback_settings(),
+            ),
+            patch(
+                "app.services.hubspot_service.get_valid_access_token",
+                new=AsyncMock(return_value="access-token"),
+            ),
+            patch(
+                "app.services.hubspot_service.get_contact_for_phone",
+                new=AsyncMock(return_value=contact),
+            ),
+            patch(
+                "app.services.hubspot_service.generate_transcript_summary",
+                return_value="Summary.",
+            ),
+            patch(
+                "app.services.hubspot_service.create_call_engagement",
+                new=AsyncMock(side_effect=Exception("HubSpot 500")),
+            ),
+            patch(
+                "app.services.hubspot_service.set_last_write_back_error"
+            ) as mock_set_error,
+        ):
+            await hubspot_service._run_post_call_writeback_async(db, call_session)
+
+        mock_set_error.assert_called_once_with(db, _TENANT_ID, "HubSpot 500")
 
     def test_run_post_call_writeback_skips_when_not_connected(self):
         """Sync entrypoint must not touch HubSpot when the tenant has no connection."""
@@ -670,3 +766,309 @@ class TestPhoneNormalization:
         assert "15550001111" in vals
         assert "5550001111" in vals
         assert "+1 (555) 000-1111" in vals
+
+
+# ── Field mapping / settings storage ────────────────────────────────────────────
+
+
+class TestFieldMappingStorage:
+    def test_save_and_read_field_mappings(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = None
+
+        mappings = [{"hubspot_field": "jobtitle", "prompt_variable": "job_title"}]
+
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            hubspot_service.save_field_mappings(db, _TENANT_ID, mappings)
+
+        assert row.extra_metadata == {"field_mappings": mappings}
+        db.commit.assert_called_once()
+
+    def test_save_field_mappings_preserves_other_metadata_keys(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = {"contact_lookup_enabled": False}
+
+        mappings = [{"hubspot_field": "jobtitle", "prompt_variable": "job_title"}]
+
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            hubspot_service.save_field_mappings(db, _TENANT_ID, mappings)
+
+        assert row.extra_metadata["contact_lookup_enabled"] is False
+        assert row.extra_metadata["field_mappings"] == mappings
+
+    def test_save_field_mappings_raises_when_not_connected(self):
+        db = MagicMock()
+        with patch("app.services.hubspot_service.get_integration", return_value=None):
+            with pytest.raises(ValueError):
+                hubspot_service.save_field_mappings(db, _TENANT_ID, [])
+
+    def test_get_field_mappings_defaults_to_empty_list(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = None
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            assert hubspot_service.get_field_mappings(db, _TENANT_ID) == []
+
+
+class TestIntegrationSettings:
+    def test_returns_defaults_when_metadata_empty(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = None
+        row.created_at = datetime.now(timezone.utc)
+
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            result = hubspot_service.get_integration_settings(db, _TENANT_ID)
+
+        assert result["connected"] is True
+        assert result["contact_lookup_enabled"] is True
+        assert result["write_back_enabled"] is True
+        assert result["field_mappings"] == []
+
+    def test_returns_stored_overrides(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = {
+            "contact_lookup_enabled": False,
+            "write_back_enabled": False,
+            "field_mappings": [{"hubspot_field": "company", "prompt_variable": "company_name"}],
+        }
+        row.created_at = datetime.now(timezone.utc)
+
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            result = hubspot_service.get_integration_settings(db, _TENANT_ID)
+
+        assert result["contact_lookup_enabled"] is False
+        assert result["write_back_enabled"] is False
+        assert result["field_mappings"] == [
+            {"hubspot_field": "company", "prompt_variable": "company_name"}
+        ]
+
+    def test_not_connected_returns_disconnected_defaults(self):
+        db = MagicMock()
+        with patch("app.services.hubspot_service.get_integration", return_value=None):
+            result = hubspot_service.get_integration_settings(db, _TENANT_ID)
+
+        assert result == {
+            "connected": False,
+            "connected_at": None,
+            "contact_lookup_enabled": True,
+            "write_back_enabled": True,
+            "field_mappings": [],
+        }
+
+    def test_update_settings_persists_toggles(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = {}
+
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            hubspot_service.update_integration_settings(
+                db, _TENANT_ID, contact_lookup_enabled=False, write_back_enabled=True
+            )
+
+        assert row.extra_metadata["contact_lookup_enabled"] is False
+        assert row.extra_metadata["write_back_enabled"] is True
+        db.commit.assert_called_once()
+
+    def test_update_settings_raises_when_not_connected(self):
+        db = MagicMock()
+        with patch("app.services.hubspot_service.get_integration", return_value=None):
+            with pytest.raises(ValueError):
+                hubspot_service.update_integration_settings(
+                    db, _TENANT_ID, contact_lookup_enabled=True, write_back_enabled=True
+                )
+
+
+class TestLastWriteBackError:
+    def test_records_error(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = {}
+
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            hubspot_service.set_last_write_back_error(db, _TENANT_ID, "HubSpot 500")
+
+        assert row.extra_metadata["last_write_back_error"] == "HubSpot 500"
+        db.commit.assert_called_once()
+
+    def test_clears_error_on_success(self):
+        db = MagicMock()
+        row = MagicMock()
+        row.extra_metadata = {"last_write_back_error": "HubSpot 500"}
+
+        with patch("app.services.hubspot_service.get_integration", return_value=row):
+            hubspot_service.set_last_write_back_error(db, _TENANT_ID, None)
+
+        assert "last_write_back_error" not in row.extra_metadata
+
+    def test_noop_when_not_connected(self):
+        db = MagicMock()
+        with patch("app.services.hubspot_service.get_integration", return_value=None):
+            hubspot_service.set_last_write_back_error(db, _TENANT_ID, "error")
+        db.commit.assert_not_called()
+
+
+# ── Field mapping resolution + prompt substitution ─────────────────────────────
+
+
+class TestFieldMappingResolution:
+    def test_resolves_from_raw_properties(self):
+        contact = {
+            "id": "1",
+            "name": "Ada Lovelace",
+            "raw_properties": {"jobtitle": "Engineer", "company": "Acme Corp"},
+        }
+        mappings = [{"hubspot_field": "jobtitle", "prompt_variable": "job_title"}]
+
+        values = hubspot_service.resolve_field_mapping_values(contact, mappings)
+
+        assert values == {"job_title": "Engineer"}
+
+    def test_falls_back_to_top_level_contact_keys(self):
+        contact = {"id": "1", "name": "Ada Lovelace", "raw_properties": {}}
+        mappings = [{"hubspot_field": "name", "prompt_variable": "caller_name"}]
+
+        values = hubspot_service.resolve_field_mapping_values(contact, mappings)
+
+        assert values == {"caller_name": "Ada Lovelace"}
+
+    def test_skips_missing_values_and_incomplete_mappings(self):
+        contact = {"id": "1", "raw_properties": {}}
+        mappings = [
+            {"hubspot_field": "jobtitle", "prompt_variable": "job_title"},
+            {"hubspot_field": "", "prompt_variable": "x"},
+            {"hubspot_field": "y"},
+        ]
+
+        assert hubspot_service.resolve_field_mapping_values(contact, mappings) == {}
+
+    def test_no_contact_or_no_mappings_returns_empty(self):
+        assert hubspot_service.resolve_field_mapping_values(None, [{"a": "b"}]) == {}
+        assert hubspot_service.resolve_field_mapping_values({"id": "1"}, []) == {}
+
+    def test_apply_field_mapping_values_replaces_placeholders(self):
+        prompt = "Hello {caller_name}, you work at {company_name}."
+        values = {"caller_name": "Ada", "company_name": "Acme Corp"}
+
+        result = hubspot_service.apply_field_mapping_values(prompt, values)
+
+        assert result == "Hello Ada, you work at Acme Corp."
+
+    def test_apply_field_mapping_values_noop_when_empty(self):
+        prompt = "Hello {caller_name}."
+        assert hubspot_service.apply_field_mapping_values(prompt, {}) == prompt
+
+
+class TestGetFieldMappingValuesForCall:
+    @pytest.mark.anyio
+    async def test_returns_cached_value_without_refetching(self):
+        db = MagicMock()
+        call_session = _call_session(metadata={"hubspot_field_mapping_values": {"job_title": "Engineer"}})
+
+        with patch("app.services.hubspot_service.tenant_has_hubspot_connected") as mock_connected:
+            values = await hubspot_service.get_field_mapping_values_for_call(db, call_session)
+
+        mock_connected.assert_not_called()
+        assert values == {"job_title": "Engineer"}
+
+    @pytest.mark.anyio
+    async def test_resolves_and_caches_on_first_call(self):
+        db = MagicMock()
+        call_session = _call_session(metadata={})
+        contact = {"id": "1", "raw_properties": {"jobtitle": "Engineer"}}
+        integration_settings = {
+            "connected": True,
+            "contact_lookup_enabled": True,
+            "write_back_enabled": True,
+            "field_mappings": [{"hubspot_field": "jobtitle", "prompt_variable": "job_title"}],
+        }
+
+        with (
+            patch("app.services.hubspot_service.tenant_has_hubspot_connected", return_value=True),
+            patch(
+                "app.services.hubspot_service.get_integration_settings",
+                return_value=integration_settings,
+            ),
+            patch(
+                "app.services.hubspot_service.get_contact_for_phone",
+                new=AsyncMock(return_value=contact),
+            ),
+        ):
+            values = await hubspot_service.get_field_mapping_values_for_call(db, call_session)
+
+        assert values == {"job_title": "Engineer"}
+        assert call_session.call_metadata["hubspot_field_mapping_values"] == values
+        db.flush.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_skips_lookup_when_contact_lookup_disabled(self):
+        db = MagicMock()
+        call_session = _call_session(metadata={})
+        integration_settings = {
+            "connected": True,
+            "contact_lookup_enabled": False,
+            "write_back_enabled": True,
+            "field_mappings": [{"hubspot_field": "jobtitle", "prompt_variable": "job_title"}],
+        }
+
+        with (
+            patch("app.services.hubspot_service.tenant_has_hubspot_connected", return_value=True),
+            patch(
+                "app.services.hubspot_service.get_integration_settings",
+                return_value=integration_settings,
+            ),
+            patch("app.services.hubspot_service.get_contact_for_phone") as mock_get_contact,
+        ):
+            values = await hubspot_service.get_field_mapping_values_for_call(db, call_session)
+
+        mock_get_contact.assert_not_called()
+        assert values == {}
+
+    @pytest.mark.anyio
+    async def test_fails_open_on_exception(self):
+        db = MagicMock()
+        call_session = _call_session(metadata={})
+
+        with patch(
+            "app.services.hubspot_service.tenant_has_hubspot_connected",
+            side_effect=Exception("DB down"),
+        ):
+            values = await hubspot_service.get_field_mapping_values_for_call(db, call_session)
+
+        assert values == {}
+
+
+# ── Transcript summary caching ──────────────────────────────────────────────────
+
+
+class TestTranscriptSummaryCaching:
+    def test_generates_and_caches_on_first_call(self):
+        db = MagicMock()
+        call_session = _call_session(metadata={})
+
+        with patch(
+            "app.services.hubspot_service.generate_transcript_summary",
+            return_value="Caller asked about pricing.",
+        ) as mock_generate:
+            summary = hubspot_service.get_cached_transcript_summary(db, call_session)
+
+        mock_generate.assert_called_once_with(db, call_session)
+        assert summary == "Caller asked about pricing."
+        assert call_session.call_metadata["hubspot_call_summary"] == summary
+
+    def test_returns_cached_value_without_calling_gemini_again(self):
+        db = MagicMock()
+        call_session = _call_session(
+            metadata={"hubspot_call_summary": "Cached summary."}
+        )
+
+        with patch(
+            "app.services.hubspot_service.generate_transcript_summary"
+        ) as mock_generate:
+            summary = hubspot_service.get_cached_transcript_summary(db, call_session)
+
+        mock_generate.assert_not_called()
+        assert summary == "Cached summary."

@@ -58,6 +58,11 @@ _STATE_TTL_MINUTES = 10
 _CONTACT_CACHE_TTL_SECONDS = 300  # 5 minutes, per acceptance criteria
 _CONTACT_NOT_FOUND_SENTINEL = "__not_found__"
 
+_DEFAULT_CONTACT_LOOKUP_ENABLED = True
+_DEFAULT_WRITE_BACK_ENABLED = True
+
+_SUMMARY_CACHE_TTL_SECONDS = 3600  # 1 hour — long enough to cover writeback retries
+
 _HS_CALL_STATUS_MAP = {
     "completed": "COMPLETED",
     "failed": "FAILED",
@@ -265,6 +270,99 @@ async def get_valid_access_token(db: Session, tenant_id: uuid.UUID) -> Optional[
     return decrypt_hubspot_token(row.access_token, db)
 
 
+def get_field_mappings(db: Session, tenant_id: uuid.UUID) -> list[dict]:
+    row = get_integration(db, tenant_id)
+    if row is None or not row.extra_metadata:
+        return []
+    return row.extra_metadata.get("field_mappings") or []
+
+
+def save_field_mappings(
+    db: Session, tenant_id: uuid.UUID, mappings: list[dict]
+) -> WorkspaceIntegration:
+    """Persist the tenant's HubSpot field -> prompt variable mappings. Raises ValueError if not connected."""
+    row = get_integration(db, tenant_id)
+    if row is None:
+        raise ValueError("HubSpot is not connected for this workspace")
+
+    updated_metadata = dict(row.extra_metadata or {})
+    updated_metadata["field_mappings"] = mappings
+    row.extra_metadata = updated_metadata
+    flag_modified(row, "extra_metadata")
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_integration_settings(db: Session, tenant_id: uuid.UUID) -> dict:
+    """Return the tenant's HubSpot connection status, toggles, and field mappings, with defaults applied."""
+    row = get_integration(db, tenant_id)
+    if row is None:
+        return {
+            "connected": False,
+            "connected_at": None,
+            "contact_lookup_enabled": _DEFAULT_CONTACT_LOOKUP_ENABLED,
+            "write_back_enabled": _DEFAULT_WRITE_BACK_ENABLED,
+            "field_mappings": [],
+        }
+
+    metadata = row.extra_metadata or {}
+    return {
+        "connected": True,
+        "connected_at": row.created_at,
+        "contact_lookup_enabled": metadata.get(
+            "contact_lookup_enabled", _DEFAULT_CONTACT_LOOKUP_ENABLED
+        ),
+        "write_back_enabled": metadata.get(
+            "write_back_enabled", _DEFAULT_WRITE_BACK_ENABLED
+        ),
+        "field_mappings": metadata.get("field_mappings") or [],
+    }
+
+
+def update_integration_settings(
+    db: Session,
+    tenant_id: uuid.UUID,
+    *,
+    contact_lookup_enabled: bool,
+    write_back_enabled: bool,
+) -> WorkspaceIntegration:
+    """Persist the contact-lookup / write-back toggles. Raises ValueError if not connected."""
+    row = get_integration(db, tenant_id)
+    if row is None:
+        raise ValueError("HubSpot is not connected for this workspace")
+
+    updated_metadata = dict(row.extra_metadata or {})
+    updated_metadata["contact_lookup_enabled"] = contact_lookup_enabled
+    updated_metadata["write_back_enabled"] = write_back_enabled
+    row.extra_metadata = updated_metadata
+    flag_modified(row, "extra_metadata")
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def set_last_write_back_error(
+    db: Session, tenant_id: uuid.UUID, error: Optional[str]
+) -> None:
+    """Record (or clear, when error is None) the last post-call write-back failure."""
+    row = get_integration(db, tenant_id)
+    if row is None:
+        return
+
+    updated_metadata = dict(row.extra_metadata or {})
+    if error:
+        updated_metadata["last_write_back_error"] = error
+    else:
+        updated_metadata.pop("last_write_back_error", None)
+    row.extra_metadata = updated_metadata
+    flag_modified(row, "extra_metadata")
+    db.add(row)
+    db.commit()
+
+
 async def disconnect(db: Session, tenant_id: uuid.UUID) -> bool:
     """Revoke the refresh token at HubSpot (best-effort) and delete the local row."""
     row = get_integration(db, tenant_id)
@@ -371,10 +469,26 @@ def _contact_dict_from_hubspot(raw: dict) -> dict:
     }
 
 
-async def search_contact_by_phone(access_token: str, phone: str) -> Optional[dict]:
+async def search_contact_by_phone(
+    access_token: str, phone: str, extra_properties: Optional[list[str]] = None
+) -> Optional[dict]:
     search_vals = _get_phone_search_values(phone)
     if not search_vals:
         return None
+
+    properties = [
+        "firstname",
+        "lastname",
+        "email",
+        "company",
+        "phone",
+        "mobilephone",
+        "notes_last_contacted",
+        "lastmodifieddate",
+    ]
+    for prop in extra_properties or []:
+        if prop and prop not in properties:
+            properties.append(prop)
 
     # Construct filter groups to search both `phone` and `mobilephone` fields
     # against all exact-match variations (joined with OR logic).
@@ -405,16 +519,7 @@ async def search_contact_by_phone(access_token: str, phone: str) -> Optional[dic
         headers={"Authorization": f"Bearer {access_token}"},
         json={
             "filterGroups": filter_groups,
-            "properties": [
-                "firstname",
-                "lastname",
-                "email",
-                "company",
-                "phone",
-                "mobilephone",
-                "notes_last_contacted",
-                "lastmodifieddate",
-            ],
+            "properties": properties,
             "limit": 1,
         },
     )
@@ -441,10 +546,22 @@ async def get_contact_for_phone(
             logger.warning("HubSpot contact cache read failed (continuing)", exc_info=True)
 
     try:
+        field_mappings = get_field_mappings(db, tenant_id)
+        extra_properties = [
+            m.get("hubspot_field")
+            for m in field_mappings
+            if isinstance(m, dict) and m.get("hubspot_field")
+        ]
+    except Exception:
+        extra_properties = []
+
+    try:
         access_token = await get_valid_access_token(db, tenant_id)
         if not access_token:
             return None
-        raw_contact = await search_contact_by_phone(access_token, normalized_phone)
+        raw_contact = await search_contact_by_phone(
+            access_token, normalized_phone, extra_properties=extra_properties
+        )
     except Exception:
         logger.warning(
             "HubSpot contact search failed for tenant=%s (failing open)",
@@ -454,6 +571,8 @@ async def get_contact_for_phone(
         return None
 
     contact = _contact_dict_from_hubspot(raw_contact) if raw_contact else None
+    if contact is not None:
+        contact["raw_properties"] = raw_contact.get("properties") or {}
 
     if redis_client is not None:
         try:
@@ -525,6 +644,90 @@ async def get_crm_context_block_for_call(db: Session, call_session: CallSession)
     return context_block
 
 
+# ─── Custom field mapping (prompt-variable injection) ─────────────────────────
+
+
+def resolve_field_mapping_values(
+    contact: Optional[dict], field_mappings: list[dict]
+) -> dict[str, str]:
+    """Map configured HubSpot fields to prompt-variable values from a contact record."""
+    if not contact or not field_mappings:
+        return {}
+
+    raw_properties = contact.get("raw_properties") or {}
+    values: dict[str, str] = {}
+    for mapping in field_mappings:
+        hubspot_field = mapping.get("hubspot_field")
+        prompt_variable = mapping.get("prompt_variable")
+        if not hubspot_field or not prompt_variable:
+            continue
+        value = raw_properties.get(hubspot_field)
+        if value is None:
+            value = contact.get(hubspot_field)
+        if value is not None:
+            values[prompt_variable] = str(value)
+    return values
+
+
+async def get_field_mapping_values_for_call(
+    db: Session, call_session: CallSession
+) -> dict[str, str]:
+    """
+    Resolve configured HubSpot field mappings to prompt-variable values for a call.
+
+    Cached in call_session.call_metadata["hubspot_field_mapping_values"] so it's
+    computed once per call (mirrors get_crm_context_block_for_call). Fails open —
+    returns {} on any error so a CRM outage never blocks the call.
+    """
+    metadata = call_session.call_metadata or {}
+    if "hubspot_field_mapping_values" in metadata:
+        return metadata.get("hubspot_field_mapping_values") or {}
+
+    values: dict[str, str] = {}
+    try:
+        if call_session.customer_phone_number and tenant_has_hubspot_connected(
+            db, call_session.tenant_id
+        ):
+            integration_settings = get_integration_settings(db, call_session.tenant_id)
+            field_mappings = integration_settings["field_mappings"]
+            if integration_settings["contact_lookup_enabled"] and field_mappings:
+                contact = await get_contact_for_phone(
+                    db, call_session.tenant_id, call_session.customer_phone_number
+                )
+                values = resolve_field_mapping_values(contact, field_mappings)
+    except Exception:
+        logger.warning(
+            "HubSpot field mapping resolution failed (continuing without field mappings)",
+            exc_info=True,
+        )
+        values = {}
+
+    try:
+        with db.begin_nested():
+            updated_metadata = dict(call_session.call_metadata or {})
+            updated_metadata["hubspot_field_mapping_values"] = values
+            call_session.call_metadata = updated_metadata
+            flag_modified(call_session, "call_metadata")
+            db.add(call_session)
+            db.flush()
+    except Exception:
+        logger.warning(
+            "Failed to cache HubSpot field mapping values on call_session (non-critical)",
+            exc_info=True,
+        )
+
+    return values
+
+
+def apply_field_mapping_values(prompt: str, values: dict[str, str]) -> str:
+    """Replace `{prompt_variable}` placeholders in the prompt text with resolved values."""
+    if not values:
+        return prompt
+    for prompt_variable, value in values.items():
+        prompt = prompt.replace("{" + prompt_variable + "}", value)
+    return prompt
+
+
 # ─── Post-call write-back (Engagements/Calls API + Gemini summary) ────────────
 
 
@@ -571,6 +774,35 @@ def generate_transcript_summary(db: Session, call_session: CallSession) -> str:
         return ""
 
 
+def get_cached_transcript_summary(db: Session, call_session: CallSession) -> str:
+    """
+    2-sentence Gemini summary of the call transcript, cached on
+    call_session.call_metadata["hubspot_call_summary"] so a retried write-back
+    never calls Gemini twice for the same call.
+    """
+    metadata = call_session.call_metadata or {}
+    if "hubspot_call_summary" in metadata:
+        return metadata.get("hubspot_call_summary") or ""
+
+    summary = generate_transcript_summary(db, call_session)
+
+    try:
+        with db.begin_nested():
+            updated_metadata = dict(call_session.call_metadata or {})
+            updated_metadata["hubspot_call_summary"] = summary
+            call_session.call_metadata = updated_metadata
+            flag_modified(call_session, "call_metadata")
+            db.add(call_session)
+            db.flush()
+    except Exception:
+        logger.warning(
+            "Failed to cache HubSpot call summary on call_session (non-critical)",
+            exc_info=True,
+        )
+
+    return summary
+
+
 async def create_call_engagement(
     access_token: str,
     contact_id: str,
@@ -614,12 +846,22 @@ async def create_call_engagement(
 
 
 async def _run_post_call_writeback_async(db: Session, call_session: CallSession) -> None:
-    access_token = await get_valid_access_token(db, call_session.tenant_id)
+    tenant_id = call_session.tenant_id
+
+    integration_settings = get_integration_settings(db, tenant_id)
+    if not integration_settings["write_back_enabled"]:
+        logger.info(
+            "HubSpot write-back skipped — disabled in settings for tenant=%s",
+            tenant_id,
+        )
+        return
+
+    access_token = await get_valid_access_token(db, tenant_id)
     if not access_token:
         return
 
     contact = await get_contact_for_phone(
-        db, call_session.tenant_id, call_session.customer_phone_number
+        db, tenant_id, call_session.customer_phone_number
     )
     if not contact or not contact.get("id"):
         logger.info(
@@ -628,19 +870,31 @@ async def _run_post_call_writeback_async(db: Session, call_session: CallSession)
         )
         return
 
-    summary = generate_transcript_summary(db, call_session)
+    summary = get_cached_transcript_summary(db, call_session)
     body_text = summary or "Call completed — no transcript summary available."
 
-    await create_call_engagement(
-        access_token,
-        contact["id"],
-        occurred_at=call_session.start_time or datetime.now(timezone.utc),
-        duration_seconds=call_session.duration or 0,
-        direction=_hs_call_direction(call_session.call_type),
-        hs_status=_hs_call_status(call_session.status),
-        title=f"Voice agent call — {call_session.status}",
-        body_text=body_text,
-    )
+    try:
+        await create_call_engagement(
+            access_token,
+            contact["id"],
+            occurred_at=call_session.start_time or datetime.now(timezone.utc),
+            duration_seconds=call_session.duration or 0,
+            direction=_hs_call_direction(call_session.call_type),
+            hs_status=_hs_call_status(call_session.status),
+            title=f"Voice agent call — {call_session.status}",
+            body_text=body_text,
+        )
+    except Exception as exc:
+        logger.error(
+            "HubSpot call engagement creation failed for session=%s: %s",
+            call_session.id,
+            exc,
+            exc_info=True,
+        )
+        set_last_write_back_error(db, tenant_id, str(exc))
+        return
+
+    set_last_write_back_error(db, tenant_id, None)
     logger.info(
         "HubSpot call engagement created for session=%s contact=%s",
         call_session.id,

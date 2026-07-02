@@ -532,6 +532,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 else:
                     system_prompt = system_prompt + "\n\n" + crm_context_block
 
+            # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
+            # in the prompt with tenant-configured HubSpot contact field values.
+            # Resolved once per call (Redis/DB-cached) and fails open on timeout/error.
+            if self._h.call_session and self._h.db:
+                try:
+                    from app.services.hubspot_service import (
+                        apply_field_mapping_values,
+                        get_field_mapping_values_for_call,
+                    )
+
+                    field_mapping_values = await asyncio.wait_for(
+                        get_field_mapping_values_for_call(self._h.db, self._h.call_session),
+                        timeout=0.6,
+                    )
+                    if field_mapping_values:
+                        system_prompt = apply_field_mapping_values(
+                            system_prompt, field_mapping_values
+                        )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "HubSpot field mapping lookup timed out; proceeding without substitution"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "HubSpot field mapping lookup failed; proceeding without substitution: %s",
+                        exc,
+                    )
+
             from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
 
             llm_runtime = resolve_llm_runtime(self._h.agent)
