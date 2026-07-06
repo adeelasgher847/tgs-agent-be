@@ -18,10 +18,27 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services import caller_memory_service
+from conftest import TestingSessionLocal
 
 _TENANT_ID = uuid.uuid4()
 _FLOW_ID = uuid.uuid4()
 _SESSION_ID = uuid.uuid4()
+
+
+@pytest.fixture(autouse=True)
+def override_session_local(db):
+    class CloseSafeSessionWrapper:
+        def __init__(self, session):
+            self._session = session
+
+        def __getattr__(self, name):
+            return getattr(self._session, name)
+
+        def close(self):
+            pass
+
+    with patch("app.services.caller_memory_service.SessionLocal", lambda: CloseSafeSessionWrapper(db)):
+        yield
 
 
 def _call_flow(*, enabled=True, window=3):
@@ -110,10 +127,10 @@ class TestGetCallerMemoryContextBlockForCall:
                 db, call_session, _call_flow(window=3)
             )
 
-        assert block.startswith("CALLER HISTORY (last 2 interactions):")
+        assert block.startswith("<caller_history>\nCALLER HISTORY (last 2 interactions):")
         assert "Booked an appointment for Tuesday." in block
         assert "Asked about pricing." in block
-        assert block.endswith("End of caller history.")
+        assert block.endswith("End of caller history.\n</caller_history>")
         assert call_session.call_metadata["caller_memory_context"] == block
         db.flush.assert_called_once()
         db.commit.assert_not_called()
@@ -199,10 +216,26 @@ class TestFormatCallerMemoryBlock:
         ]
         block = caller_memory_service._format_caller_memory_block(sessions)
         lines = block.split("\n")
-        assert lines[0] == "CALLER HISTORY (last 1 interactions):"
-        assert lines[1].startswith("- Call on ")
-        assert "First summary" in lines[1]
-        assert lines[-1] == "End of caller history."
+        assert lines[0] == "<caller_history>"
+        assert lines[1] == "CALLER HISTORY (last 1 interactions):"
+        assert lines[2].startswith("- Call on ")
+        assert "First summary" in lines[2]
+        assert lines[-2] == "End of caller history."
+        assert lines[-1] == "</caller_history>"
+
+
+class TestSanitizeSummary:
+    def test_replaces_control_characters(self):
+        raw = "Hello\x00World\x1f!\x7f"
+        sanitized = caller_memory_service._sanitize_summary(raw)
+        assert sanitized == "Hello World !"
+
+    def test_truncates_long_summaries(self):
+        raw = "a" * 500
+        sanitized = caller_memory_service._sanitize_summary(raw)
+        assert len(sanitized) == 401  # 400 chars + 1 ellipsis char
+        assert sanitized.endswith("…")
+        assert sanitized[:-1] == "a" * 400
 
 
 class TestFetchRecentSummariesQuery:
@@ -299,9 +332,15 @@ class TestFetchRecentSummariesQuery:
         )
         db.commit()
 
-        results = caller_memory_service._fetch_recent_summaries(db, current_session, window=10)
+        results = caller_memory_service._fetch_recent_summaries(
+            current_session.tenant_id,
+            current_session.call_flow_id,
+            current_session.from_number,
+            current_session.id,
+            window=10
+        )
 
-        assert [r.id for r in results] == [matching_recent.id, matching_older.id]
+        assert [r.transcript_summary for r in results] == ["Most recent call", "Older call"]
 
     def test_respects_window_limit(self, db):
         from app.models.agent import Agent
@@ -367,5 +406,11 @@ class TestFetchRecentSummariesQuery:
             )
         db.commit()
 
-        results = caller_memory_service._fetch_recent_summaries(db, current_session, window=2)
+        results = caller_memory_service._fetch_recent_summaries(
+            current_session.tenant_id,
+            current_session.call_flow_id,
+            current_session.from_number,
+            current_session.id,
+            window=2
+        )
         assert len(results) == 2

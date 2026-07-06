@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import hashlib
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
@@ -845,6 +846,17 @@ async def create_call_engagement(
     return response.json()
 
 
+_MAX_ERROR_LEN = 500
+
+
+def _safe_error_msg(exc: Exception) -> str:
+    """Extract a brief, safe error summary for tenant-visible storage."""
+    msg = str(exc)
+    # Redact anything that looks like a bearer token
+    msg = re.sub(r'Bearer [A-Za-z0-9\-._~+/]+=*', 'Bearer [redacted]', msg)
+    return msg[:_MAX_ERROR_LEN]
+
+
 async def _run_post_call_writeback_async(db: Session, call_session: CallSession) -> None:
     tenant_id = call_session.tenant_id
 
@@ -891,7 +903,7 @@ async def _run_post_call_writeback_async(db: Session, call_session: CallSession)
             exc,
             exc_info=True,
         )
-        set_last_write_back_error(db, tenant_id, str(exc))
+        set_last_write_back_error(db, tenant_id, _safe_error_msg(exc))
         return
 
     set_last_write_back_error(db, tenant_id, None)

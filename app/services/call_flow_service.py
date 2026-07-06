@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import HTTPException, status
 from scipy.stats import chi2_contingency
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.logger import logger
@@ -449,30 +449,37 @@ class CallFlowService:
         tenant_id: uuid.UUID,
         variant: str,
     ) -> VariantMetrics:
-        sessions = db.execute(
-            select(CallSession).where(
+        row = db.execute(
+            select(
+                func.count().label('calls'),
+                func.sum(
+                    case((CallSession.status == 'completed', 1), else_=0)
+                ).label('completed'),
+                func.sum(
+                    case((CallSession.status == 'failed', 1), else_=0)
+                ).label('failed'),
+                func.avg(CallSession.duration).label('avg_duration'),
+                func.sum(
+                    case((CallSession.transferred == True, 1), else_=0)  # noqa: E712
+                ).label('transferred'),
+                func.sum(
+                    case((CallSession.success_evaluation == 'success', 1), else_=0)
+                ).label('successes'),
+            ).where(
                 CallSession.call_flow_id == flow_id,
                 CallSession.tenant_id == tenant_id,
                 CallSession.ab_variant == variant,
             )
-        ).scalars().all()
+        ).one()
 
-        calls = len(sessions)
-        completed = sum(1 for s in sessions if s.status == "completed")
-        failed = sum(1 for s in sessions if s.status == "failed")
-        transferred = sum(1 for s in sessions if s.transferred)
-        successes = sum(1 for s in sessions if s.success_evaluation == "success")
-
-        durations = [s.duration for s in sessions if s.duration is not None]
-        avg_duration = sum(durations) / len(durations) if durations else None
-
+        calls = row.calls or 0
         return VariantMetrics(
             calls=calls,
-            completed=completed,
-            failed=failed,
-            avg_duration=avg_duration,
-            transfer_rate=(transferred / calls) if calls else 0.0,
-            success_rate=(successes / calls) if calls else 0.0,
+            completed=row.completed or 0,
+            failed=row.failed or 0,
+            avg_duration=float(row.avg_duration) if row.avg_duration else None,
+            transfer_rate=(row.transferred / calls) if calls else 0.0,
+            success_rate=(row.successes / calls) if calls else 0.0,
         )
 
     def _ab_significance(
