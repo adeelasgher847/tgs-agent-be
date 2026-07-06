@@ -37,6 +37,7 @@ class CallHistoryItem(BaseModel):
     duration_seconds: Optional[int]
     started_at: Optional[datetime]
     ended_at: Optional[datetime]
+    ab_variant: Optional[str] = None
 
 
 class CallHistoryList(BaseModel):

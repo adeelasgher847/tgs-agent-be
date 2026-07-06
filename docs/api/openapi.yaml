@@ -8149,6 +8149,108 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/ab-test:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure A/B prompt testing on a call flow
+      operationId: update_ab_test_api_v2_flows__flow_id__ab_test_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AbTestUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbTestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/ab-results:
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get A/B prompt test results and statistical significance
+      operationId: get_ab_results_api_v2_flows__flow_id__ab_results_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbResultsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/ab-test/winner:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Promote the winning A/B variant to the flow's active prompt
+      operationId: promote_ab_winner_api_v2_flows__flow_id__ab_test_winner_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AbTestWinnerUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Promote Ab Winner Api V2 Flows  Flow Id  Ab Test Winner
+                  Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/workspace/branding:
     get:
       tags:
@@ -8832,6 +8934,92 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    AbResultsResponse:
+      properties:
+        variant_a:
+          $ref: '#/components/schemas/VariantMetrics'
+        variant_b:
+          $ref: '#/components/schemas/VariantMetrics'
+        statistical_significance:
+          type: boolean
+          title: Statistical Significance
+        recommended_variant:
+          type: string
+          enum:
+          - a
+          - b
+          - inconclusive
+          title: Recommended Variant
+      type: object
+      required:
+      - variant_a
+      - variant_b
+      - statistical_significance
+      - recommended_variant
+      title: AbResultsResponse
+    AbTestResponse:
+      properties:
+        ab_test_enabled:
+          type: boolean
+          title: Ab Test Enabled
+        ab_prompt_a_id:
+          type: string
+          format: uuid
+          nullable: true
+        ab_prompt_b_id:
+          type: string
+          format: uuid
+          nullable: true
+        ab_split_ratio:
+          type: number
+          title: Ab Split Ratio
+      type: object
+      required:
+      - ab_test_enabled
+      - ab_prompt_a_id
+      - ab_prompt_b_id
+      - ab_split_ratio
+      title: AbTestResponse
+    AbTestUpdate:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+        prompt_a_id:
+          type: string
+          format: uuid
+          title: Prompt A Id
+        prompt_b_id:
+          type: string
+          format: uuid
+          title: Prompt B Id
+        split_ratio:
+          type: number
+          maximum: 0.9
+          minimum: 0.1
+          title: Split Ratio
+      additionalProperties: false
+      type: object
+      required:
+      - enabled
+      - prompt_a_id
+      - prompt_b_id
+      - split_ratio
+      title: AbTestUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/ab-test``.
+    AbTestWinnerUpdate:
+      properties:
+        variant:
+          type: string
+          enum:
+          - a
+          - b
+          title: Variant
+      additionalProperties: false
+      type: object
+      required:
+      - variant
+      title: AbTestWinnerUpdate
     AccountDeletionRequest:
       properties:
         confirmation:
@@ -10755,6 +10943,9 @@ components:
         ended_at:
           type: string
           format: date-time
+          nullable: true
+        ab_variant:
+          type: string
           nullable: true
       type: object
       required:
@@ -17760,6 +17951,35 @@ components:
       - msg
       - type
       title: ValidationError
+    VariantMetrics:
+      properties:
+        calls:
+          type: integer
+          title: Calls
+        completed:
+          type: integer
+          title: Completed
+        failed:
+          type: integer
+          title: Failed
+        avg_duration:
+          type: number
+          nullable: true
+        transfer_rate:
+          type: number
+          title: Transfer Rate
+        success_rate:
+          type: number
+          title: Success Rate
+      type: object
+      required:
+      - calls
+      - completed
+      - failed
+      - avg_duration
+      - transfer_rate
+      - success_rate
+      title: VariantMetrics
     VoiceTypeEnum:
       type: string
       enum:

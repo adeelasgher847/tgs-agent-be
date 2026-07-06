@@ -51,6 +51,9 @@ class CallSession(Base):
     # Optional link to the call flow that triggered this session
     call_flow_id = Column(UUID(as_uuid=True), ForeignKey("callflow.id"), nullable=True, index=True)
 
+    # A/B prompt testing: variant assigned at dispatch time ('a' or 'b'), locked for call duration
+    ab_variant = Column(String(1), nullable=True)
+
     # Smart Callback: points to the original missed call in a retry chain
     parent_call_id = Column(
         UUID(as_uuid=True),

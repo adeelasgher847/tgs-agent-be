@@ -1856,10 +1856,18 @@ Previous conversation:
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
 
+            # A/B prompt testing: variant + resolved prompt text are locked onto
+            # call_metadata at dispatch time (see ab_testing_service) and never
+            # re-resolved mid-call, so the same variant is used for the whole call.
+            ab_prompt_override = None
+            if self.call_session and self.call_session.call_metadata:
+                ab_prompt_override = self.call_session.call_metadata.get("ab_prompt_text")
+
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self.agent and self.agent.system_prompt:
                 # Agent has custom system prompt - grounding rules placed BEFORE custom
                 # instructions so factual constraints cannot be overridden by agent config.
+                effective_custom_prompt = ab_prompt_override or self.agent.system_prompt
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -1873,7 +1881,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 {_bk_block}
 
 # CUSTOM INSTRUCTIONS
-{self.agent.system_prompt}
+{effective_custom_prompt}
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
@@ -1911,6 +1919,7 @@ Previous conversation:
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self.agent and self.agent.model and self.agent.model.system_prompt:
                 # Model has system prompt - grounding rules placed BEFORE model instructions.
+                effective_model_prompt = ab_prompt_override or self.agent.model.system_prompt
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -1924,7 +1933,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 {_bk_block}
 
 # MODEL INSTRUCTIONS
-{self.agent.model.system_prompt}
+{effective_model_prompt}
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).

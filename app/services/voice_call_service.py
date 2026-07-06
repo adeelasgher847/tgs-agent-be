@@ -5,19 +5,21 @@ from typing import Optional
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.error_responses import build_call_initiate_error_payload
 from app.middleware.request_id_middleware import new_request_id
 from app.core.logger import logger
+from app.models.call_flow import CallFlow
 from app.models.call_session import CallSession
 from app.schemas.twilio import (
     CallInitiateRequest,
     CallInitiateResponse,
 )
 from app.schemas.base import SuccessResponse
+from app.services.ab_testing_service import ab_testing_service
 from app.services.agent_service import agent_service
 from app.services.call_session_service import call_session_service
 from app.services.credit_service import credit_service
@@ -405,6 +407,17 @@ async def initiate_call(
             call_session.call_flow_id = flow_uuid
             db.commit()
             db.refresh(call_session)
+
+            # A/B prompt testing: assign + persist the variant now, before any
+            # LLM request, so it's known even if the call fails mid-way. Locked
+            # for the duration of the call via call_metadata["ab_prompt_text"].
+            call_flow_row = db.execute(
+                select(CallFlow).where(CallFlow.id == flow_uuid)
+            ).scalar_one_or_none()
+            if call_flow_row is not None:
+                ab_testing_service.assign_and_lock_variant(
+                    db, call_session, call_flow_row
+                )
 
         # JD / resume enrichment (non-blocking on failure)
         _ctx = call_request.jd_context or {}

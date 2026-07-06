@@ -369,14 +369,23 @@ Continue the conversation based on the history above. Be {agent_name}."""
 
             # Batch calls may inject a per-row substituted prompt via call_metadata
             batch_prompt_override = None
+            ab_prompt_override = None
             if self._h.call_session and self._h.call_session.call_metadata:
                 batch_prompt_override = self._h.call_session.call_metadata.get(
                     "batch_prompt_override"
                 )
+                # A/B prompt testing: variant + resolved prompt text are locked onto
+                # call_metadata at dispatch time (see ab_testing_service) and never
+                # re-resolved mid-call.
+                ab_prompt_override = self._h.call_session.call_metadata.get(
+                    "ab_prompt_text"
+                )
 
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self._h.agent and self._h.agent.system_prompt:
-                effective_custom_prompt = batch_prompt_override or self._h.agent.system_prompt
+                effective_custom_prompt = (
+                    batch_prompt_override or ab_prompt_override or self._h.agent.system_prompt
+                )
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -414,7 +423,9 @@ Previous conversation:
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
                 effective_model_prompt = (
-                    batch_prompt_override or self._h.agent.model.system_prompt
+                    batch_prompt_override
+                    or ab_prompt_override
+                    or self._h.agent.model.system_prompt
                 )
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.

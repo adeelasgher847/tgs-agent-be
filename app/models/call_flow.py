@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Boolean, Index, CheckConstraint
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Boolean, Index, CheckConstraint, Numeric
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -24,6 +24,22 @@ class CallFlow(Base):
     flow_data = Column(JSONB, nullable=True)
     settings = Column(JSONB, nullable=True)
     knowledge_base_ids = Column(JSONB, nullable=True, default=list)
+
+    # A/B prompt testing
+    ab_test_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    ab_prompt_a_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("promptversion.id", use_alter=True, name="fk_callflow_ab_prompt_a"),
+        nullable=True,
+    )
+    ab_prompt_b_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("promptversion.id", use_alter=True, name="fk_callflow_ab_prompt_b"),
+        nullable=True,
+    )
+    # Fraction of calls routed to variant A (0.10-0.90)
+    ab_split_ratio = Column(Numeric(3, 2), default=0.50, nullable=False, server_default="0.50")
+
     hipaa_compliance = Column(Boolean, default=False, nullable=False, server_default="false")
     public_access = Column(Boolean, default=False, nullable=False, server_default="false")
     is_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
@@ -46,6 +62,16 @@ class CallFlow(Base):
         foreign_keys="[CallFlow.current_prompt_id]",
         post_update=True,
     )
+    ab_prompt_a = relationship(
+        "PromptVersion",
+        foreign_keys="[CallFlow.ab_prompt_a_id]",
+        post_update=True,
+    )
+    ab_prompt_b = relationship(
+        "PromptVersion",
+        foreign_keys="[CallFlow.ab_prompt_b_id]",
+        post_update=True,
+    )
     call_sessions = relationship("CallSession", back_populates="call_flow")
 
     __table_args__ = (
@@ -59,5 +85,9 @@ class CallFlow(Base):
             "welcome_message_type IS NULL OR "
             "welcome_message_type IN ('user_initiated', 'ai_dynamic', 'ai_custom')",
             name="ck_callflow_welcome_message_type",
+        ),
+        CheckConstraint(
+            "ab_split_ratio > 0 AND ab_split_ratio < 1",
+            name="ck_callflow_ab_split_ratio",
         ),
     )

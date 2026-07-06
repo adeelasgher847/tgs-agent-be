@@ -231,6 +231,7 @@ class CallHistoryService:
                 CallSession.duration.label("duration_seconds"),
                 CallSession.start_time.label("started_at"),
                 CallSession.end_time.label("ended_at"),
+                CallSession.ab_variant,
             )
             .select_from(CallSession)
             .outerjoin(Agent, Agent.id == CallSession.agent_id)
@@ -265,6 +266,7 @@ class CallHistoryService:
                 duration_seconds=row.duration_seconds,
                 started_at=row.started_at,
                 ended_at=row.ended_at,
+                ab_variant=row.ab_variant,
             )
             for row in rows
         ]
