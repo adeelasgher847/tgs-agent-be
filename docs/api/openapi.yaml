@@ -6866,6 +6866,22 @@ paths:
       security:
       - HTTPBearer: []
   /api/v1/integrations/hubspot:
+    get:
+      tags:
+      - HubSpot Integration
+      summary: Hubspot Get Integration Status
+      description: Connection status, contact-lookup/write-back toggles, and field
+        mappings for this workspace.
+      operationId: hubspot_get_integration_status_api_v1_integrations_hubspot_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_HubSpotIntegrationStatusOut_'
+      security:
+      - HTTPBearer: []
     delete:
       tags:
       - HubSpot Integration
@@ -6880,6 +6896,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_HubSpotDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/hubspot/field-mapping:
+    post:
+      tags:
+      - HubSpot Integration
+      summary: Hubspot Save Field Mapping
+      description: Save the HubSpot field -> agent prompt-variable mappings for this
+        workspace.
+      operationId: hubspot_save_field_mapping_api_v1_integrations_hubspot_field_mapping_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HubSpotFieldMappingRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_HubSpotFieldMappingResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/hubspot/settings:
+    put:
+      tags:
+      - HubSpot Integration
+      summary: Hubspot Update Settings
+      description: Toggle contact-lookup and post-call write-back for this workspace.
+      operationId: hubspot_update_settings_api_v1_integrations_hubspot_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HubSpotSettingsUpdateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_HubSpotIntegrationStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
   /api/v1/integrations/hubspot/contact:
@@ -11786,6 +11859,81 @@ components:
       required:
       - disconnected
       title: HubSpotDisconnectResponse
+    HubSpotFieldMapping:
+      properties:
+        hubspot_field:
+          type: string
+          title: Hubspot Field
+        prompt_variable:
+          type: string
+          title: Prompt Variable
+      type: object
+      required:
+      - hubspot_field
+      - prompt_variable
+      title: HubSpotFieldMapping
+    HubSpotFieldMappingRequest:
+      properties:
+        mappings:
+          items:
+            $ref: '#/components/schemas/HubSpotFieldMapping'
+          type: array
+          title: Mappings
+      type: object
+      required:
+      - mappings
+      title: HubSpotFieldMappingRequest
+    HubSpotFieldMappingResponse:
+      properties:
+        field_mappings:
+          items:
+            $ref: '#/components/schemas/HubSpotFieldMapping'
+          type: array
+          title: Field Mappings
+      type: object
+      required:
+      - field_mappings
+      title: HubSpotFieldMappingResponse
+    HubSpotIntegrationStatusOut:
+      properties:
+        connected:
+          type: boolean
+          title: Connected
+        connected_at:
+          type: string
+          format: date-time
+          nullable: true
+        contact_lookup_enabled:
+          type: boolean
+          title: Contact Lookup Enabled
+          default: true
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+          default: true
+        field_mappings:
+          items:
+            $ref: '#/components/schemas/HubSpotFieldMapping'
+          type: array
+          title: Field Mappings
+          default: []
+      type: object
+      required:
+      - connected
+      title: HubSpotIntegrationStatusOut
+    HubSpotSettingsUpdateRequest:
+      properties:
+        contact_lookup_enabled:
+          type: boolean
+          title: Contact Lookup Enabled
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+      type: object
+      required:
+      - contact_lookup_enabled
+      - write_back_enabled
+      title: HubSpotSettingsUpdateRequest
     ImportTwilioPhoneNumberRequest:
       properties:
         phone_number:
@@ -15568,6 +15716,38 @@ components:
       required:
       - data
       title: SuccessResponse[HubSpotDisconnectResponse]
+    SuccessResponse_HubSpotFieldMappingResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/HubSpotFieldMappingResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[HubSpotFieldMappingResponse]
+    SuccessResponse_HubSpotIntegrationStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/HubSpotIntegrationStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[HubSpotIntegrationStatusOut]
     SuccessResponse_ImportTwilioPhoneNumberResponse_:
       properties:
         data:

@@ -184,6 +184,155 @@ class TestContactEndpoint:
         assert exc_info.value.status_code == 404
 
 
+class TestIntegrationStatusEndpoint:
+    @pytest.mark.anyio
+    async def test_returns_status_shape(self):
+        from app.routers.hubspot_integration import hubspot_get_integration_status
+
+        connected_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        settings = {
+            "connected": True,
+            "connected_at": connected_at,
+            "contact_lookup_enabled": True,
+            "write_back_enabled": False,
+            "field_mappings": [{"hubspot_field": "jobtitle", "prompt_variable": "job_title"}],
+        }
+
+        with patch(
+            "app.routers.hubspot_integration.hubspot_service.get_integration_settings",
+            return_value=settings,
+        ):
+            result = await hubspot_get_integration_status(principal=_principal(), db=MagicMock())
+
+        assert result.data.connected is True
+        assert result.data.connected_at == connected_at
+        assert result.data.contact_lookup_enabled is True
+        assert result.data.write_back_enabled is False
+        assert result.data.field_mappings[0].hubspot_field == "jobtitle"
+        assert result.data.field_mappings[0].prompt_variable == "job_title"
+
+
+class TestFieldMappingEndpoint:
+    @pytest.mark.anyio
+    async def test_saves_mappings(self):
+        from app.routers.hubspot_integration import hubspot_save_field_mapping
+        from app.schemas.hubspot_integration import (
+            HubSpotFieldMapping,
+            HubSpotFieldMappingRequest,
+        )
+
+        payload = HubSpotFieldMappingRequest(
+            mappings=[HubSpotFieldMapping(hubspot_field="jobtitle", prompt_variable="job_title")]
+        )
+
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=True,
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.save_field_mappings"
+            ) as mock_save,
+        ):
+            result = await hubspot_save_field_mapping(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
+
+        mock_save.assert_called_once_with(
+            mock_save.call_args[0][0],
+            _TENANT_ID,
+            [{"hubspot_field": "jobtitle", "prompt_variable": "job_title"}],
+        )
+        assert result.data.field_mappings[0].hubspot_field == "jobtitle"
+
+    @pytest.mark.anyio
+    async def test_not_connected_returns_400(self):
+        from app.routers.hubspot_integration import hubspot_save_field_mapping
+        from app.schemas.hubspot_integration import (
+            HubSpotFieldMapping,
+            HubSpotFieldMappingRequest,
+        )
+
+        payload = HubSpotFieldMappingRequest(
+            mappings=[HubSpotFieldMapping(hubspot_field="jobtitle", prompt_variable="job_title")]
+        )
+
+        with patch(
+            "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+            return_value=False,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await hubspot_save_field_mapping(
+                    payload=payload, principal=_principal(), db=MagicMock()
+                )
+
+        assert exc_info.value.status_code == 400
+
+
+class TestSettingsEndpoint:
+    @pytest.mark.anyio
+    async def test_updates_settings(self):
+        from app.routers.hubspot_integration import hubspot_update_settings
+        from app.schemas.hubspot_integration import HubSpotSettingsUpdateRequest
+
+        payload = HubSpotSettingsUpdateRequest(
+            contact_lookup_enabled=False, write_back_enabled=True
+        )
+        updated_settings = {
+            "connected": True,
+            "connected_at": datetime.now(timezone.utc),
+            "contact_lookup_enabled": False,
+            "write_back_enabled": True,
+            "field_mappings": [],
+        }
+
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=True,
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.update_integration_settings"
+            ) as mock_update,
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.get_integration_settings",
+                return_value=updated_settings,
+            ),
+        ):
+            result = await hubspot_update_settings(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
+
+        mock_update.assert_called_once_with(
+            mock_update.call_args[0][0],
+            _TENANT_ID,
+            contact_lookup_enabled=False,
+            write_back_enabled=True,
+        )
+        assert result.data.contact_lookup_enabled is False
+        assert result.data.write_back_enabled is True
+
+    @pytest.mark.anyio
+    async def test_not_connected_returns_400(self):
+        from app.routers.hubspot_integration import hubspot_update_settings
+        from app.schemas.hubspot_integration import HubSpotSettingsUpdateRequest
+
+        payload = HubSpotSettingsUpdateRequest(
+            contact_lookup_enabled=False, write_back_enabled=True
+        )
+
+        with patch(
+            "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+            return_value=False,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await hubspot_update_settings(
+                    payload=payload, principal=_principal(), db=MagicMock()
+                )
+
+        assert exc_info.value.status_code == 400
+
+
 class TestDisconnectEndpoint:
     @pytest.mark.anyio
     async def test_disconnects_successfully(self):

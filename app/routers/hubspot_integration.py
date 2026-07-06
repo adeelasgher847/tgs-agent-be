@@ -1,11 +1,14 @@
 """
 HubSpot CRM OAuth integration endpoints.
 
-GET    /connect    — redirect to HubSpot's OAuth consent page (tenant-authenticated)
-GET    /callback   — public; HubSpot redirects the browser here with no auth headers,
-                      so the connecting tenant is recovered from the signed `state` param
-DELETE ""          — revoke at HubSpot and delete the local connection
-GET    /contact     — CRM Search API lookup by phone, used by the dashboard and tests
+GET    /connect        — redirect to HubSpot's OAuth consent page (tenant-authenticated)
+GET    /callback       — public; HubSpot redirects the browser here with no auth headers,
+                          so the connecting tenant is recovered from the signed `state` param
+DELETE ""              — revoke at HubSpot and delete the local connection
+GET    ""              — connection status, settings toggles, and field mappings
+GET    /contact        — CRM Search API lookup by phone, used by the dashboard and tests
+POST   /field-mapping  — save HubSpot field -> agent prompt-variable mappings
+PUT    /settings       — toggle contact-lookup / write-back for this workspace
 """
 from __future__ import annotations
 
@@ -22,6 +25,10 @@ from app.schemas.base import SuccessResponse
 from app.schemas.hubspot_integration import (
     HubSpotContactOut,
     HubSpotDisconnectResponse,
+    HubSpotFieldMappingRequest,
+    HubSpotFieldMappingResponse,
+    HubSpotIntegrationStatusOut,
+    HubSpotSettingsUpdateRequest,
 )
 from app.services import hubspot_service
 from app.utils.response import create_success_response
@@ -92,6 +99,66 @@ async def hubspot_disconnect(
     return create_success_response(
         HubSpotDisconnectResponse(disconnected=True),
         "HubSpot disconnected successfully",
+    )
+
+
+@router.get("", response_model=SuccessResponse[HubSpotIntegrationStatusOut])
+async def hubspot_get_integration_status(
+    principal=Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Connection status, contact-lookup/write-back toggles, and field mappings for this workspace."""
+    tenant_id = _tenant_id(principal)
+    integration_settings = hubspot_service.get_integration_settings(db, tenant_id)
+    return create_success_response(HubSpotIntegrationStatusOut(**integration_settings))
+
+
+@router.post("/field-mapping", response_model=SuccessResponse[HubSpotFieldMappingResponse])
+async def hubspot_save_field_mapping(
+    payload: HubSpotFieldMappingRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Save the HubSpot field -> agent prompt-variable mappings for this workspace."""
+    tenant_id = _tenant_id(principal)
+    if not hubspot_service.tenant_has_hubspot_connected(db, tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HubSpot is not connected for this workspace",
+        )
+
+    mappings = [m.model_dump() for m in payload.mappings]
+    hubspot_service.save_field_mappings(db, tenant_id, mappings)
+    return create_success_response(
+        HubSpotFieldMappingResponse(field_mappings=payload.mappings),
+        "Field mappings saved successfully",
+    )
+
+
+@router.put("/settings", response_model=SuccessResponse[HubSpotIntegrationStatusOut])
+async def hubspot_update_settings(
+    payload: HubSpotSettingsUpdateRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Toggle contact-lookup and post-call write-back for this workspace."""
+    tenant_id = _tenant_id(principal)
+    if not hubspot_service.tenant_has_hubspot_connected(db, tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HubSpot is not connected for this workspace",
+        )
+
+    hubspot_service.update_integration_settings(
+        db,
+        tenant_id,
+        contact_lookup_enabled=payload.contact_lookup_enabled,
+        write_back_enabled=payload.write_back_enabled,
+    )
+    integration_settings = hubspot_service.get_integration_settings(db, tenant_id)
+    return create_success_response(
+        HubSpotIntegrationStatusOut(**integration_settings),
+        "Settings updated successfully",
     )
 
 
