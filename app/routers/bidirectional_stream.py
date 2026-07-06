@@ -182,6 +182,7 @@ from app.utils.eleven_tts_text import (
 from app.voice.booking_mixin import BookingMixin
 from app.voice.tts_stream_mixin import TtsStreamMixin
 from app.voice.call_control_mixin import CallControlMixin
+from app.voice.flow_pipeline_mixin import FlowPipelineMixin
 from app.voice.pipeline_session import PipelineSession
 
 router = APIRouter()
@@ -236,7 +237,7 @@ _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE = re.compile(
 )
 
 
-class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin):
+class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin, FlowPipelineMixin):
     """Handles real-time bidirectional voice streaming (400–500ms target, Vapi-style gapless TTS)."""
 
     # Expose tunables on the class so they remain easy to discover in-context,
@@ -326,6 +327,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
         self.call_session = None
         self.agent = None
         self.call_flow = None
+        self._flow_executor = None
+        self._flow_state = None
         self._last_offered_calendar_slots: List[datetime] = []
         self._last_requested_calendar_date: Optional[date] = None
         self._last_selected_calendar_slot: Optional[datetime] = None
@@ -594,6 +597,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
                     )
                     .first()
                 )
+            self._flow_init()
         except Exception as e:
             logger.error(f"Error loading session data: {e}", exc_info=True)
 
@@ -966,6 +970,12 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             await self._cancel_inflight_llm_response()
 
         self._tts_cancel.clear()
+
+        # Visual flow editor: a compiled call flow intercepts the transcript and
+        # drives the next node itself, bypassing the default LLM turn entirely.
+        if self._flow_executor and await self._flow_on_transcript(transcript, confidence):
+            return
+
         try:
             await asyncio.wait_for(
                 self.generate_and_stream_response(transcript, confidence, is_greeting=False),
@@ -1424,6 +1434,12 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin)
             
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting (inbound pickup only)
             if is_greeting:
+                # Visual flow editor: if the agent has a compiled call flow, the
+                # flow's start node drives the opening turn instead of the
+                # agent's static greeting_message/first_message.
+                if self._flow_executor and await self._flow_start():
+                    return
+
                 greeting_text = None
                 inbound = (
                     self.call_session is not None

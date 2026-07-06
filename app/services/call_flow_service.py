@@ -34,8 +34,13 @@ from app.schemas.call_flow import (
     CallerMemorySettingsUpdate,
     CallFlowSettingsUpdate,
     CallFlowUpdate,
+    FlowDataResponse,
+    FlowDataUpdate,
+    FlowValidationError,
+    FlowValidationResponse,
 )
 from app.schemas.prompt_version import PromptVersionOut
+from app.services.flow_graph_service import compile_graph, validate_graph
 from app.utils.gemini_prompt_sanitizer import sanitize_prompt_for_gemini
 
 _MAX_VERSIONS = 50
@@ -566,6 +571,77 @@ class CallFlowService:
                 select(Agent).where(Agent.id == flow.agent_id)
             ).scalar_one_or_none()
         return self._flow_to_out(db, flow)
+
+
+    # ── Visual Flow Editor ────────────────────────────────────────────────
+
+    def get_flow_data(
+        self, db: Session, flow_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> FlowDataResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        validation_errors = validate_graph(flow.flow_data) if flow.flow_data else []
+        return FlowDataResponse(
+            flow_data=flow.flow_data,
+            flow_data_compiled=flow.flow_data_compiled,
+            validation_errors=[FlowValidationError(**e) for e in validation_errors],
+        )
+
+    def validate_flow_data(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: Optional[FlowDataUpdate] = None,
+    ) -> FlowValidationResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        flow_data = body.flow_data.model_dump() if body else (flow.flow_data or {})
+        validation_errors = validate_graph(flow_data)
+        return FlowValidationResponse(
+            valid=not validation_errors,
+            validation_errors=[FlowValidationError(**e) for e in validation_errors],
+        )
+
+    def update_flow_data(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: FlowDataUpdate,
+    ) -> FlowDataResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        flow_data = body.flow_data.model_dump()
+
+        validation_errors = validate_graph(flow_data)
+        if validation_errors:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "flow_validation_failed",
+                    "message": "Flow graph validation failed",
+                    "validationErrors": [
+                        {
+                            "code": e["code"],
+                            "message": e["message"],
+                            "nodeId": e.get("node_id"),
+                        }
+                        for e in validation_errors
+                    ],
+                },
+            )
+
+        compiled = compile_graph(flow_data)
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow, {"flow_data": flow_data, "flow_data_compiled": compiled}
+        )
+        db.commit()
+        db.refresh(flow)
+        return FlowDataResponse(
+            flow_data=flow.flow_data,
+            flow_data_compiled=flow.flow_data_compiled,
+            validation_errors=[],
+        )
 
 
 call_flow_service = CallFlowService()

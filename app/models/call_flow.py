@@ -22,6 +22,8 @@ class CallFlow(Base):
         nullable=True,
     )
     flow_data = Column(JSONB, nullable=True)
+    # Pre-compiled decision tree derived from flow_data — {node_id: {node, outgoing_edges}}
+    flow_data_compiled = Column(JSONB, nullable=True)
     settings = Column(JSONB, nullable=True)
     knowledge_base_ids = Column(JSONB, nullable=True, default=list)
 
