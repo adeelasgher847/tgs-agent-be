@@ -66,7 +66,7 @@ class AbTestingService:
             **(call_session.call_metadata or {}),
             "ab_prompt_text": prompt_text,
         }
-        db.commit()
+        db.flush()
         db.refresh(call_session)
         logger.info(
             "A/B variant '%s' assigned to call session %s (flow=%s)",

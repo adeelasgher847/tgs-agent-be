@@ -1072,3 +1072,19 @@ class TestTranscriptSummaryCaching:
 
         mock_generate.assert_not_called()
         assert summary == "Cached summary."
+
+
+class TestSafeErrorMsg:
+    def test_redacts_bearer_token(self):
+        from app.services.hubspot_service import _safe_error_msg
+        exc = Exception("API failed: Bearer pat-na1-12345-abc-xyz-123456789")
+        msg = _safe_error_msg(exc)
+        assert "Bearer [redacted]" in msg
+        assert "pat-na1-12345" not in msg
+
+    def test_truncates_long_errors(self):
+        from app.services.hubspot_service import _safe_error_msg
+        exc = Exception("a" * 1000)
+        msg = _safe_error_msg(exc)
+        assert len(msg) == 500
+        assert msg == "a" * 500

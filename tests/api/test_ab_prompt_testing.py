@@ -79,6 +79,9 @@ def test_agent(db, auth_tenant: Tenant) -> Agent:
     db.add(a)
     db.commit()
     db.refresh(a)
+    print("DEBUG AGENT IN FIXTURE:", a)
+    print("DEBUG SESSION ID IN FIXTURE:", id(db))
+    print("DEBUG ALL AGENTS IN FIXTURE DB:", db.query(Agent).all())
     return a
 
 
@@ -113,7 +116,7 @@ def authed_client(client, auth_tenant: Tenant):
 
 def _create_flow_with_two_prompts(client, tenant, agent) -> dict:
     created = client.post(
-        "/api/v1/call-flows",
+        "/api/v1/call-flows/",
         json={
             "name": "AB Flow",
             "direction": "outbound",
@@ -252,6 +255,23 @@ class TestAbTestConfigEndpoint:
             headers=_headers(auth_tenant),
         )
         assert resp.status_code == 400
+
+    def test_same_prompts_for_both_variants_returns_400(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        flow = _create_flow_with_two_prompts(authed_client, auth_tenant, test_agent)
+        resp = authed_client.put(
+            f"/api/v2/flows/{flow['flow_id']}/ab-test",
+            json={
+                "enabled": True,
+                "prompt_a_id": flow["prompt_a_id"],
+                "prompt_b_id": flow["prompt_a_id"],
+                "split_ratio": 0.5,
+            },
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 400
+        assert "must be different prompt versions" in resp.text
 
 
 @pytest.mark.usefixtures("db")

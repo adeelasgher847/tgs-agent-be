@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AbTestUpdate(BaseModel):
@@ -15,6 +15,12 @@ class AbTestUpdate(BaseModel):
     prompt_a_id: uuid.UUID
     prompt_b_id: uuid.UUID
     split_ratio: float = Field(..., ge=0.1, le=0.9)
+
+    @model_validator(mode='after')
+    def prompts_must_differ(self) -> AbTestUpdate:
+        if self.prompt_a_id == self.prompt_b_id:
+            raise ValueError('prompt_a_id and prompt_b_id must be different prompt versions')
+        return self
 
 
 class AbTestResponse(BaseModel):

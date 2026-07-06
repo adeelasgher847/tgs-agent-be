@@ -391,3 +391,53 @@ class TestIntegrationListIncludesHubSpot:
         hubspot_item = next(i for i in result.integrations if i.name == "hubspot")
         assert hubspot_item.connected is True
         assert hubspot_item.connected_at == connected_at
+
+
+class TestHubSpotFieldMappingValidation:
+    def test_valid_mapping(self):
+        from app.schemas.hubspot_integration import HubSpotFieldMapping
+        mapping = HubSpotFieldMapping(
+            hubspot_field="custom_property",
+            prompt_variable="custom_var"
+        )
+        assert mapping.hubspot_field == "custom_property"
+        assert mapping.prompt_variable == "custom_var"
+
+    def test_invalid_hubspot_field_raises(self):
+        from app.schemas.hubspot_integration import HubSpotFieldMapping
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc:
+            HubSpotFieldMapping(
+                hubspot_field="Invalid-Field-Name!",
+                prompt_variable="valid_var"
+            )
+        assert "hubspot_field must be a valid HubSpot property name" in str(exc.value)
+
+    def test_invalid_prompt_variable_raises(self):
+        from app.schemas.hubspot_integration import HubSpotFieldMapping
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc:
+            HubSpotFieldMapping(
+                hubspot_field="valid_field",
+                prompt_variable="invalid-var-name!"
+            )
+        assert "prompt_variable must be a valid identifier" in str(exc.value)
+
+    def test_mappings_count_limit(self):
+        from app.schemas.hubspot_integration import HubSpotFieldMapping, HubSpotFieldMappingRequest
+        from pydantic import ValidationError
+
+        valid_mappings = [
+            HubSpotFieldMapping(hubspot_field="field", prompt_variable=f"var_{i}")
+            for i in range(50)
+        ]
+        request = HubSpotFieldMappingRequest(mappings=valid_mappings)
+        assert len(request.mappings) == 50
+
+        with pytest.raises(ValidationError) as exc:
+            HubSpotFieldMappingRequest(mappings=valid_mappings + [
+                HubSpotFieldMapping(hubspot_field="field", prompt_variable="excess_var")
+            ])
+        assert "A maximum of 50 field mappings are allowed" in str(exc.value)

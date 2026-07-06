@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, Boolean
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, Boolean, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -47,6 +47,9 @@ class CallSession(Base):
     # Additional metadata
     call_metadata = Column(JSONB, nullable=True)  # Store additional call metadata
     transferred = Column(Boolean, nullable=False, server_default="false")  # Whether call was transferred
+
+    # Finalized, HIPAA-redacted end-of-call summary — powers cross-session caller memory
+    transcript_summary = Column(Text, nullable=True)
     
     # Optional link to the call flow that triggered this session
     call_flow_id = Column(UUID(as_uuid=True), ForeignKey("callflow.id"), nullable=True, index=True)
@@ -77,6 +80,16 @@ class CallSession(Base):
     # Self-referential: retry calls point back to the original missed call
     parent_call = relationship("CallSession", remote_side="CallSession.id", foreign_keys=[parent_call_id])
     callback_schedules = relationship("CallbackSchedule", back_populates="original_call", foreign_keys="CallbackSchedule.original_call_id")
-    
+
+    __table_args__ = (
+        Index(
+            "ix_callsession_memory_lookup",
+            "tenant_id",
+            "call_flow_id",
+            "from_number",
+            "start_time",
+        ),
+    )
+
     def __repr__(self):
         return f"<CallSession(id={self.id}, status={self.status})>"

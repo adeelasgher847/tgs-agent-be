@@ -134,6 +134,8 @@ app.dependency_overrides[get_db] = override_get_db
 @pytest.fixture(scope="module")
 def db():
     """Fresh SQLite database for the entire test module."""
+    print("DEBUG SHARED CONN ID IN CONFTEST:", id(_shared_sqlite_conn))
+    print("DEBUG ENGINE IN CONFTEST:", id(engine))
     _shared_sqlite_conn.rollback()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
