@@ -7,7 +7,7 @@ on:
 
 env:
   AWS_REGION: us-east-1                   # Aapka AWS Region
-  ECR_REPOSITORY: tgs-voice-backend       # AWS ECR Repo name
+  ECR_REPOSITORY: tgs-agent-be      # AWS ECR Repo name
   ECS_CLUSTER: tgs-voice-cluster         # AWS ECS Cluster name
   ECS_SERVICE_API: tgs-api-service        # Web API Service name in ECS
   ECS_SERVICE_WORKER: tgs-worker-service  # ARQ Worker Service name in ECS
