@@ -44,17 +44,7 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY --all-tags
         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-    # ── Database Migration Running Step ──
-    - name: Run Alembic Database Migrations
-      run: |
-        aws ecs run-task \
-          --cluster ${{ env.ECS_CLUSTER }} \
-          --task-definition tgs-migration-task \
-          --launch-type FARGATE \
-          --network-configuration '{"awsvpcConfiguration":{"subnets":["YOUR_SUBNET_ID"],"securityGroups":["YOUR_SECURITY_GROUP_ID"],"assignPublicIp":"ENABLED"}}' \
-          --overrides '{"containerOverrides":[{"name":"app","command":["alembic","upgrade","head"]}]}' \
-          --query "tasks[0].taskArn" \
-          --output text
+
 
     # ── Update API Service ──
     - name: Fill in the new image ID in the Amazon ECS API task definition
