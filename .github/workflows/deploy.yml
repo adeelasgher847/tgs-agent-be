@@ -34,6 +34,12 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
+    - name: Substitute AWS Account ID in task definitions
+      run: |
+        AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+        sed -i "s/ACCOUNT_ID/${AWS_ACCOUNT_ID}/g" ${{ env.API_TASK_DEFINITION }}
+        sed -i "s/ACCOUNT_ID/${AWS_ACCOUNT_ID}/g" ${{ env.WORKER_TASK_DEFINITION }}
+
     - name: Build, Tag, and Push Docker Image to ECR
       id: build-image
       env:
