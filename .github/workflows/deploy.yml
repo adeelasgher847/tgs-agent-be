@@ -1,0 +1,91 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - dev  # Dev branch push hote hi deploy ho jaye
+
+env:
+  AWS_REGION: us-east-1                   # Aapka AWS Region
+  ECR_REPOSITORY: tgs-voice-backend       # AWS ECR Repo name
+  ECS_CLUSTER: tgs-voice-cluster         # AWS ECS Cluster name
+  ECS_SERVICE_API: tgs-api-service        # Web API Service name in ECS
+  ECS_SERVICE_WORKER: tgs-worker-service  # ARQ Worker Service name in ECS
+  API_TASK_DEFINITION: .aws/api-task.json # Local task definitions
+  WORKER_TASK_DEFINITION: .aws/worker-task.json
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, Tag, and Push Docker Image to ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY --all-tags
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    # ── Database Migration Running Step ──
+    - name: Run Alembic Database Migrations
+      run: |
+        aws ecs run-task \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --task-definition tgs-migration-task \
+          --launch-type FARGATE \
+          --network-configuration '{"awsvpcConfiguration":{"subnets":["YOUR_SUBNET_ID"],"securityGroups":["YOUR_SECURITY_GROUP_ID"],"assignPublicIp":"ENABLED"}}' \
+          --overrides '{"containerOverrides":[{"name":"app","command":["alembic","upgrade","head"]}]}' \
+          --query "tasks[0].taskArn" \
+          --output text
+
+    # ── Update API Service ──
+    - name: Fill in the new image ID in the Amazon ECS API task definition
+      id: render-api-task
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ env.API_TASK_DEFINITION }}
+        container-name: app
+        image: ${{ steps.build-image.outputs.image }}
+
+    - name: Deploy Amazon ECS API Task
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.render-api-task.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE_API }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+
+    # ── Update ARQ Worker Service ──
+    - name: Fill in the new image ID in the Amazon ECS Worker task definition
+      id: render-worker-task
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ env.WORKER_TASK_DEFINITION }}
+        container-name: worker
+        image: ${{ steps.build-image.outputs.image }}
+
+    - name: Deploy Amazon ECS Worker Task
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ steps.render-worker-task.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE_WORKER }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
