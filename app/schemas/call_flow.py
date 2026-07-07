@@ -151,3 +151,44 @@ class CallFlowListResponse(BaseModel):
     total: int
     page: int
     page_size: int = Field(..., serialization_alias="pageSize")
+
+
+class FlowValidationError(BaseModel):
+    """A single validation failure for a visual flow graph."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    code: str
+    message: str
+    node_id: Optional[str] = Field(None, serialization_alias="nodeId")
+
+
+class FlowDataUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/flow-data``."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    flow_data: FlowDataSchema = Field(..., alias="flowData")
+
+
+class FlowDataResponse(BaseModel):
+    """Response body for the flow-data GET/PUT endpoints."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    flow_data: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowData")
+    flow_data_compiled: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowDataCompiled")
+    validation_errors: List[FlowValidationError] = Field(
+        default_factory=list, serialization_alias="validationErrors"
+    )
+
+
+class FlowValidationResponse(BaseModel):
+    """Response body for ``GET /api/v2/flows/{flow_id}/flow-data/validate``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    valid: bool
+    validation_errors: List[FlowValidationError] = Field(
+        default_factory=list, serialization_alias="validationErrors"
+    )

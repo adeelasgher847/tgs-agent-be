@@ -8320,6 +8320,105 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/flow-data:
+    put:
+      tags:
+      - Visual Flow Editor
+      summary: Validate, pre-compile, and save a visual flow graph
+      operationId: update_flow_data_api_v2_flows__flow_id__flow_data_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowDataUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowDataResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Visual Flow Editor
+      summary: Get the raw and pre-compiled visual flow graph
+      operationId: get_flow_data_api_v2_flows__flow_id__flow_data_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowDataResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/flow-data/validate:
+    get:
+      tags:
+      - Visual Flow Editor
+      summary: Validate the current (or posted) flow graph without saving
+      operationId: validate_flow_data_api_v2_flows__flow_id__flow_data_validate_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              allOf:
+              - $ref: '#/components/schemas/FlowDataUpdate'
+              nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowValidationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/workspace/branding:
     get:
       tags:
@@ -12007,6 +12106,24 @@ components:
       - skill
       - confidence
       title: ExtractedSkill
+    FlowDataResponse:
+      properties:
+        flowData:
+          additionalProperties: true
+          type: object
+          nullable: true
+        flowDataCompiled:
+          additionalProperties: true
+          type: object
+          nullable: true
+        validationErrors:
+          items:
+            $ref: '#/components/schemas/FlowValidationError'
+          type: array
+          title: Validationerrors
+      type: object
+      title: FlowDataResponse
+      description: Response body for the flow-data GET/PUT endpoints.
     FlowDataSchema:
       properties:
         nodes:
@@ -12022,6 +12139,16 @@ components:
       title: FlowDataSchema
       description: Structural validation for flowData JSONB — future visual-editor
         format.
+    FlowDataUpdate:
+      properties:
+        flowData:
+          $ref: '#/components/schemas/FlowDataSchema'
+      additionalProperties: false
+      type: object
+      required:
+      - flowData
+      title: FlowDataUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/flow-data``.
     FlowKbUpdate:
       properties:
         kb_ids:
@@ -12034,6 +12161,38 @@ components:
       required:
       - kb_ids
       title: FlowKbUpdate
+    FlowValidationError:
+      properties:
+        code:
+          type: string
+          title: Code
+        message:
+          type: string
+          title: Message
+        nodeId:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - code
+      - message
+      title: FlowValidationError
+      description: A single validation failure for a visual flow graph.
+    FlowValidationResponse:
+      properties:
+        valid:
+          type: boolean
+          title: Valid
+        validationErrors:
+          items:
+            $ref: '#/components/schemas/FlowValidationError'
+          type: array
+          title: Validationerrors
+      type: object
+      required:
+      - valid
+      title: FlowValidationResponse
+      description: Response body for ``GET /api/v2/flows/{flow_id}/flow-data/validate``.
     FolderCreate:
       properties:
         name:

@@ -10,6 +10,9 @@ GET  /api/v2/flows/{flow_id}/ab-results
 PUT  /api/v2/flows/{flow_id}/ab-test/winner
 PUT  /api/v2/flows/{flow_id}/caller-memory-settings
 
+Visual Flow Editor endpoints (flow-data, flow-data/validate) live in
+app.api.v2.routers.flow_data — a separate router under the same prefix.
+
 Note: the caller memory settings path is deliberately NOT `/{flow_id}/settings` —
 that path is already registered by app.api.v2.routers.hipaa for the HIPAA
 compliance toggle, and reusing it here would silently shadow that endpoint.
