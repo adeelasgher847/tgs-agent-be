@@ -119,6 +119,7 @@ class CallFlowOut(BaseModel):
     prompt_versions: List[PromptVersionOut] = Field(default_factory=list, serialization_alias="promptVersions")
     flow_data: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowData")
     settings: Optional[Dict[str, Any]] = None
+    knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
     created_at: datetime = Field(..., serialization_alias="createdAt")
     updated_at: Optional[datetime] = Field(None, serialization_alias="updatedAt")
@@ -139,6 +140,7 @@ class CallFlowListItem(BaseModel):
     current_prompt_id: Optional[uuid.UUID] = Field(None, serialization_alias="currentPromptId")
     flow_data: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowData")
     settings: Optional[Dict[str, Any]] = None
+    knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
     created_at: datetime = Field(..., serialization_alias="createdAt")
     updated_at: Optional[datetime] = Field(None, serialization_alias="updatedAt")
