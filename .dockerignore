@@ -18,6 +18,7 @@ venv
 node_modules
 
 docs
+!docs/api/openapi.yaml
 tests
 README.md
 call_session_websocket_test.html

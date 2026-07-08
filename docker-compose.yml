@@ -1,169 +1,26 @@
-# On-premise / self-hosted production stack.
-#
-# Single-command start:
-#   docker compose up --build -d
-#
-# Dev-only extras (pgAdmin, etc.) live in docker-compose.dev.yml — layer it
-# in explicitly, it is never loaded by default:
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
-#
-# See docs/on-premise/README.md for the full setup guide, env var reference,
-# and troubleshooting FAQ.
-
-x-app-image: &app-image
-  build:
-    context: .
-    dockerfile: Dockerfile
-  # Full "repo:tag" in one var — set to an Artifact Registry path:tag
-  # (e.g. us-docker.pkg.dev/<project>/<repo>/tgs-agent-be:1.4.0) to pull a
-  # published release instead of building locally.
-  image: ${APP_IMAGE:-tgs-agent-be:local}
-  env_file:
-    - .env
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
-    migrate:
-      condition: service_completed_successfully
-  networks:
-    - internal
-  restart: unless-stopped
 
 services:
-  postgres:
-    # pgvector/pgvector (not plain postgres:16-alpine): the KB/RAG schema
-    # (kbchunk.embedding vector(1536)) needs the pgvector extension, which
-    # stock Postgres images don't ship. Verified by actually running the
-    # migration chain against plain postgres:16-alpine — it failed with
-    # "extension vector is not available". pgcrypto (used for BYO key
-    # encryption) is a standard contrib module already in the base image.
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-voiceagent}
-    volumes:
-      # Named volume, NOT a bind mount — keeps the DB portable across hosts
-      # (technical note: do not bind-mount Postgres data).
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-    networks:
-      - internal
+  web:
+    build: .
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: always
+
+  worker:
+    build: .
+    entrypoint: ["python3", "-m", "arq", "app.workers.batch_call_worker.WorkerSettings"]
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: always
 
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks:
-      - internal
-
-  livekit:
-    image: livekit/livekit-server:latest
-    restart: unless-stopped
-    environment:
-      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret_change_me_in_production_min32ch}"
-      LIVEKIT_PORT: "7880"
-      LIVEKIT_RTC_TCP_PORT: "7881"
-      LIVEKIT_RTC_PORT_RANGE_START: "50000"
-      LIVEKIT_RTC_PORT_RANGE_END: "50100"
-      # Internal-only by default (Twilio media bridges through fastapi-v2,
-      # not directly to LiveKit). Flip to "true" + set NODE_IP if you connect
-      # WebRTC/browser clients straight to this LiveKit instance from outside
-      # the Docker network — see docs/on-premise/README.md.
-      LIVEKIT_RTC_USE_EXTERNAL_IP: "false"
     ports:
-      - "7881:7881"
-      - "50000-50100:50000-50100/udp"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:7880/"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-    networks:
-      - internal
-
-  # One-off job: runs `alembic upgrade head` and exits. distroless has no
-  # shell, so migrations cannot be chained into the app ENTRYPOINT with
-  # `&&` — a dedicated service that fastapi-v2/worker depend on
-  # (service_completed_successfully) is the standard pattern for shell-less
-  # images and also avoids every replica racing to migrate concurrently.
-  migrate:
-    <<: *app-image
-    entrypoint: ["python3", "-m", "alembic", "upgrade", "head"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  fastapi-v2:
-    <<: *app-image
-    ports:
-      - "8001:8001"
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/v2/health', timeout=3)"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 15s
-
-  worker:
-    <<: *app-image
-    entrypoint: ["python3", "-m", "arq", "app.workers.batch_call_worker.WorkerSettings"]
-    healthcheck:
-      test: ["CMD", "python3", "-m", "arq", "app.workers.batch_call_worker.WorkerSettings", "--check"]
-      interval: 10s
-      timeout: 10s
-      retries: 15
-      start_period: 20s
-
-  nginx-proxy:
-    # `image:` lets a customer running from the packaged tar.gz (which ships
-    # without nginx/ source — see docs/on-premise/README.md) pull the
-    # published tag instead of building. `build:` is only exercised when
-    # running from a full source checkout with `docker compose up --build`.
-    image: ${NGINX_IMAGE:-tgs-agent-be-nginx:local}
-    build:
-      context: ./nginx
-      dockerfile: Dockerfile
-      args:
-        NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-localhost}
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    depends_on:
-      fastapi-v2:
-        condition: service_healthy
-      livekit:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1/nginx-health"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-    networks:
-      - internal
-
-volumes:
-  postgres_data:
-  redis_data:
-
-networks:
-  internal:
-    driver: bridge
+      - "6379:6379"
+    restart: always
