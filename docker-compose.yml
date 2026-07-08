@@ -12,7 +12,7 @@ services:
 
   worker:
     build: .
-    entrypoint: ["arq", "app.workers.batch_call_worker.WorkerSettings"]
+    entrypoint: ["python3", "-m", "arq", "app.workers.batch_call_worker.WorkerSettings"]
     env_file:
       - .env
     depends_on:
