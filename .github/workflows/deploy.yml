@@ -6,7 +6,7 @@ on:
       - dev  # Dev branch push hote hi deploy ho jaye
 
 env:
-  PROJECT_PATH: "/home/ubuntu/tgs-agent-be"
+  PROJECT_PATH: "/home/ubuntu/happyassist/tgs-agent-be"
 
 jobs:
   deploy:
