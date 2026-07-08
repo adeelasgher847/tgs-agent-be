@@ -215,17 +215,25 @@ async def handle_incoming_call(
                     detail="Invalid Twilio signature",
                 )
 
-        inbound_agent = agent_service.get_inbound_agent_by_tenant(
-            db=db, tenant_id=phone_number.tenant_id
-        )
+        # Resolve target agent: Check if a specific assistant/agent is linked directly to this PhoneNumber
+        inbound_agent = None
+        if phone_number.assistant_id:
+            inbound_agent = (
+                db.query(Agent)
+                .filter(
+                    Agent.id == phone_number.assistant_id,
+                    Agent.is_deleted == False,
+                )
+                .first()
+            )
+
         if not inbound_agent:
             logger.warning(
-                "No inbound agent configured for tenant %s (number=%s)",
-                phone_number.tenant_id,
+                "Inbound call rejected: No active agent linked to number %s",
                 to_number,
             )
             return _fallback_twiml(
-                "Sorry, inbound service is temporarily unavailable for this tenant."
+                "Sorry, this number is not configured to receive calls."
             )
 
         # Billing guardrail: enforce the same credit gating used in outbound flows.

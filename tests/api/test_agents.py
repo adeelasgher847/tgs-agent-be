@@ -178,11 +178,10 @@ class TestCreateAgent:
         assert body["llmModel"] == "gpt-4o-mini"
         assert body["status"] == "active"
         assert "createdAt" in body
-        assert body["ttsModel"] == {
-            "provider": "elevenlabs",
-            "voiceId": "EXAVITQu4vr4xnSDxMaL",
-            "language": "en",
-        }
+        assert body["ttsModel"]["provider"] == "elevenlabs"
+        assert body["ttsModel"]["voiceId"] == "EXAVITQu4vr4xnSDxMaL"
+        assert body["ttsModel"]["language"] == "en"
+        assert "ttsVoiceId" in body["ttsModel"]
         # BYO key must never appear in any response.
         assert "elevenLabsApiKey" not in body
         assert "encrypted_elevenlabs_api_key" not in body

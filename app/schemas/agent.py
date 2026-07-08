@@ -140,6 +140,7 @@ class TtsModelSchema(BaseModel):
     provider: TtsProviderEnum
     voice_id: str = Field(..., min_length=1, max_length=255, alias="voiceId")
     language: LanguageEnum
+    tts_voice_id: Optional[uuid.UUID] = Field(None, alias="ttsVoiceId")
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -334,6 +335,7 @@ def agent_to_out(agent: Agent) -> AgentOut:
                 provider=tts_slug_to_api_provider(agent.tts_provider_slug),
                 voice_id=agent.tts_voice_external_id,
                 language=LanguageEnum(agent.tts_language),
+                tts_voice_id=agent.tts_voice_id,
             )
         except ValueError:
             tts_model = None
