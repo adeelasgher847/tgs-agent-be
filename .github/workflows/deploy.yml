@@ -43,4 +43,4 @@ jobs:
           docker compose up --build -d
           
           # 4. Run Alembic migrations inside the new container
-          docker compose run --rm web alembic upgrade head
+          docker compose run --rm --entrypoint "python3" web -m alembic upgrade head
