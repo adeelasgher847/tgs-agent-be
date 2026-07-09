@@ -17914,6 +17914,10 @@ components:
           title: Voiceid
         language:
           $ref: '#/components/schemas/LanguageEnum'
+        ttsVoiceId:
+          type: string
+          format: uuid
+          nullable: true
       additionalProperties: false
       type: object
       required:

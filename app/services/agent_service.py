@@ -529,18 +529,7 @@ class AgentService:
         self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
         self._validate_transfer_route_for_tenant(db, tenant_id, agent_data.get("transfer_route_id"))
 
-        # Enforce one dedicated inbound agent per tenant.
-        if agent_data.get("is_inbound_agent"):
-            existing_inbound_agent = db.query(Agent).filter(
-                Agent.tenant_id == tenant_id,
-                Agent.is_deleted == False,
-                Agent.is_inbound_agent == True,
-            ).first()
-            if existing_inbound_agent:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Only one dedicated inbound agent is allowed per tenant.",
-                )
+
 
         # Enforce one follow-up appointment agent per tenant.
         if agent_data.get("is_follow_up_agent"):
@@ -630,19 +619,7 @@ class AgentService:
         )
         self._apply_ticket_update(db, agent_update, agent, update_dict)
 
-        # Enforce one dedicated inbound agent per tenant.
-        if update_dict.get("is_inbound_agent") is True:
-            existing_inbound_agent = db.query(Agent).filter(
-                Agent.tenant_id == tenant_id,
-                Agent.is_deleted == False,
-                Agent.is_inbound_agent == True,
-                Agent.id != agent_id,
-            ).first()
-            if existing_inbound_agent:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Only one dedicated inbound agent is allowed per tenant.",
-                )
+
 
         # Enforce one follow-up appointment agent per tenant.
         if update_dict.get("is_follow_up_agent") is True:

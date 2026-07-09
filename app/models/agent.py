@@ -112,12 +112,6 @@ class Agent(Base):
     __table_args__ = (
         Index("ix_agent_tenant_id", "tenant_id"),
         Index(
-            "uq_agent_single_inbound_per_tenant",
-            "tenant_id",
-            unique=True,
-            postgresql_where=text("is_inbound_agent = true AND is_deleted = false"),
-        ),
-        Index(
             "uq_agent_single_follow_up_per_tenant",
             "tenant_id",
             unique=True,
