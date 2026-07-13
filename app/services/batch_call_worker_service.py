@@ -21,6 +21,7 @@ from typing import Optional
 from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.logger import logger
 from app.models.batch_call_record import BatchCallRecord
 from app.models.batch_job import BatchJob
@@ -122,6 +123,11 @@ class BatchCallWorkerService:
         agent_system_prompt: Optional[str],
     ) -> None:
         """Dispatch a single batch call record via the existing `initiate_call` path."""
+        if not settings.N8N_WEBHOOK_SECRET:
+            raise RuntimeError(
+                "N8N_WEBHOOK_SECRET is not configured. Outbound batch calls require a configured secret key."
+            )
+
         from app.schemas.twilio import CallInitiateRequest
         from app.services.voice_call_service import initiate_call
 

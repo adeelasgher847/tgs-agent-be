@@ -305,6 +305,12 @@ def test_resolve_stt_model_invalid_provider(db):
     from fastapi import HTTPException
     from app.services.agent_service import AgentService
     from app.schemas.agent import SttModelSchema, SttProviderEnum
+    from app.models.stt_model import STTModel
+    from app.models.stt_provider import STTProvider
+
+    db.query(STTModel).delete()
+    db.query(STTProvider).delete()
+    db.commit()
 
     svc = AgentService()
     stt = SttModelSchema(provider=SttProviderEnum.google, model_id="chirp-3", language_code="en-AU")
@@ -318,6 +324,12 @@ def test_resolve_stt_model_invalid_provider(db):
 def test_resolve_stt_model_none_returns_deepgram_defaults(db):
     from fastapi import HTTPException
     from app.services.agent_service import AgentService
+    from app.models.stt_model import STTModel
+    from app.models.stt_provider import STTProvider
+
+    db.query(STTModel).delete()
+    db.query(STTProvider).delete()
+    db.commit()
 
     svc = AgentService()
     # None input should return defaults — but only if deepgram/nova-3 is seeded.
@@ -343,6 +355,7 @@ def test_agent_to_out_includes_stt_model():
         tts_provider_slug="elevenlabs",
         tts_voice_external_id="voice123",
         tts_language="en",
+        tts_voice_id=None,
         stt_provider_slug="google",
         stt_model_external_id="chirp-3",
         stt_language_code="en-AU",
@@ -375,6 +388,7 @@ def test_agent_to_out_stt_model_none_when_missing():
         tts_provider_slug=None,
         tts_voice_external_id=None,
         tts_language=None,
+        tts_voice_id=None,
         stt_provider_slug=None,
         stt_model_external_id=None,
         stt_language_code=None,

@@ -119,10 +119,6 @@ async def _run(
 
     with (
         patch(
-            "app.services.voice_call_service.verify_n8n_webhook_secret_async",
-            AsyncMock(return_value=False),
-        ),
-        patch(
             "app.services.voice_call_service.agent_service",
             MagicMock(get_agent_by_id=MagicMock(return_value=_agent())),
         ),
@@ -159,7 +155,14 @@ async def _run(
             MagicMock(return_value=("AC_test", "token_test")),
         ),
     ):
-        await initiate_call(request, mock_http_req, mock_user, _db())
+        await initiate_call(
+            call_request=request,
+            db=_db(),
+            is_system_call=False,
+            tenant_id=mock_user.current_tenant_id,
+            user_id=mock_user.id,
+            request_id="rid_test123",
+        )
 
     return lk_create_room
 
@@ -261,10 +264,6 @@ async def _run_raw(request) -> object:
 
     with (
         patch(
-            "app.services.voice_call_service.verify_n8n_webhook_secret_async",
-            AsyncMock(return_value=False),
-        ),
-        patch(
             "app.services.voice_call_service.agent_service",
             MagicMock(get_agent_by_id=MagicMock(return_value=_agent())),
         ),
@@ -301,4 +300,11 @@ async def _run_raw(request) -> object:
             MagicMock(return_value=("AC_test", "token_test")),
         ),
     ):
-        return await initiate_call(request, mock_http_req, mock_user, _db())
+        return await initiate_call(
+            call_request=request,
+            db=_db(),
+            is_system_call=False,
+            tenant_id=mock_user.current_tenant_id,
+            user_id=mock_user.id,
+            request_id="rid_test123",
+        )

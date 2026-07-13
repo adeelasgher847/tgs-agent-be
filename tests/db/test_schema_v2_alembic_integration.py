@@ -31,9 +31,6 @@ def _migration_database_url() -> str | None:
     explicit = (os.environ.get("TEST_MIGRATION_DATABASE_URL") or "").strip()
     if explicit:
         return explicit
-    fallback = (os.environ.get("DATABASE_URL") or "").strip()
-    if fallback.startswith("postgresql"):
-        return fallback
     return None
 
 

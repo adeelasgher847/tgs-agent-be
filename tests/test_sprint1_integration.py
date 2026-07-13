@@ -18,6 +18,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def enable_rate_limiting():
+    prev = settings.RATE_LIMIT_ENABLED
+    settings.RATE_LIMIT_ENABLED = True
+    try:
+        yield
+    finally:
+        settings.RATE_LIMIT_ENABLED = prev
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,7 @@ def test_prompt_block_only_emitted_for_elevenlabs():
 
     block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
     assert "ELEVENLABS" in block
-    assert "[pause]" in block or "[pauses]" in block
+    assert "[breathe]" in block or "[breathes]" in block
     assert "[excited]" in block
     assert "[sad]" in block or "sorrowful" in block
     assert build_elevenlabs_audio_tag_prompt_block("google") == ""

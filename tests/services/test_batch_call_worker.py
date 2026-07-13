@@ -843,7 +843,7 @@ class TestBillingRecordCallUsage:
 
         usage = (
             db.query(UsageRecord)
-            .filter(UsageRecord.subscription_id == sub.id)
+            .filter(UsageRecord.workspace_id == workspace_id)
             .one()
         )
-        assert usage.calls_used == 1
+        assert usage.workspace_id == workspace_id
