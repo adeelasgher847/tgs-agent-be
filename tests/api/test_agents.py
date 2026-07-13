@@ -256,6 +256,10 @@ class TestCreateAgent:
         )
         assert resp.status_code == 400
 
+    @pytest.mark.skipif(
+        bool(__import__("os").environ.get("TEST_DATABASE_URL")),
+        reason="pgcrypto not available in CI DB — covered by pgcrypto integration tests",
+    )
     def test_create_byo_encrypts_key_and_hides_in_response(
         self, authed_client, auth_tenant, db, byo_sqlite_encrypt_compat
     ):
@@ -426,6 +430,10 @@ class TestUpdateAgent:
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "invalid_llm_model"
 
+    @pytest.mark.skipif(
+        bool(__import__("os").environ.get("TEST_DATABASE_URL")),
+        reason="pgcrypto not available in CI DB — covered by pgcrypto integration tests",
+    )
     def test_put_byo_persists_encrypted_key(
         self, authed_client, auth_tenant, db, byo_sqlite_encrypt_compat
     ):
@@ -453,6 +461,10 @@ class TestUpdateAgent:
         agent = db.query(Agent).filter(Agent.id == uuid.UUID(created["id"])).first()
         _assert_byo_key_roundtrip(db, agent, "xi-rotated-key-2026")
 
+    @pytest.mark.skipif(
+        bool(__import__("os").environ.get("TEST_DATABASE_URL")),
+        reason="pgcrypto not available in CI DB — covered by pgcrypto integration tests",
+    )
     def test_put_switch_off_byo_clears_stored_key(
         self, authed_client, auth_tenant, db, byo_sqlite_encrypt_compat
     ):
