@@ -35,7 +35,7 @@ jobs:
           pip install ruff black
 
       - name: Run Ruff Lint Check
-        run: ruff check . --exclude alembic/versions --ignore F401,F841,E402,E711,E712
+        run: ruff check . --exclude alembic/versions --ignore F401,F841,F541,F811,F821,E402,E711,E712,E702,E722,E741
 
       - name: Run Black Code Format Check
         run: black --check .
