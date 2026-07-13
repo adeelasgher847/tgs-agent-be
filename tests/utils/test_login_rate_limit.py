@@ -8,9 +8,20 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.core.exception_handlers import register_exception_handlers
 from app.middleware.request_id_middleware import RequestIdMiddleware
 from app.utils.rate_limiter import enforce_login_rate_limit
+
+
+@pytest.fixture(autouse=True)
+def enable_rate_limiting():
+    prev = settings.RATE_LIMIT_ENABLED
+    settings.RATE_LIMIT_ENABLED = True
+    try:
+        yield
+    finally:
+        settings.RATE_LIMIT_ENABLED = prev
 
 
 def _make_app() -> FastAPI:

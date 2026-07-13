@@ -58,6 +58,7 @@ def _base_handler() -> Handler:
 
     h.is_speaking = False
     h._is_tts_playing = False  # core fix gate
+    h._tts_play_start_ts = 0.0
 
     h._barge_in_min_conf = 0.40
     h._barge_in_min_conf_1w = 0.55

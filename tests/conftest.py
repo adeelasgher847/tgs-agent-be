@@ -4,6 +4,13 @@ import sys
 import sqlite3
 from unittest.mock import MagicMock
 
+# Prevent duplicate imports of conftest as a separate module under 'tests.conftest'
+if __name__ == "conftest":
+    sys.modules["tests.conftest"] = sys.modules[__name__]
+elif __name__ == "tests.conftest":
+    sys.modules["conftest"] = sys.modules[__name__]
+
+
 # Rime TTS is validated at app startup; tests must not depend on a developer .env file.
 os.environ["RATE_LIMIT_ENABLED"] = "False"
 os.environ.setdefault("RIME_API_KEY", "test-rime-key-for-pytest")
@@ -125,6 +132,29 @@ def override_get_db():
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def _configure_rate_limiting(request):
+    from app.core.config import settings
+    # Enable rate limiting only for files that specifically test rate limits
+    if (
+        hasattr(request, "module")
+        and request.module
+        and any(
+            x in request.module.__name__
+            for x in ("rate_limit", "sprint1_integration")
+        )
+    ):
+        prev = settings.RATE_LIMIT_ENABLED
+        settings.RATE_LIMIT_ENABLED = True
+        try:
+            yield
+        finally:
+            settings.RATE_LIMIT_ENABLED = prev
+    else:
+        yield
+
 
 
 from app.api.deps import get_db

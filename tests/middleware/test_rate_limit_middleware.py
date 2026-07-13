@@ -22,6 +22,16 @@ from app.middleware.rate_limit_middleware import (
 from app.middleware.request_id_middleware import RequestIdMiddleware
 
 
+@pytest.fixture(autouse=True)
+def enable_rate_limiting():
+    prev = settings.RATE_LIMIT_ENABLED
+    settings.RATE_LIMIT_ENABLED = True
+    try:
+        yield
+    finally:
+        settings.RATE_LIMIT_ENABLED = prev
+
+
 def _make_app(limit: int = 5, window: int = 60) -> FastAPI:
     mini = FastAPI()
     mini.add_middleware(RateLimitMiddleware)

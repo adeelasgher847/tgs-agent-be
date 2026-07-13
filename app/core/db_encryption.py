@@ -124,7 +124,9 @@ def is_pgcrypto_ciphertext(value: str) -> bool:
     if not value or is_legacy_jwt_ciphertext(value):
         return False
     try:
-        raw = base64.b64decode(value, validate=True)
+        # PostgreSQL encode(..., 'base64') includes newline characters, so strip them
+        cleaned_value = "".join(value.split())
+        raw = base64.b64decode(cleaned_value, validate=True)
     except Exception:
         return False
     return bool(raw) and raw[0] in _PGP_SYM_ENCRYPT_MARKERS
