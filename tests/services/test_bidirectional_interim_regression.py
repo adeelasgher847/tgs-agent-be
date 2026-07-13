@@ -95,14 +95,29 @@ def _empty_handler() -> Handler:
     h._rag_prefetch_task = None
     h._rag_prefetch_user_text = ""
     h.is_speaking = False
+    h._is_tts_playing = False
     h._barge_in_min_conf = 0.26
     h._barge_in_min_conf_1w = 0.52
+    h._barge_in_min_words = 2
+    h._barge_in_rejected_while_playing = 0
+    h._tts_play_start_ts = 0.0
+    h._barge_in_dead_zone_ms = 0.0
     h._stt_min_final_confidence = 0.26
     h._enable_soft_final_fallback = True
     h._stt_soft_min_final_confidence = 0.16
     h._stt_soft_min_words = 2
+    h._rag_prefetch_min_words = 1
+    h._rag_prefetch_min_confidence = 0.05
+    h._speculative_prefetch_task = None
+    h._run_speculative_tts_prefetch = AsyncMock()  # type: ignore[method-assign]
     h._prefetch_rag_context = AsyncMock(return_value=("", {}))  # type: ignore[method-assign]
     h._llm_turn_serial_lock = asyncio.Lock()
+    h._tts_cancel = asyncio.Event()
+    h._llm_last_answered_transcript = ""
+    h._llm_last_answered_ts = 0.0
+    h.call_session = None
+    h._screening_decline_handled = False
+    h._jd_recruitment_screening_active = lambda: False  # type: ignore[method-assign, assignment]
     return h
 
 
@@ -164,7 +179,7 @@ def test_interim_llm_off_skips_generate() -> None:
 
 def test_barge_in_clears_turn_no_generate() -> None:
     """
-    While the agent TTS is active, a one-word user interim triggers cancel, not a new LLM.
+    While the agent TTS is active, a multi-word user interim triggers cancel, not a new LLM.
     """
 
     async def _body() -> None:
@@ -182,11 +197,12 @@ def test_barge_in_clears_turn_no_generate() -> None:
             cancel_current_and_clear_queue=AsyncMock(),
         )
         h._tts_pipeline = tts
+        h._is_tts_playing = True
         h._should_defer_interim_response = lambda _t: False  # type: ignore[method-assign]
         h._cancel_inflight_llm_response = types.MethodType(Handler._cancel_inflight_llm_response, h)
 
         with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
-            await Handler._maybe_process_interim(h, "no", 0.9)
+            await Handler._maybe_process_interim(h, "no wait", 0.9)
 
         tts.cancel_current_and_clear_queue.assert_awaited_once()
         assert h._turn_response_started is False

@@ -2,9 +2,10 @@ from fastapi import APIRouter
 
 from app.api.api_v1.endpoints import (
     accept_invite,
+    allowed_domains,
+    api_keys,
     billing,
     gemini,
-    invite,
     model,
     openai,
     plan,
@@ -12,9 +13,15 @@ from app.api.api_v1.endpoints import (
     role,
     tenant,
     user,
+    workspace,
+    workspace_invites,
 )
-from app.routers.agent import router as agent_router
+from app.routers.sso import router as sso_router
+from app.routers.agents import router as agent_router
+from app.routers.call_flows import router as call_flows_router
+from app.routers.folders import router as folders_router
 from app.routers.bidirectional_stream import router as bidirectional_stream_router
+from app.routers.livekit_bridge import router as livekit_bridge_router
 from app.routers.call_logs import router as call_logs_router
 from app.routers.call_sessions import router as call_sessions_router
 from app.routers.clickup_oauth import router as clickup_oauth_router
@@ -22,11 +29,13 @@ from app.routers.crm_config import router as crm_config_router
 from app.routers.job_description import router as job_description_router
 from app.routers.knowledge_base import router as knowledge_base_router
 from app.routers.phone_numbers import router as phone_numbers_router
+from app.routers.telephony import router as telephony_router
 from app.routers.transfer_routes import router as transfer_routes_router
 from app.routers.recruitment_dashboard import router as recruitment_dashboard_router
-from app.routers.resume import router as resume_router
+from app.routers.resumes import router as resume_router
 from app.routers.resume_interviews import router as resume_interviews_router
 from app.routers.scheduled_calls import router as scheduled_calls_router
+from app.routers.sdk import router as sdk_router
 from app.routers.tts_audio import router as tts_audio_router
 from app.routers.tts import router as tts_router
 from app.routers.voice import router as voice_router
@@ -36,13 +45,29 @@ from app.routers.general_websocket import router as general_websocket_router
 from app.routers.calendar import router as calendar_router
 from app.routers.inbound_crm import router as inbound_crm_router
 from app.routers.internal_tts import router as internal_tts_router
+from app.routers.internal_stt import router as internal_stt_router
 from app.routers.business_knowledge import router as business_knowledge_router
+from app.routers.recordings import router as recordings_router
+from app.routers.integrations import router as integrations_router
+from app.routers.hubspot_integration import router as hubspot_integration_router
+from app.routers.call_history import router as call_history_router
+from app.routers.call_history import batch_router as batch_call_metrics_router
+from app.routers.payments import router as payments_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
+api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
+# Invite/allowed-domains sub-routes must be registered BEFORE workspace.router so
+# that their literal paths take priority over /workspace/{workspace_id}.
+api_router.include_router(workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"])
+api_router.include_router(allowed_domains.router, prefix="/workspace", tags=["Workspace — Allowed Domains"])
+api_router.include_router(sso_router, prefix="/workspace/sso", tags=["SSO"])
+api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
 api_router.include_router(agent_router, prefix="/agent", tags=["Voice Agent"])
+api_router.include_router(call_flows_router, prefix="/call-flows", tags=["Call Flows"])
+api_router.include_router(folders_router, prefix="/folders", tags=["Folders"])
 api_router.include_router(voice_router, prefix="/voice", tags=["Voice Calls"])
 api_router.include_router(
     voice_gather_router,
@@ -57,6 +82,7 @@ api_router.include_router(
     include_in_schema=False,
 )
 api_router.include_router(phone_numbers_router, prefix="/phone-numbers", tags=["Phone Numbers"])
+api_router.include_router(telephony_router, prefix="/telephony", tags=["Telephony"])
 api_router.include_router(
     transfer_routes_router,
     prefix="/transfer-routes",
@@ -65,7 +91,6 @@ api_router.include_router(
 api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"])
 api_router.include_router(call_logs_router, prefix="/call-logs", tags=["Call Logs"])
 api_router.include_router(general_websocket_router, prefix="/general", tags=["General WebSocket"])
-api_router.include_router(invite.router, prefix="/invites", tags=["invites"])
 api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 api_router.include_router(plan.router, prefix="/plans", tags=["plans"])
@@ -76,13 +101,21 @@ api_router.include_router(openai.router, prefix="/openai", tags=["openai"], incl
 api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
 api_router.include_router(tts_router, prefix="/tts", tags=["TTS"])
 api_router.include_router(internal_tts_router, prefix="/internal/tts", tags=["Internal TTS"])
+api_router.include_router(internal_stt_router, prefix="/internal/stt", tags=["Internal STT"])
 api_router.include_router(
     bidirectional_stream_router,
     prefix="/stream",
     tags=["Bidirectional Streaming"],
     include_in_schema=False,
 )
+api_router.include_router(
+    livekit_bridge_router,
+    prefix="/livekit",
+    tags=["LiveKit Bridge"],
+    include_in_schema=False,
+)
 api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
+api_router.include_router(sdk_router, prefix="/sdk", tags=["Web SDK — Public"])
 api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Configuration"])
 api_router.include_router(
     clickup_oauth_router,
@@ -125,3 +158,13 @@ api_router.include_router(
     prefix="/recruiting/dashboard",
     tags=["Recruiting Dashboard"],
 )
+api_router.include_router(recordings_router, prefix="/recordings", tags=["Call Recordings"])
+api_router.include_router(integrations_router, prefix="/integrations", tags=["Integrations"])
+api_router.include_router(
+    hubspot_integration_router,
+    prefix="/integrations/hubspot",
+    tags=["HubSpot Integration"],
+)
+api_router.include_router(call_history_router, prefix="/calls", tags=["Call History Analytics"])
+api_router.include_router(batch_call_metrics_router, prefix="/batch-calls", tags=["Batch Call Analytics"])
+api_router.include_router(payments_router, prefix="/payments", tags=["In-Call Payments"])

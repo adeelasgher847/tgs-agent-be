@@ -18,11 +18,10 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
+from app.api.deps import get_db, require_manager, require_readonly
 from app.core.config import settings
 from app.models.job_description import JobDescription
 from app.models.resume import CandidateStatus, ParseStatus, Resume, UploadMode
-from app.models.resume_interview import ResumeInterview
 from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.resume import (
@@ -294,7 +293,7 @@ def _resolved_resume_file_path(storage_path: str) -> Path:
 @router.get("/{resume_id}/download")
 def download_resume(
     resume_id: UUID,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -330,17 +329,13 @@ def download_resume(
 )
 async def upload_resume(
     file: UploadFile = File(...),
-    admin_user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     """
     Upload a single resume file for the current tenant.
     """
-    if not admin_user.current_tenant_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
-    resume = await _store_single_file_and_create_resume(
-        file,
-        admin_user.current_tenant_id,
+        user.current_tenant_id,
         db,
         upload_mode=UploadMode.SINGLE,
     )
@@ -362,7 +357,7 @@ async def upload_resume(
 def update_resume_candidate_status(
     resume_id: UUID,
     body: ResumeCandidateStatusUpdateRequest,
-    admin_user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     """
@@ -372,14 +367,14 @@ def update_resume_candidate_status(
     - partially qualified
     - rejected
     """
-    if not admin_user.current_tenant_id:
+    if not user.current_tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
 
     resume = (
         db.query(Resume)
         .filter(
             Resume.id == resume_id,
-            Resume.tenant_id == admin_user.current_tenant_id,
+            Resume.tenant_id == user.current_tenant_id,
         )
         .first()
     )
@@ -413,24 +408,24 @@ async def upload_multiple_resumes_and_match(
         default=False,
         description="When true, return full detailed scoring payload. Default returns concise match summary.",
     ),
-    admin_user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     """
     Upload multiple resumes, parse each, and score against one job description.
     Returns per-file results without failing the whole batch.
     """
-    if not admin_user.current_tenant_id:
+    if not user.current_tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "At least one file is required")
 
     job = db.query(JobDescription).filter(
         JobDescription.id == job_description_id,
-        JobDescription.tenant_id == admin_user.current_tenant_id,
+        JobDescription.tenant_id == user.current_tenant_id,
     ).first()
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job description not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job description not found")
 
     # Single batch id ties all uploaded files together for traceability.
     batch_id = uuid.uuid4()
@@ -442,10 +437,9 @@ async def upload_multiple_resumes_and_match(
     for f in files:
         original_filename = f.filename or "unknown"
         try:
-            # Upload phase: persist file + create resume record.
             resume = await _store_single_file_and_create_resume(
                 f,
-                admin_user.current_tenant_id,
+                user.current_tenant_id,
                 db,
                 upload_mode=UploadMode.BATCH,
                 batch_id=batch_id,
@@ -571,7 +565,7 @@ async def upload_multiple_resumes_and_match(
 def list_resumes_by_job_description(
     job_description_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     if not user.current_tenant_id:
@@ -656,7 +650,7 @@ def list_resumes_by_job_description(
 def list_resumes_after_screening(
     job_description_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Maximum number of resumes to return"),
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -684,21 +678,6 @@ def list_resumes_after_screening(
         return create_success_response([], "No screened resumes found for this job description")
 
     threshold = float(job.pass_match_threshold if job and job.pass_match_threshold is not None else 0.5)
-    resume_ids = [r.id for r in rows]
-    interview_rows = (
-        db.query(ResumeInterview)
-        .filter(
-            ResumeInterview.tenant_id == user.current_tenant_id,
-            ResumeInterview.resume_id.in_(resume_ids),
-        )
-        .order_by(ResumeInterview.created_at.desc())
-        .all()
-        if resume_ids
-        else []
-    )
-    interviews_by_resume: dict[UUID, list[UUID]] = {}
-    for interview in interview_rows:
-        interviews_by_resume.setdefault(interview.resume_id, []).append(interview.id)
     items: list[ResumeListItem] = []
     for r in rows:
         location, education, years_exp = _extract_candidate_summary(r)
@@ -741,7 +720,6 @@ def list_resumes_after_screening(
                 created_at=r.created_at,
                 batch_id=r.batch_id,
                 job_description_id=r.job_description_id,
-                resume_interviews=interviews_by_resume.get(r.id, []),
             )
         )
 

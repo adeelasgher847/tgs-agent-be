@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone
 import uuid
-from app.api.deps import get_db, require_tenant, get_optional_tenant_user, require_owner
+from app.api.deps import get_db, require_tenant, get_optional_tenant_user, require_owner, require_manager, require_readonly, require_admin
 from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.user import User
 from app.models.agent import Agent
@@ -279,7 +279,7 @@ async def upload_scheduled_calls_csv(
     crm_config_id: str = Query(..., description="CRM configuration ID (UUID)"),
     agent_id: str = Query(..., description="Agent ID to use for all calls in this CSV (required)"),
     phone_number_id: Optional[str] = Query(None, description="Optional phone number ID to use for all calls in CSV"),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db)
 ):
     """
@@ -424,7 +424,7 @@ async def create_single_scheduled_call(
     phone_number: str = Query(..., description="Phone number to call (e.g., +1234567890)"),
     call_time_utc: str = Query(..., description="Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS"),
     phone_number_id: Optional[str] = Query(None, description="Optional phone number ID from DB to use for call"),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db)
 ):
     """
@@ -449,7 +449,7 @@ async def create_single_scheduled_call(
 
     **n8n → `/voice/call/initiate`:** Trello cards created for **appointment follow-up** reminders include
     `Appointment ID: <uuid>` in the card description. Pass that value as `appointment_id` in the initiate
-    JSON body (with `agentId`, `userPhoneNumber`, `tenant_id`, `user_id`, and CRM fields) so the outbound
+    JSON body (with `agentId`, `toNumber`, `tenant_id`, `user_id`, and CRM fields) so the outbound
     call runs the follow-up confirmation flow.
     """
     try:
@@ -525,7 +525,7 @@ async def create_single_scheduled_call(
 @router.post("/from-call-session", response_model=SuccessResponse[SingleCallResponse])
 async def create_scheduled_call_from_call_session(
     body: ScheduleFromCallSessionRequest = Body(...),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     """
@@ -577,7 +577,7 @@ async def create_scheduled_call_from_call_session(
 
 @router.get("/crm-config", response_model=SuccessResponse[CRMConfigListResponse])
 async def get_crm_config(
-    user: User = Depends(require_tenant),  # Member, admin, owner — all tenant users
+    user: User = Depends(require_readonly),  # Member, admin, owner — all tenant users
     db: Session = Depends(get_db)
 ):
     """
@@ -623,7 +623,7 @@ async def get_crm_config(
 @router.get("/board", response_model=SuccessResponse[BoardInfoResponse])
 async def get_board_url(
     crm_config_id: Optional[str] = Query(None, description="CRM config ID. Pass to get that CRM's board URL; omit for first linked board."),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -730,7 +730,7 @@ async def get_board_url(
     summary="Get total pending scheduled calls for current tenant across all CRMs",
 )
 async def get_pending_scheduled_calls_count(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -828,7 +828,7 @@ async def get_pending_scheduled_calls_count(
 @router.delete("/board/items", response_model=SuccessResponse[DeleteBoardItemsResponse])
 async def clear_board_items(
     crm_config_id: Optional[str] = Query(None, description="CRM config ID to clear. If omitted, first linked board is used."),
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     """
@@ -1905,7 +1905,7 @@ async def mark_batch_email_sent_jira(
 @router.post("/select-crm-config", response_model=SuccessResponse[dict])
 async def select_crm_config(
     crm_config_id: str = Query(..., description="CRM configuration ID (UUID)"),
-    user: User = Depends(require_owner),  # Only owner can select
+    user: User = Depends(require_admin),  # Only admin/owner can select
     db: Session = Depends(get_db)
 ):
     """
@@ -1960,7 +1960,7 @@ async def select_crm_config(
 
 @router.get("/selected-crm-config", response_model=SuccessResponse[dict])
 async def get_selected_crm_config(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
     """

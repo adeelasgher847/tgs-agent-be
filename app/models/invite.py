@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -11,10 +11,19 @@ class Invite(Base):
     tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id'), nullable=False)
     invited_by = Column(UUID(as_uuid=True), ForeignKey('user.id'), nullable=False)
     token = Column(String, unique=True, nullable=False, index=True)
-    status = Column(String, default="PENDING", nullable=False)
+    status = Column(String, default="pending", nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     accepted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    role_id = Column(UUID(as_uuid=True), ForeignKey('role.id'), nullable=True)
+
     tenant = relationship("Tenant")
     inviter = relationship("User", foreign_keys=[invited_by])
+    role = relationship("Role")
+
+
+    __table_args__ = (
+        Index("ix_invite_email_tenant_id", "email", "tenant_id"),
+    )

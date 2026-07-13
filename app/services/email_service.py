@@ -8,6 +8,31 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def build_invite_email_content(
+    invite_token: str, inviter_name: str, tenant_name: str
+) -> tuple[str, str]:
+    """Subject + HTML body for workspace invite (log now, SendGrid later)."""
+    subject = f"You're invited to join {tenant_name} on Voice Agent Platform"
+    invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={invite_token}"
+    html_body = f"""
+            <html>
+            <body>
+                <h2>You're Invited to Join {tenant_name}!</h2>
+                <p>Hello,</p>
+                <p>{inviter_name} has invited you to join the <strong>{tenant_name}</strong> team on Voice Agent Platform.</p>
+                <p>Click the link below to accept the invitation and create your account:</p>
+                <p><a href="{invite_link}" style="background-color: #28a745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Accept Invitation</a></p>
+                <p>Or copy and paste this link into your browser:</p>
+                <p>{invite_link}</p>
+                <p><strong>This invitation will expire in 7 days.</strong></p>
+                <p>If you don't want to join this team, you can safely ignore this email.</p>
+                <p>Best regards,<br>The Voice Agent Team</p>
+            </body>
+            </html>
+            """
+    return subject, html_body
+
+
 class EmailService:
     def __init__(self):
         self.sg_client = SendGridAPIClient(settings.SENDGRID_API_KEY) if settings.SENDGRID_API_KEY else None
@@ -58,7 +83,16 @@ class EmailService:
     ) -> bool:
         """
         Send an email using SendGrid API.
+
+        In staging, emails are logged to the console instead of actually
+        sent — avoids real mail going out from a non-production environment.
         """
+        if settings.ENVIRONMENT == "staging":
+            logger.info(
+                "[STAGING EMAIL] to=%s cc=%s subject=%s\n%s",
+                to_email, cc_emails or [], subject, html_body,
+            )
+            return True
         try:
             if not self.sg_client:
                 logger.error("SendGrid client is not configured. Missing SENDGRID_API_KEY.")
@@ -98,27 +132,37 @@ class EmailService:
             bool: True if email sent successfully, False otherwise
         """
         try:
-            subject = f"You're invited to join {tenant_name} on Voice Agent Platform"
-            invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={invite_token}"
+            subject, html_body = build_invite_email_content(
+                invite_token, inviter_name, tenant_name
+            )
+            return self._send_email(to_email=email, subject=subject, html_body=html_body)
+        except Exception as e:
+            logger.error(f"Error sending invite email to {email}: {str(e)}")
+            return False
+
+    def send_data_export_ready_email(
+        self, email: str, download_url: str, workspace_name: str
+    ) -> bool:
+        """Notify the workspace admin that their GDPR data export is ready for download."""
+        try:
+            subject = f"Your data export for {workspace_name} is ready"
             body = f"""
             <html>
             <body>
-                <h2>You're Invited to Join {tenant_name}!</h2>
+                <h2>Your Data Export is Ready</h2>
                 <p>Hello,</p>
-                <p>{inviter_name} has invited you to join the <strong>{tenant_name}</strong> team on Voice Agent Platform.</p>
-                <p>Click the link below to accept the invitation and create your account:</p>
-                <p><a href="{invite_link}" style="background-color: #28a745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Accept Invitation</a></p>
+                <p>The data export you requested for <strong>{workspace_name}</strong> has finished processing.</p>
+                <p><a href="{download_url}" style="background-color: #28a745; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Download Export</a></p>
                 <p>Or copy and paste this link into your browser:</p>
-                <p>{invite_link}</p>
-                <p><strong>This invitation will expire in 7 days.</strong></p>
-                <p>If you don't want to join this team, you can safely ignore this email.</p>
+                <p>{download_url}</p>
+                <p><strong>This link will expire in 24 hours.</strong></p>
                 <p>Best regards,<br>The Voice Agent Team</p>
             </body>
             </html>
             """
             return self._send_email(to_email=email, subject=subject, html_body=body)
         except Exception as e:
-            logger.error(f"Error sending invite email to {email}: {str(e)}")
+            logger.error(f"Error sending data export ready email to {email}: {str(e)}")
             return False
 
     def send_generic_email(

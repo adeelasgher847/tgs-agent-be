@@ -10,7 +10,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.core.logger import logger
 
-from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin
+from app.api.deps import get_db, require_manager, require_readonly
 from app.models.job_description import JobDescription
 from app.models.call_session import CallSession
 from app.models.resume import Resume
@@ -489,7 +489,7 @@ async def _create_scheduled_interview(
 )
 async def schedule_resume_interview(
     body: ResumeInterviewScheduleRequest,
-    user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     interview = await _create_scheduled_interview(db=db, user=user, body=body)
@@ -511,7 +511,7 @@ async def schedule_resume_interviews_bulk(
         default=None,
         description="Optional CRM config ID to force for all bulk items. If omitted, uses selected/linked Trello fallback logic.",
     ),
-    user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     if not user.current_tenant_id:
@@ -689,7 +689,7 @@ async def schedule_resume_interviews_bulk(
 def list_resume_interviews(
     resume_id: UUID,
     limit: int = Query(50, ge=1, le=200),
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     if not user.current_tenant_id:
@@ -719,7 +719,7 @@ def list_resume_interviews_for_calendar(
     start_date: date = Query(..., description="Calendar start date in YYYY-MM-DD"),
     end_date: date = Query(..., description="Calendar end date in YYYY-MM-DD"),
     limit: int = Query(500, ge=1, le=5000),
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     if not user.current_tenant_id:
@@ -767,7 +767,7 @@ def list_resume_interviews_for_calendar(
 def update_resume_interview_status(
     interview_id: UUID,
     body: ResumeInterviewStatusUpdateRequest,
-    user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
     if not user.current_tenant_id:
@@ -822,7 +822,7 @@ def update_resume_interview_status(
 )
 def get_resume_session_link(
     resume_id: UUID,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     if not user.current_tenant_id:
@@ -870,7 +870,7 @@ def get_resume_session_link(
 )
 def get_resume_interview_call_media(
     resume_id: UUID,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -908,7 +908,7 @@ def get_resume_interview_call_media(
 )
 def get_resume_interview_transcript(
     resume_id: UUID,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -940,7 +940,7 @@ def get_resume_interview_transcript(
 )
 def get_resume_interview_recording(
     resume_id: UUID,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -968,7 +968,7 @@ def get_resume_interview_recording(
 )
 def get_resume_interview_call_media_from_trello(
     resume_interview_id: UUID,
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """
@@ -1092,7 +1092,7 @@ def get_resume_interview_call_media_from_trello(
 def list_resume_session_links_by_job(
     job_description_id: UUID,
     limit: int = Query(200, ge=1, le=500),
-    user: User = Depends(require_member_or_admin),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     if not user.current_tenant_id:

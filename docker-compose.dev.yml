@@ -1,0 +1,46 @@
+# Dev-only extras layered on top of docker-compose.yml. Never loaded by
+# default — pgAdmin and friends have no place in the production compose file
+# per the ticket's technical notes.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+
+services:
+  fastapi-v2:
+    # Bind-mount the checkout over the image's baked-in COPY and add
+    # --reload, so code edits take effect without `docker compose build`.
+    volumes:
+      - ./:/app
+    entrypoint: ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    environment:
+      DEBUG: "true"
+    ports:
+      - "8001:8001"
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal

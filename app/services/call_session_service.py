@@ -17,16 +17,74 @@ from app.services.inbound_call_crm_sync_service import (
     schedule_inbound_crm_sync,
     tenant_has_active_inbound_crm,
 )
+from app.utils.arq_pool import get_arq_pool
+
+
+def _fire_callback_enqueue(schedule_id: uuid.UUID, scheduled_at: datetime) -> None:
+    """
+    Schedule an ARQ ``execute_callback`` job on the running event loop.
+
+    Design contract
+    ---------------
+    - Always fire-and-forget: never awaited, never blocks the caller.
+    - Idempotent: ``_job_id=callback:<schedule_id>`` lets ARQ deduplicate
+      concurrent enqueues for the same schedule row.
+    - Resilient: if the ARQ pool is unavailable (Redis down, startup race)
+      or there is no running event loop (rare sync-only caller), a warning is
+      logged and the row stays with ``arq_job_id=NULL``.  The worker's
+      ``on_startup`` hook (``startup_recover_callbacks``) will pick it up on
+      the next restart and submit the job with the original ``_defer_until``
+      time — so no retry is ever permanently lost.
+    """
+    pool = get_arq_pool()
+    if pool is None:
+        logger.warning(
+            "ARQ pool not ready; callback schedule=%s will be recovered at next worker startup",
+            schedule_id,
+        )
+        return
+
+    async def _enqueue() -> None:
+        try:
+            await pool.enqueue_job(
+                "execute_callback",
+                str(schedule_id),
+                _defer_until=scheduled_at,
+                _job_id=f"callback:{schedule_id}",
+            )
+            logger.info(
+                "callback_enqueued schedule_id=%s defer_until=%s",
+                schedule_id,
+                scheduled_at.isoformat(),
+            )
+        except Exception as exc:
+            logger.error(
+                "callback_enqueue failed for schedule=%s (startup recovery will retry): %s",
+                schedule_id,
+                exc,
+            )
+
+    try:
+        asyncio.get_running_loop().create_task(_enqueue())
+    except RuntimeError:
+        # No running event loop — called from a sync-only context.
+        # Startup recovery will handle it.
+        logger.warning(
+            "No event loop available; callback schedule=%s will be recovered at next worker startup",
+            schedule_id,
+        )
 
 
 class CallSessionService:
     """Service class for handling call session operations"""
     
-    def create_call_session(self, db: Session, user_id: uuid.UUID, agent_id: uuid.UUID, 
+    def create_call_session(self, db: Session, user_id: uuid.UUID, agent_id: uuid.UUID,
                            tenant_id: uuid.UUID, twilio_call_sid: str = None,
                            from_number: str = None, to_number: str = None,
                            call_type: str = "inbound", assistant_phone_number: str = None,
-                           customer_phone_number: str = None) -> CallSession:
+                           customer_phone_number: str = None,
+                           session_id: Optional[uuid.UUID] = None,
+                           status: str = "active") -> CallSession:
         """
         Create a new call session and associated call log
         
@@ -47,11 +105,12 @@ class CallSessionService:
         """
         
         call_session = CallSession(
+            id=session_id if session_id is not None else uuid.uuid4(),
             user_id=user_id,
             agent_id=agent_id,
             tenant_id=tenant_id,
             start_time=datetime.utcnow(),
-            status="active",
+            status=status,
             call_type=call_type,
             twilio_call_sid=twilio_call_sid,
             from_number=from_number,
@@ -195,7 +254,7 @@ class CallSessionService:
                 if transferred is not None:
                     call_session.transferred = transferred
                 
-                if status in ["completed", "failed", "busy"]:
+                if status in ["completed", "failed", "busy", "no_answer"]:
                     call_session.end_time = datetime.now(timezone.utc)
                     if call_session.start_time:
                         duration = (call_session.end_time - call_session.start_time).total_seconds()
@@ -203,7 +262,7 @@ class CallSessionService:
                 
                 db.commit()
                 db.refresh(call_session)
-                
+
                 self._update_call_log_for_session(
                     db, call_session, ended_reason, success_evaluation, cost, transferred
                 )
@@ -217,7 +276,45 @@ class CallSessionService:
                         schedule_inbound_crm_sync(call_session.id)
                     except Exception as sync_exc:  # pragma: no cover
                         logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
-            
+
+                # HubSpot post-call write-back: create a Call engagement with the
+                # transcript summary once the call has actually completed. Fire-and-forget
+                # (fail open) — see app/services/hubspot_service.py::schedule_hubspot_writeback.
+                if status == "completed":
+                    try:
+                        from app.services.hubspot_service import (
+                            schedule_hubspot_writeback,
+                            tenant_has_hubspot_connected,
+                        )
+
+                        if tenant_has_hubspot_connected(db, call_session.tenant_id):
+                            schedule_hubspot_writeback(call_session.id)
+                    except Exception as hubspot_exc:  # pragma: no cover
+                        logger.warning(
+                            "HubSpot write-back schedule failed (non-critical): %s", hubspot_exc
+                        )
+
+                # Smart Callback: schedule a retry for missed outbound calls.
+                # maybe_schedule_callback writes the CallbackSchedule row (sync).
+                # _fire_callback_enqueue then submits the ARQ job on the current
+                # event loop so the retry fires exactly at scheduled_at without
+                # any polling.  If the enqueue fails, startup_recover_callbacks
+                # will re-submit it when the ARQ worker next starts.
+                if status in ("no_answer", "busy"):
+                    try:
+                        from app.services.callback_scheduler_service import callback_scheduler_service
+                        cb_schedule = callback_scheduler_service.maybe_schedule_callback(
+                            db, call_session
+                        )
+                        if cb_schedule is not None:
+                            _fire_callback_enqueue(cb_schedule.id, cb_schedule.scheduled_at)
+                    except Exception as cb_exc:
+                        logger.warning(
+                            "Smart callback schedule failed (non-critical) session=%s: %s",
+                            session_id,
+                            cb_exc,
+                        )
+
             return call_session
 
         except Exception as e:

@@ -11,13 +11,19 @@ from app.models.password_reset import PasswordResetToken
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
-from app.api.deps import get_db, get_current_user_jwt, require_member_or_admin, security, issue_tokens_for_user, is_session_already_credited, mark_session_credited
+from app.api.deps import (
+    get_db,
+    get_active_user_by_id,
+    get_current_user_jwt,
+    require_member_or_admin,
+    security,
+    issue_tokens_for_user,
+)
 from app.core.security import verify_password, create_user_token, pwd_context, create_password_reset_token, get_password_hash
 from app.core.security import create_refresh_token_value, refresh_token_expires_at
 from app.core.security import is_token_expired, verify_token
 from app.services.email_service import email_service
 from app.utils.response import create_success_response
-from app.utils.rate_limiter import login_rate_limit
 from datetime import datetime, timezone
 from app.services.role_service import get_user_role_in_tenant
 import secrets
@@ -29,6 +35,7 @@ from typing import Optional
 import re
 from app.core.logger import logger
 from app.services.role_service import get_default_product_id
+from app.utils.rate_limiter import enforce_login_rate_limit
 
 router = APIRouter()
 
@@ -108,8 +115,11 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=SuccessResponse[TokenResponse])
-@login_rate_limit()
-def login(login_data: LoginRequest, db: Session = Depends(get_db)):
+def login(
+    login_data: LoginRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(enforce_login_rate_limit),
+):
     """
     User login endpoint that returns JWT token with role information as object.
     Uses the user's current_tenant_id if set, otherwise uses the first available tenant.
@@ -117,8 +127,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
     """
     # Convert email to lowercase
     login_data.email = login_data.email.lower()
-    # Find user by email
-    user = db.query(User).filter(User.email == login_data.email).first()
+    # Find active (non-deleted) user by email
+    user = db.query(User).filter(
+        User.email == login_data.email,
+        User.deleted_at.is_(None),
+    ).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -168,13 +181,15 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
         
         # Check if user has a role in this tenant
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
-        
-        if role:
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_tenant_id)
+        if disp:
             role_info = RoleInfo(
-                id=role.id,
-                name=role.name,
-                description=role.description
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
             )
+        if role:
             current_role = role.name
         product = get_user_product_in_tenant(db, user.id, current_tenant_id)
         if product:
@@ -213,7 +228,11 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login/google", response_model=SuccessResponse[TokenResponse])
-def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
+def google_login(
+    req: GoogleLoginRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(enforce_login_rate_limit),
+):
     try:
         logger.debug(f'Google token received: {req.google_token}')
         idinfo = google_id_token.verify_oauth2_token(
@@ -243,15 +262,19 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
             detail="Invalid Google token"
         )
 
-    # Prefer matching by provider_user_id for stability
+    # Prefer matching by provider_user_id for stability; exclude soft-deleted accounts
     user = db.query(User).filter(
         User.provider == "google",
-        User.provider_user_id == sub
+        User.provider_user_id == sub,
+        User.deleted_at.is_(None),
     ).first()
 
     # If not found, try link by email (first-time social login)
     if not user:
-        user = db.query(User).filter(User.email == email).first()
+        user = db.query(User).filter(
+            User.email == email,
+            User.deleted_at.is_(None),
+        ).first()
 
     if not user:
         # Create new user
@@ -355,12 +378,15 @@ def google_login(req: GoogleLoginRequest, db: Session = Depends(get_db)):
     current_role = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
-        if role:
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_tenant_id)
+        if disp:
             role_info = RoleInfo(
-                id=role.id,
-                name=role.name,
-                description=role.description
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
             )
+        if role:
             current_role = role.name
 
     # Issue tokens (provider-based; no password needed)
@@ -379,34 +405,77 @@ def _expires_at_utc_aware(expires_at: datetime) -> datetime:
 @router.post("/refresh")
 def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     """
-    Refresh endpoint:
-    1) If access_token is provided and still valid -> return "still valid"
-    2) If access_token expired but refresh_token valid -> issue new access_token
-       (reuse cached one only if unexpired and same role as current DB state)
-    3) If refresh_token invalid/expired -> return 401
+    Refresh endpoint with token rotation and replay detection:
+    1) If access_token is provided and still valid -> return "still valid" (no rotation)
+    2) If refresh_token is revoked or already rotated -> replay attack: revoke all user tokens, 401
+    3) If refresh_token valid -> issue new access_token + rotate refresh_token
+    4) If refresh_token invalid/expired -> 401
     """
 
-    # 1) If access token is still valid
+    # 1) If access token is still valid (and user is not soft-deleted)
     if req.access_token:
         payload = verify_token(req.access_token)
         if payload and not is_token_expired(req.access_token):
+            user_id_str = payload.get("user_id")
+            if user_id_str:
+                try:
+                    user_id = uuid.UUID(user_id_str)
+                except ValueError:
+                    user_id = None
+                if user_id and not get_active_user_by_id(db, user_id):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="User not found or account has been deactivated",
+                    )
             return {
                 "status_code": 200,
                 "message": "Access token still valid"
             }
 
-    # 2) Validate refresh token
     now_utc = datetime.now(timezone.utc)
+
+    # 2) Look up the token regardless of revocation state so we can detect replays
     rt = db.query(RefreshToken).filter(RefreshToken.token == req.refresh_token).first()
-    if not rt or rt.revoked or _expires_at_utc_aware(rt.expires_at) <= now_utc:
+
+    if not rt:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token"
+            detail="Invalid or expired session"
         )
 
-    user = db.query(User).filter(User.id == rt.user_id).first()
+    # Replay detection: token was already used (rotated) or explicitly revoked
+    if rt.revoked or rt.replaced_by_token is not None:
+        logger.warning(
+            f"Replay attack detected: refresh token already consumed for user_id={rt.user_id}. "
+            "Revoking all active tokens."
+        )
+        try:
+            db.query(RefreshToken).filter(
+                RefreshToken.user_id == rt.user_id,
+                RefreshToken.revoked == False,
+            ).update({"revoked": True}, synchronize_session=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session"
+        )
+
+    # Legitimately expired (not a replay — token was never used)
+    if _expires_at_utc_aware(rt.expires_at) <= now_utc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session"
+        )
+
+    # 3) Valid token — load user and tenant context
+    user = get_active_user_by_id(db, rt.user_id)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account has been deactivated",
+        )
 
     tenant_ids = [t.id for t in user.tenants]
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
@@ -415,50 +484,53 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_role: Optional[str] = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_tenant_id)
+        if disp:
+            role_info = RoleInfo(
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
+            )
         if role:
-            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
             current_role = role.name
 
-    def _cache_matches_context(cached_payload: dict) -> bool:
-        if cached_payload.get("role") != current_role:
-            return False
-        cur_tid = str(current_tenant_id) if current_tenant_id else None
-        cached_tid = cached_payload.get("tenant_id")
-        return cached_tid == cur_tid
+    # Issue fresh access token
+    new_access_token = create_user_token(
+        user_id=user.id,
+        email=user.email,
+        tenant_id=current_tenant_id,
+        role=current_role,
+    )
 
-    # 3) Reuse cached access JWT only if still valid and claims match current DB (role + tenant)
-    new_access_token: str
-    cached = rt.replaced_access_token
-    if cached and not is_token_expired(cached):
-        cached_payload = verify_token(cached)
-        if cached_payload and _cache_matches_context(cached_payload):
-            new_access_token = cached
-        else:
-            new_access_token = create_user_token(
-                user_id=user.id,
-                email=user.email,
-                tenant_id=current_tenant_id,
-                role=current_role,
-            )
-            rt.replaced_access_token = new_access_token
-            db.add(rt)
-    else:
-        new_access_token = create_user_token(
-            user_id=user.id,
-            email=user.email,
-            tenant_id=current_tenant_id,
-            role=current_role,
+    # Rotate: revoke old token and create replacement
+    new_rt_value = create_refresh_token_value()
+    rt.revoked = True
+    rt.replaced_by_token = new_rt_value
+
+    new_rt = RefreshToken(
+        user_id=user.id,
+        token=new_rt_value,
+        expires_at=refresh_token_expires_at(),
+        revoked=False,
+    )
+    db.add(new_rt)
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to rotate session token"
         )
-        rt.replaced_access_token = new_access_token
-        db.add(rt)
-
-    db.commit()
 
     return {
         "status_code": 200,
         "message": "Access token refreshed",
         "data": {
             "access_token": new_access_token,
+            "refresh_token": new_rt_value,
             "token_type": "bearer",
             "user_id": user.id,
             "email": user.email,
@@ -582,9 +654,12 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     """
     Send password reset email to user
     """
-    # Find user by email
-    user = db.query(User).filter(User.email == request.email).first()
-    
+    # Find active user by email (soft-deleted accounts cannot reset password)
+    user = db.query(User).filter(
+        User.email == request.email,
+        User.deleted_at.is_(None),
+    ).first()
+
     # Check if user exists
     if not user:
         raise HTTPException(
@@ -667,13 +742,12 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
             }
         )
     
-    # Get user
-    user = db.query(User).filter(User.id == reset_token.user_id).first()
+    user = get_active_user_by_id(db, reset_token.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
-                "message": "User not found.",
+                "message": "User not found or account has been deactivated.",
                 "error_type": "user_not_found"
             }
         )
@@ -711,13 +785,11 @@ def get_user_profile(
     Get complete user profile information including role and tenant details.
     Requires JWT Bearer token authentication.
     """
-    # Fetch user with all related data
-    user = db.query(User).filter(User.id == current_user.id).first()
-    
+    user = get_active_user_by_id(db, current_user.id)
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account has been deactivated",
         )
     
     # Stripe credits are now processed via webhook; no crediting logic here.
@@ -725,10 +797,15 @@ def get_user_profile(
     # Get role information for the current tenant
     role_info = None
     if user.current_tenant_id:
-        from app.services.role_service import get_user_role_in_tenant
         role = get_user_role_in_tenant(db, user.id, user.current_tenant_id)
-        if role:
-            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, user.current_tenant_id)
+        if disp:
+            role_info = RoleInfo(
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
+            )
 
     # Create user profile response
     user_profile = UserProfile(
@@ -796,10 +873,15 @@ def update_user_profile(
     # Get role information for the current tenant
     role_info = None
     if current_user.current_tenant_id:
-        from app.services.role_service import get_user_role_in_tenant
         role = get_user_role_in_tenant(db, current_user.id, current_user.current_tenant_id)
-        if role:
-            role_info = RoleInfo(id=role.id, name=role.name, description=role.description)
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, current_user.id, current_user.current_tenant_id)
+        if disp:
+            role_info = RoleInfo(
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
+            )
 
     # Create updated user profile response
     user_profile = UserProfile(
@@ -851,11 +933,13 @@ def get_tenant_members(
         # Get role information for this user in the current tenant
         role = get_user_role_in_tenant(db, user.id, current_user.current_tenant_id)
         role_info = None
-        if role:
+        from app.services.role_service import get_display_role_details
+        disp = get_display_role_details(db, user.id, current_user.current_tenant_id)
+        if disp:
             role_info = RoleInfo(
-                id=role.id,
-                name=role.name,
-                description=role.description
+                id=role.id if role else uuid.UUID(int=0),
+                name=disp["name"],
+                description=disp["description"]
             )
         
         member = TenantMember(

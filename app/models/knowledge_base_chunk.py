@@ -1,33 +1,41 @@
 from __future__ import annotations
 
 import uuid
-from sqlalchemy import Column, String, Integer, DateTime, ForeignKey
+from sqlalchemy import Column, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+from pgvector.sqlalchemy import Vector
 
 from app.db.base_class import Base
 
 
-class KnowledgeBaseChunk(Base):
-    """
-    Inventories Pinecone vector IDs for each document chunk.
-
-    This enables:
-    - safe deletion of stale vectors on re-ingest
-    - stable chunk references for auditing/debugging
-    """
+class KbChunk(Base):
+    """A single text chunk from a knowledge base, with its pgvector embedding."""
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    document_id = Column(UUID(as_uuid=True), ForeignKey("knowledgebasedocument.id"), nullable=False, index=True)
-
-    chunk_index = Column(Integer, nullable=False, index=True)
-    vector_id = Column(String(300), nullable=False, unique=True, index=True)
-
-    # Optional: keep a short preview to make debugging easier.
-    text_preview = Column(String(700), nullable=True)
+    kb_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledgebase.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    file_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("kbfile.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    content = Column(Text, nullable=False)
+    embedding = Column(Vector(1536), nullable=True)
+    # Column named "metadata" in DB; "metadata" is reserved by SQLAlchemy's Declarative API.
+    chunk_metadata = Column("metadata", JSON, nullable=False, default=dict)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    document = relationship("KnowledgeBaseDocument", back_populates="chunks")
+    knowledge_base = relationship("KnowledgeBase", back_populates="chunks")
+    kb_file = relationship("KbFile", back_populates="chunks")
 
+
+# Legacy alias
+KnowledgeBaseChunk = KbChunk

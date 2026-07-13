@@ -1,19 +1,38 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import func
+from sqlalchemy import func, select
 from typing import List, Optional, Dict, Any
 from app.models.agent import Agent
+from app.models.phone_number import PhoneNumber
 from app.models.transfer_route import TransferRoute
 from app.models.model import Model
-from app.models.knowledge_base_document import KnowledgeBaseDocument
+from app.models.knowledge_base_document import KnowledgeBase, KnowledgeBaseDocument
 from app.models.business_knowledge import BusinessKnowledge
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
-from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
+from app.models.stt_provider import STTProvider
+from app.models.stt_model import STTModel
+from app.schemas.agent import (
+    AgentCreate,
+    AgentUpdate,
+    AgentListResponse,
+    AgentStatusEnum,
+    TtsModelSchema,
+    TtsProviderEnum,
+    SttModelSchema,
+    SttProviderEnum,
+    _DEFAULT_STT_PROVIDER,
+    _DEFAULT_STT_MODEL_ID,
+    _DEFAULT_STT_LANGUAGE_CODE,
+    agent_to_out,
+    normalize_tts_provider_slug,
+)
 from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
 from app.services.rag_service import rag_service
 from app.core.config import settings
+from app.core.db_encryption import encrypt_elevenlabs_key
+from app.repositories.agent_repository import AgentRepository
 from fastapi import HTTPException, status
 import uuid
 import re
@@ -24,57 +43,228 @@ class AgentService:
     Agent service with business logic for agent operations
     """
 
-    def _validate_tts_selection(
-        self,
-        db: Session,
-        *,
-        tts_provider_id: Optional[uuid.UUID],
-        tts_voice_id: Optional[uuid.UUID],
-    ) -> Dict[str, Any]:
-        """
-        Validate optional TTS provider/voice selection.
-        Returns normalized ids where provider can be inferred from voice.
-        """
-        normalized = {
-            "tts_provider_id": tts_provider_id,
-            "tts_voice_id": tts_voice_id,
-        }
+    def _repo(self, db: Session) -> AgentRepository:
+        return AgentRepository(db)
 
-        if not tts_provider_id and not tts_voice_id:
-            return normalized
+    def list_active_llm_model_names(self, db: Session) -> list[str]:
+        rows = (
+            db.query(Model.model_name)
+            .filter(Model.archive == False)  # noqa: E712
+            .order_by(Model.model_name)
+            .all()
+        )
+        return [r[0] for r in rows]
 
-        provider = None
-        if tts_provider_id:
-            provider = db.query(TTSProvider).filter(TTSProvider.id == tts_provider_id).first()
-            if not provider or not provider.is_active:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid tts_provider_id. Provider not found or inactive.",
-                )
-
-        if tts_voice_id:
-            voice = db.query(TTSVoice).filter(TTSVoice.id == tts_voice_id).first()
-            if not voice or not voice.is_active:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid tts_voice_id. Voice not found or inactive.",
-                )
-
-            if provider and voice.provider_id != provider.id:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Selected TTS voice does not belong to the selected provider.",
-                )
-
-            normalized["tts_provider_id"] = provider.id if provider else voice.provider_id
-            normalized["tts_voice_id"] = voice.id
-        elif provider:
+    def _resolve_llm_model(self, db: Session, llm_model: str) -> Model:
+        name = llm_model.strip()
+        model = (
+            db.query(Model)
+            .filter(Model.model_name == name, Model.archive == False)  # noqa: E712
+            .first()
+        )
+        if not model:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="tts_voice_id is required when selecting a tts_provider_id.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"'{name}' is not a supported LLM model.",
+            )
+        return model
+
+    def _resolve_tts_model(self, db: Session, tts: TtsModelSchema) -> dict[str, Any]:
+        slug = normalize_tts_provider_slug(tts.provider.value)
+        # BYO key is not a separate voice provider in our catalog; it only
+        # changes runtime behavior (inject ElevenLabs API key).
+        provider_lookup_slug = (
+            "elevenlabs" if slug == TtsProviderEnum.elevenlabs_byo.value else slug
+        )
+        provider = (
+            db.query(TTSProvider)
+            .filter(
+                TTSProvider.slug == provider_lookup_slug,
+                TTSProvider.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid ttsModel.provider '{tts.provider.value}'. Provider not found or inactive.",
             )
 
-        return normalized
+        voice = (
+            db.query(TTSVoice)
+            .filter(
+                TTSVoice.provider_id == provider.id,
+                TTSVoice.external_voice_id == tts.voice_id,
+                TTSVoice.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not voice:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid ttsModel.voiceId '{tts.voice_id}' for provider '{tts.provider.value}'."
+                ),
+            )
+
+        lang = tts.language.value
+        if voice.language_code and voice.language_code.lower() != lang.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"ttsModel.language '{lang}' does not match voice language "
+                    f"'{voice.language_code}'."
+                ),
+            )
+
+        return {
+            "tts_provider_slug": slug,
+            "tts_voice_external_id": tts.voice_id,
+            "tts_language": lang,
+            "tts_provider_id": provider.id,
+            "tts_voice_id": voice.id,
+        }
+
+    def _resolve_stt_model(
+        self,
+        db: Session,
+        stt: Optional[SttModelSchema],
+    ) -> Dict[str, Any]:
+        """Validate and resolve STT provider + model to DB FK ids + slug triad.
+
+        Falls back to deepgram/nova-3/en when stt is None (backward compat).
+        modelId is the user-facing ID (e.g. 'nova-3', 'chirp-3'), never 'phone_call'.
+        """
+        if stt is None:
+            slug = _DEFAULT_STT_PROVIDER
+            model_id_str = _DEFAULT_STT_MODEL_ID
+            lang = _DEFAULT_STT_LANGUAGE_CODE
+        else:
+            slug = stt.provider.value
+            model_id_str = stt.model_id
+            lang = stt.language_code
+
+        provider = (
+            db.query(STTProvider)
+            .filter(
+                STTProvider.slug == slug,
+                STTProvider.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not provider:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid sttModel.provider '{slug}'. Provider not found or inactive.",
+            )
+
+        model = (
+            db.query(STTModel)
+            .filter(
+                STTModel.provider_id == provider.id,
+                STTModel.external_model_id == model_id_str,
+                STTModel.is_active == True,  # noqa: E712
+            )
+            .first()
+        )
+        if not model:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Invalid sttModel.modelId '{model_id_str}' "
+                    f"for provider '{slug}'. Not found or inactive."
+                ),
+            )
+
+        return {
+            "stt_provider_slug": slug,
+            "stt_model_external_id": model_id_str,
+            "stt_language_code": lang,
+            "stt_provider_id": provider.id,
+            "stt_model_id": model.id,
+        }
+
+    def _encrypt_byo_key(self, raw_key: str, db: Session) -> str:
+        try:
+            return encrypt_elevenlabs_key(raw_key, db)
+        except ValueError as exc:
+            logger.error("ElevenLabs BYO key encryption failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not securely store the provided ElevenLabs key",
+            )
+
+    def _ticket_payload_from_create(self, db: Session, agent_in: AgentCreate) -> Dict[str, Any]:
+        model = self._resolve_llm_model(db, agent_in.llm_model)
+        tts_fields = self._resolve_tts_model(db, agent_in.tts_model)
+        stt_fields = self._resolve_stt_model(db, agent_in.stt_model)
+        encrypted_key: Optional[str] = None
+        if agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo:
+            encrypted_key = self._encrypt_byo_key(agent_in.eleven_labs_api_key or "", db)
+        stt_settings: Optional[Dict[str, Any]] = None
+        if agent_in.stt_settings is not None:
+            stt_settings = agent_in.stt_settings.model_dump(by_alias=False, exclude_none=True)
+        return {
+            "llm_model": model.model_name,
+            "model_id": model.id,
+            "provider_id": model.provider_id,
+            "status": agent_in.status.value,
+            "encrypted_elevenlabs_api_key": encrypted_key,
+            "stt_settings_json": stt_settings,
+            **tts_fields,
+            **stt_fields,
+        }
+
+    def _apply_ticket_update(
+        self,
+        db: Session,
+        agent_in: AgentUpdate,
+        agent: Agent,
+        update_dict: Dict[str, Any],
+    ) -> None:
+        if agent_in.llm_model is not None:
+            model = self._resolve_llm_model(db, agent_in.llm_model)
+            update_dict["llm_model"] = model.model_name
+            update_dict["model_id"] = model.id
+            update_dict["provider_id"] = model.provider_id
+        if agent_in.status is not None:
+            update_dict["status"] = agent_in.status.value
+        if agent_in.tts_model is not None:
+            update_dict.update(self._resolve_tts_model(db, agent_in.tts_model))
+            if agent_in.tts_model.provider != TtsProviderEnum.elevenlabs_byo:
+                update_dict["encrypted_elevenlabs_api_key"] = None
+        if agent_in.stt_model is not None:
+            update_dict.update(self._resolve_stt_model(db, agent_in.stt_model))
+        if agent_in.stt_settings is not None:
+            update_dict["stt_settings_json"] = agent_in.stt_settings.model_dump(
+                by_alias=False, exclude_none=True
+            )
+        if agent_in.eleven_labs_api_key is not None:
+            update_dict["encrypted_elevenlabs_api_key"] = self._encrypt_byo_key(
+                agent_in.eleven_labs_api_key, db
+            )
+        if agent_in.tts_model is not None:
+            new_is_byo = agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo
+            if (
+                new_is_byo
+                and not agent_in.eleven_labs_api_key
+                and not agent.encrypted_elevenlabs_api_key
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="elevenLabsApiKey is required when ttsModel.provider is 'elevenlabs_byo'",
+                )
+
+    def has_active_phone_binding(self, db: Session, agent_id: uuid.UUID) -> bool:
+        stmt = (
+            select(PhoneNumber.id)
+            .where(
+                PhoneNumber.assistant_id == agent_id,
+                PhoneNumber.status == "active",
+            )
+            .limit(1)
+        )
+        return db.execute(stmt).first() is not None
 
     def _validate_tts_settings_payload(self, tts_settings_json: Optional[Dict[str, Any]]) -> None:
         if not tts_settings_json:
@@ -97,6 +287,55 @@ class AgentService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="TTS provider credentials must not be passed in request payload.",
             )
+
+        # Validate speed / volume — accept flat or nested ("settings": {...}).
+        # Ranges match agent_runtime clamps so the API rejects out-of-bounds
+        # input rather than silently coercing it during call setup.
+        nested = tts_settings_json.get("settings") if isinstance(tts_settings_json, dict) else None
+        combined: Dict[str, Any] = {}
+        if isinstance(nested, dict):
+            combined.update(nested)
+        combined.update({k: v for k, v in tts_settings_json.items() if k != "settings"})
+
+        if "speed" in combined:
+            try:
+                speed = float(combined["speed"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"ttsSettingsJson.speed must be a number between "
+                        f"{settings.TTS_SPEED_MIN} and {settings.TTS_SPEED_MAX}."
+                    ),
+                )
+            if speed < settings.TTS_SPEED_MIN or speed > settings.TTS_SPEED_MAX:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"ttsSettingsJson.speed must be between "
+                        f"{settings.TTS_SPEED_MIN} and {settings.TTS_SPEED_MAX}."
+                    ),
+                )
+
+        if "volume" in combined:
+            try:
+                voice_volume = float(combined["volume"])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"ttsSettingsJson.volume must be a number between "
+                        f"{settings.TTS_VOLUME_MIN} and {settings.TTS_VOLUME_MAX}."
+                    ),
+                )
+            if voice_volume < settings.TTS_VOLUME_MIN or voice_volume > settings.TTS_VOLUME_MAX:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"ttsSettingsJson.volume must be between "
+                        f"{settings.TTS_VOLUME_MIN} and {settings.TTS_VOLUME_MAX}."
+                    ),
+                )
 
         if "background_enabled" in tts_settings_json:
             raw_enabled = tts_settings_json.get("background_enabled")
@@ -221,75 +460,46 @@ class AgentService:
 
     def ensure_agent_prompt_ingested(self, db: Session, agent: Agent) -> None:
         """
-        Lazy safety net for existing agents: if auto KB doc is missing, ingest now.
-        Best-effort and non-blocking for call/runtime flows.
+        Migrated to pgvector schema: auto-ingest via the new pipeline.
+        Calls _auto_ingest_agent_system_prompt which uses rag_service.ingest_document.
         """
         if not agent:
             return
-
-        source_ref = f"agent-system-prompt:{agent.id}"
-        exists = (
-            db.query(KnowledgeBaseDocument.id)
-            .filter(
-                KnowledgeBaseDocument.tenant_id == agent.tenant_id,
-                KnowledgeBaseDocument.agent_id == agent.id,
-                KnowledgeBaseDocument.source_type == "agent_system_prompt_auto",
-                KnowledgeBaseDocument.source_ref == source_ref,
-                KnowledgeBaseDocument.is_active == True,  # noqa: E712
-            )
-            .first()
-        )
-        if exists:
-            return
-
-        logger.info(
-            "Auto KB document missing for agent_id=%s; triggering lazy ingest",
-            agent.id,
-        )
         self._auto_ingest_agent_system_prompt(db, agent)
 
-    def create_agent(self, db: Session, agent_in: AgentCreate, tenant_id: uuid.UUID, user_id: uuid.UUID) -> Agent:
+    def create_agent(
+        self,
+        db: Session,
+        agent_in: AgentCreate,
+        tenant_id: uuid.UUID,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> Agent:
         """
-        Create a new agent with tenant context and audit trail
+        Create a new agent with tenant context and audit trail.
+        Supports JWT users and API-key M2M (``user_id`` may be None).
         """
-        # Validate model_id if provided
-        if agent_in.model_id:
-            model = db.query(Model).filter(
-                Model.id == agent_in.model_id,
-                Model.archive == False  # Only allow active models
-            ).first()
-            if not model:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid model_id. Model not found or is archived."
-                )
+        repo = self._repo(db)
 
         # 🚨 CHECK AGENT LIMIT (MAX 5 AGENTS PER TENANT)
-        agent_count = db.query(func.count(Agent.id)).filter(
-            Agent.tenant_id == tenant_id,
-            Agent.is_deleted == False
-        ).scalar()
-        
-        if agent_count >= 5:
+        if repo.count_active_by_workspace(tenant_id) >= 5:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Agent limit reached. You can only create up to 5 agents per tenant."
             )
 
-        # Check for duplicate name within tenant
-        existing = db.query(Agent).filter(
-            Agent.tenant_id == tenant_id,
-            func.lower(Agent.name) == agent_in.name.strip().lower(),
-            Agent.is_deleted == False
-        ).first()
-        if existing:
+        if repo.find_by_name_in_workspace(tenant_id, agent_in.name):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Agent name must be unique within the tenant."
             )
 
-        # Sanitize string fields
-        agent_data = agent_in.model_dump()
+        ticket_data = self._ticket_payload_from_create(db, agent_in)
+
+        # Sanitize string fields (exclude ticket-only nested objects)
+        agent_data = agent_in.model_dump(
+            exclude={"tts_model", "stt_model", "stt_settings", "eleven_labs_api_key", "llm_model", "status"}
+        )
+        agent_data.update(ticket_data)
         for field in ['name', 'system_prompt', 'fallback_response', 'greeting_message']:
             if field in agent_data and agent_data[field]:
                 agent_data[field] = agent_data[field].strip()
@@ -316,28 +526,10 @@ class AgentService:
         agent_data['created_by'] = user_id
         agent_data['updated_by'] = user_id  # On creation, updated_by = created_by
 
-        normalized_tts = self._validate_tts_selection(
-            db,
-            tts_provider_id=agent_data.get("tts_provider_id"),
-            tts_voice_id=agent_data.get("tts_voice_id"),
-        )
-        agent_data["tts_provider_id"] = normalized_tts.get("tts_provider_id")
-        agent_data["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
         self._validate_transfer_route_for_tenant(db, tenant_id, agent_data.get("transfer_route_id"))
 
-        # Enforce one dedicated inbound agent per tenant.
-        if agent_data.get("is_inbound_agent"):
-            existing_inbound_agent = db.query(Agent).filter(
-                Agent.tenant_id == tenant_id,
-                Agent.is_deleted == False,
-                Agent.is_inbound_agent == True,
-            ).first()
-            if existing_inbound_agent:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Only one dedicated inbound agent is allowed per tenant.",
-                )
+
 
         # Enforce one follow-up appointment agent per tenant.
         if agent_data.get("is_follow_up_agent"):
@@ -352,51 +544,37 @@ class AgentService:
                     detail="Only one follow-up appointment agent is allowed per tenant.",
                 )
         
-        db_agent = Agent(**agent_data)
-        db.add(db_agent)
         try:
-            db.commit()
+            db_agent = repo.create(agent_data)
         except IntegrityError:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
-        db.refresh(db_agent)
         self._auto_ingest_agent_system_prompt(db, db_agent)
-        
+
         return db_agent
     
     def get_agent_by_id(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> Agent:
         """
         Get agent by ID with strict tenant isolation.
-        Returns 403 if agent exists but belongs to different tenant.
-        Returns 404 if agent doesn't exist at all.
+        Returns 404 if agent doesn't exist or belongs to a different workspace.
         """
-        # First, check if agent exists (regardless of tenant)
-        agent = (
-            db.query(Agent)
-            .options(joinedload(Agent.transfer_route))
-            .filter(
-                Agent.id == agent_id,
-                Agent.is_deleted == False,
-            )
-            .first()
-        )
-        
+        agent = self._repo(db).find_by_id(agent_id, load_transfer_route=True)
+
         if not agent:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Agent not found"
             )
         
-        # If agent exists but belongs to different tenant, return 403
         if agent.tenant_id != tenant_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied. You can only access agents within your current tenant."
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent not found",
             )
-        
+
         return agent
     
     def list_agents(
@@ -404,46 +582,22 @@ class AgentService:
         db: Session, 
         tenant_id: uuid.UUID,
         page: int = 1,
-        limit: int = 10,
+        limit: int = 20,
         search: Optional[str] = None
     ) -> AgentListResponse:
         """
         List agents with pagination, search, and tenant isolation
         """
-        # Calculate offset
-        offset = (page - 1) * limit
-        logger.debug(f"List agents for tenant: {tenant_id}")
-        # Base query with tenant isolation
-        query = db.query(Agent).filter(
-            Agent.tenant_id == tenant_id,
-            Agent.is_deleted == False
+        logger.debug("List agents for tenant: %s", tenant_id)
+        agents, total = self._repo(db).find_by_workspace(
+            tenant_id, page=page, limit=limit, search=search
         )
-        logger.debug(f"Query: {query}")
 
-        # Apply search filter - handle empty strings and whitespace
-        if search and search.strip():
-            search_term = search.strip().lower()
-            query = query.filter(func.lower(Agent.name).like(f"%{search_term}%"))
-        
-        # Get total count
-        total = query.count()
-        
-        # Get paginated results
-        agents = query.offset(offset).limit(limit).all()
-        
-        # Calculate pagination info
-        total_pages = (total + limit - 1) // limit
-        has_next = page * limit < total
-        has_prev = page > 1
-        
         return AgentListResponse(
-            data=[AgentOut.model_validate(agent) for agent in agents],
+            data=[agent_to_out(agent) for agent in agents],
             total=total,
             page=page,
-            limit=limit,
-            total_pages=total_pages,
-            has_next=has_next,
-            has_prev=has_prev
+            page_size=limit,
         )
     
     def update_agent(
@@ -452,40 +606,20 @@ class AgentService:
         agent_id: uuid.UUID, 
         agent_update: AgentUpdate, 
         tenant_id: uuid.UUID,
-        user_id: uuid.UUID
+        user_id: Optional[uuid.UUID] = None,
     ) -> Agent:
         """
         Update agent with tenant isolation and audit trail
         """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
-        
-        update_dict = agent_update.model_dump(exclude_unset=True)
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)
 
-        # Validate model_id if being updated
-        if "model_id" in update_dict and update_dict["model_id"] is not None:
-            model = db.query(Model).filter(
-                Model.id == update_dict["model_id"],
-                Model.archive == False  # Only allow active models
-            ).first()
-            if not model:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid model_id. Model not found or is archived."
-                )
+        update_dict = agent_update.model_dump(
+            exclude_unset=True,
+            exclude={"tts_model", "stt_model", "stt_settings", "eleven_labs_api_key", "llm_model", "status"},
+        )
+        self._apply_ticket_update(db, agent_update, agent, update_dict)
 
-        # Enforce one dedicated inbound agent per tenant.
-        if update_dict.get("is_inbound_agent") is True:
-            existing_inbound_agent = db.query(Agent).filter(
-                Agent.tenant_id == tenant_id,
-                Agent.is_deleted == False,
-                Agent.is_inbound_agent == True,
-                Agent.id != agent_id,
-            ).first()
-            if existing_inbound_agent:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Only one dedicated inbound agent is allowed per tenant.",
-                )
+
 
         # Enforce one follow-up appointment agent per tenant.
         if update_dict.get("is_follow_up_agent") is True:
@@ -501,13 +635,6 @@ class AgentService:
                     detail="Only one follow-up appointment agent is allowed per tenant.",
                 )
 
-        normalized_tts = self._validate_tts_selection(
-            db,
-            tts_provider_id=update_dict.get("tts_provider_id", agent.tts_provider_id),
-            tts_voice_id=update_dict.get("tts_voice_id", agent.tts_voice_id),
-        )
-        update_dict["tts_provider_id"] = normalized_tts.get("tts_provider_id")
-        update_dict["tts_voice_id"] = normalized_tts.get("tts_voice_id")
         self._validate_tts_settings_payload(update_dict.get("tts_settings_json"))
 
         if "transfer_route_id" in update_dict:
@@ -553,21 +680,17 @@ class AgentService:
                     detail="Agent max tokens must be greater than 0."
                 )
 
-        for field, value in update_dict.items():
-            setattr(agent, field, value)
-        
-        # Update the updated_by field
-        agent.updated_by = user_id
-        
+        if user_id is not None:
+            update_dict["updated_by"] = user_id
+
         try:
-            db.commit()
+            agent = self._repo(db).update(agent, update_dict)
         except IntegrityError:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Agent role constraint violated (inbound or follow-up uniqueness per tenant).",
             )
-        db.refresh(agent)
         self._auto_ingest_agent_system_prompt(db, agent)
         return agent
 
@@ -592,9 +715,8 @@ class AgentService:
             Agent.id != inbound_agent_id,
         ).all()
 
-        kb_documents = db.query(KnowledgeBaseDocument).filter(
-            KnowledgeBaseDocument.tenant_id == tenant_id,
-            KnowledgeBaseDocument.is_active == True,  # noqa: E712
+        kb_documents = db.query(KnowledgeBase).filter(
+            KnowledgeBase.workspace_id == tenant_id,
         ).all()
 
         return {
@@ -612,10 +734,10 @@ class AgentService:
             "knowledge_documents": [
                 {
                     "document_id": str(doc.id),
-                    "title": doc.title,
-                    "source_type": doc.source_type,
-                    "source_ref": doc.source_ref,
-                    "agent_id": str(doc.agent_id) if doc.agent_id else None,
+                    "title": doc.name,
+                    "source_type": "knowledge_base",
+                    "source_ref": str(doc.id),
+                    "agent_id": None,
                 }
                 for doc in kb_documents
             ],
@@ -683,17 +805,27 @@ No active tenant knowledge base documents were found.
             )
         return "\n".join(lines)
     
-    def delete_agent(self, db: Session, agent_id: uuid.UUID, tenant_id: uuid.UUID) -> bool:
-        """
-        Soft delete agent with tenant isolation
-        """
-        agent = self.get_agent_by_id(db, agent_id, tenant_id)  # This will handle 403/404 logic
-        
-        # Soft delete
-        agent.is_deleted = True
-        
-        db.commit()
-        return True
+    def delete_agent(
+        self,
+        db: Session,
+        agent_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """Soft delete; raises 409 when an active phone number is still bound."""
+        agent = self.get_agent_by_id(db, agent_id, tenant_id)
+
+        if self.has_active_phone_binding(db, agent.id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Agent has an active phone number bound to it. "
+                    "Unassign the phone number before deleting."
+                ),
+            )
+
+        self._repo(db).soft_delete(agent, updated_by=user_id)
     
     def get_agents_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> List[Agent]:
         """

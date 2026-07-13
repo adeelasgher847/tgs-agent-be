@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Table, ForeignKey, DateTime, Boolean, JSON
+from sqlalchemy import Column, String, Table, ForeignKey, DateTime, Boolean, JSON, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -18,12 +18,17 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
+    # Not globally unique=True: GDPR erasure anonymizes deleted users' emails to
+    # the same fixed placeholder, so uniqueness is only enforced among active
+    # (non soft-deleted) rows via uq_user_email_active below.
+    email = Column(String, nullable=False)
     phone = Column(String, nullable=True)  # Optional field
     hashed_password = Column(String, nullable=False)
     join_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    current_tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id'), nullable=True)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    current_tenant_id = Column(UUID(as_uuid=True), ForeignKey('tenant.id', ondelete='SET NULL'), nullable=True)
         # OAuth provider fields (for Google, etc.)
     provider = Column(String, nullable=True, index=True)
     provider_user_id = Column(String, nullable=True, index=True)
@@ -47,3 +52,14 @@ class User(Base):
     scheduled_calls = relationship("ScheduledCall", back_populates="user", uselist=True)
     # CRM plan subscriptions (one per crm_type: monday, clickup, jira, trello)
     subscriptions = relationship("Subscription", back_populates="user", uselist=True)
+
+    __table_args__ = (
+        Index("ix_user_email", "email"),
+        Index(
+            "uq_user_email_active",
+            "email",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )

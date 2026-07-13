@@ -1,0 +1,75 @@
+name: Publish on-premise image
+
+# Builds the fastapi-v2/worker image (multi-stage -> distroless, multi-arch)
+# and pushes it to Artifact Registry tagged with the triggering semver tag.
+#
+# Requires these to be configured in the repo/environment before this can
+# run (not provisioned by this workflow — see docs/on-premise/README.md):
+#   vars.GCP_AR_REGISTRY                 e.g. us-docker.pkg.dev/<project>/<repo>
+#   secrets.GCP_WORKLOAD_IDENTITY_PROVIDER
+#   secrets.GCP_SERVICE_ACCOUNT
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build + push multi-arch image
+    runs-on: ubuntu-latest
+    environment: docker-publish
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for linux/arm64 cross-build)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Configure Docker for Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_AR_REGISTRY }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Derive semver tag
+        id: version
+        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push app image (fastapi-v2 / worker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ vars.GCP_AR_REGISTRY }}/tgs-agent-be:${{ steps.version.outputs.tag }}
+            ${{ vars.GCP_AR_REGISTRY }}/tgs-agent-be:latest
+
+      - name: Build and push nginx-proxy image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./nginx
+          file: ./nginx/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ vars.GCP_AR_REGISTRY }}/tgs-agent-be-nginx:${{ steps.version.outputs.tag }}
+            ${{ vars.GCP_AR_REGISTRY }}/tgs-agent-be-nginx:latest

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, Boolean
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, Boolean, Index
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -31,7 +31,11 @@ class CallSession(Base):
     # Call content
     call_transcript = Column(JSONB, nullable=True)  # Store as JSON array of messages
     response_times = Column(JSONB, nullable=True)  # Store response times for each interaction
-    recording_url = Column(String(500), nullable=True)  # URL to the call recording
+    recording_url = Column(String(500), nullable=True)  # Legacy Twilio recording URL (kept for compat)
+
+    # GCS recording (Sprint 4 — replaces Twilio recording for LiveKit calls)
+    recording_gcs_path = Column(String(500), nullable=True)  # e.g. recordings/{workspaceId}/{callId}/{date}.opus
+    recording_error = Column(Boolean, nullable=False, server_default="false")
     
     # Phone numbers and external IDs
     twilio_call_sid = Column(String(255), nullable=True, index=True)
@@ -43,11 +47,28 @@ class CallSession(Base):
     # Additional metadata
     call_metadata = Column(JSONB, nullable=True)  # Store additional call metadata
     transferred = Column(Boolean, nullable=False, server_default="false")  # Whether call was transferred
+
+    # Finalized, HIPAA-redacted end-of-call summary — powers cross-session caller memory
+    transcript_summary = Column(Text, nullable=True)
     
+    # Optional link to the call flow that triggered this session
+    call_flow_id = Column(UUID(as_uuid=True), ForeignKey("callflow.id"), nullable=True, index=True)
+
+    # A/B prompt testing: variant assigned at dispatch time ('a' or 'b'), locked for call duration
+    ab_variant = Column(String(1), nullable=True)
+
+    # Smart Callback: points to the original missed call in a retry chain
+    parent_call_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("callsession.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    
+
     # Relationships
     user = relationship("User", back_populates="call_sessions")
     agent = relationship("Agent", back_populates="call_sessions")
@@ -55,6 +76,20 @@ class CallSession(Base):
     call_logs = relationship("CallLog", back_populates="call_session", cascade="all, delete-orphan")
     transcript_messages = relationship("TranscriptMessage", back_populates="call_session", cascade="all, delete-orphan")
     slot_reservations = relationship("SlotReservation", back_populates="call_session", cascade="all, delete-orphan")
-    
+    call_flow = relationship("CallFlow", back_populates="call_sessions")
+    # Self-referential: retry calls point back to the original missed call
+    parent_call = relationship("CallSession", remote_side="CallSession.id", foreign_keys=[parent_call_id])
+    callback_schedules = relationship("CallbackSchedule", back_populates="original_call", foreign_keys="CallbackSchedule.original_call_id")
+
+    __table_args__ = (
+        Index(
+            "ix_callsession_memory_lookup",
+            "tenant_id",
+            "call_flow_id",
+            "from_number",
+            "start_time",
+        ),
+    )
+
     def __repr__(self):
         return f"<CallSession(id={self.id}, status={self.status})>"

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Query, Depends, status, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Query, Depends, status, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
@@ -42,12 +42,12 @@ from app.routers.general_websocket import (
 )
 from app.services.model_service import ModelService
 from app.services.transcript_service import transcript_service
-from app.services.gemini_service import gemini_service
 from app.services.credit_service import credit_service
+from app.services.batch_call_completion_service import notify_batch_call_ended
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.services.phone_number_service import phone_number_service
-from app.services.voice_twilio_utils import (
+from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
     twilio_caller_id_for_transfer_dial,
 )
@@ -62,6 +62,7 @@ from app.services.voice_conversation_service import (
 )
 from app.services.voice_language_service import get_agent_voice
 from app.services.voice_analysis_service import voice_analysis_service
+from app.middleware.request_id_middleware import get_request_id
 from app.services.voice_call_service import initiate_call as initiate_call_service
 from app.services.voice_analytics_service import voice_analytics_service
 
@@ -71,6 +72,7 @@ router = APIRouter()
 model_service = ModelService()
 
 @router.post("/call/initiate", response_model=SuccessResponse[CallInitiateResponse])
+@router.post("/call/initiate/send", response_model=SuccessResponse[CallInitiateResponse])
 async def initiate_call(
     call_request: CallInitiateRequest,
     http_request: Request,
@@ -78,10 +80,61 @@ async def initiate_call(
     db: Session = Depends(get_db)
 ):
     """
-    Endpoint to initiate a voice call using Twilio.
-    Thin wrapper around `voice_call_service.initiate_call`.
+    Initiate an outbound voice call.
+    /call/initiate/send is an alias for backward compatibility and direct dispatch.
+
+    Auth is resolved here before delegating to the service:
+    - JWT user present → standard user-initiated call.
+    - No JWT but valid N8N webhook secret → system/webhook call with
+      tenant_id resolved from the request body.
     """
-    return await initiate_call_service(call_request, http_request, user, db)
+    from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
+
+    rid = get_request_id(http_request)
+
+    if user is not None:
+        return await initiate_call_service(
+            call_request=call_request,
+            db=db,
+            is_system_call=False,
+            tenant_id=user.current_tenant_id,
+            user_id=user.id,
+            request_id=rid,
+        )
+
+    # No JWT user — try webhook secret path
+    is_webhook = await verify_n8n_webhook_secret_async(http_request)
+    if not is_webhook:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: JWT token or n8n webhook secret",
+        )
+
+    if not call_request.tenant_id:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tenant_id is required in request body when using webhook secret",
+        )
+    try:
+        tenant_uuid = uuid.UUID(call_request.tenant_id)
+        user_uuid = uuid.UUID(call_request.user_id) if call_request.user_id else None
+    except ValueError:
+        from fastapi import HTTPException as _HTTPException
+        raise _HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid UUID format for tenant_id or user_id",
+        )
+
+    return await initiate_call_service(
+        call_request=call_request,
+        db=db,
+        is_system_call=True,
+        tenant_id=tenant_uuid,
+        user_id=user_uuid,
+        request_id=rid,
+    )
 
 
 @router.post("/incoming", response_class=HTMLResponse, include_in_schema=False)
@@ -162,17 +215,25 @@ async def handle_incoming_call(
                     detail="Invalid Twilio signature",
                 )
 
-        inbound_agent = agent_service.get_inbound_agent_by_tenant(
-            db=db, tenant_id=phone_number.tenant_id
-        )
+        # Resolve target agent: Check if a specific assistant/agent is linked directly to this PhoneNumber
+        inbound_agent = None
+        if phone_number.assistant_id:
+            inbound_agent = (
+                db.query(Agent)
+                .filter(
+                    Agent.id == phone_number.assistant_id,
+                    Agent.is_deleted == False,
+                )
+                .first()
+            )
+
         if not inbound_agent:
             logger.warning(
-                "No inbound agent configured for tenant %s (number=%s)",
-                phone_number.tenant_id,
+                "Inbound call rejected: No active agent linked to number %s",
                 to_number,
             )
             return _fallback_twiml(
-                "Sorry, inbound service is temporarily unavailable for this tenant."
+                "Sorry, this number is not configured to receive calls."
             )
 
         # Billing guardrail: enforce the same credit gating used in outbound flows.
@@ -226,10 +287,27 @@ async def handle_incoming_call(
         return _fallback_twiml("Sorry, we are unable to connect your call right now.")
 
 
+# Twilio CallStatus → internal lifecycle status (GAP 4).
+# "busy" maps to "no_answer" per ticket spec (both mean the callee was unreachable).
+# "in-progress" and "answered" are skipped for outbound (handled by first media packet
+# in bidirectional_stream.py); they map to "connected" for inbound/other flows.
+_TWILIO_TO_INTERNAL_STATUS: dict[str, str] = {
+    "initiated": "initiated",
+    "ringing": "ringing",
+    "in-progress": "connected",
+    "answered": "connected",
+    "completed": "completed",
+    "failed": "failed",
+    "no-answer": "no_answer",
+    "busy": "no_answer",
+}
+
+
 @router.post("/call-events", response_class=HTMLResponse, include_in_schema=False)
-@router.post("/webhook/call-events", response_class=HTMLResponse,include_in_schema=False)
+@router.post("/webhook/call-events", response_class=HTMLResponse, include_in_schema=False)
 async def handle_call_events_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     agentId: Optional[str] = Query(None),
     userId: Optional[str] = Query(None),
     callSessionId: Optional[str] = Query(None),
@@ -240,13 +318,22 @@ async def handle_call_events_webhook(
     logger.info("🔥🔥🔥 WEBHOOK CALLED! 🔥🔥🔥")
     logger.info("=== Call Events Webhook Started ===")
     logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
-    logger.info(f"Request method: {request.method}")
-    logger.info(f"Request URL: {request.url}")
-    logger.info(f"Request headers: {dict(request.headers)}")
-    logger.info(f"Query params: agentId={agentId}, userId={userId}, callSessionId={callSessionId}")
-    logger.info(f"Request body length: {len(body) if body else 0}")
-    logger.debug(f"Request body preview: {body[:200] if body else 'None'}...")
-    logger.debug(f"Database session: {db}")
+    from app.core.pii_redactor import prepare_request_log_context
+
+    logger.info(
+        "Call events webhook started %s",
+        prepare_request_log_context(
+            request.method,
+            request.url.path,
+            request.headers,
+            query_params={
+                "agentId": agentId or "",
+                "userId": userId or "",
+                "callSessionId": callSessionId or "",
+            },
+            body_length=len(body) if body else 0,
+        ),
+    )
     
     # Optional WebSocket broadcast (non-blocking - fire and forget)
     try:
@@ -379,6 +466,7 @@ async def handle_call_events_webhook(
         # Update call session status if we have a call session and status
         # ⚠️ SKIP automatic update for "answered" and "in-progress" - handled in specific handlers below
         # "in-progress" will ONLY be set when media streaming actually starts (first media packet in bidirectional_stream.py)
+        internal_status = _TWILIO_TO_INTERNAL_STATUS.get(call_status, call_status)
         if (
             call_session
             and call_status
@@ -387,8 +475,11 @@ async def handle_call_events_webhook(
                 or direction == "inbound"
             )
         ):
-            logger.info(f"🔄 Updating call session {call_session.id} status to: {call_status}")
-            call_session.status = call_status
+            logger.info(
+                "🔄 Updating call session %s status: %s → %s",
+                call_session.id, call_status, internal_status,
+            )
+            call_session.status = internal_status
         elif call_session and call_status in ["answered", "in-progress"]:
             logger.debug(f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - will be set when media streaming starts")
         
@@ -436,7 +527,19 @@ async def handle_call_events_webhook(
                 maybe_update_resume_status_on_call_completed(db, call_session.id)
             except Exception as mq_exc:
                 logger.warning("Resume screening qualify on completed webhook: %s", mq_exc, exc_info=True)
-            
+
+            try:
+                await notify_batch_call_ended(db, call_session.id, call_status)
+            except Exception as batch_exc:
+                logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
+
+            # Schedule GCS recording upload (non-blocking; skipped if recording_enabled=false)
+            try:
+                from app.services.call_recording_upload_service import schedule_recording_upload
+                schedule_recording_upload(call_session.id)
+            except Exception as _ru_exc:
+                logger.warning("Recording upload schedule failed: %s", _ru_exc)
+
             logger.info(f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up")
             
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
@@ -504,7 +607,7 @@ async def handle_call_events_webhook(
         if call_status == "initiated" and direction == "outbound-api":
             # Call has been initiated - just log and return empty response
             logger.info(f"Call initiated - SID: {call_sid}")
-            
+
             # Broadcast call initiated event (non-blocking - fire and forget)
             if call_session:
                 try:
@@ -521,7 +624,25 @@ async def handle_call_events_webhook(
                     logger.debug(f"✅ Broadcasted call initiated event for session {call_session.id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to broadcast call initiated event: {e}")
-            
+
+                # Fire call.started webhook
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.started",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.started webhook fire failed: %s", _wh_exc)
+
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "ringing" and direction == "outbound-api":
@@ -575,16 +696,53 @@ async def handle_call_events_webhook(
         elif call_status == "completed":
             # Call completed
             logger.info(f"📞 CALL COMPLETED - SID: {call_sid}")
-            
-            # Broadcast call completed event (this is already handled above in the status update section)
-            # The broadcast_call_ended is already called in the status update section above
-            
+
+            # Fire call.completed webhook
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.completed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "duration": call_session.duration,
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.completed webhook fire failed: %s", _wh_exc)
+
             return HTMLResponse("", media_type="application/xml")
         
         elif call_status == "failed":
             # Call failed - handle error
             logger.error(f"Call failed - SID: {call_sid}")
-            
+
+            # Fire call.failed webhook
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.failed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "reason": "failed",
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.failed webhook fire failed: %s", _wh_exc)
+
             # Broadcast call failed event (non-blocking - fire and forget)
             if call_session:
                 try:
@@ -620,91 +778,73 @@ async def handle_call_events_webhook(
                     logger.debug(f"✅ Stopped credit monitoring for failed call session {call_session.id}")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+
+                try:
+                    await notify_batch_call_ended(db, call_session.id, call_status)
+                except Exception as batch_exc:
+                    logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
             
             return HTMLResponse("", media_type="application/xml")
         
-        elif call_status == "busy":
-            # Call busy - handle busy signal
-            logger.info(f"Call busy - SID: {call_sid}")
-            
-            # Broadcast call busy event (non-blocking - fire and forget)
+        elif call_status in ("busy", "no-answer"):
+            # Both busy and no-answer → internal "no_answer" (per ticket spec)
+            logger.info(f"Call {call_status} (internal: no_answer) - SID: {call_sid}")
+
+            # Fire call.failed webhook for no_answer/busy
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.failed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "reason": "no_answer",
+                            "twilio_status": call_status,
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.failed (no_answer) webhook fire failed: %s", _wh_exc)
+
             if call_session:
                 try:
                     asyncio.create_task(broadcast_call_status_update(
                         call_session_id=str(call_session.id),
-                        status="busy",
+                        status="no_answer",
                         metadata={
                             "call_sid": call_sid,
+                            "twilio_status": call_status,
                             "direction": direction,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    logger.debug(f"✅ Queued call busy event for session {call_session.id}")
-                    
-                    # Also broadcast call ended event for busy calls (non-blocking - fire and forget)
                     asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
-                        reason="busy",
+                        reason="no_answer",
                         duration=0,
                         metadata={
                             "call_sid": call_sid,
+                            "twilio_status": call_status,
                             "direction": direction,
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                     ))
-                    logger.debug(f"✅ Queued call ended (busy) event for session {call_session.id}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call busy event: {e}")
-                
-                # Stop credit monitoring when call is busy
+                    logger.error(f"❌ Failed to broadcast no_answer event: {e}")
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
-                    logger.debug(f"✅ Stopped credit monitoring for busy call session {call_session.id}")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-            
-            return HTMLResponse("", media_type="application/xml")
-        
-        elif call_status == "no-answer":
-            # Call no-answer - handle no answer
-            logger.info(f"Call no-answer - SID: {call_sid}")
-            
-            # Broadcast call no-answer event (non-blocking - fire and forget)
-            if call_session:
+
                 try:
-                    asyncio.create_task(broadcast_call_status_update(
-                        call_session_id=str(call_session.id),
-                        status="no-answer",
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call no-answer event for session {call_session.id}")
-                    
-                    # Also broadcast call ended event for no-answer calls (non-blocking - fire and forget)
-                    asyncio.create_task(broadcast_call_ended(
-                        call_session_id=str(call_session.id),
-                        reason="no-answer",
-                        duration=0,
-                        metadata={
-                            "call_sid": call_sid,
-                            "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                    ))
-                    logger.debug(f"✅ Queued call ended (no-answer) event for session {call_session.id}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call no-answer event: {e}")
-                
-                # Stop credit monitoring when call has no-answer
-                try:
-                    credit_service.stop_credit_monitoring(call_session.id)
-                    logger.debug(f"✅ Stopped credit monitoring for no-answer call session {call_session.id}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
-            
+                    await notify_batch_call_ended(db, call_session.id, call_status)
+                except Exception as batch_exc:
+                    logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
             return HTMLResponse("", media_type="application/xml")
         
         else:

@@ -12,7 +12,10 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'a3a08e39e50b'
-down_revision: Union[str, Sequence[str], None] = None
+# Was None (declared root) — the real root is f2ab218de84d_onprem_baseline_full_schema,
+# which creates the foundational tables (user, tenant, agent, phonenumber, ...) that
+# this project's schema was originally bootstrapped with outside of Alembic.
+down_revision: Union[str, Sequence[str], None] = 'f2ab218de84d'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

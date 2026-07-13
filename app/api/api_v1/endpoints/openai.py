@@ -11,7 +11,7 @@ from app.services.openai_service import openai_service
 from app.services.model_service import model_service
 from app.core.security import decrypt_api_key
 from app.core.config import settings
-from openai import OpenAI
+from app.core.openai_client import get_openai_client
 import uuid
 from app.core.logger import logger
 
@@ -245,7 +245,7 @@ async def get_available_openai_models(
             )
         
         # Create OpenAI client
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        client = get_openai_client()
         
         # Get available models
         models = client.models.list()
@@ -340,7 +340,7 @@ async def validate_model_name(
             )
         
         # Create OpenAI client
-        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        client = get_openai_client()
         
         # Try to make a minimal API call with this model
         try:

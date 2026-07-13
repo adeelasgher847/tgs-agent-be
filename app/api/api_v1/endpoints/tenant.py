@@ -6,7 +6,7 @@ from app.schemas.base import SuccessResponse
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
-from app.api.deps import get_db, get_current_user_jwt, require_admin, require_member_or_admin, require_admin_or_owner, is_session_already_credited, mark_session_credited
+from app.api.deps import get_db, get_current_user_jwt, require_admin, require_member_or_admin, require_admin_or_owner
 from app.core.security import create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.utils.response import create_success_response
 import re
@@ -178,15 +178,18 @@ def switch_tenant(
     # Get role information for the switched tenant
     role_info = None
     current_role = None
-    from app.services.role_service import get_user_role_in_tenant
+    from app.services.role_service import get_user_role_in_tenant, get_display_role_details
     role = get_user_role_in_tenant(db, current_user.id, switch_data.tenant_id)
-    if role:
+    disp = get_display_role_details(db, current_user.id, switch_data.tenant_id)
+    if disp:
         role_info = RoleInfo(
-            id=role.id,
-            name=role.name,
-            description=role.description
+            id=role.id if role else uuid.UUID(int=0),
+            name=disp["name"],
+            description=disp["description"]
         )
+    if role:
         current_role = role.name
+
     
     # Create new token with updated tenant and role
     access_token = create_user_token(
@@ -226,7 +229,7 @@ def switch_tenant(
 def start_credit_checkout_session(
     amount: float,  # Amount in dollars
     current_user: User = Depends(get_current_user_jwt),
-    admin_user: User = Depends(require_admin_or_owner),
+    admin_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """

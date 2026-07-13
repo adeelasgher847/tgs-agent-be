@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Tuple
 
 from sqlalchemy.orm import Session
 
@@ -53,21 +53,4 @@ def get_twilio_credentials_for_call(db: Session, call_session: CallSession) -> T
         phone_number_obj.phone_number,
     )
     return account_sid, auth_token
-
-
-def twilio_caller_id_for_transfer_dial(call_session: CallSession) -> Optional[str]:
-    """
-    Caller ID for outbound <Dial> / REST calls must be a Twilio or verified number — never the customer's E.164.
-
-    - Inbound: assistant_phone_number or to_number (the Twilio number that was dialed).
-    - Outbound: assistant_phone_number or from_number (the Twilio line used to place the call).
-    """
-    if call_session.assistant_phone_number:
-        return call_session.assistant_phone_number.strip()
-    ctype = (call_session.call_type or "").lower()
-    if ctype == "outbound" and call_session.from_number:
-        return call_session.from_number.strip()
-    if ctype == "inbound" and call_session.to_number:
-        return call_session.to_number.strip()
-    return None
 

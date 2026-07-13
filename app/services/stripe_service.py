@@ -330,4 +330,61 @@ class StripeService:
 
         logger.info(f"Added {plan.credits} credits to tenant {tenant.id}")
 
-    # Note: Idempotency is now handled at the endpoint level using in-memory store in deps
+    # -------------------------------------------------------------------------
+    # In-call payment helpers (Sprint — Stripe PaymentIntent + Webhook)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def create_payment_intent(
+        amount_cents: int,
+        currency: str,
+        description: str,
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        """
+        Create a Stripe PaymentIntent for in-call payment collection.
+
+        Uses the global stripe.api_key (sk_test_* in staging, sk_live_* post Sprint 6).
+        automatic_payment_methods=True lets Stripe handle 3DS automatically.
+
+        Returns the raw stripe.PaymentIntent object.
+        """
+        try:
+            intent = stripe.PaymentIntent.create(
+                amount=amount_cents,
+                currency=currency.lower(),
+                description=description or None,
+                automatic_payment_methods={"enabled": True},
+                metadata=metadata or {},
+            )
+            return intent
+        except stripe.StripeError as e:
+            raise Exception(f"Failed to create PaymentIntent: {str(e)}")
+
+    @staticmethod
+    def construct_payment_webhook_event(
+        payload: bytes,
+        sig_header: str,
+        webhook_secret: str,
+    ) -> Dict[str, Any]:
+        """
+        Construct and verify a Stripe webhook event for in-call payments.
+
+        Uses the caller-supplied *webhook_secret* (STRIPE_INCALL_WEBHOOK_SECRET)
+        rather than the billing STRIPE_WEBHOOK_SECRET, allowing the two webhook
+        endpoints to be registered with independent secrets in Stripe Dashboard.
+
+        Raises:
+            ValueError: payload is not valid JSON.
+            stripe.SignatureVerificationError: signature does not match.
+        """
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+            return event
+        except ValueError as e:
+            raise ValueError(f"Invalid webhook payload: {str(e)}")
+        except stripe.SignatureVerificationError as e:
+            raise stripe.SignatureVerificationError(
+                f"Invalid webhook signature: {str(e)}", sig_header
+            )
+

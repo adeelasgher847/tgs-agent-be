@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
-from app.services.gemini_service import gemini_service
 from app.services.openai_service import openai_service
 from app.services.groq_service import groq_service
 from app.utils.eleven_tts_text import (
@@ -311,8 +310,15 @@ class ConversationOrchestrator:
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
-            tts_provider = getattr(self._h.agent, "tts_provider", None) if self._h.agent else None
-            tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
+            from app.core.agent_runtime import resolve_tts_runtime
+
+            tts_provider_slug = (
+                resolve_tts_runtime(
+                    self._h.agent, db=getattr(self._h, "db", None)
+                ).adapter_slug
+                if self._h.agent
+                else ""
+            )
             elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
             if elevenlabs_audio_tags_enabled:
                 output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
@@ -361,8 +367,25 @@ Previous conversation:
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
 
+            # Batch calls may inject a per-row substituted prompt via call_metadata
+            batch_prompt_override = None
+            ab_prompt_override = None
+            if self._h.call_session and self._h.call_session.call_metadata:
+                batch_prompt_override = self._h.call_session.call_metadata.get(
+                    "batch_prompt_override"
+                )
+                # A/B prompt testing: variant + resolved prompt text are locked onto
+                # call_metadata at dispatch time (see ab_testing_service) and never
+                # re-resolved mid-call.
+                ab_prompt_override = self._h.call_session.call_metadata.get(
+                    "ab_prompt_text"
+                )
+
             # Use agent's custom system prompt if available, otherwise use base prompt
             if self._h.agent and self._h.agent.system_prompt:
+                effective_custom_prompt = (
+                    batch_prompt_override or ab_prompt_override or self._h.agent.system_prompt
+                )
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -376,7 +399,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 {_bk_block}
 
 # CUSTOM INSTRUCTIONS
-{self._h.agent.system_prompt}
+{effective_custom_prompt}
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
@@ -399,6 +422,11 @@ Previous conversation:
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
             elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
+                effective_model_prompt = (
+                    batch_prompt_override
+                    or ab_prompt_override
+                    or self._h.agent.model.system_prompt
+                )
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -412,7 +440,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 {_bk_block}
 
 # MODEL INSTRUCTIONS
-{self._h.agent.model.system_prompt}
+{effective_model_prompt}
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
@@ -443,54 +471,142 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if call_policy_block:
                 system_prompt = call_policy_block + "\n" + system_prompt
 
-            # Get agent's configured model and provider
-            llm_service = None
-            model_name = "gemini-1.5-flash"  # Default fallback
-            api_key = None
-            temperature = 0.15
-            max_tokens = 100
+            # KB context injection: runs when flow.knowledge_base_ids is non-empty.
+            # Injected AFTER the system prompt and BEFORE conversation history.
+            kb_context_block = ""
+            flow = getattr(self._h, "call_flow", None)
+            flow_kb_ids = (flow.knowledge_base_ids or []) if flow else []
+            if flow_kb_ids and self._h.db:
+                try:
+                    from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+                    from app.utils.redis_client import get_redis
 
-            if self._h.agent and self._h.agent.model:
-                model_name = self._h.agent.model.model_name
+                    kb_context_block, kb_latency_ms = await asyncio.wait_for(
+                        retrieve_kb_context_for_turn(
+                            transcript=user_text,
+                            kb_ids=flow_kb_ids,
+                            redis_client=get_redis(),
+                        ),
+                        timeout=0.45,  # stay within 500ms budget; fail open if exceeded
+                    )
+                    logger.info(
+                        "kb_retrieval latency_ms=%.1f kb_count=%d call_sid=%s",
+                        kb_latency_ms,
+                        len(flow_kb_ids),
+                        getattr(self._h, "call_sid", ""),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "kb_retrieval timed out after 450ms; proceeding without KB context"
+                    )
+                except Exception as exc:
+                    logger.error("kb_retrieval failed; proceeding without context: %s", exc)
 
-                # Decrypt API key if available
-                if self._h.agent.model.api_key:
-                    try:
-                        from app.core.security import decrypt_api_key
-
-                        api_key = decrypt_api_key(self._h.agent.model.api_key)
-                    except Exception as e:
-                        logger.error(f"Failed to decrypt agent API key: {e}")
-                        api_key = None
+            # Inject KB context block between system prompt and conversation history.
+            if kb_context_block:
+                anchor = "# CONVERSATION STATE"
+                if anchor in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        anchor, kb_context_block + "\n\n" + anchor, 1
+                    )
                 else:
-                    api_key = None
+                    system_prompt = system_prompt + "\n\n" + kb_context_block
 
-                # Use agent-specific config if available
-                if self._h.agent.agent_temperature is not None:
-                    temperature = self._h.agent.agent_temperature / 100.0
-                elif self._h.agent.model.temperature is not None:
-                    temperature = self._h.agent.model.temperature / 100.0
+            # HubSpot CRM context injection: fetched once at call start (Redis-cached
+            # contact lookup) and cached on call_session.call_metadata, so every later
+            # turn (the prompt is rebuilt each turn) is a cheap in-memory dict read.
+            # Fails open on timeout/error — never blocks the call.
+            crm_context_block = ""
+            if self._h.call_session and self._h.db:
+                try:
+                    from app.services.hubspot_service import get_crm_context_block_for_call
 
-                if self._h.agent.agent_max_tokens:
-                    max_tokens = self._h.agent.agent_max_tokens
-                elif self._h.agent.model.max_tokens:
-                    max_tokens = self._h.agent.model.max_tokens
+                    crm_context_block = await asyncio.wait_for(
+                        get_crm_context_block_for_call(self._h.db, self._h.call_session),
+                        timeout=0.6,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "HubSpot CRM context lookup timed out; proceeding without CRM context"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "HubSpot CRM context lookup failed; proceeding without context: %s", exc
+                    )
 
-                # Select service based on provider
-                if self._h.agent.provider:
-                    provider_name = self._h.agent.provider.name.lower()
-                    if "openai" in provider_name:
-                        llm_service = openai_service
-                    elif "gemini" in provider_name or "google" in provider_name:
-                        llm_service = gemini_service
-                    elif "groq" in provider_name:
-                        llm_service = groq_service
-                    else:
-                        llm_service = gemini_service
+            if crm_context_block:
+                anchor = "# CONVERSATION STATE"
+                if anchor in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        anchor, crm_context_block + "\n\n" + anchor, 1
+                    )
                 else:
-                    llm_service = gemini_service
-            else:
-                llm_service = gemini_service
+                    system_prompt = system_prompt + "\n\n" + crm_context_block
+
+            # Cross-session caller memory: fetched once at call start (DB lookup,
+            # 100ms timeout budget, fail-open) and cached on call_session.call_metadata
+            # so every later turn is a cheap in-memory dict read. Injected right after
+            # the KB/CRM context blocks and before conversation history.
+            caller_memory_block = ""
+            if self._h.call_session and self._h.db and flow and flow.caller_memory_enabled:
+                try:
+                    from app.services.caller_memory_service import (
+                        get_caller_memory_context_block_for_call,
+                    )
+
+                    caller_memory_block = await get_caller_memory_context_block_for_call(
+                        self._h.db, self._h.call_session, flow
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "caller_memory lookup failed; proceeding without context: %s", exc
+                    )
+
+            if caller_memory_block:
+                anchor = "# CONVERSATION STATE"
+                if anchor in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        anchor, caller_memory_block + "\n\n" + anchor, 1
+                    )
+                else:
+                    system_prompt = system_prompt + "\n\n" + caller_memory_block
+
+            # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
+            # in the prompt with tenant-configured HubSpot contact field values.
+            # Resolved once per call (Redis/DB-cached) and fails open on timeout/error.
+            if self._h.call_session and self._h.db:
+                try:
+                    from app.services.hubspot_service import (
+                        apply_field_mapping_values,
+                        get_field_mapping_values_for_call,
+                    )
+
+                    field_mapping_values = await asyncio.wait_for(
+                        get_field_mapping_values_for_call(self._h.db, self._h.call_session),
+                        timeout=0.6,
+                    )
+                    if field_mapping_values:
+                        system_prompt = apply_field_mapping_values(
+                            system_prompt, field_mapping_values
+                        )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "HubSpot field mapping lookup timed out; proceeding without substitution"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "HubSpot field mapping lookup failed; proceeding without substitution: %s",
+                        exc,
+                    )
+
+            from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
+
+            llm_runtime = resolve_llm_runtime(self._h.agent)
+            model_name = llm_runtime.model_name
+            api_key = llm_runtime.api_key
+            temperature = llm_runtime.temperature
+            max_tokens = llm_runtime.max_tokens
+            llm_service = llm_service_for_provider(llm_runtime.provider_slug)
 
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0

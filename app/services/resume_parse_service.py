@@ -12,7 +12,7 @@ from app.schemas.resume import ParseMode, ParsedResume
 from app.services.openai_service import openai_service
 from app.services.resume_extraction_service import ExtractionError, extract_text_from_file
 from app.services.resume_merge_service import merge_parsed
-from app.services.resume_rules_parser import parse_rules
+from app.utils.resume_rules_parser import parse_rules
 
 log = logging.getLogger(__name__)
 

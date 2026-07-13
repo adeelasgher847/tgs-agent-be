@@ -1,0 +1,26 @@
+
+services:
+  web:
+    build: .
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: always
+
+  worker:
+    build: .
+    entrypoint: ["python3", "-m", "arq", "app.workers.batch_call_worker.WorkerSettings"]
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: always

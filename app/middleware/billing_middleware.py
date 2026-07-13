@@ -41,7 +41,7 @@ class BillingMiddleware:
             return
         
         # Check if this is an agent-related endpoint
-        if "/api/v1/agents/" in request.url.path:
+        if "/api/v1/agent" in request.url.path:
             await self._handle_agent_usage(request, scope, receive, send)
         else:
             await self.app(scope, receive, send)

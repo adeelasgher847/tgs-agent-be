@@ -1,0 +1,29 @@
+# Secrets — never bake these into an image layer.
+.env
+.env.*
+
+.git
+.github
+.gitignore
+.claude
+.pytest_cache
+.mypy_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.pyc
+
+venv
+.venv
+node_modules
+
+docs
+!docs/api/openapi.yaml
+tests
+README.md
+call_session_websocket_test.html
+agents
+
+# Separate build contexts — not needed inside the app image.
+nginx
+livekit

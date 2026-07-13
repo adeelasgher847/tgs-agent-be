@@ -1,19 +1,21 @@
-from sqlalchemy import Column, Integer, DateTime, ForeignKey
+from sqlalchemy import Column, DateTime, Numeric, Index, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
 from app.db.base_class import Base
 
+
 class UsageRecord(Base):
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    subscription_id = Column(UUID(as_uuid=True), ForeignKey('subscription.id'), nullable=False)
-    month = Column(Integer, nullable=False)  # 1-12
-    year = Column(Integer, nullable=False)
-    calls_used = Column(Integer, default=0, nullable=False)
-    agents_created = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
-    
-    # Relationships
-    subscription = relationship("Subscription", back_populates="usage_records")
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False)
+    call_id = Column(UUID(as_uuid=True), ForeignKey("callsession.id", ondelete="SET NULL"), nullable=True)
+    billable_minutes = Column(Numeric(10, 2), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    tenant = relationship("Tenant", back_populates="usage_record")
+
+    __table_args__ = (
+        Index("idx_usagerecord_workspace_recorded_at", "workspace_id", "recorded_at"),
+    )

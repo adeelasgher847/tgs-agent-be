@@ -5,7 +5,7 @@ Tenant inbound call log → CRM (Trello). Owner configures; all members benefit.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin_or_owner, require_owner, require_tenant
+from app.api.deps import get_db, require_admin, require_config, require_readonly
 from app.core.logger import logger
 from app.core.security import encrypt_api_key
 from app.models.tenant import Tenant
@@ -92,7 +92,7 @@ def _ensure_tenant_board(
 
 @router.get("/config", response_model=SuccessResponse[TenantInboundCRMConfigPublic | None])
 def get_inbound_crm_config(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     row = (
@@ -107,7 +107,7 @@ def get_inbound_crm_config(
 
 @router.get("/board-url", response_model=SuccessResponse[InboundBoardUrlOut])
 def get_inbound_crm_board_url(
-    user: User = Depends(require_tenant),
+    user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
     """Get or provision tenant board URL. Keeps the same board unless it no longer exists."""
@@ -142,7 +142,7 @@ def get_inbound_crm_board_url(
 @router.post("/config", response_model=SuccessResponse[TenantInboundCRMConfigPublic])
 def create_inbound_crm_config(
     body: TenantInboundCRMConfigUpsert,
-    user: User = Depends(require_owner),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     """Create inbound CRM config once. Use PUT /config to update existing config."""
@@ -161,7 +161,7 @@ def create_inbound_crm_config(
 @router.put("/config", response_model=SuccessResponse[TenantInboundCRMConfigPublic])
 def upsert_inbound_crm_config(
     body: TenantInboundCRMConfigUpsert,
-    user: User = Depends(require_owner),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     if body.provider != "trello":
@@ -235,7 +235,7 @@ def upsert_inbound_crm_config(
 @router.post("/config/validate", response_model=SuccessResponse[dict])
 def validate_inbound_crm_credentials(
     body: TenantInboundCRMConfigUpsert,
-    user: User = Depends(require_owner),
+    user: User = Depends(require_config),
     db: Session = Depends(get_db),
 ):
     if body.provider != "trello":
@@ -252,7 +252,7 @@ def validate_inbound_crm_credentials(
 
 @router.delete("/config", response_model=SuccessResponse[dict])
 def delete_inbound_crm_config(
-    user: User = Depends(require_admin_or_owner),
+    user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Owner/admin: clear inbound call log cards only; keep board and tenant configuration."""

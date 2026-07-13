@@ -119,46 +119,6 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
             optimize_streaming_latency=optimize_streaming_latency,
         )
 
-    async def async_stream_synthesize(
-        self,
-        text: str,
-        voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
-    ):
-        """
-        True async streaming via httpx — no event-loop blocking.
-        Used by _prefetch_tts_audio for the ElevenLabs hot path.
-        """
-        cfg = dict(settings_json or {})
-        model_id = cfg.pop("model", "eleven_flash_v2_5")
-        output_format = cfg.pop("output_format", "ulaw_8000")
-        optimize_streaming_latency = int(cfg.pop("optimize_streaming_latency", 4))
-        language_code = cfg.pop("language_code", None)
-        previous_text = cfg.pop("previous_text", None)
-        next_text = cfg.pop("next_text", None)
-        previous_request_ids = cfg.pop("previous_request_ids", None)
-        next_request_ids = cfg.pop("next_request_ids", None)
-        apply_text_normalization = cfg.pop("apply_text_normalization", None)
-        apply_language_text_normalization = cfg.pop("apply_language_text_normalization", None)
-        cfg.pop("eleven_background", None)
-        cfg.pop("eleven_background_level", None)
-        async for chunk in elevenlabs_service.async_stream_text_to_speech(
-            text=text,
-            voice_id=voice_external_id,
-            model_id=model_id,
-            output_format=output_format,
-            voice_settings=cfg if cfg else None,
-            language_code=language_code,
-            previous_text=previous_text,
-            next_text=next_text,
-            previous_request_ids=previous_request_ids,
-            next_request_ids=next_request_ids,
-            apply_text_normalization=apply_text_normalization,
-            apply_language_text_normalization=apply_language_text_normalization,
-            optimize_streaming_latency=optimize_streaming_latency,
-        ):
-            yield chunk
-
 
 class GoogleTTSAdapter(BaseTTSProviderAdapter):
     def list_voices(self) -> list[dict[str, Any]]:

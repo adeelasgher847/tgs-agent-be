@@ -60,7 +60,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 TENANT_TZ = "Asia/Karachi"
-MONDAY = date(2026, 6, 8)
+# Dynamically find next Monday in the future to keep slots valid relative to date.today()
+_today = date.today()
+_days_ahead = 0 - _today.weekday()
+if _days_ahead <= 0:
+    _days_ahead += 7
+MONDAY = _today + timedelta(days=_days_ahead)
 
 
 @pytest.fixture()
