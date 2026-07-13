@@ -335,6 +335,8 @@ async def upload_resume(
     """
     Upload a single resume file for the current tenant.
     """
+    resume = await _store_uploaded_file(
+        file,
         user.current_tenant_id,
         db,
         upload_mode=UploadMode.SINGLE,
