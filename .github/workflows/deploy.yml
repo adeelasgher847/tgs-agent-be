@@ -58,17 +58,25 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ALGORITHM: HS256
           ELEVENLABS_ENCRYPTION_KEY: ${{ secrets.ELEVENLABS_ENCRYPTION_KEY }}
           WEBHOOK_SECRET_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_SECRET_ENCRYPTION_KEY }}
         run: |
-          # Start app in background
           python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 &
           PID=$!
-          sleep 5
-          # Test health endpoint
-          curl --fail http://localhost:8001/health || { kill $PID; exit 1; }
-          # Terminate background server
+          # Wait up to 30 seconds for app to start
+          for i in $(seq 1 10); do
+            sleep 3
+            if curl --silent --fail http://localhost:8001/health; then
+              echo "App is healthy!"
+              kill $PID
+              exit 0
+            fi
+            echo "Attempt $i: App not ready yet..."
+          done
+          echo "App failed to start in 30 seconds"
           kill $PID
+          exit 1
 
   deploy-production:
     name: Deploy to Production (EC2)
