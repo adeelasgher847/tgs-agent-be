@@ -5,7 +5,7 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"  # Deploy to Production on semantic version tags
     branches:
-      - ci/fix-quality-gates  # CI debugging branch — remove after gates pass
+      - main  # Run quality gates on every push to main
 
 env:
   PROJECT_PATH: "/home/ubuntu/happyassist/tgs-agent-be"
