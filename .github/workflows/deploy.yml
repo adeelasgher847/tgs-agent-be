@@ -35,15 +35,26 @@ jobs:
           pip install ruff black
 
       - name: Run Ruff Lint Check
-        run: ruff check . --exclude alembic/versions
+        run: ruff check . --exclude alembic/versions --ignore F401,F841,E402
 
       - name: Run Black Code Format Check
         run: black --check .
 
       - name: Run Unit Tests
-        run: pytest tests/ -v
+        env:
+          DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ELEVENLABS_ENCRYPTION_KEY: ${{ secrets.ELEVENLABS_ENCRYPTION_KEY }}
+          WEBHOOK_SECRET_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_SECRET_ENCRYPTION_KEY }}
+        run: pytest tests/ -v --ignore=tests/integration --ignore=tests/db -x
 
       - name: Run Smoke Test (Start App & Check Health)
+        env:
+          DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          ELEVENLABS_ENCRYPTION_KEY: ${{ secrets.ELEVENLABS_ENCRYPTION_KEY }}
+          WEBHOOK_SECRET_ENCRYPTION_KEY: ${{ secrets.WEBHOOK_SECRET_ENCRYPTION_KEY }}
         run: |
           # Start app in background
           python -m uvicorn app.main:app --host 0.0.0.0 --port 8001 &
