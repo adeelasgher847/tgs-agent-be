@@ -148,7 +148,7 @@ def _make_record(db, batch_job_id, phone="+15551230000", status="waiting"):
 class TestCsvValidation:
     """Tests for BatchCallService._validate_csv and create_batch_job."""
 
-    @patch("app.services.batch_call_service.batch_call_gcs_service.upload_batch_csv")
+    @patch("app.services.batch_call_service.batch_call_s3_service.upload_batch_csv")
     def test_valid_csv_creates_job_and_records(self, mock_upload, db):
         mock_upload.return_value = "batch-files/ws/id.csv"
 
@@ -165,10 +165,10 @@ class TestCsvValidation:
         assert result.total_count == 2
         assert result.waiting_count == 2
         assert result.status == "pending"
-        assert result.gcs_path is not None
+        assert result.s3_path is not None
         mock_upload.assert_called_once()
 
-    @patch("app.services.batch_call_service.batch_call_gcs_service.upload_batch_csv")
+    @patch("app.services.batch_call_service.batch_call_s3_service.upload_batch_csv")
     def test_missing_phone_number_column_raises_422(self, mock_upload, db):
         workspace_id = _make_tenant(db)
         agent_id = _make_agent(db, workspace_id)
@@ -186,7 +186,7 @@ class TestCsvValidation:
         assert "phone_number" in str(exc_info.value.detail)
         mock_upload.assert_not_called()
 
-    @patch("app.services.batch_call_service.batch_call_gcs_service.upload_batch_csv")
+    @patch("app.services.batch_call_service.batch_call_s3_service.upload_batch_csv")
     def test_prompt_variable_mismatch_raises_422(self, mock_upload, db):
         workspace_id = _make_tenant(db)
         # Agent prompt references {last_name} but CSV only has first_name
@@ -205,7 +205,7 @@ class TestCsvValidation:
         assert "last_name" in str(exc_info.value.detail)
         mock_upload.assert_not_called()
 
-    @patch("app.services.batch_call_service.batch_call_gcs_service.upload_batch_csv")
+    @patch("app.services.batch_call_service.batch_call_s3_service.upload_batch_csv")
     def test_prompt_variable_present_in_csv_succeeds(self, mock_upload, db):
         mock_upload.return_value = "batch-files/ws/id.csv"
         workspace_id = _make_tenant(db)
@@ -220,7 +220,7 @@ class TestCsvValidation:
 
         assert result.total_count == 1
 
-    @patch("app.services.batch_call_service.batch_call_gcs_service.upload_batch_csv")
+    @patch("app.services.batch_call_service.batch_call_s3_service.upload_batch_csv")
     def test_exceeding_max_size_raises_422(self, mock_upload, db):
         workspace_id = _make_tenant(db)
         agent_id = _make_agent(db, workspace_id)

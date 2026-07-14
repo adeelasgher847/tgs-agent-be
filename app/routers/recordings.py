@@ -1,13 +1,13 @@
 """
 GET /api/v1/recordings/{call_id}
 
-Returns a short-lived GCS signed URL for the call recording.
+Returns a short-lived S3 signed URL for the call recording.
 
 404 cases:
   - call_session not found or wrong tenant
   - recording_enabled was false for that call's number
-  - no recording_gcs_path and recording_error=true (upload failed)
-  - no recording_gcs_path yet (not yet uploaded)
+  - no recording_s3_path and recording_error=true (upload failed)
+  - no recording_s3_path yet (not yet uploaded)
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ async def get_recording(
     db: Session = Depends(get_db),
 ) -> SuccessResponse[RecordingResponse]:
     """
-    Return a signed GCS URL for the call recording.
+    Return a signed S3 URL for the call recording.
 
     URL expires in {GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS} seconds (default 3600).
     For HIPAA-flagged flows, readonly and config roles receive 403.
@@ -100,35 +100,35 @@ async def get_recording(
         raise HTTPException(status_code=404, detail="Recording not enabled for this call")
 
     # No path + error = upload failed
-    if not session.recording_gcs_path and session.recording_error:
+    if not session.recording_s3_path and session.recording_error:
         raise HTTPException(status_code=404, detail="Recording upload failed for this call")
 
     # No path yet = not uploaded (may still be processing)
-    if not session.recording_gcs_path:
+    if not session.recording_s3_path:
         raise HTTPException(status_code=404, detail="Recording not available yet")
 
     # Generate signed URL
     try:
-        from app.services import gcs_recording_service
+        from app.services import s3_recording_service
 
-        signed_url = gcs_recording_service.generate_signed_url(
-            gcs_path=session.recording_gcs_path,
+        signed_url = s3_recording_service.generate_signed_url(
+            gcs_path=session.recording_s3_path,
             expiry_seconds=settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
         )
     except Exception as exc:
         logger.error(
             "Failed to generate signed URL for session %s path %s: %s",
             call_id,
-            session.recording_gcs_path,
+            session.recording_s3_path,
             exc,
             exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Could not generate recording URL")
 
-    # Optionally fetch file size from GCS (best-effort)
+    # Optionally fetch file size from S3 (best-effort)
     size: int | None = None
     try:
-        size = gcs_recording_service.get_object_size(session.recording_gcs_path)
+        size = s3_recording_service.get_object_size(session.recording_s3_path)
     except Exception:
         pass
 

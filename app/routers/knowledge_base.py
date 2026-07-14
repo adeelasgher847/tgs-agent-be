@@ -50,7 +50,7 @@ from app.services.embedding_service import embed_text_for_rag
 from app.services.kb_ingestion_service import (
     gcs_kb_path,
     run_text_ingestion,
-    upload_kb_file_to_gcs,
+    upload_kb_file_to_s3,
 )
 from app.services.rag_service import rag_service
 from app.utils.response import create_success_response
@@ -417,16 +417,16 @@ async def upload_kb_file(
         status="processing",
     )
 
-    if settings.GCS_KB_BUCKET:
+    if settings.S3_KB_BUCKET:
         gcs_path = gcs_kb_path(workspace_id, kb_id, file_id, filename)
         try:
             import io
-            upload_kb_file_to_gcs(
-                settings.GCS_KB_BUCKET, gcs_path, io.BytesIO(content)
+            upload_kb_file_to_s3(
+                settings.S3_KB_BUCKET, gcs_path, io.BytesIO(content)
             )
-            kb_file.gcs_path = gcs_path
+            kb_file.s3_path = gcs_path
         except Exception as e:
-            logger.error("GCS upload failed for file_id=%s: %s", file_id, e, exc_info=True)
+            logger.error("S3 upload failed for file_id=%s: %s", file_id, e, exc_info=True)
             raise HTTPException(status_code=500, detail="File storage failed")
 
     db.add(kb_file)

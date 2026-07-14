@@ -2768,7 +2768,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if not self.call_session or not self.agent:
             return
         try:
-            from app.services.gcs_recording_service import build_gcs_key
+            from app.services.s3_recording_service import build_s3_key
             from app.services.livekit_recording_service import livekit_recording_service
             from app.services.livekit_service import livekit_service
             from app.voice.livekit_twilio_bridge import LiveKitTwilioPublisher
@@ -2788,7 +2788,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 await self._disconnect_livekit_recording_publishers()
                 return
 
-            gcs_path = build_gcs_key(
+            gcs_path = build_s3_key(
                 workspace_id=self.call_session.tenant_id,
                 call_id=self.call_session.id,
                 end_time=self.call_session.end_time,

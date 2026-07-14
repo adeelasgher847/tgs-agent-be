@@ -338,10 +338,10 @@ async def initiate_call(
                 _nc = db.execute(_pn_stmt).scalar_one_or_none()
                 _livekit_recording_enabled = bool(_nc and _nc.recording_enabled)
                 if _livekit_recording_enabled:
-                    from app.services.gcs_recording_service import build_gcs_key
+                    from app.services.s3_recording_service import build_s3_key
                     from app.services.livekit_recording_service import livekit_recording_service
 
-                    _gcs_path = build_gcs_key(
+                    _gcs_path = build_s3_key(
                         workspace_id=tenant_id_filter,
                         call_id=session_id,
                     )

@@ -79,7 +79,7 @@ class TestTriggerDataExport:
 class TestGetDataExportStatus:
     def test_processing_status_has_no_download_url(self):
         db = MagicMock()
-        job = MagicMock(id=JOB_ID, status="processing", gcs_path=None)
+        job = MagicMock(id=JOB_ID, status="processing", s3_path=None)
 
         with patch("app.api.v2.routers.workspace.get_export_job", return_value=job):
             client = _build_app(db)
@@ -92,12 +92,12 @@ class TestGetDataExportStatus:
 
     def test_ready_status_returns_signed_url(self):
         db = MagicMock()
-        job = MagicMock(id=JOB_ID, status="ready", gcs_path=f"data-exports/{WORKSPACE_ID}/{JOB_ID}.zip")
+        job = MagicMock(id=JOB_ID, status="ready", s3_path=f"data-exports/{WORKSPACE_ID}/{JOB_ID}.zip")
 
         with (
             patch("app.api.v2.routers.workspace.get_export_job", return_value=job),
             patch(
-                "app.services.gcs_recording_service.generate_signed_url",
+                "app.services.s3_recording_service.generate_signed_url",
                 return_value="https://signed.example.com/export.zip",
             ) as mock_signed,
         ):
@@ -109,11 +109,11 @@ class TestGetDataExportStatus:
         assert body["status"] == "ready"
         assert body["download_url"] == "https://signed.example.com/export.zip"
         mock_signed.assert_called_once()
-        assert mock_signed.call_args.args[0] == job.gcs_path
+        assert mock_signed.call_args.args[0] == job.s3_path
 
     def test_error_status_has_no_download_url(self):
         db = MagicMock()
-        job = MagicMock(id=JOB_ID, status="error", gcs_path=None)
+        job = MagicMock(id=JOB_ID, status="error", s3_path=None)
 
         with patch("app.api.v2.routers.workspace.get_export_job", return_value=job):
             client = _build_app(db)

@@ -61,13 +61,13 @@ def _get_workspace_admin_email(db: Session, workspace_id: uuid.UUID) -> Optional
 
 def run_export_job(db: Session, job: DataExportJob) -> None:
     """
-    Build the export ZIP, upload it to GCS, email the signed URL to the
+    Build the export ZIP, upload it to S3, email the signed URL to the
     workspace admin, and update the job's status accordingly.
 
     Never raises — failures are captured on the job row (status='error')
     so the ARQ worker doesn't need its own try/except around this call.
     """
-    from app.services import gcs_data_export_service
+    from app.services import s3_data_export_service
     from app.services.data_export_zip_builder import build_export_zip
     from app.services.email_service import email_service
 
@@ -75,17 +75,17 @@ def run_export_job(db: Session, job: DataExportJob) -> None:
     try:
         zip_path = build_export_zip(db, job.workspace_id)
 
-        key = gcs_data_export_service.build_export_gcs_key(job.workspace_id, job.id)
-        gcs_data_export_service.upload_export_zip(zip_path, key)
+        key = s3_data_export_service.build_export_gcs_key(job.workspace_id, job.id)
+        s3_data_export_service.upload_export_zip(zip_path, key)
 
-        from app.services.gcs_recording_service import generate_signed_url
+        from app.services.s3_recording_service import generate_signed_url
 
         signed_url = generate_signed_url(
-            key, expiry_seconds=gcs_data_export_service.DATA_EXPORT_SIGNED_URL_EXPIRY_SECONDS
+            key, expiry_seconds=s3_data_export_service.DATA_EXPORT_SIGNED_URL_EXPIRY_SECONDS
         )
 
         job.status = "ready"
-        job.gcs_path = key
+        job.s3_path = key
         job.completed_at = datetime.now(timezone.utc)
         db.commit()
 

@@ -2,7 +2,7 @@
 LiveKit Recording Service — room-composite egress for call audio capture.
 
 Starts a mix-minus audio-only egress on the LiveKit room when
-recording_enabled=True.  The egress writes an Opus file directly to GCS.
+recording_enabled=True.  The egress writes an Opus file directly to S3.
 
 After the call ends, call_recording_upload_service polls the egress status,
 confirms completion, and updates the DB record.
@@ -28,23 +28,6 @@ class LiveKitRecordingService:
 
         return get_livekit_credentials()
 
-    def _gcs_credentials_json(self) -> Optional[str]:
-        """
-        Load the GCS service account JSON string for LiveKit's GCPUpload.
-
-        Reads GOOGLE_APPLICATION_CREDENTIALS (file path) and returns the file
-        contents as a JSON string.  Returns None if credentials are unavailable
-        (LiveKit will fall back to instance metadata in GKE).
-        """
-        if not settings.GOOGLE_APPLICATION_CREDENTIALS:
-            return None
-        try:
-            with open(settings.GOOGLE_APPLICATION_CREDENTIALS, "r") as fh:
-                return fh.read()
-        except Exception as exc:
-            logger.warning("Could not read GCS credentials file for LiveKit egress: %s", exc)
-            return None
-
     async def start_room_recording(
         self,
         call_id: uuid.UUID,
@@ -52,7 +35,7 @@ class LiveKitRecordingService:
         gcs_path: str,
     ) -> Optional[str]:
         """
-        Start a room-composite audio-only egress that uploads to GCS.
+        Start a room-composite audio-only egress that uploads to S3.
 
         Returns the LiveKit egress_id, or None on failure (recording_enabled
         will remain True but egress won't run — caller logs and continues).
@@ -65,21 +48,17 @@ class LiveKitRecordingService:
         room_name = f"room_{call_id}"
         url, api_key, api_secret = self._get_credentials()
 
-        gcs_creds = self._gcs_credentials_json()
-
-        gcp_upload = api.GCPUpload(
-            bucket=settings.GCS_RECORDINGS_BUCKET,
+        s3_upload = api.S3Upload(
+            bucket=settings.S3_RECORDINGS_BUCKET,
+            region=settings.AWS_REGION_NAME,
+            access_key=settings.AWS_ACCESS_KEY_ID,
+            secret=settings.AWS_SECRET_ACCESS_KEY,
         )
-        if gcs_creds:
-            gcp_upload = api.GCPUpload(
-                bucket=settings.GCS_RECORDINGS_BUCKET,
-                credentials=gcs_creds,
-            )
 
         file_output = api.EncodedFileOutput(
             file_type=api.EncodedFileType.OGG,
             filepath=gcs_path,
-            gcp=gcp_upload,
+            s3=s3_upload,
         )
 
         egress_request = api.RoomCompositeEgressRequest(
@@ -95,7 +74,7 @@ class LiveKitRecordingService:
                 )
             egress_id = info.egress_id
             logger.info(
-                "LiveKit recording egress started: egress_id=%s room=%s gcs=%s",
+                "LiveKit recording egress started: egress_id=%s room=%s s3_key=%s",
                 egress_id,
                 room_name,
                 gcs_path,

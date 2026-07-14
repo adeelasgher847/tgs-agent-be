@@ -11,7 +11,7 @@ from app.db.base_class import Base
 
 
 class DataExportJob(Base):
-    """Tracks one GDPR data-portability export (ARQ job -> ZIP in GCS)."""
+    """Tracks one GDPR data-portability export (ARQ job -> ZIP in S3)."""
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False)
@@ -20,7 +20,7 @@ class DataExportJob(Base):
     # processing -> ready | error
     status = Column(String(20), nullable=False, default="processing", server_default="processing")
 
-    gcs_path = Column(Text, nullable=True)
+    s3_path = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

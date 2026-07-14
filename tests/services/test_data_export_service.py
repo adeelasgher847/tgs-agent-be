@@ -77,21 +77,21 @@ class TestRunExportJob:
             return key
 
         with (
-            patch("app.services.gcs_data_export_service.upload_export_zip", side_effect=_fake_upload) as mock_upload,
-            patch("app.services.gcs_recording_service.generate_signed_url", return_value="https://signed.example/export.zip") as mock_signed,
+            patch("app.services.s3_data_export_service.upload_export_zip", side_effect=_fake_upload) as mock_upload,
+            patch("app.services.s3_recording_service.generate_signed_url", return_value="https://signed.example/export.zip") as mock_signed,
             patch("app.services.email_service.email_service.send_data_export_ready_email") as mock_email,
         ):
             run_export_job(db, job)
 
         db.refresh(job)
         assert job.status == "ready"
-        assert job.gcs_path == f"data-exports/{tenant.id}/{job.id}.zip"
+        assert job.s3_path == f"data-exports/{tenant.id}/{job.id}.zip"
         assert job.completed_at is not None
 
         mock_upload.assert_called_once()
-        assert mock_upload.call_args.args[1] == job.gcs_path
+        assert mock_upload.call_args.args[1] == job.s3_path
 
-        mock_signed.assert_called_once_with(job.gcs_path, expiry_seconds=24 * 60 * 60)
+        mock_signed.assert_called_once_with(job.s3_path, expiry_seconds=24 * 60 * 60)
 
         mock_email.assert_called_once_with(admin.email, "https://signed.example/export.zip", tenant.name)
 
@@ -107,8 +107,8 @@ class TestRunExportJob:
         job = _make_job(db, tenant.id)
 
         with (
-            patch("app.services.gcs_data_export_service.upload_export_zip", return_value="key") as mock_upload,
-            patch("app.services.gcs_recording_service.generate_signed_url", return_value="https://signed.example/export.zip"),
+            patch("app.services.s3_data_export_service.upload_export_zip", return_value="key") as mock_upload,
+            patch("app.services.s3_recording_service.generate_signed_url", return_value="https://signed.example/export.zip"),
             patch("app.services.email_service.email_service.send_data_export_ready_email") as mock_email,
         ):
             run_export_job(db, job)
@@ -127,7 +127,7 @@ class TestRunExportJob:
         job = _make_job(db, tenant.id)
 
         with (
-            patch("app.services.gcs_data_export_service.upload_export_zip", side_effect=RuntimeError("GCS down")),
+            patch("app.services.s3_data_export_service.upload_export_zip", side_effect=RuntimeError("GCS down")),
             patch("app.services.email_service.email_service.send_data_export_ready_email") as mock_email,
         ):
             run_export_job(db, job)

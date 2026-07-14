@@ -27,7 +27,7 @@ class BatchJob(Base):
     completed_count = Column(Integer, nullable=False, default=0, server_default="0")
     failed_count = Column(Integer, nullable=False, default=0, server_default="0")
 
-    gcs_path = Column(Text, nullable=True)
+    s3_path = Column(Text, nullable=True)
     scheduled_at = Column(DateTime(timezone=True), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)

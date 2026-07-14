@@ -7,8 +7,8 @@ Coverage:
   - TranscriptService.add_message: redacts message when hipaa_enabled=True, skips when False
   - call_control_mixin._add_to_transcript: passes hipaa_enabled from self.call_flow
   - voice_analysis_service: redacts analysis fields before storing in call_metadata
-  - gcs_recording_service.upload_recording: kms_key_name passed to GCS blob for CMEK
-  - gcs_recording_service.set_bucket_default_kms_key: sets bucket default KMS for LiveKit uploads
+  - s3_recording_service.upload_recording: kms_key_name passed as SSE-KMS params for CMK
+  - s3_recording_service.set_bucket_default_kms_key: sets bucket default KMS for LiveKit uploads
   - PUT /api/v2/flows/{id}/settings: toggle hipaa_compliance, admin RBAC, audit event
   - GET /api/v2/workspace/hipaa-status: returns hipaa_enabled_flows, kms_key_configured, baa_on_file
   - PUT /api/v2/workspace/kms-key: validates KMS key, persists, sets bucket default, rejects bad format
@@ -512,69 +512,67 @@ class TestVoiceAnalysisHipaaRedaction:
                 assert c.kwargs.get("hipaa_enabled") is False
 
 
-# ── GCS CMEK Upload Tests ─────────────────────────────────────────────────────
+# ── S3 CMK Upload Tests ────────────────────────────────────────────────────────
 
 
 class TestCmekUpload:
-    """Verify kms_key_name is forwarded to the GCS blob for CMEK-encrypted uploads."""
+    """Verify kms_key_name is forwarded as SSE-KMS params for CMK-encrypted uploads."""
 
-    def test_upload_recording_passes_kms_key_to_blob(self):
-        from app.services import gcs_recording_service
+    def test_upload_recording_passes_kms_key_to_put_object(self):
+        from app.services import s3_recording_service
 
-        kms_key = "projects/my-proj/locations/us-central1/keyRings/r/cryptoKeys/k"
+        kms_key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
         file_bytes = b"fake-audio"
         metadata = {"callId": str(CALL_ID)}
 
-        mock_blob = MagicMock()
-        mock_bucket = MagicMock()
-        mock_bucket.blob.return_value = mock_blob
         mock_client = MagicMock()
-        mock_client.bucket.return_value = mock_bucket
 
-        with patch.object(gcs_recording_service, "_get_gcs_client", return_value=mock_client):
-            gcs_recording_service.upload_recording(
+        with patch("app.services.s3_recording_service.get_s3_client", return_value=mock_client):
+            s3_recording_service.upload_recording(
                 key="recordings/test.opus",
                 file_bytes=file_bytes,
                 metadata=metadata,
                 kms_key_name=kms_key,
             )
 
-        mock_bucket.blob.assert_called_once_with("recordings/test.opus", kms_key_name=kms_key)
-        mock_blob.upload_from_string.assert_called_once_with(file_bytes, content_type="audio/ogg; codecs=opus")
+        mock_client.put_object.assert_called_once()
+        call_kwargs = mock_client.put_object.call_args.kwargs
+        assert call_kwargs["Key"] == "recordings/test.opus"
+        assert call_kwargs["Body"] == file_bytes
+        assert call_kwargs["ServerSideEncryption"] == "aws:kms"
+        assert call_kwargs["SSEKMSKeyId"] == kms_key
 
     def test_upload_recording_no_kms_key_omits_kms_param(self):
-        from app.services import gcs_recording_service
+        from app.services import s3_recording_service
 
-        mock_blob = MagicMock()
-        mock_bucket = MagicMock()
-        mock_bucket.blob.return_value = mock_blob
         mock_client = MagicMock()
-        mock_client.bucket.return_value = mock_bucket
 
-        with patch.object(gcs_recording_service, "_get_gcs_client", return_value=mock_client):
-            gcs_recording_service.upload_recording(
+        with patch("app.services.s3_recording_service.get_s3_client", return_value=mock_client):
+            s3_recording_service.upload_recording(
                 key="recordings/test.opus",
                 file_bytes=b"audio",
                 metadata={},
             )
 
-        mock_bucket.blob.assert_called_once_with("recordings/test.opus", kms_key_name=None)
+        call_kwargs = mock_client.put_object.call_args.kwargs
+        assert "ServerSideEncryption" not in call_kwargs
+        assert "SSEKMSKeyId" not in call_kwargs
 
     def test_set_bucket_default_kms_key(self):
-        """set_bucket_default_kms_key patches the bucket's default_kms_key_name and calls patch()."""
-        from app.services import gcs_recording_service
+        """set_bucket_default_kms_key calls put_bucket_encryption with the SSE-KMS key."""
+        from app.services import s3_recording_service
 
-        kms_key = "projects/p/locations/us-central1/keyRings/r/cryptoKeys/k"
-        mock_bucket = MagicMock()
+        kms_key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
         mock_client = MagicMock()
-        mock_client.get_bucket.return_value = mock_bucket
 
-        with patch.object(gcs_recording_service, "_get_gcs_client", return_value=mock_client):
-            gcs_recording_service.set_bucket_default_kms_key(kms_key)
+        with patch("app.services.s3_recording_service.get_s3_client", return_value=mock_client):
+            s3_recording_service.set_bucket_default_kms_key(kms_key)
 
-        mock_client.get_bucket.assert_called_once()
-        assert mock_bucket.default_kms_key_name == kms_key
-        mock_bucket.patch.assert_called_once()
+        mock_client.put_bucket_encryption.assert_called_once()
+        call_kwargs = mock_client.put_bucket_encryption.call_args.kwargs
+        rule = call_kwargs["ServerSideEncryptionConfiguration"]["Rules"][0]
+        assert rule["ApplyServerSideEncryptionByDefault"]["SSEAlgorithm"] == "aws:kms"
+        assert rule["ApplyServerSideEncryptionByDefault"]["KMSMasterKeyID"] == kms_key
 
 
 # ── HIPAA Router Tests ────────────────────────────────────────────────────────
@@ -774,7 +772,7 @@ class TestHipaaStatus:
 class TestKmsKeyUpdate:
     """PUT /workspace/kms-key"""
 
-    _VALID_KEY = "projects/my-proj/locations/us-central1/keyRings/r/cryptoKeys/k"
+    _VALID_KEY = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 
     def _make_db(self, kms_key_name: str | None = None):
         tenant = MagicMock()
@@ -797,7 +795,7 @@ class TestKmsKeyUpdate:
         client = _build_hipaa_app(db)
 
         with patch("app.api.v2.routers.hipaa._validate_kms_key"):
-            with patch("app.api.v2.routers.hipaa.gcs_recording_service.set_bucket_default_kms_key") as mock_set_bucket:
+            with patch("app.api.v2.routers.hipaa.s3_recording_service.set_bucket_default_kms_key") as mock_set_bucket:
                 resp = client.put("/workspace/kms-key", json={"kms_key_name": self._VALID_KEY})
 
         assert resp.status_code == 200
@@ -807,20 +805,20 @@ class TestKmsKeyUpdate:
         mock_set_bucket.assert_called_once_with(self._VALID_KEY)
 
     def test_bucket_default_kms_failure_does_not_break_response(self):
-        """GCS bucket patch failure is logged as warning; endpoint still returns 200."""
-        from app.services import gcs_recording_service
+        """S3 bucket patch failure is logged as warning; endpoint still returns 200."""
+        from app.services import s3_recording_service
 
         db, tenant = self._make_db()
         client = _build_hipaa_app(db)
 
         with patch("app.api.v2.routers.hipaa._validate_kms_key"):
             with patch(
-                "app.api.v2.routers.hipaa.gcs_recording_service.set_bucket_default_kms_key",
-                side_effect=RuntimeError("GCS unavailable"),
+                "app.api.v2.routers.hipaa.s3_recording_service.set_bucket_default_kms_key",
+                side_effect=RuntimeError("S3 unavailable"),
             ):
                 resp = client.put("/workspace/kms-key", json={"kms_key_name": self._VALID_KEY})
 
-        # Key is still persisted even if GCS bucket patch fails
+        # Key is still persisted even if S3 bucket patch fails
         assert resp.status_code == 200
         assert tenant.kms_key_name == self._VALID_KEY
 
@@ -874,7 +872,7 @@ class TestRecordingHipaaRbac:
         session.id = CALL_ID
         session.tenant_id = WORKSPACE_ID
         session.call_flow_id = flow_id
-        session.recording_gcs_path = "recordings/test.opus"
+        session.recording_s3_path = "recordings/test.opus"
         session.recording_error = False
         session.duration = 60
 
@@ -918,7 +916,7 @@ class TestRecordingHipaaRbac:
 
         with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
             with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
-                with patch("app.services.gcs_recording_service.generate_signed_url"):
+                with patch("app.services.s3_recording_service.generate_signed_url"):
                     resp = client.get(f"/{CALL_ID}")
 
         assert resp.status_code == 403
@@ -932,8 +930,8 @@ class TestRecordingHipaaRbac:
 
         with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
             with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
-                with patch("app.services.gcs_recording_service.generate_signed_url", return_value="https://signed.url"):
-                    with patch("app.services.gcs_recording_service.get_object_size", return_value=1024):
+                with patch("app.services.s3_recording_service.generate_signed_url", return_value="https://signed.url"):
+                    with patch("app.services.s3_recording_service.get_object_size", return_value=1024):
                         resp = client.get(f"/{CALL_ID}")
 
         assert resp.status_code == 200
@@ -945,8 +943,8 @@ class TestRecordingHipaaRbac:
 
         with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
             with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
-                with patch("app.services.gcs_recording_service.generate_signed_url", return_value="https://signed.url"):
-                    with patch("app.services.gcs_recording_service.get_object_size", return_value=512):
+                with patch("app.services.s3_recording_service.generate_signed_url", return_value="https://signed.url"):
+                    with patch("app.services.s3_recording_service.get_object_size", return_value=512):
                         resp = client.get(f"/{CALL_ID}")
 
         assert resp.status_code == 200

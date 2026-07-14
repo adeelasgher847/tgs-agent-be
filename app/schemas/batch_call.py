@@ -46,7 +46,7 @@ class BatchJobOut(BaseModel):
     active_count: int
     completed_count: int
     failed_count: int
-    gcs_path: Optional[str] = None
+    s3_path: Optional[str] = None
     scheduled_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

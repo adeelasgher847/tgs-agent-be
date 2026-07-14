@@ -147,7 +147,7 @@ async def embed_chunks(
     return all_embeddings
 
 
-# ── GCS streaming upload ──────────────────────────────────────────────────────
+# ── S3 streaming upload ───────────────────────────────────────────────────────
 
 def gcs_kb_path(
     workspace_id: uuid.UUID,
@@ -158,19 +158,22 @@ def gcs_kb_path(
     return f"{settings.GCS_KB_PREFIX}/{workspace_id}/{kb_id}/{file_id}/{filename}"
 
 
-def upload_kb_file_to_gcs(
+def upload_kb_file_to_s3(
     bucket_name: str,
     gcs_path: str,
     file_obj: IO[bytes],
     content_type: str = "application/octet-stream",
 ) -> None:
-    """Stream-upload a file-like object to GCS. Never buffers the full file in memory."""
-    from google.cloud import storage  # type: ignore
+    """Stream-upload a file-like object to S3 via upload_fileobj."""
+    from app.services.s3_service import get_s3_client
 
-    client = storage.Client()
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(gcs_path)
-    blob.upload_from_file(file_obj, content_type=content_type)
+    client = get_s3_client()
+    client.upload_fileobj(
+        file_obj,
+        bucket_name,
+        gcs_path,
+        ExtraArgs={"ContentType": content_type},
+    )
 
 
 # ── Core ingestion logic (called by ARQ worker and sync text endpoint) ────────
