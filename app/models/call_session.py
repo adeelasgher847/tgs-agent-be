@@ -75,7 +75,6 @@ class CallSession(Base):
     tenant = relationship("Tenant", back_populates="call_sessions")
     call_logs = relationship("CallLog", back_populates="call_session", cascade="all, delete-orphan")
     transcript_messages = relationship("TranscriptMessage", back_populates="call_session", cascade="all, delete-orphan")
-    slot_reservations = relationship("SlotReservation", back_populates="call_session", cascade="all, delete-orphan")
     call_flow = relationship("CallFlow", back_populates="call_sessions")
     # Self-referential: retry calls point back to the original missed call
     parent_call = relationship("CallSession", remote_side="CallSession.id", foreign_keys=[parent_call_id])

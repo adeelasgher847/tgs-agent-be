@@ -2291,7 +2291,39 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             _is_gemini_agent = (_provider_slug or "").lower() == "gemini"
             _fallback_msg = getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", "I am sorry, I did not catch that")
             try:
-                final_text = await try_stream(llm_service, model_name, api_key)
+                from app.services.vertex_gemini_service import VertexGeminiService as _VertexGeminiServiceCls
+
+                if self._calendly_enabled() and isinstance(llm_service, _VertexGeminiServiceCls):
+                    # Calendly-enabled agents resolve availability/booking via Gemini
+                    # native function calling — bypass the legacy try_stream() +
+                    # [CHECK_SLOTS:...]/[BOOK_APPOINTMENT:...] regex-token pipeline.
+                    final_text = await self._run_calendly_tool_turn(
+                        llm_service=llm_service,
+                        user_text=user_text,
+                        system_prompt=system_prompt,
+                        conversation_history=list(self._conversation_history_cache),
+                        model_name=model_name,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    chunk_counter += 1
+                    if final_text and self._tts_pipeline and not self._tts_cancel.is_set():
+                        safe_tts_text = self._prepare_tts_text(final_text)
+                        if safe_tts_text:
+                            await self._tts_pipeline.queue_tts({
+                                "text": safe_tts_text,
+                                "chunk_id": chunk_counter,
+                                "use_ssml": self._use_ssml,
+                                "is_final": True,
+                            })
+                    _vm = getattr(self, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
+                    asyncio.create_task(
+                        self._deferred_conversation_memory_update(turn_context, user_text)
+                    )
+                else:
+                    final_text = await try_stream(llm_service, model_name, api_key)
             except VertexLlmError as vertex_err:
                 # Vertex-specific errors (quota, timeout, content filter) — canned fallback only.
                 # Do NOT fall through to OpenAI/Gemini AI Studio for gemini-configured agents.

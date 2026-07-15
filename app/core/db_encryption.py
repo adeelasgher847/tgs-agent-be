@@ -310,6 +310,67 @@ def decrypt_hubspot_token(ciphertext: str, db: Session) -> str:
         raise ValueError(f"HubSpot token decryption failed: {exc}") from exc
 
 
+# Tags new-format ciphertext unambiguously for the Calendly OAuth token columns.
+_CALENDLY_AESGCM_PREFIX = "gcm1:"
+
+
+def _calendly_aes_key() -> bytes:
+    """Derive a 32-byte AES-256 key from CALENDLY_TOKEN_ENCRYPTION_KEY.
+
+    SECURITY NOTE:
+      For secure AES-256-GCM encryption, CALENDLY_TOKEN_ENCRYPTION_KEY must be
+      configured as a randomly generated 32-byte secret (typically represented
+      as a 64-character hex string, e.g. generated via `secrets.token_hex(32)`).
+
+    We derive the key using hashlib.sha256 (same pattern as HubSpot) so any
+    key length/format can be safely resolved.
+    """
+    key = settings.CALENDLY_TOKEN_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "CALENDLY_TOKEN_ENCRYPTION_KEY is not configured — "
+            "cannot encrypt/decrypt Calendly OAuth token."
+        )
+    return hashlib.sha256(key.encode("utf-8")).digest()
+
+
+def encrypt_calendly_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+    """Encrypt *plaintext* Calendly OAuth token with AES-256-GCM.
+
+    Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
+    encryption has no GCM mode). ``db`` is accepted only for parity with the other
+    encrypt_* helpers in this module; it is unused here.
+
+    Raises ``ValueError`` if ``CALENDLY_TOKEN_ENCRYPTION_KEY`` is not configured.
+    """
+    key = _calendly_aes_key()
+    nonce = os.urandom(12)  # 96-bit nonce, the standard size for AES-GCM
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return _CALENDLY_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+
+
+def decrypt_calendly_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+    """Decrypt a Calendly OAuth token written by :func:`encrypt_calendly_token`.
+
+    Raises ``ValueError`` if ``CALENDLY_TOKEN_ENCRYPTION_KEY`` is not configured or
+    if the ciphertext is corrupt / encrypted with a different key / not in the
+    expected ``gcm1:`` format.
+    """
+    if not ciphertext:
+        raise ValueError("ciphertext is empty")
+
+    if not ciphertext.startswith(_CALENDLY_AESGCM_PREFIX):
+        raise ValueError("Unrecognized Calendly token ciphertext format (expected gcm1: prefix).")
+
+    key = _calendly_aes_key()
+    try:
+        raw = base64.b64decode(ciphertext[len(_CALENDLY_AESGCM_PREFIX):])
+        nonce, body = raw[:12], raw[12:]
+        return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
+    except Exception as exc:
+        raise ValueError(f"Calendly token decryption failed: {exc}") from exc
+
+
 def decrypt_stored_elevenlabs_key(
     ciphertext: str,
     *,

@@ -5354,51 +5354,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/calendar/slots:
-    get:
-      tags:
-      - Calendar
-      summary: Get Available Slots
-      description: Return available booking slots for a given date.
-      operationId: get_available_slots_api_v1_calendar_slots_get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: date
-        in: query
-        required: true
-        schema:
-          type: string
-          format: date
-          description: Date to check (YYYY-MM-DD)
-          title: Date
-        description: Date to check (YYYY-MM-DD)
-      - name: agent_id
-        in: query
-        required: false
-        schema:
-          type: string
-          format: uuid
-          nullable: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_AvailableSlotsResponse_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/calendar/appointments:
     post:
       tags:
       - Calendar
       summary: Create Appointment
-      description: Book an appointment. Returns 409 if the slot is unavailable.
+      description: Log an appointment (already scheduled on Calendly, or via legacy
+        web flow).
       operationId: create_appointment_api_v1_calendar_appointments_post
       requestBody:
         content:
@@ -5555,8 +5517,7 @@ paths:
       tags:
       - Calendar
       summary: Reschedule Appointment
-      description: Move a confirmed/pending appointment to a new time. Fails with
-        409 if the slot is unavailable.
+      description: Move a confirmed/pending appointment's local record to a new time.
       operationId: reschedule_appointment_api_v1_calendar_appointments__appointment_id__reschedule_patch
       security:
       - HTTPBearer: []
@@ -5680,77 +5641,6 @@ paths:
           type: string
           format: uuid
           title: Business Hours Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_dict_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/calendar/blocked-slots:
-    get:
-      tags:
-      - Calendar
-      summary: List Blocked Slots
-      description: List all blocked slots for the tenant.
-      operationId: list_blocked_slots_api_v1_calendar_blocked_slots_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_List_BlockedSlotOut__'
-      security:
-      - HTTPBearer: []
-    post:
-      tags:
-      - Calendar
-      summary: Create Blocked Slot
-      operationId: create_blocked_slot_api_v1_calendar_blocked_slots_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BlockedSlotCreate'
-        required: true
-      responses:
-        '201':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_BlockedSlotOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
-  /api/v1/calendar/blocked-slots/{blocked_slot_id}:
-    delete:
-      tags:
-      - Calendar
-      summary: Delete Blocked Slot
-      operationId: delete_blocked_slot_api_v1_calendar_blocked_slots__blocked_slot_id__delete
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: blocked_slot_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Blocked Slot Id
       responses:
         '200':
           description: Successful Response
@@ -8975,6 +8865,129 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v2/integrations/calendly:
+    get:
+      tags:
+      - Calendly Integration
+      summary: Calendly Get Integration Status
+      description: Connection status for this workspace.
+      operationId: calendly_get_integration_status_api_v2_integrations_calendly_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CalendlyIntegrationStatusOut_'
+      security:
+      - HTTPBearer: []
+    delete:
+      tags:
+      - Calendly Integration
+      summary: Calendly Disconnect
+      description: Revoke the token at Calendly and delete the calendlyintegration
+        row.
+      operationId: calendly_disconnect_api_v2_integrations_calendly_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CalendlyDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v2/integrations/calendly/event-type:
+    put:
+      tags:
+      - Calendly Integration
+      summary: Calendly Set Event Type
+      description: Select which Calendly event type to check availability for / book
+        against.
+      operationId: calendly_set_event_type_api_v2_integrations_calendly_event_type_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendlyEventTypeUpdateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CalendlyIntegrationStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/calendar/availability:
+    get:
+      tags:
+      - Calendly Calendar
+      summary: Calendly Get Availability
+      operationId: calendly_get_availability_api_v2_calendar_availability_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Date From
+      - name: date_to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Date To
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CalendlyAvailabilityResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/calendar/events:
+    post:
+      tags:
+      - Calendly Calendar
+      summary: Calendly Create Event
+      operationId: calendly_create_event_api_v2_calendar_events_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendlyBookEventRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /auth/saml/{workspace_slug}/metadata:
     get:
       tags:
@@ -10043,48 +10056,6 @@ components:
       - ip_address
       - user_agent
       title: AuditEventOut
-    AvailableSlot:
-      properties:
-        slot_start:
-          type: string
-          format: date-time
-          title: Slot Start
-        slot_end:
-          type: string
-          format: date-time
-          title: Slot End
-        slot_label:
-          type: string
-          title: Slot Label
-      type: object
-      required:
-      - slot_start
-      - slot_end
-      - slot_label
-      title: AvailableSlot
-    AvailableSlotsResponse:
-      properties:
-        date:
-          type: string
-          title: Date
-        timezone:
-          type: string
-          title: Timezone
-        slots:
-          items:
-            $ref: '#/components/schemas/AvailableSlot'
-          type: array
-          title: Slots
-        total:
-          type: integer
-          title: Total
-      type: object
-      required:
-      - date
-      - timezone
-      - slots
-      - total
-      title: AvailableSlotsResponse
     BatchCallMetrics:
       properties:
         total_batches:
@@ -10308,61 +10279,6 @@ components:
       - agent_status
       - message
       title: BindingStatusResponse
-    BlockedSlotCreate:
-      properties:
-        title:
-          type: string
-          maxLength: 255
-          minLength: 1
-          title: Title
-        blocked_from:
-          type: string
-          format: date-time
-          title: Blocked From
-        blocked_until:
-          type: string
-          format: date-time
-          title: Blocked Until
-      type: object
-      required:
-      - title
-      - blocked_from
-      - blocked_until
-      title: BlockedSlotCreate
-    BlockedSlotOut:
-      properties:
-        id:
-          type: string
-          format: uuid
-          title: Id
-        tenant_id:
-          type: string
-          format: uuid
-          title: Tenant Id
-        title:
-          type: string
-          title: Title
-        blocked_from:
-          type: string
-          format: date-time
-          title: Blocked From
-        blocked_until:
-          type: string
-          format: date-time
-          title: Blocked Until
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-      type: object
-      required:
-      - id
-      - tenant_id
-      - title
-      - blocked_from
-      - blocked_until
-      - created_at
-      title: BlockedSlotOut
     BoardInfoResponse:
       properties:
         board_id:
@@ -10982,6 +10898,92 @@ components:
       - board_url
       - batch_id
       title: CSVUploadResponse
+    CalendlyAvailabilityResponse:
+      properties:
+        slots:
+          items:
+            $ref: '#/components/schemas/CalendlySlotOut'
+          type: array
+          title: Slots
+      type: object
+      required:
+      - slots
+      title: CalendlyAvailabilityResponse
+    CalendlyBookEventRequest:
+      properties:
+        start_time:
+          type: string
+          format: date-time
+          title: Start Time
+        attendee_email:
+          type: string
+          title: Attendee Email
+        attendee_name:
+          type: string
+          title: Attendee Name
+        description:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - start_time
+      - attendee_email
+      - attendee_name
+      title: CalendlyBookEventRequest
+    CalendlyDisconnectResponse:
+      properties:
+        disconnected:
+          type: boolean
+          title: Disconnected
+        provider:
+          type: string
+          title: Provider
+          default: calendly
+      type: object
+      required:
+      - disconnected
+      title: CalendlyDisconnectResponse
+    CalendlyEventTypeUpdateRequest:
+      properties:
+        event_type_uri:
+          type: string
+          title: Event Type Uri
+      type: object
+      required:
+      - event_type_uri
+      title: CalendlyEventTypeUpdateRequest
+    CalendlyIntegrationStatusOut:
+      properties:
+        connected:
+          type: boolean
+          title: Connected
+        user_uri:
+          type: string
+          nullable: true
+        event_type_uri:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - connected
+      title: CalendlyIntegrationStatusOut
+    CalendlySlotOut:
+      properties:
+        slot_start:
+          type: string
+          format: date-time
+          title: Slot Start
+        slot_end:
+          type: string
+          nullable: true
+        available:
+          type: boolean
+          title: Available
+      type: object
+      required:
+      - slot_start
+      - available
+      title: CalendlySlotOut
     CallFlowCreate:
       properties:
         name:
@@ -15806,22 +15808,6 @@ components:
       required:
       - data
       title: SuccessResponse[AppointmentOut]
-    SuccessResponse_AvailableSlotsResponse_:
-      properties:
-        data:
-          $ref: '#/components/schemas/AvailableSlotsResponse'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[AvailableSlotsResponse]
     SuccessResponse_BatchCallMetrics_:
       properties:
         data:
@@ -15854,22 +15840,6 @@ components:
       required:
       - data
       title: SuccessResponse[BindingStatusResponse]
-    SuccessResponse_BlockedSlotOut_:
-      properties:
-        data:
-          $ref: '#/components/schemas/BlockedSlotOut'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[BlockedSlotOut]
     SuccessResponse_BoardInfoResponse_:
       properties:
         data:
@@ -15982,6 +15952,54 @@ components:
       required:
       - data
       title: SuccessResponse[CSVUploadResponse]
+    SuccessResponse_CalendlyAvailabilityResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CalendlyAvailabilityResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CalendlyAvailabilityResponse]
+    SuccessResponse_CalendlyDisconnectResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CalendlyDisconnectResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CalendlyDisconnectResponse]
+    SuccessResponse_CalendlyIntegrationStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CalendlyIntegrationStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CalendlyIntegrationStatusOut]
     SuccessResponse_CallHistoryList_:
       properties:
         data:
@@ -16446,25 +16464,6 @@ components:
       required:
       - data
       title: SuccessResponse[KnowledgeBaseRetrievePreviewResponse]
-    SuccessResponse_List_BlockedSlotOut__:
-      properties:
-        data:
-          items:
-            $ref: '#/components/schemas/BlockedSlotOut'
-          type: array
-          title: Data
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[List[BlockedSlotOut]]
     SuccessResponse_List_BusinessHoursOut__:
       properties:
         data:

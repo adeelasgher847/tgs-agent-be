@@ -151,6 +151,13 @@ class CrmSettings(BaseModel):
     hubspot_token_encryption_key: str = Field(
         default="", validation_alias="HUBSPOT_TOKEN_ENCRYPTION_KEY"
     )
+    # Calendly
+    calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
+    calendly_client_secret: str = Field(default="", validation_alias="CALENDLY_CLIENT_SECRET")
+    calendly_redirect_uri: str = Field(default="", validation_alias="CALENDLY_REDIRECT_URI")
+    calendly_token_encryption_key: str = Field(
+        default="", validation_alias="CALENDLY_TOKEN_ENCRYPTION_KEY"
+    )
     # Monday.com
     monday_api_key: str = Field(default="", validation_alias="MONDAY_API_KEY")
     monday_board_id: str = Field(default="", validation_alias="MONDAY_BOARD_ID")
@@ -371,6 +378,14 @@ class Settings(BaseSettings):
     # Symmetric encryption key for workspaceintegration.access_token / refresh_token
     # (pgp_sym_encrypt) — same scheme as ELEVENLABS_ENCRYPTION_KEY above.
     HUBSPOT_TOKEN_ENCRYPTION_KEY: str = ""
+
+    # Calendly calendar OAuth (app/services/calendly_service.py).
+    CALENDLY_CLIENT_ID: str = ""
+    CALENDLY_CLIENT_SECRET: str = ""
+    CALENDLY_REDIRECT_URI: str = ""  # e.g. {WEBHOOK_BASE_URL}/api/v2/integrations/calendly/callback
+    # Symmetric encryption key for calendlyintegration.access_token / refresh_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    CALENDLY_TOKEN_ENCRYPTION_KEY: str = ""
 
     # Google Cloud Speech-to-Text Configuration
     GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file for Vertex AI + STT
@@ -811,6 +826,10 @@ class Settings(BaseSettings):
             hubspot_client_secret=self.HUBSPOT_CLIENT_SECRET,
             hubspot_redirect_uri=self.HUBSPOT_REDIRECT_URI,
             hubspot_token_encryption_key=self.HUBSPOT_TOKEN_ENCRYPTION_KEY,
+            calendly_client_id=self.CALENDLY_CLIENT_ID,
+            calendly_client_secret=self.CALENDLY_CLIENT_SECRET,
+            calendly_redirect_uri=self.CALENDLY_REDIRECT_URI,
+            calendly_token_encryption_key=self.CALENDLY_TOKEN_ENCRYPTION_KEY,
             monday_api_key=self.MONDAY_API_KEY,
             monday_board_id=self.MONDAY_BOARD_ID,
             monday_workspace_id=self.MONDAY_WORKSPACE_ID,

@@ -1,6 +1,11 @@
 """
-Business Hours & Blocked Slots Service
-Handles CRUD for business hours configuration and blocked time slots.
+Business Hours Service
+Handles CRUD for business hours configuration.
+
+Kept independently of the Calendly booking migration: the Smart Callback
+Scheduler (app/services/callback_scheduler_service.py) reads `businesshours`
+to decide whether a retry falls within the tenant's working hours — that use
+is unrelated to appointment-slot availability, which now lives in Calendly.
 All operations are scoped to tenant_id for multi-tenant isolation.
 """
 from datetime import datetime, timezone
@@ -10,8 +15,7 @@ from sqlalchemy.orm import Session
 import uuid
 
 from app.models.business_hours import BusinessHours
-from app.models.blocked_slot import BlockedSlot
-from app.schemas.calendar import BlockedSlotCreate, BusinessHoursUpsert
+from app.schemas.calendar import BusinessHoursUpsert
 
 
 class BusinessHoursConflictError(Exception):
@@ -32,7 +36,7 @@ def _parse_time_str(t: str):
 
 
 class BusinessHoursService:
-    """CRUD operations for business hours and blocked slots."""
+    """CRUD operations for business hours."""
 
     def get_business_hours(self, db: Session, tenant_id: uuid.UUID) -> List[BusinessHours]:
         return (
@@ -177,56 +181,5 @@ class BusinessHoursService:
         db.commit()
         return True
 
-    def get_blocked_slots(self, db: Session, tenant_id: uuid.UUID) -> List[BlockedSlot]:
-        return (
-            db.query(BlockedSlot)
-            .filter(BlockedSlot.tenant_id == tenant_id)
-            .order_by(BlockedSlot.blocked_from.asc())
-            .all()
-        )
 
-    def create_blocked_slot(
-        self, db: Session, tenant_id: uuid.UUID, data: BlockedSlotCreate
-    ) -> BlockedSlot:
-        blocked_from = self._localize_and_utc(db, tenant_id, data.blocked_from)
-        blocked_until = self._localize_and_utc(db, tenant_id, data.blocked_until)
-        bs = BlockedSlot(
-            tenant_id=tenant_id,
-            title=data.title,
-            blocked_from=blocked_from,
-            blocked_until=blocked_until,
-        )
-        db.add(bs)
-        db.commit()
-        db.refresh(bs)
-        return bs
-
-    def delete_blocked_slot(
-        self, db: Session, blocked_slot_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> bool:
-        bs = (
-            db.query(BlockedSlot)
-            .filter(BlockedSlot.id == blocked_slot_id, BlockedSlot.tenant_id == tenant_id)
-            .first()
-        )
-        if not bs:
-            return False
-        db.delete(bs)
-        db.commit()
-        return True
-
-    def _localize_and_utc(self, db: Session, tenant_id: uuid.UUID, dt_val: datetime) -> datetime:
-        """Localize a naive datetime to the tenant timezone then convert to UTC."""
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-        tz_str = self.get_tenant_timezone(db, tenant_id)
-        try:
-            tenant_tz = ZoneInfo(tz_str)
-        except (ZoneInfoNotFoundError, Exception):
-            tenant_tz = timezone.utc
-        if dt_val.tzinfo is None:
-            dt_val = dt_val.replace(tzinfo=tenant_tz)
-        else:
-            dt_val = dt_val.astimezone(tenant_tz)
-        if dt_val.tzinfo is None:
-            return dt_val.replace(tzinfo=timezone.utc)
-        return dt_val.astimezone(timezone.utc)
+business_hours_service = BusinessHoursService()

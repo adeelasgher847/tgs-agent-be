@@ -9,7 +9,7 @@ import json
 import re
 import time
 import uuid
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from typing import TYPE_CHECKING, List, Optional
 
 from app.core.config import settings
@@ -27,6 +27,134 @@ _RE_VOICE_SCREENING_QUALIFIED = re.compile(r"\[\s*SCREENING_QUALIFIED\s*\]", re.
 
 class BookingMixin:
     """Calendar and appointment booking methods for BidirectionalStreamHandler."""
+
+    # ── Calendly (Gemini function-calling) ──────────────────────────────────────
+
+    def _calendly_enabled(self) -> bool:
+        """True when this call's flow has `calendly_integration_enabled` set."""
+        call_flow = getattr(self, "call_flow", None)
+        flow_settings = getattr(call_flow, "settings", None) if call_flow else None
+        if not isinstance(flow_settings, dict):
+            return False
+        return bool(flow_settings.get("calendly_integration_enabled"))
+
+    async def _execute_calendly_tool_call(self, name: str, args: dict) -> dict:
+        """
+        Resolve a Gemini function_call (check_availability / book_appointment)
+        against the Calendly service backend. Always returns a JSON-serializable
+        dict — errors are surfaced to the model as {"error": "..."} so it can
+        recover gracefully instead of crashing the turn.
+        """
+        from app.services import calendly_service
+
+        if not self.call_session:
+            return {"error": "no active call session"}
+        tenant_id = self.call_session.tenant_id
+
+        try:
+            if name == "check_availability":
+                # Calendly's event_type_available_times endpoint has no duration
+                # parameter — slot length is fixed by the connected event type,
+                # so a caller-requested duration cannot filter/size the results.
+                date_str = (args.get("date") or "").strip()
+                target = self._resolve_calendly_target_date(date_str)
+                date_from = datetime.combine(target, datetime.min.time(), tzinfo=timezone.utc)
+                date_to = date_from + timedelta(days=1)
+                slots = await calendly_service.get_available_slots(
+                    self.db, tenant_id, date_from, date_to
+                )
+                self._last_offered_calendar_slots = [
+                    s["slot_start"] for s in slots if s["available"]
+                ]
+                self._last_selected_calendar_slot = None
+                self._last_requested_calendar_date = target
+                return {
+                    "date": target.isoformat(),
+                    "slots": [
+                        {
+                            "slot_start": s["slot_start"].isoformat(),
+                            "available": s["available"],
+                        }
+                        for s in slots
+                    ],
+                }
+
+            if name == "book_appointment":
+                slot_raw = (args.get("slot") or "").strip()
+                attendee_email = (args.get("attendee_email") or "").strip()
+                if not slot_raw or not attendee_email:
+                    return {"error": "slot and attendee_email are required"}
+                slot_dt = self._resolve_cached_calendar_slot(slot_raw)
+                if slot_dt is None:
+                    try:
+                        slot_dt = datetime.fromisoformat(slot_raw.replace("Z", "+00:00"))
+                    except ValueError:
+                        return {"error": f"invalid slot datetime: {slot_raw}"}
+                attendee_name = ""
+                try:
+                    from app.services.call_session_contact_state import get_contact_intake
+
+                    intake = get_contact_intake(self.call_session)
+                    attendee_name = (intake.get("name") or "").strip()
+                except Exception:
+                    pass
+                summary = (self.call_session.transcript_summary or "").strip()
+                result = await calendly_service.book_appointment(
+                    self.db,
+                    tenant_id,
+                    start_time=slot_dt,
+                    attendee_email=attendee_email,
+                    attendee_name=attendee_name or "Caller",
+                    description=summary or None,
+                )
+                return {"booked": True, "slot_start": slot_dt.isoformat(), "calendly_event": result.get("resource", result)}
+
+            return {"error": f"unknown function: {name}"}
+        except ValueError as ve:
+            return {"error": str(ve)}
+        except Exception as e:
+            logger.error("Calendly tool call %s failed: %s", name, e, exc_info=True)
+            return {"error": "internal error executing Calendly tool call"}
+
+    @staticmethod
+    def _resolve_calendly_target_date(raw_date: str) -> date:
+        today = datetime.now(timezone.utc).date()
+        low = (raw_date or "").strip().lower()
+        if low in ("", "today"):
+            return today
+        if low == "tomorrow":
+            return today + timedelta(days=1)
+        try:
+            return date.fromisoformat(low)
+        except ValueError:
+            return today + timedelta(days=1)
+
+    async def _run_calendly_tool_turn(
+        self,
+        *,
+        llm_service,
+        user_text: str,
+        system_prompt: str,
+        conversation_history: list,
+        model_name: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """
+        Run one LLM turn with Gemini native tool-calling for Calendly-enabled
+        agents. Completely bypasses the legacy [CHECK_SLOTS:...] /
+        [BOOK_APPOINTMENT:...] regex-token pipeline — the model resolves
+        availability/booking via function calls instead.
+        """
+        return await llm_service.generate_with_tools(
+            prompt=user_text,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history,
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tool_executor=self._execute_calendly_tool_call,
+        )
 
     # ── Calendar token handlers ───────────────────────────────────────────────
 
