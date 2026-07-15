@@ -1,10 +1,13 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Optional, List
-from datetime import datetime, date, time
+from datetime import datetime, time
 import uuid
 
 
-# ─── Business Hours ───────────────────────────────────────────────────────────
+# ─── Business Hours ────────────────────────────────────────────────────────────
+# Kept for the Smart Callback Scheduler (app/services/callback_scheduler_service.py),
+# which reads business hours to gate retry timing. Unrelated to appointment-slot
+# availability, which now lives in Calendly.
 
 class BusinessHoursUpsert(BaseModel):
     day_of_week: int = Field(..., ge=0, le=6, description="0=Sunday … 6=Saturday")
@@ -53,31 +56,8 @@ class BusinessHoursOut(BaseModel):
             return v.strftime("%H:%M")
         return v
 
-# ─── Blocked Slots ────────────────────────────────────────────────────────────
 
-class BlockedSlotCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
-    blocked_from: datetime
-    blocked_until: datetime
-
-    @model_validator(mode="after")
-    def validate_range(self):
-        if self.blocked_until <= self.blocked_from:
-            raise ValueError("blocked_until must be after blocked_from.")
-        return self
-
-
-class BlockedSlotOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    tenant_id: uuid.UUID
-    title: str
-    blocked_from: datetime
-    blocked_until: datetime
-    created_at: datetime
-
-# ─── Appointments ─────────────────────────────────────────────────────────────
+# ─── Appointments (local read-log; Calendly owns availability/booking) ────────
 
 class AppointmentCreate(BaseModel):
     customer_name: str = Field(..., min_length=1, max_length=255)
@@ -173,7 +153,8 @@ class AppointmentListResponse(BaseModel):
     total: int
 
 
-# ─── Slot availability ────────────────────────────────────────────────────────
+# ─── Legacy slot availability (non-Calendly tenants only) ─────────────────────
+# Calendly-enabled tenants use calendly_service.get_available_slots instead.
 
 class AvailableSlot(BaseModel):
     slot_start: datetime

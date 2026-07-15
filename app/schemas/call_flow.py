@@ -51,6 +51,10 @@ class CallFlowCreate(BaseModel):
     prompt: Optional[str] = None
     notes: Optional[str] = None  # notes for the initial prompt version
     flow_data: Optional[FlowDataSchema] = Field(None, alias="flowData")
+    # Free-form flow settings. Recognized keys include:
+    #   calendly_integration_enabled: bool — routes booking through Gemini
+    #   function-calling + Calendly instead of the legacy [BOOK_APPOINTMENT:...]
+    #   regex-token pipeline (see app/voice/booking_mixin.py::_calendly_enabled).
     settings: Optional[Dict[str, Any]] = None
 
 
