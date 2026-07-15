@@ -130,14 +130,14 @@ def delete_workspace_account(db: Session, workspace_id: uuid.UUID) -> None:
         raise
 
     try:
-        from app.services.gcs_recording_service import delete_workspace_recordings
+        from app.services.s3_recording_service import delete_workspace_recordings
 
         delete_workspace_recordings(workspace_id)
     except Exception as exc:
         # PII in Postgres is already wiped and committed (the core legal
-        # obligation); a GCS hiccup here shouldn't undo that or fail the
+        # obligation); an S3 hiccup here shouldn't undo that or fail the
         # otherwise-successful deletion. Logged loudly for ops follow-up.
         logger.error(
-            "account_deletion: GCS recording cleanup failed for workspace %s: %s",
+            "account_deletion: S3 recording cleanup failed for workspace %s: %s",
             workspace_id, exc, exc_info=True,
         )

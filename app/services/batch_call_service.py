@@ -31,7 +31,7 @@ from app.schemas.batch_call import (
     PaginatedBatchCallRecords,
     PaginatedBatchJobs,
 )
-from app.services import batch_call_gcs_service
+from app.services import batch_call_s3_service
 
 MAX_CSV_ROWS = 10_000
 MAX_CSV_BYTES = 20 * 1024 * 1024  # 20 MB
@@ -176,13 +176,13 @@ class BatchCallService:
 
         # ── Persist job + records ─────────────────────────────────────────────
         batch_id = uuid.uuid4()
-        gcs_key = batch_call_gcs_service.build_batch_csv_gcs_key(workspace_id, batch_id)
+        gcs_key = batch_call_s3_service.build_batch_csv_gcs_key(workspace_id, batch_id)
 
-        # Upload CSV to GCS (may raise — no DB side-effects yet)
+        # Upload CSV to S3 (may raise — no DB side-effects yet)
         try:
-            batch_call_gcs_service.upload_batch_csv(gcs_key, csv_bytes, workspace_id, batch_id)
+            batch_call_s3_service.upload_batch_csv(gcs_key, csv_bytes, workspace_id, batch_id)
         except Exception as exc:
-            logger.error("GCS CSV upload failed for batch %s: %s", batch_id, exc)
+            logger.error("S3 CSV upload failed for batch %s: %s", batch_id, exc)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Failed to upload CSV to storage; please retry",
@@ -198,7 +198,7 @@ class BatchCallService:
             active_count=0,
             completed_count=0,
             failed_count=0,
-            gcs_path=gcs_key,
+            s3_path=gcs_key,
             scheduled_at=scheduled_at,
         )
         self._db.add(job)

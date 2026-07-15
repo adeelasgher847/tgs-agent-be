@@ -232,6 +232,12 @@ class ServerSettings(BaseModel):
     # GCS knowledge base
     gcs_kb_bucket: str = Field(default="", validation_alias="GCS_KB_BUCKET")
     gcs_kb_prefix: str = Field(default="kb-files", validation_alias="GCS_KB_PREFIX")
+    # AWS S3 storage
+    aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str = Field(default="", validation_alias="AWS_SECRET_ACCESS_KEY")
+    aws_region_name: str = Field(default="us-east-1", validation_alias="AWS_REGION_NAME")
+    s3_recordings_bucket: str = Field(default="", validation_alias="S3_RECORDINGS_BUCKET")
+    s3_kb_bucket: str = Field(default="", validation_alias="S3_KB_BUCKET")
     # Concurrency
     outbound_max_concurrent_per_workspace: int = Field(
         default=10, validation_alias="OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE"
@@ -640,6 +646,13 @@ class Settings(BaseSettings):
     GCS_KB_BUCKET: str = ""
     GCS_KB_PREFIX: str = "kb-files"
 
+    # AWS S3 storage (GCS → S3 migration)
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_REGION_NAME: str = "us-east-1"
+    S3_RECORDINGS_BUCKET: str = ""
+    S3_KB_BUCKET: str = ""
+
     # HIPAA — Google Cloud DLP + CMEK
     # GCP_PROJECT_ID is declared above (line ~245); no second declaration here.
 
@@ -846,6 +859,11 @@ class Settings(BaseSettings):
             gcs_recordings_prefix=self.GCS_RECORDINGS_PREFIX,
             gcs_kb_bucket=self.GCS_KB_BUCKET,
             gcs_kb_prefix=self.GCS_KB_PREFIX,
+            aws_access_key_id=self.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=self.AWS_SECRET_ACCESS_KEY,
+            aws_region_name=self.AWS_REGION_NAME,
+            s3_recordings_bucket=self.S3_RECORDINGS_BUCKET,
+            s3_kb_bucket=self.S3_KB_BUCKET,
             outbound_max_concurrent_per_workspace=self.OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE,
             max_batch_concurrency=self.MAX_BATCH_CONCURRENCY,
         )

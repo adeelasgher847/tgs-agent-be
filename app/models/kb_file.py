@@ -22,7 +22,7 @@ class KbFile(Base):
     original_filename = Column(Text, nullable=False)
     size_bytes = Column(BigInteger, nullable=True)
     file_type = Column(Text, nullable=True)
-    gcs_path = Column(Text, nullable=True)
+    s3_path = Column(Text, nullable=True)
 
     # processing | ready | error
     status = Column(Text, nullable=False, default="processing")

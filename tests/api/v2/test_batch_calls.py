@@ -135,7 +135,7 @@ class TestCreateBatchJob:
             active_count=0,
             completed_count=0,
             failed_count=0,
-            gcs_path=f"batch-files/{WORKSPACE_ID}/{uuid.uuid4()}.csv",
+            s3_path=f"batch-files/{WORKSPACE_ID}/{uuid.uuid4()}.csv",
             scheduled_at=None,
             started_at=None,
             completed_at=None,
@@ -310,7 +310,7 @@ class TestCreateBatchJob:
             active_count=0,
             completed_count=0,
             failed_count=0,
-            gcs_path=f"batch-files/{WORKSPACE_ID}/x.csv",
+            s3_path=f"batch-files/{WORKSPACE_ID}/x.csv",
             scheduled_at=None,
             started_at=None,
             completed_at=None,
@@ -385,7 +385,7 @@ class TestListBatchJobs:
             active_count=0,
             completed_count=5,
             failed_count=0,
-            gcs_path=None,
+            s3_path=None,
             scheduled_at=None,
             started_at=None,
             completed_at=None,
@@ -424,7 +424,7 @@ class TestGetBatchJob:
         job_model.active_count = 3
         job_model.completed_count = 0
         job_model.failed_count = 0
-        job_model.gcs_path = "batch-files/x/y.csv"
+        job_model.s3_path = "batch-files/x/y.csv"
         job_model.scheduled_at = None
         job_model.started_at = None
         job_model.completed_at = None
@@ -538,7 +538,7 @@ class TestCancelBatchJob:
             active_count=2,
             completed_count=3,
             failed_count=0,
-            gcs_path=None,
+            s3_path=None,
             scheduled_at=None,
             started_at=None,
             completed_at=datetime.now(timezone.utc),

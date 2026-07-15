@@ -180,7 +180,7 @@ async def poll_pending_batch_jobs(ctx: dict) -> None:
 
 async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
     """
-    ARQ job: download the KB file from GCS, extract text, chunk via tiktoken,
+    ARQ job: download the KB file from S3, extract text, chunk via tiktoken,
     embed with OpenAI ada-002, insert kb_chunks, and update kb_file.status.
     """
     from app.db.session import SessionLocal
@@ -199,28 +199,30 @@ async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
             logger.info("kb_ingestion_task: KbFile %s already %s — skipping", file_id, kb_file.status)
             return
 
-        # Download bytes from GCS
+        # Download bytes from S3
         file_bytes: Optional[bytes] = None
-        if kb_file.gcs_path and settings.GCS_KB_BUCKET:
+        if kb_file.s3_path and settings.S3_KB_BUCKET:
             try:
-                from google.cloud import storage as gcs_storage  # type: ignore
+                from app.services.s3_service import get_s3_client
 
-                gcs_client = gcs_storage.Client()
-                bucket = gcs_client.bucket(settings.GCS_KB_BUCKET)
-                blob = bucket.blob(kb_file.gcs_path)
-                file_bytes = blob.download_as_bytes()
+                s3_client = get_s3_client()
+                response = s3_client.get_object(
+                    Bucket=settings.S3_KB_BUCKET,
+                    Key=kb_file.s3_path,
+                )
+                file_bytes = response["Body"].read()
             except Exception as e:
                 logger.error(
-                    "kb_ingestion_task: GCS download failed for file_id=%s: %s", file_id, e, exc_info=True
+                    "kb_ingestion_task: S3 download failed for file_id=%s: %s", file_id, e, exc_info=True
                 )
                 kb_file.status = "error"
-                kb_file.error_message = f"GCS download failed: {str(e)[:500]}"
+                kb_file.error_message = f"S3 download failed: {str(e)[:500]}"
                 db.commit()
                 return
 
         if file_bytes is None:
             kb_file.status = "error"
-            kb_file.error_message = "No GCS path set or GCS_KB_BUCKET not configured"
+            kb_file.error_message = "No S3 path set or S3_KB_BUCKET not configured"
             db.commit()
             return
 

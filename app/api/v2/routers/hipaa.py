@@ -9,6 +9,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -21,14 +22,15 @@ from app.core.logger import logger
 from app.models.call_flow import CallFlow
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services import gcs_recording_service
+from app.services import s3_recording_service
 from app.services.audit_service import log_audit_event
 from app.utils.response import create_success_response
 
 flows_router = APIRouter(prefix="/flows", tags=["hipaa"])
 workspace_router = APIRouter(prefix="/workspace", tags=["hipaa"])
 
-_KMS_KEY_PREFIX = "projects/"
+# arn:aws:kms:<region>:<account-id>:key/<key-id>
+_KMS_KEY_ARN_RE = re.compile(r"^arn:aws:kms:[a-z0-9-]+:\d{12}:key/[a-zA-Z0-9-]+$")
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -44,11 +46,10 @@ class KmsKeyUpdate(BaseModel):
     @field_validator("kms_key_name")
     @classmethod
     def validate_kms_key_format(cls, v: str) -> str:
-        if not v.startswith(_KMS_KEY_PREFIX):
+        if not _KMS_KEY_ARN_RE.match(v):
             raise ValueError(
-                "kms_key_name must be a full Cloud KMS resource name "
-                "(e.g. projects/my-project/locations/us-central1/keyRings/..."
-                "/cryptoKeys/my-key)"
+                "kms_key_name must be a full AWS KMS key ARN "
+                "(e.g. arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab)"
             )
         return v
 
@@ -97,10 +98,9 @@ def _get_hipaa_flow_ids(
 
 def _validate_kms_key_blocking(kms_key_name: str) -> None:
     """Blocking KMS validation — run inside executor via to_thread."""
-    from google.cloud import kms  # type: ignore
+    from app.services.s3_service import get_kms_client
 
-    client = kms.KeyManagementServiceClient()
-    client.get_crypto_key(request={"name": kms_key_name})
+    get_kms_client().describe_key(KeyId=kms_key_name)
 
 
 async def _validate_kms_key(kms_key_name: str) -> None:
@@ -231,7 +231,7 @@ async def update_kms_key(
     # written directly by LiveKit (which bypass upload_recording()) are also
     # encrypted automatically, with no application-level changes required.
     try:
-        gcs_recording_service.set_bucket_default_kms_key(body.kms_key_name)
+        s3_recording_service.set_bucket_default_kms_key(body.kms_key_name)
     except Exception as exc:
         logger.warning(
             "KMS key persisted but bucket default-key patch failed "

@@ -6721,7 +6721,7 @@ paths:
       tags:
       - Call Recordings
       summary: Get Recording
-      description: 'Return a signed GCS URL for the call recording.
+      description: 'Return a signed S3 URL for the call recording.
 
 
         URL expires in {GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS} seconds (default
@@ -10189,7 +10189,7 @@ components:
         failed_count:
           type: integer
           title: Failed Count
-        gcs_path:
+        s3_path:
           type: string
           nullable: true
         scheduled_at:
