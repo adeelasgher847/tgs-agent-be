@@ -86,6 +86,8 @@ async def create_batch_job(
     file: UploadFile = File(..., description="UTF-8 CSV file, max 20 MB"),
     agent_id: uuid.UUID = Form(...),
     scheduled_at: Optional[datetime] = Form(default=None),
+    voicemail_action: str = Form(default="skip", description="skip | leave_message | continue"),
+    voicemail_message: Optional[str] = Form(default=None, description="Max 500 chars"),
     workspace: Workspace = Depends(get_workspace),
     db: Session = Depends(get_db),
     svc=Depends(_batch_service_write),
@@ -97,6 +99,19 @@ async def create_batch_job(
     Additional columns are available as {variable} substitutions in the agent prompt.
     Requires admin / member / owner / config role for JWT users; any API key client.
     """
+    from app.schemas.batch_call import VOICEMAIL_ACTIONS
+
+    if voicemail_action not in VOICEMAIL_ACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"voicemail_action must be one of {VOICEMAIL_ACTIONS}",
+        )
+    if voicemail_message is not None and len(voicemail_message) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="voicemail_message must be at most 500 characters",
+        )
+
     if file.content_type and "csv" not in file.content_type and "text" not in file.content_type:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -124,6 +139,8 @@ async def create_batch_job(
         agent_id=agent_id,
         csv_bytes=raw,
         scheduled_at=scheduled_at,
+        voicemail_action=voicemail_action,
+        voicemail_message=voicemail_message,
     )
 
     await _enqueue_batch_job(str(job_out.id), scheduled_at)

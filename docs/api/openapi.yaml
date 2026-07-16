@@ -7338,6 +7338,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/webhooks/twilio/amd:
+    post:
+      tags:
+      - AMD Webhook
+      - AMD Webhook
+      summary: Amd Callback
+      description: Twilio async AMD status callback — see module docstring.
+      operationId: amd_callback_api_v1_webhooks_twilio_amd_post
+      parameters:
+      - name: callSessionId
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      - name: batchCallRecordId
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/html:
+              schema:
+                type: string
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /health:
     get:
       summary: Health Check
@@ -10160,6 +10194,13 @@ components:
         failed_count:
           type: integer
           title: Failed Count
+        voicemail_action:
+          type: string
+          title: Voicemail Action
+          default: skip
+        voicemail_message:
+          type: string
+          nullable: true
         s3_path:
           type: string
           nullable: true
@@ -10218,6 +10259,14 @@ components:
         percent_complete:
           type: number
           title: Percent Complete
+        voicemail_skipped:
+          type: integer
+          title: Voicemail Skipped
+          default: 0
+        voicemail_message_left:
+          type: integer
+          title: Voicemail Message Left
+          default: 0
       type: object
       required:
       - batch_id
@@ -10306,6 +10355,14 @@ components:
         scheduled_at:
           type: string
           format: date-time
+          nullable: true
+        voicemail_action:
+          type: string
+          title: Voicemail Action
+          description: skip | leave_message | continue
+          default: skip
+        voicemail_message:
+          type: string
           nullable: true
       type: object
       required:
@@ -11278,6 +11335,16 @@ components:
           type: string
           nullable: true
         batch_prompt_override:
+          type: string
+          nullable: true
+        enable_amd:
+          type: boolean
+          title: Enable Amd
+          default: false
+        voicemail_action:
+          type: string
+          nullable: true
+        voicemail_message:
           type: string
           nullable: true
       type: object

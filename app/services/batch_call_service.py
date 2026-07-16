@@ -112,6 +112,8 @@ class BatchCallService:
         agent_id: uuid.UUID,
         csv_bytes: bytes,
         scheduled_at: Optional[datetime] = None,
+        voicemail_action: str = "skip",
+        voicemail_message: Optional[str] = None,
     ) -> BatchJobOut:
         """
         Validate CSV, upload to GCS, persist BatchJob + BatchCallRecords.
@@ -200,6 +202,8 @@ class BatchCallService:
             failed_count=0,
             s3_path=gcs_key,
             scheduled_at=scheduled_at,
+            voicemail_action=voicemail_action,
+            voicemail_message=voicemail_message,
         )
         self._db.add(job)
         self._db.flush()
@@ -295,6 +299,8 @@ class BatchCallService:
             failed=job.failed_count,
             total=total,
             percent_complete=pct,
+            voicemail_skipped=job.voicemail_skipped_count or 0,
+            voicemail_message_left=job.voicemail_message_left_count or 0,
         )
 
     def list_batch_call_records(

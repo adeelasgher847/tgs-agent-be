@@ -462,7 +462,7 @@ async def initiate_call(
             db.refresh(call_session)
 
         # Webhook URLs
-        webhook_url = (
+        streaming_webhook_url = (
             f"{base_url}/api/v1/voice/gather/streaming?"
             f"agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         )
@@ -470,6 +470,22 @@ async def initiate_call(
             f"{base_url}/api/v1/voice/webhook/call-events?"
             f"agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         )
+
+        # Answering Machine Detection (batch calls only) — hold the call on a
+        # pause/redirect loop until the async AMD callback resolves human vs machine.
+        amd_status_callback_url: Optional[str] = None
+        if call_request.enable_amd:
+            batch_record_id_q = call_request.batch_call_record_id or ""
+            amd_status_callback_url = (
+                f"{base_url}/api/v1/webhooks/twilio/amd?"
+                f"callSessionId={call_session.id}&batchCallRecordId={batch_record_id_q}"
+            )
+            webhook_url = (
+                f"{base_url}/api/v1/webhooks/twilio/amd-hold?"
+                f"agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
+            )
+        else:
+            webhook_url = streaming_webhook_url
 
         logger.info("Making call with webhook_url: %s", webhook_url)
         logger.info("Making call with status_callback_url: %s", status_callback_url)
@@ -493,6 +509,16 @@ async def initiate_call(
         # ── 10. Initiate Twilio call ──────────────────────────────────────
         _twilio_record = not _livekit_recording_enabled
         try:
+            amd_kwargs = (
+                {
+                    "machine_detection": "Enable",
+                    "machine_detection_timeout": 3,
+                    "async_amd": "true",
+                    "async_amd_status_callback": amd_status_callback_url,
+                }
+                if call_request.enable_amd
+                else {}
+            )
             if use_custom_credentials:
                 call = twilio_service.make_call_with_credentials(
                     to_number=call_request.toNumber,
@@ -502,6 +528,7 @@ async def initiate_call(
                     account_sid=account_sid,
                     auth_token=auth_token,
                     record=_twilio_record,
+                    **amd_kwargs,
                 )
             else:
                 call = twilio_service.make_call(
@@ -510,6 +537,7 @@ async def initiate_call(
                     webhook_url=webhook_url,
                     status_callback_url=status_callback_url,
                     record=_twilio_record,
+                    **amd_kwargs,
                 )
         except Exception as exc:
             logger.error(
