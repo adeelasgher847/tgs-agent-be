@@ -9,6 +9,26 @@ from app.core.config import settings
 from typing import List, Dict, Optional, Any
 from app.core.logger import logger
 
+def _build_amd_kwargs(
+    machine_detection: Optional[str] = None,
+    machine_detection_timeout: Optional[int] = None,
+    async_amd: Optional[str] = None,
+    async_amd_status_callback: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build the subset of AMD kwargs to pass to client.calls.create — only includes
+    params that were explicitly set, so omitting them all preserves the "no AMD" default."""
+    kwargs: Dict[str, Any] = {}
+    if machine_detection is not None:
+        kwargs["machine_detection"] = machine_detection
+    if machine_detection_timeout is not None:
+        kwargs["machine_detection_timeout"] = machine_detection_timeout
+    if async_amd is not None:
+        kwargs["async_amd"] = async_amd
+    if async_amd_status_callback is not None:
+        kwargs["async_amd_status_callback"] = async_amd_status_callback
+    return kwargs
+
+
 class TwilioService:
     """Service class for handling Twilio operations"""
     
@@ -75,14 +95,33 @@ class TwilioService:
                     f"(actual={actual_status_method})"
                 )
     
-    def make_call(self, to_number, from_number, webhook_url, status_callback_url, record=True):
-        """Make an outbound call with improved reliability and optional recording"""
+    def make_call(
+        self,
+        to_number,
+        from_number,
+        webhook_url,
+        status_callback_url,
+        record=True,
+        machine_detection: Optional[str] = None,
+        machine_detection_timeout: Optional[int] = None,
+        async_amd: Optional[str] = None,
+        async_amd_status_callback: Optional[str] = None,
+    ):
+        """Make an outbound call with improved reliability and optional recording.
+
+        AMD (Answering Machine Detection) is opt-in via machine_detection — leaving it
+        None preserves the existing "no AMD" behaviour (instant TwiML, no announcements).
+        """
         client = self.get_client()
-        
+
         # Set up recording status callback URL (use settings for correct base URL)
         from app.core.config import settings
         recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
-        
+
+        amd_kwargs = _build_amd_kwargs(
+            machine_detection, machine_detection_timeout, async_amd, async_amd_status_callback
+        )
+
         call = client.calls.create(
             to=to_number,
             from_=from_number,
@@ -94,29 +133,35 @@ class TwilioService:
             recording_channels='dual',  # Record both channels
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
             timeout=30,  # Answer timeout (30 seconds)
-            
-            # NO AMD - Fast webhook response prevents Twilio announcements naturally!
-            # Instant TwiML (< 10ms) + Auto-greeting = No "Please hold" messages
+            **amd_kwargs,
         )
-        
+
         return call
-    
+
     def make_call_with_credentials(
-        self, 
-        to_number: str, 
-        from_number: str, 
-        webhook_url: str, 
+        self,
+        to_number: str,
+        from_number: str,
+        webhook_url: str,
         status_callback_url: str,
         account_sid: str,
         auth_token: str,
-        record: bool = True
+        record: bool = True,
+        machine_detection: Optional[str] = None,
+        machine_detection_timeout: Optional[int] = None,
+        async_amd: Optional[str] = None,
+        async_amd_status_callback: Optional[str] = None,
     ):
         """Make call with custom Twilio credentials"""
         client = self.get_client_with_credentials(account_sid, auth_token)
-        
+
         from app.core.config import settings
         recording_status_callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/webhook/recording-status"
-        
+
+        amd_kwargs = _build_amd_kwargs(
+            machine_detection, machine_detection_timeout, async_amd, async_amd_status_callback
+        )
+
         call = client.calls.create(
             to=to_number,
             from_=from_number,
@@ -128,8 +173,9 @@ class TwilioService:
             recording_channels='dual',
             recording_status_callback=recording_status_callback_url,
             timeout=30,
+            **amd_kwargs,
         )
-        
+
         return call
     
     def get_recent_calls(self, limit=10):
@@ -618,6 +664,31 @@ class TwilioService:
             
         except TwilioException as e:
             logger.error(f"❌ Error redirecting call {call_sid}: {str(e)}")
+            return False
+
+    def update_call_twiml(
+        self,
+        call_sid: str,
+        twiml: str,
+        account_sid: Optional[str] = None,
+        auth_token: Optional[str] = None,
+    ) -> bool:
+        """
+        Inject TwiML directly into an in-progress call (no URL fetch round-trip).
+        Used by the AMD callback to play a voicemail message and hang up.
+        """
+        client = (
+            self.get_client_with_credentials(account_sid, auth_token)
+            if account_sid and auth_token
+            else self.get_client()
+        )
+
+        try:
+            client.calls(call_sid).update(twiml=twiml)
+            logger.info(f"✅ Call {call_sid} updated with inline TwiML")
+            return True
+        except TwilioException as e:
+            logger.error(f"❌ Error updating call {call_sid} with TwiML: {str(e)}")
             return False
 
     def redirect_call_with_credentials(

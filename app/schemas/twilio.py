@@ -89,6 +89,11 @@ class CallInitiateRequest(BaseModel):
     # Batch outbound calls — worker passes substituted prompt + record link
     batch_call_record_id: Optional[str] = None
     batch_prompt_override: Optional[str] = None
+    # Answering Machine Detection — worker enables this when the batch job's
+    # voicemail_action is 'skip' or 'leave_message'
+    enable_amd: bool = False
+    voicemail_action: Optional[str] = None
+    voicemail_message: Optional[str] = None
 
     @field_validator("toNumber")
     @classmethod

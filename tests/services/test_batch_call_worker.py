@@ -109,7 +109,9 @@ def _make_agent(db, tenant_id: uuid.UUID, prompt: str = "") -> uuid.UUID:
     return a.id
 
 
-def _make_batch_job(db, workspace_id, agent_id, total=3) -> "BatchJob":  # noqa: F821
+def _make_batch_job(
+    db, workspace_id, agent_id, total=3, voicemail_action="skip", voicemail_message=None
+) -> "BatchJob":  # noqa: F821
     from app.models.batch_job import BatchJob
 
     j = BatchJob(
@@ -121,6 +123,8 @@ def _make_batch_job(db, workspace_id, agent_id, total=3) -> "BatchJob":  # noqa:
         active_count=0,
         completed_count=0,
         failed_count=0,
+        voicemail_action=voicemail_action,
+        voicemail_message=voicemail_message,
     )
     db.add(j)
     db.commit()
@@ -847,3 +851,163 @@ class TestBillingRecordCallUsage:
             .one()
         )
         assert usage.workspace_id == workspace_id
+
+
+# ── Answering Machine Detection (AMD) ─────────────────────────────────────────
+
+class TestDispatchEnablesAMD:
+    """dispatch_record must thread AMD flags into CallInitiateRequest based on
+    the batch job's voicemail_action."""
+
+    def _dispatch(self, db, job, workspace_id, agent_id):
+        from app.schemas.base import SuccessResponse
+        from app.schemas.twilio import CallInitiateResponse
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        record = _make_record(db, job.id, "+15550009999", status="active")
+        job.active_count = 1
+        db.commit()
+
+        _cid = uuid.uuid4()
+        fake_response = SuccessResponse(
+            data=CallInitiateResponse(
+                callId=str(_cid),
+                twilioCallSid="CAamd",
+                callSessionId=str(_cid),
+                status="initiated",
+            )
+        )
+        with patch(
+            "app.services.voice_call_service.initiate_call",
+            new=AsyncMock(return_value=fake_response),
+        ) as mock_call:
+            svc = BatchCallWorkerService(db)
+            asyncio.run(svc.dispatch_record(record, workspace_id, agent_id, None))
+        return mock_call.call_args.kwargs["call_request"]
+
+    def test_voicemail_action_skip_enables_amd(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1, voicemail_action="skip")
+
+        req = self._dispatch(db, job, workspace_id, agent_id)
+
+        assert req.enable_amd is True
+        assert req.voicemail_action == "skip"
+
+    def test_voicemail_action_leave_message_enables_amd(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(
+            db, workspace_id, agent_id, total=1,
+            voicemail_action="leave_message", voicemail_message="Please call us back.",
+        )
+
+        req = self._dispatch(db, job, workspace_id, agent_id)
+
+        assert req.enable_amd is True
+        assert req.voicemail_action == "leave_message"
+        assert req.voicemail_message == "Please call us back."
+
+    def test_voicemail_action_continue_does_not_enable_amd(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1, voicemail_action="continue")
+
+        req = self._dispatch(db, job, workspace_id, agent_id)
+
+        assert req.enable_amd is False
+
+
+class TestVoicemailStateTransitions:
+    def test_mark_voicemail_skipped_updates_record_and_counters(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1, voicemail_action="skip")
+        record = _make_record(db, job.id, "+15550001111", status="active")
+        job.active_count = 1
+        job.waiting_count = 0
+        db.commit()
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        svc = BatchCallWorkerService(db)
+        asyncio.run(svc.mark_voicemail_skipped(record.id))
+
+        db.refresh(record)
+        db.refresh(job)
+        assert record.status == "voicemail_skipped"
+        assert job.active_count == 0
+        assert job.completed_count == 1
+        assert job.voicemail_skipped_count == 1
+        assert job.status == "completed"  # no records remain waiting/active
+
+    def test_mark_voicemail_skipped_is_noop_for_non_active_record(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1, voicemail_action="skip")
+        record = _make_record(db, job.id, "+15550001111", status="completed")
+        db.commit()
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        svc = BatchCallWorkerService(db)
+        asyncio.run(svc.mark_voicemail_skipped(record.id))
+
+        db.refresh(record)
+        db.refresh(job)
+        assert record.status == "completed"  # untouched
+        assert job.voicemail_skipped_count == 0
+
+    def test_mark_voicemail_message_left_updates_record_counters_and_bills(self, db):
+        from app.models.call_session import CallSession
+        from app.models.user import User
+
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user = User(
+            id=uuid.uuid4(),
+            first_name="Batch",
+            last_name="AMD",
+            email="batch-amd@example.com",
+            hashed_password="x",
+        )
+        db.add(user)
+        db.flush()
+        call_id = uuid.uuid4()
+        cs = CallSession(
+            id=call_id,
+            user_id=user.id,
+            agent_id=agent_id,
+            tenant_id=workspace_id,
+            start_time=datetime.now(timezone.utc),
+            status="active",
+            call_type="outbound",
+        )
+        db.add(cs)
+
+        job = _make_batch_job(
+            db, workspace_id, agent_id, total=1,
+            voicemail_action="leave_message", voicemail_message="We called, please call back.",
+        )
+        record = _make_record(db, job.id, "+15550001111", status="active")
+        record.call_id = call_id
+        job.active_count = 1
+        job.waiting_count = 0
+        db.commit()
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        with patch(
+            "app.services.billing_service.BillingService.record_call_usage"
+        ) as mock_bill:
+            svc = BatchCallWorkerService(db)
+            asyncio.run(svc.mark_voicemail_message_left(record.id))
+
+        db.refresh(record)
+        db.refresh(job)
+        assert record.status == "voicemail_message_left"
+        assert job.active_count == 0
+        assert job.completed_count == 1
+        assert job.voicemail_message_left_count == 1
+        mock_bill.assert_called_once()

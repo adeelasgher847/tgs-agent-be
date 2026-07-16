@@ -8,11 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that handle inbound/outbound phone calls via Twilio + LiveKit, transcribe speech (Deepgram / Google STT), generate responses via LLM (OpenAI / Gemini / Groq), and synthesise voice (ElevenLabs / Rime / Google TTS). Post-call data syncs to tenant-configured CRMs.
 
-**Runtime**: Python 3.14, FastAPI, Uvicorn  
+**Runtime**: Python 3.11 (Docker) / FastAPI, Uvicorn  
 **DB**: PostgreSQL via SQLAlchemy 2.x (sync) + asyncpg (async) + Alembic  
 **Background jobs**: ARQ (Redis-backed) for batch calls; APScheduler (PostgreSQL job store) for smart callbacks  
 **Vector store**: Pinecone + pgvector for RAG  
-**Infra**: GCS for recordings/KB files, Stripe for billing, SendGrid for email, Redis for rate-limiting
+**Infra**: S3 for recordings/KB files/data exports (migrated off GCS — `GCS_*` env vars are legacy/unused), Stripe for billing, SendGrid for email, Redis for rate-limiting, Calendly for voice-agent booking (replaced the local appointment/slot-reservation DB flow)
 
 ---
 
@@ -57,7 +57,7 @@ ruff check . && black .
 - v2 routers live in `app/api/v2/routers/` and carry their own `prefix=` on the `APIRouter`.
 - **Note**: the v1 agents router is registered at `/agent` (singular), not `/agents`.
 
-**v2 router inventory**: `active_calls`, `audit_events`, `batch_calls`, `callback_scheduler`, `webhooks`, `workspace` (branding, pricing, usage, member roles, sub-accounts, GDPR data export / account deletion), `hipaa` (HIPAA flag per call-flow, CMEK KMS key management).
+**v2 router inventory**: `active_calls`, `audit_events`, `batch_calls`, `callback_scheduler`, `webhooks`, `workspace` (branding, pricing, usage, member roles, sub-accounts, GDPR data export / account deletion), `hipaa` (HIPAA flag per call-flow, CMEK KMS key management), `flows` / `flow_data` (A/B prompt testing on call flows), `calendly_integration` (status, event types, availability, event creation — mounted twice, once under its own prefix and once under `calendar`), `health`.
 
 **v1 recruiting module**: job descriptions, resumes, resume interviews, and recruitment dashboard are all registered under `/api/v1/recruiting/`.
 
@@ -156,9 +156,11 @@ result = agent_service.get_agent_by_id(db, agent_id, tenant_id)
 
 Services never import `SessionLocal` — they always receive `db: Session` as a parameter.
 
+A handful of domains (`agent`, `call_flow`, `folder`, `prompt_version`, `workspace`) additionally split raw SQL access into a `Repository` class under `app/repositories/`, with the service holding/constructing the repo per-request (`self._repo(db)`). Most services query models directly instead — check whether a repository already exists for a model before adding new query methods on the service.
+
 ### Outbound call dispatch
 
-Internal code (batch worker, smart callback scheduler) places outbound calls by calling `voice_call_service.initiate_call()` with a fake Starlette `Request` carrying the `x-n8n-webhook-secret` header. This bypasses JWT and resolves to the webhook auth path. See `app/services/batch_call_worker_service.py::_build_fake_request()` for the pattern.
+Internal code (batch worker, smart callback scheduler) places outbound calls by calling `voice_call_service.initiate_call(call_request, db, is_system_call=True, tenant_id, user_id)` directly — `is_system_call=True` bypasses the normal JWT/API-key auth path since there's no inbound request to authenticate. Requires `N8N_WEBHOOK_SECRET` to be configured (checked before dispatch; used for the *other*, HTTP-facing n8n webhook auth path, not this internal call). See `BatchCallWorkerService.dispatch_record()` and `CallbackSchedulerService`'s dispatch methods for the pattern.
 
 ### Voice pipeline
 
@@ -231,7 +233,7 @@ Mock external HTTP APIs at the boundary with `unittest.mock.patch` or `respx`.
 |---|---|---|
 | `DATABASE_URL` | Yes | PostgreSQL DSN |
 | `SECRET_KEY` | Yes | JWT signing key |
-| `N8N_WEBHOOK_SECRET` | Yes | Auth header for internal outbound call dispatch (batch + callback) |
+| `N8N_WEBHOOK_SECRET` | Yes | Verifies inbound n8n-triggered webhook requests (`app/utils/n8n_webhook_verification.py`); also fail-fast checked (but not sent anywhere) before batch/callback dispatch |
 | `REDIS_URL` | Batch worker | ARQ queue |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Voice | Auto-switches to test creds in `staging` env |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | Voice | Required in staging/production; gated by `LIVEKIT_ENABLED` (default `true`) |
@@ -243,7 +245,8 @@ Mock external HTTP APIs at the boundary with `unittest.mock.patch` or `respx`.
 | `ENVIRONMENT` | | `development` / `staging` / `production` |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | | Default 7 days |
 | `SSO_ENCRYPTION_KEY` | SSO | AES key for SSO token encryption |
-| `GCP_PROJECT_ID` | HIPAA / GCS | Google Cloud project; required in staging/production |
+| `GCP_PROJECT_ID` | HIPAA | Google Cloud project for CMEK KMS key management; required in staging/production |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION_NAME` | S3 | Recordings, KB files, batch CSVs, data exports |
 | `OTEL_TRACING_ENABLED` | Observability | Default `false`; enable to export spans via OTLP |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Observability | Default `http://localhost:4317` |
 | `OTEL_SERVICE_NAME` | Observability | Default `tgs-agent-be` |

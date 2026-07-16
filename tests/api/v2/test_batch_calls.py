@@ -121,7 +121,7 @@ class TestCreateBatchJob:
         svc.create_batch_job.return_value = job_out
         return svc
 
-    def _job_out(self, total: int = 3) -> dict:
+    def _job_out(self, total: int = 3, voicemail_action: str = "skip", voicemail_message=None) -> dict:
         from app.schemas.batch_call import BatchJobOut
         from datetime import datetime, timezone
 
@@ -135,6 +135,8 @@ class TestCreateBatchJob:
             active_count=0,
             completed_count=0,
             failed_count=0,
+            voicemail_action=voicemail_action,
+            voicemail_message=voicemail_message,
             s3_path=f"batch-files/{WORKSPACE_ID}/{uuid.uuid4()}.csv",
             scheduled_at=None,
             started_at=None,
@@ -159,6 +161,60 @@ class TestCreateBatchJob:
         assert body["status"] == "pending"
         assert body["total_count"] == 3
         assert body["workspace_id"] == str(WORKSPACE_ID)
+
+    @patch("app.api.v2.routers.batch_calls._enqueue_batch_job", new_callable=AsyncMock)
+    def test_upload_with_voicemail_leave_message_passes_fields_to_service(self, mock_enqueue):
+        svc = self._svc(self._job_out(3, voicemail_action="leave_message", voicemail_message="Call us back"))
+        client = _build_app(svc)
+
+        resp = client.post(
+            "/batch-calls",
+            data={
+                "agent_id": str(AGENT_ID),
+                "voicemail_action": "leave_message",
+                "voicemail_message": "Call us back",
+            },
+            files={"file": ("test.csv", io.BytesIO(VALID_CSV), "text/csv")},
+            headers=AUTH_HEADERS,
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["voicemail_action"] == "leave_message"
+        assert resp.json()["voicemail_message"] == "Call us back"
+        _, kwargs = svc.create_batch_job.call_args
+        assert kwargs["voicemail_action"] == "leave_message"
+        assert kwargs["voicemail_message"] == "Call us back"
+
+    @patch("app.api.v2.routers.batch_calls._enqueue_batch_job", new_callable=AsyncMock)
+    def test_upload_defaults_voicemail_action_to_skip(self, mock_enqueue):
+        svc = self._svc(self._job_out(3))
+        client = _build_app(svc)
+
+        resp = client.post(
+            "/batch-calls",
+            data={"agent_id": str(AGENT_ID)},
+            files={"file": ("test.csv", io.BytesIO(VALID_CSV), "text/csv")},
+            headers=AUTH_HEADERS,
+        )
+
+        assert resp.status_code == 201
+        _, kwargs = svc.create_batch_job.call_args
+        assert kwargs["voicemail_action"] == "skip"
+
+    @patch("app.api.v2.routers.batch_calls._enqueue_batch_job", new_callable=AsyncMock)
+    def test_upload_invalid_voicemail_action_returns_422(self, mock_enqueue):
+        svc = self._svc(self._job_out(3))
+        client = _build_app(svc)
+
+        resp = client.post(
+            "/batch-calls",
+            data={"agent_id": str(AGENT_ID), "voicemail_action": "bogus"},
+            files={"file": ("test.csv", io.BytesIO(VALID_CSV), "text/csv")},
+            headers=AUTH_HEADERS,
+        )
+
+        assert resp.status_code == 422
+        svc.create_batch_job.assert_not_called()
 
     @patch("app.api.v2.routers.batch_calls._enqueue_batch_job", new_callable=AsyncMock)
     def test_upload_invalid_csv_missing_phone_col_returns_422(self, mock_enqueue):
@@ -232,6 +288,8 @@ class TestCreateBatchJob:
                     file=mock_file,
                     agent_id=AGENT_ID,
                     scheduled_at=None,
+                    voicemail_action="skip",
+                    voicemail_message=None,
                     workspace=mock_workspace,
                     db=MagicMock(),
                     svc=mock_svc,
@@ -275,6 +333,8 @@ class TestCreateBatchJob:
                     file=mock_file,
                     agent_id=AGENT_ID,
                     scheduled_at=None,
+                    voicemail_action="skip",
+                    voicemail_message=None,
                     workspace=mock_workspace,
                     db=MagicMock(),
                     svc=mock_svc,
@@ -310,6 +370,8 @@ class TestCreateBatchJob:
             active_count=0,
             completed_count=0,
             failed_count=0,
+            voicemail_action="skip",
+            voicemail_message=None,
             s3_path=f"batch-files/{WORKSPACE_ID}/x.csv",
             scheduled_at=None,
             started_at=None,
@@ -334,6 +396,8 @@ class TestCreateBatchJob:
                 file=mock_file,
                 agent_id=AGENT_ID,
                 scheduled_at=None,
+                voicemail_action="skip",
+                voicemail_message=None,
                 workspace=mock_workspace,
                 db=MagicMock(),
                 svc=mock_svc,
@@ -424,6 +488,8 @@ class TestGetBatchJob:
         job_model.active_count = 3
         job_model.completed_count = 0
         job_model.failed_count = 0
+        job_model.voicemail_action = "skip"
+        job_model.voicemail_message = None
         job_model.s3_path = "batch-files/x/y.csv"
         job_model.scheduled_at = None
         job_model.started_at = None
@@ -467,6 +533,8 @@ class TestGetBatchJobProgress:
             failed=0,
             total=10,
             percent_complete=30.0,
+            voicemail_skipped=2,
+            voicemail_message_left=1,
         )
         svc = MagicMock()
         svc.get_batch_job_progress.return_value = progress
@@ -481,6 +549,8 @@ class TestGetBatchJobProgress:
         assert body["completed"] == 3
         assert body["total"] == 10
         assert body["percent_complete"] == 30.0
+        assert body["voicemail_skipped"] == 2
+        assert body["voicemail_message_left"] == 1
 
 
 # ── GET /batch-calls/{id}/calls ───────────────────────────────────────────────

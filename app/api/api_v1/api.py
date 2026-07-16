@@ -53,6 +53,7 @@ from app.routers.hubspot_integration import router as hubspot_integration_router
 from app.routers.call_history import router as call_history_router
 from app.routers.call_history import batch_router as batch_call_metrics_router
 from app.routers.payments import router as payments_router
+from app.routers.amd_webhook import router as amd_webhook_router
 
 api_router = APIRouter()
 api_router.include_router(user.router, prefix="/users", tags=["users"])
@@ -168,3 +169,4 @@ api_router.include_router(
 api_router.include_router(call_history_router, prefix="/calls", tags=["Call History Analytics"])
 api_router.include_router(batch_call_metrics_router, prefix="/batch-calls", tags=["Batch Call Analytics"])
 api_router.include_router(payments_router, prefix="/payments", tags=["In-Call Payments"])
+api_router.include_router(amd_webhook_router, prefix="/webhooks/twilio", tags=["AMD Webhook"])
