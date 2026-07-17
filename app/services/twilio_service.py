@@ -132,7 +132,7 @@ class TwilioService:
             record=record,  # Enable call recording
             recording_channels='dual',  # Record both channels
             recording_status_callback=recording_status_callback_url,  # Get recording status updates
-            timeout=30,  # Answer timeout (30 seconds)
+            timeout=90,  # Answer timeout (1.5 minutes)
             **amd_kwargs,
         )
 
@@ -172,7 +172,7 @@ class TwilioService:
             record=record,
             recording_channels='dual',
             recording_status_callback=recording_status_callback_url,
-            timeout=30,
+            timeout=90,
             **amd_kwargs,
         )
 
