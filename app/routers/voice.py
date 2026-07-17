@@ -761,11 +761,11 @@ async def handle_call_events_webhook(
                     asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="failed",
-                        duration=0,
-                        metadata={
+                        final_data={
                             "call_sid": call_sid,
                             "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "duration": 0
                         }
                     ))
                     logger.debug(f"✅ Queued call ended (failed) event for session {call_session.id}")
@@ -826,12 +826,12 @@ async def handle_call_events_webhook(
                     asyncio.create_task(broadcast_call_ended(
                         call_session_id=str(call_session.id),
                         reason="no_answer",
-                        duration=0,
-                        metadata={
+                        final_data={
                             "call_sid": call_sid,
                             "twilio_status": call_status,
                             "direction": direction,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "duration": 0
                         }
                     ))
                 except Exception as e:
