@@ -9,15 +9,18 @@ Coverage:
   5. Valid timezone is accepted
   6. GET /agents/{id}/callback-status returns correct counters
   7. GET /calls/{call_id}/callback-history returns ordered history
-  8. Business hours check reschedules when outside window
-  9. Business hours: open window is used as-is
+  8. Business hours (flow settings): 3am caller-local reschedules to next open window
+  9. Business hours: open window is used as-is (valid timezone allows on-hours callback)
  10. Exhaustion: no further schedule is created at max_attempts
  11. Exhausted schedule is logged with status='exhausted'
  12. Gap schedule index is clamped at last entry when attempts exceed schedule length
  13. get_callback_history returns 404 for unknown call
  14. get_callback_history returns 404 for cross-tenant call
  15. PUT callback-config returns 404 for unknown agent
+ 16. Missing/invalid callback_timezone rejects dispatch and sends an admin alert email
+ 17. US workspace clamps flow hours to the 8am-9pm TCPA hard limit
 """
+
 from __future__ import annotations
 
 import uuid
@@ -29,9 +32,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.models.agent import Agent
-from app.models.business_hours import BusinessHours
+from app.models.call_flow import CallFlow
 from app.models.callback_schedule import CallbackSchedule
 from app.models.call_session import CallSession
+from app.models.tenant import Tenant
 from app.schemas.callback_scheduler import (
     CallbackConfigUpdate,
     GapInterval,
@@ -39,8 +43,9 @@ from app.schemas.callback_scheduler import (
 from app.services.callback_scheduler_service import (
     CallbackSchedulerService,
     CALLBACK_TRIGGER_STATUSES,
+    InvalidCallbackTimezoneError,
+    _MAX_BUSINESS_HOURS_LOOKAHEAD_DAYS,
 )
-
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -71,6 +76,7 @@ def _make_call_session(
     tenant_id: Optional[uuid.UUID] = None,
     to_number: str = "+15550001234",
     customer_phone_number: Optional[str] = None,
+    call_flow_id: Optional[uuid.UUID] = None,
 ) -> CallSession:
     cs = MagicMock(spec=CallSession)
     cs.id = uuid.uuid4()
@@ -80,7 +86,66 @@ def _make_call_session(
     cs.to_number = to_number
     cs.customer_phone_number = customer_phone_number or to_number
     cs.user_id = uuid.uuid4()
+    cs.call_flow_id = call_flow_id
     return cs
+
+
+def _make_flow(
+    *,
+    agent_id: Optional[uuid.UUID] = None,
+    business_hours: Optional[dict] = None,
+) -> CallFlow:
+    flow = MagicMock(spec=CallFlow)
+    flow.id = uuid.uuid4()
+    flow.agent_id = agent_id or uuid.uuid4()
+    flow.is_deleted = False
+    flow.settings = (
+        {"business_hours": business_hours} if business_hours is not None else None
+    )
+    return flow
+
+
+def _make_tenant(*, is_us: bool = False, contact_email: Optional[str] = None) -> Tenant:
+    tenant = MagicMock(spec=Tenant)
+    tenant.id = uuid.uuid4()
+    tenant.workspace_settings = {"country": "US"} if is_us else {}
+    tenant.contact_email = contact_email
+    return tenant
+
+
+def _make_dispatch_db(
+    *,
+    agent: Agent,
+    original_call: CallSession,
+    tenant: Optional[Tenant] = None,
+    flow: Optional[CallFlow] = None,
+) -> MagicMock:
+    """
+    Mock Session for exercising _dispatch_and_advance / dispatch_and_advance_async:
+    resolves Agent/CallSession/Tenant via db.get, and CallFlow lookups
+    (both direct id and the agent-scoped fallback query) via db.execute.
+    """
+    db = MagicMock()
+
+    def _get(model_cls, pk):
+        if model_cls is Agent:
+            return agent
+        if model_cls is CallSession:
+            return original_call
+        if model_cls is Tenant:
+            return tenant
+        if model_cls is CallFlow:
+            return flow if original_call.call_flow_id else None
+        return None
+
+    db.get.side_effect = _get
+
+    execute_result = MagicMock()
+    execute_result.scalars.return_value.first.return_value = flow
+    execute_result.scalars.return_value.all.return_value = []
+    db.execute.return_value = execute_result
+
+    return db
 
 
 def _make_db(
@@ -225,7 +290,9 @@ def test_invalid_timezone_raises_validation_error():
         )
 
     errors = exc_info.value.errors()
-    assert any("timezone" in str(e.get("loc", "")) or "timezone" in str(e) for e in errors)
+    assert any(
+        "timezone" in str(e.get("loc", "")) or "timezone" in str(e) for e in errors
+    )
 
 
 # ── 6. Valid timezone is accepted ─────────────────────────────────────────────
@@ -364,49 +431,45 @@ def test_get_callback_history_returns_ordered_rows():
 
 def test_outside_business_hours_reschedules():
     """
-    When the current time is outside business hours, _dispatch_and_advance
-    must update scheduled_at to the next valid window and NOT dispatch.
+    A callback scheduled at 3am in the caller's (agent's callback_timezone)
+    local time must be rescheduled to the flow's next business-hours open
+    time, and must NOT be dispatched.
     """
-    agent = _make_agent(callback_timezone="America/New_York")
-    # Simulate current time at 02:00 UTC = 22:00 Eastern (outside 09:00-17:00)
-    closed_dt = datetime(2026, 6, 15, 2, 0, 0, tzinfo=ZoneInfo("UTC"))
+    tz_name = "America/New_York"
+    agent = _make_agent(callback_timezone=tz_name)
+    # 07:00 UTC == 03:00 Eastern (outside the flow's configured 09:00-17:00)
+    closed_dt = datetime(2026, 6, 15, 7, 0, 0, tzinfo=ZoneInfo("UTC"))
+    dow = closed_dt.astimezone(ZoneInfo(tz_name)).weekday()
 
-    bh = MagicMock(spec=BusinessHours)
-    bh.is_closed = False
-    bh.open_time = time(9, 0)
-    bh.close_time = time(17, 0)
+    flow = _make_flow(
+        agent_id=agent.id,
+        business_hours={str(dow): {"open": "09:00", "close": "17:00"}},
+    )
 
+    original_call = _make_call_session(call_flow_id=flow.id)
     schedule = MagicMock(spec=CallbackSchedule)
     schedule.id = uuid.uuid4()
-    schedule.original_call_id = uuid.uuid4()
+    schedule.original_call_id = original_call.id
+    schedule.original_call = original_call
     schedule.agent_id = agent.id
     schedule.phone_number = "+15550001234"
     schedule.attempt_number = 1
     schedule.scheduled_at = closed_dt
-    schedule.timezone = "America/New_York"
+    schedule.timezone = tz_name
 
-    db = MagicMock()
-    db.get.side_effect = lambda cls, pk: agent if cls is Agent else None
-
-    # Return the business hours row on first BH query, None afterward
-    bh_call = [0]
-
-    def _execute(stmt, *a, **kw):
-        bh_call[0] += 1
-        m = MagicMock()
-        m.scalar_one_or_none.return_value = bh
-        return m
-
-    db.execute.side_effect = _execute
+    db = _make_dispatch_db(agent=agent, original_call=original_call, flow=flow)
 
     svc = CallbackSchedulerService()
 
     with patch("app.services.callback_scheduler_service.datetime") as mock_dt:
-        mock_dt.utcnow.return_value = closed_dt
+        mock_dt.utcnow.return_value = closed_dt.replace(tzinfo=None)
         svc._dispatch_and_advance(db, schedule)
 
-    # The schedule should have been rescheduled (scheduled_at updated), not executed
+    # The schedule should have been rescheduled to today's 09:00 Eastern open time
     assert schedule.status != "executed"
+    new_local = schedule.scheduled_at.astimezone(ZoneInfo(tz_name))
+    assert new_local.time() == time(9, 0)
+    assert new_local.date() == closed_dt.astimezone(ZoneInfo(tz_name)).date()
     db.commit.assert_called()
 
 
@@ -415,8 +478,8 @@ def test_outside_business_hours_reschedules():
 
 def test_within_business_hours_dispatches_call():
     """
-    When the time is within business hours, dispatch_call is invoked and
-    the schedule is marked executed.
+    A valid timezone with the current local time inside the flow's
+    business hours must dispatch the call and mark the schedule executed.
     """
     agent = _make_agent(
         max_callback_attempts=3,
@@ -428,13 +491,14 @@ def test_within_business_hours_dispatches_call():
         callback_timezone="UTC",
     )
     open_dt = datetime(2026, 6, 15, 14, 0, 0, tzinfo=ZoneInfo("UTC"))
+    dow = open_dt.weekday()
 
-    bh = MagicMock(spec=BusinessHours)
-    bh.is_closed = False
-    bh.open_time = time(9, 0)
-    bh.close_time = time(17, 0)
+    flow = _make_flow(
+        agent_id=agent.id,
+        business_hours={str(dow): {"open": "09:00", "close": "17:00"}},
+    )
 
-    original_call = MagicMock(spec=CallSession)
+    original_call = _make_call_session(agent_id=agent.id, call_flow_id=flow.id)
     original_call.id = uuid.uuid4()
     original_call.user_id = uuid.uuid4()
     original_call.tenant_id = uuid.uuid4()
@@ -442,6 +506,7 @@ def test_within_business_hours_dispatches_call():
     schedule = MagicMock(spec=CallbackSchedule)
     schedule.id = uuid.uuid4()
     schedule.original_call_id = original_call.id
+    schedule.original_call = original_call
     schedule.agent_id = agent.id
     schedule.phone_number = "+15550001234"
     schedule.attempt_number = 1
@@ -449,19 +514,7 @@ def test_within_business_hours_dispatches_call():
     schedule.timezone = "UTC"
     schedule.status = "pending"
 
-    db = MagicMock()
-    db.get.side_effect = lambda cls, pk: (
-        agent if cls is Agent
-        else original_call if cls is CallSession
-        else None
-    )
-
-    def _execute(stmt, *a, **kw):
-        m = MagicMock()
-        m.scalar_one_or_none.return_value = bh
-        return m
-
-    db.execute.side_effect = _execute
+    db = _make_dispatch_db(agent=agent, original_call=original_call, flow=flow)
 
     svc = CallbackSchedulerService()
 
@@ -481,7 +534,8 @@ def test_within_business_hours_dispatches_call():
     add_calls = [
         call_args[0][0]
         for call_args in db.add.call_args_list
-        if isinstance(call_args[0][0], CallbackSchedule) and call_args[0][0] is not schedule
+        if isinstance(call_args[0][0], CallbackSchedule)
+        and call_args[0][0] is not schedule
     ]
     assert len(add_calls) == 1, "Expected one chained CallbackSchedule to be added"
     assert add_calls[0].attempt_number == 2
@@ -500,14 +554,10 @@ def test_exhaustion_at_max_attempts():
         gap_schedule=[{"days": 0, "hours": 1}],
         callback_timezone="UTC",
     )
+    # 10:00 UTC falls within the default 8am-8pm window (no flow configured)
     open_dt = datetime(2026, 6, 15, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
 
-    bh = MagicMock(spec=BusinessHours)
-    bh.is_closed = False
-    bh.open_time = time(9, 0)
-    bh.close_time = time(17, 0)
-
-    original_call = MagicMock(spec=CallSession)
+    original_call = _make_call_session(agent_id=agent.id, call_flow_id=None)
     original_call.id = uuid.uuid4()
     original_call.user_id = uuid.uuid4()
     original_call.tenant_id = uuid.uuid4()
@@ -515,6 +565,7 @@ def test_exhaustion_at_max_attempts():
     schedule = MagicMock(spec=CallbackSchedule)
     schedule.id = uuid.uuid4()
     schedule.original_call_id = original_call.id
+    schedule.original_call = original_call
     schedule.agent_id = agent.id
     schedule.phone_number = "+15550001234"
     # This is the LAST allowed attempt
@@ -523,20 +574,7 @@ def test_exhaustion_at_max_attempts():
     schedule.timezone = "UTC"
     schedule.status = "pending"
 
-    db = MagicMock()
-    db.get.side_effect = lambda cls, pk: (
-        agent if cls is Agent
-        else original_call if cls is CallSession
-        else None
-    )
-
-    def _execute(stmt, *a, **kw):
-        m = MagicMock()
-        m.scalar_one_or_none.return_value = bh
-        m.scalars.return_value.all.return_value = []
-        return m
-
-    db.execute.side_effect = _execute
+    db = _make_dispatch_db(agent=agent, original_call=original_call, flow=None)
 
     svc = CallbackSchedulerService()
 
@@ -554,7 +592,8 @@ def test_exhaustion_at_max_attempts():
     chained = [
         call_args[0][0]
         for call_args in db.add.call_args_list
-        if isinstance(call_args[0][0], CallbackSchedule) and call_args[0][0] is not schedule
+        if isinstance(call_args[0][0], CallbackSchedule)
+        and call_args[0][0] is not schedule
     ]
     assert len(chained) == 0, "No chained schedule should be created after exhaustion"
 
@@ -643,3 +682,196 @@ def test_trigger_status_set_contents():
     assert "busy" in CALLBACK_TRIGGER_STATUSES
     assert "completed" not in CALLBACK_TRIGGER_STATUSES
     assert "failed" not in CALLBACK_TRIGGER_STATUSES
+
+
+# ── 19. Missing/invalid timezone rejects dispatch and alerts admin ────────────
+
+
+@pytest.mark.parametrize("bad_timezone", [None, "", "Not/AZone"])
+def test_require_valid_callback_timezone_raises(bad_timezone):
+    """_require_valid_callback_timezone must reject missing/invalid IANA zones."""
+    agent = _make_agent(callback_timezone=bad_timezone)
+    svc = CallbackSchedulerService()
+    with pytest.raises(InvalidCallbackTimezoneError):
+        svc._require_valid_callback_timezone(agent)
+
+
+def test_require_valid_callback_timezone_accepts_valid_zone():
+    agent = _make_agent(callback_timezone="America/Los_Angeles")
+    svc = CallbackSchedulerService()
+    assert svc._require_valid_callback_timezone(agent) == "America/Los_Angeles"
+
+
+@pytest.mark.parametrize("bad_timezone", [None, "", "Not/AZone"])
+def test_invalid_timezone_rejects_dispatch_and_sends_alert(bad_timezone):
+    """
+    An agent with a missing or invalid callback_timezone must never dispatch
+    a callback; the schedule is cancelled and the workspace admin is emailed.
+    """
+    agent = _make_agent(callback_timezone=bad_timezone)
+    original_call = _make_call_session(agent_id=agent.id, call_flow_id=None)
+
+    schedule = MagicMock(spec=CallbackSchedule)
+    schedule.id = uuid.uuid4()
+    schedule.original_call_id = original_call.id
+    schedule.original_call = original_call
+    schedule.agent_id = agent.id
+    schedule.scheduled_at = datetime(2026, 6, 15, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
+    schedule.status = "pending"
+
+    db = _make_dispatch_db(agent=agent, original_call=original_call, flow=None)
+
+    svc = CallbackSchedulerService()
+
+    with (
+        patch(
+            "app.services.data_export_service._get_workspace_admin_email",
+            return_value="admin@example.com",
+        ),
+        patch(
+            "app.services.email_service.email_service.send_generic_email"
+        ) as mock_send,
+        patch.object(svc, "_dispatch_call") as mock_dispatch,
+    ):
+        svc._dispatch_and_advance(db, schedule)
+
+    mock_dispatch.assert_not_called()
+    assert schedule.status == "cancelled"
+    mock_send.assert_called_once()
+    assert mock_send.call_args.kwargs["to_email"] == "admin@example.com"
+
+
+def test_invalid_timezone_falls_back_to_tenant_contact_email():
+    """When no admin user exists, the alert falls back to tenant.contact_email."""
+    agent = _make_agent(callback_timezone=None)
+    original_call = _make_call_session(agent_id=agent.id, call_flow_id=None)
+    tenant = _make_tenant(contact_email="owner@example.com")
+
+    schedule = MagicMock(spec=CallbackSchedule)
+    schedule.id = uuid.uuid4()
+    schedule.original_call_id = original_call.id
+    schedule.original_call = original_call
+    schedule.agent_id = agent.id
+    schedule.scheduled_at = datetime(2026, 6, 15, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
+    schedule.status = "pending"
+
+    db = _make_dispatch_db(
+        agent=agent, original_call=original_call, tenant=tenant, flow=None
+    )
+
+    svc = CallbackSchedulerService()
+
+    with (
+        patch(
+            "app.services.data_export_service._get_workspace_admin_email",
+            return_value=None,
+        ),
+        patch(
+            "app.services.email_service.email_service.send_generic_email"
+        ) as mock_send,
+    ):
+        svc._dispatch_and_advance(db, schedule)
+
+    assert schedule.status == "cancelled"
+    mock_send.assert_called_once()
+    assert mock_send.call_args.kwargs["to_email"] == "owner@example.com"
+
+
+# ── 20. US workspace clamps flow hours to the TCPA 8am-9pm hard limit ─────────
+
+
+def test_us_workspace_clamps_to_tcpa_hard_limit():
+    """
+    A flow configured for 06:00-22:00 in a US workspace must be clamped to
+    08:00-21:00; a callback at 21:30 local (inside the flow window but
+    outside the TCPA ceiling) must be rescheduled, not dispatched.
+    """
+    tz_name = "UTC"
+    agent = _make_agent(callback_timezone=tz_name)
+    late_dt = datetime(2026, 6, 15, 21, 30, 0, tzinfo=ZoneInfo("UTC"))
+    dow = late_dt.weekday()
+
+    flow = _make_flow(
+        agent_id=agent.id,
+        business_hours={str(dow): {"open": "06:00", "close": "22:00"}},
+    )
+    tenant = _make_tenant(is_us=True)
+
+    original_call = _make_call_session(agent_id=agent.id, call_flow_id=flow.id)
+    schedule = MagicMock(spec=CallbackSchedule)
+    schedule.id = uuid.uuid4()
+    schedule.original_call_id = original_call.id
+    schedule.original_call = original_call
+    schedule.agent_id = agent.id
+    schedule.phone_number = "+15550001234"
+    schedule.attempt_number = 1
+    schedule.scheduled_at = late_dt
+    schedule.timezone = tz_name
+
+    db = _make_dispatch_db(
+        agent=agent, original_call=original_call, tenant=tenant, flow=flow
+    )
+
+    svc = CallbackSchedulerService()
+
+    with (
+        patch("app.services.callback_scheduler_service.datetime") as mock_dt,
+        patch.object(svc, "_dispatch_call") as mock_dispatch,
+    ):
+        mock_dt.utcnow.return_value = late_dt.replace(tzinfo=None)
+        svc._dispatch_and_advance(db, schedule)
+
+    mock_dispatch.assert_not_called()
+    assert schedule.status != "executed"
+    # Rescheduled to the next compliant open time (08:00, next day since today
+    # is already past the 21:00 TCPA ceiling)
+    new_local = schedule.scheduled_at.astimezone(ZoneInfo(tz_name))
+    assert new_local.time() == time(8, 0)
+    assert new_local.date() > late_dt.date()
+
+
+# ── 21. All-days-closed misconfiguration never yields a non-advancing reschedule ──
+
+
+def test_all_days_closed_pushes_forward_instead_of_hot_looping():
+    """
+    A flow misconfigured with every day closed must never leave the
+    schedule pinned at the original (non-compliant) instant — that would
+    make the poller re-select and re-reschedule the same row forever.
+    _next_valid_window must push the candidate strictly into the future.
+    """
+    tz_name = "UTC"
+    agent = _make_agent(callback_timezone=tz_name)
+    now_dt = datetime(2026, 6, 15, 10, 0, 0, tzinfo=ZoneInfo("UTC"))
+
+    flow = _make_flow(
+        agent_id=agent.id,
+        business_hours={str(d): {"closed": True} for d in range(7)},
+    )
+
+    original_call = _make_call_session(agent_id=agent.id, call_flow_id=flow.id)
+    schedule = MagicMock(spec=CallbackSchedule)
+    schedule.id = uuid.uuid4()
+    schedule.original_call_id = original_call.id
+    schedule.original_call = original_call
+    schedule.agent_id = agent.id
+    schedule.phone_number = "+15550001234"
+    schedule.attempt_number = 1
+    schedule.scheduled_at = now_dt
+    schedule.timezone = tz_name
+
+    db = _make_dispatch_db(agent=agent, original_call=original_call, flow=flow)
+
+    svc = CallbackSchedulerService()
+
+    with patch("app.services.callback_scheduler_service.datetime") as mock_dt:
+        mock_dt.utcnow.return_value = now_dt.replace(tzinfo=None)
+        svc._dispatch_and_advance(db, schedule)
+
+    assert schedule.status != "executed"
+    # Must strictly advance — never equal to (or before) the instant that was
+    # just found non-compliant, otherwise the poller re-processes it forever.
+    assert schedule.scheduled_at > now_dt
+    assert (schedule.scheduled_at - now_dt) >= timedelta(
+        days=_MAX_BUSINESS_HOURS_LOOKAHEAD_DAYS
+    )
