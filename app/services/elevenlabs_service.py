@@ -294,16 +294,28 @@ class ElevenLabsService:
         Returns:
             Dictionary with available voices
         """
-        api_key = self.get_api_key()
-        
+        api_key = None
+        try:
+            api_key = self.get_api_key()
+        except Exception as e:
+            logger.warning("ElevenLabs: No API key found or invalid key, attempting public fetch: %s", e)
+
         try:
             url = f"{self._base_url}/voices"
             
-            headers = {
-                "xi-api-key": api_key
-            }
+            headers = {}
+            if api_key:
+                headers["xi-api-key"] = api_key
             
             response = self._session.get(url, headers=headers, timeout=20)
+            
+            # If the request fails with 401 Unauthorized but we provided a key,
+            # retry without the key to fetch public voices.
+            if response.status_code == 401 and api_key:
+                logger.warning("ElevenLabs: Configured API key was unauthorized (401). Retrying with public fetch...")
+                headers.pop("xi-api-key", None)
+                response = self._session.get(url, headers=headers, timeout=20)
+                
             response.raise_for_status()
             return response.json()
         except requests.RequestException as exc:
