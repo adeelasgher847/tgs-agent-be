@@ -22,14 +22,17 @@ from datetime import datetime
 from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_workspace, require_tenant
+from app.core.error_responses import build_api_error_payload
 from app.core.logger import logger
 from app.core.request_auth import ApiKeyPrincipal
 from app.core.workspace import Workspace
 from app.models.user import User
 from app.services.audit_service import log_audit_event
+from app.services.batch_call_service import AllNumbersFlaggedError
 from app.schemas.batch_call import (
     BatchJobOut,
     BatchJobProgress,
@@ -142,6 +145,38 @@ async def create_batch_job(
         voicemail_action=voicemail_action,
         voicemail_message=voicemail_message,
     )
+
+    # Rotate the outbound caller ID before dispatch if the agent's bound number
+    # is spam-flagged; 422s out if no clean same-country number is available.
+    try:
+        rotation = await svc.rotate_number_if_flagged(
+            workspace_id=workspace.id,
+            agent_id=agent_id,
+            batch_job_id=job_out.id,
+        )
+    except AllNumbersFlaggedError:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=build_api_error_payload(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "All outbound numbers are spam-flagged. Please add a new number.",
+                error_code="all_numbers_flagged",
+                request_id=getattr(request.state, "request_id", ""),
+            ),
+        )
+
+    if rotation is not None:
+        old_number, new_number = rotation
+        log_audit_event(
+            db,
+            request=request,
+            tenant_id=workspace.id,
+            action="batch.number_rotated",
+            resource_type="batch_job",
+            resource_id=job_out.id,
+            old_value={"from_number": old_number},
+            new_value={"from_number": new_number, "reason": "spam_flagged"},
+        )
 
     await _enqueue_batch_job(str(job_out.id), scheduled_at)
 

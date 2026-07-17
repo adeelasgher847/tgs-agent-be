@@ -1,7 +1,15 @@
 """
 Integration tests for LiveKit — require a live server.
 
-Run only when LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET are set.
+Run only when RUN_LIVEKIT_INTEGRATION=1 and LIVEKIT_URL, LIVEKIT_API_KEY,
+LIVEKIT_API_SECRET are set. The explicit opt-in flag (mirroring
+RUN_GOOGLE_STT_INTEGRATION in test_google_stt_live.py) is required in
+addition to the credential vars because those vars are also present in the
+shared .env file and get loaded into os.environ as a side effect of
+collecting unrelated test modules (e.g. test_google_stt_live.py calls
+load_dotenv() at import time) — without the flag this module would
+silently attempt a real connection whenever it happens to be collected
+alongside such a module, instead of skipping as intended.
 
 These tests confirm both HTTP/API-plane and WebSocket/RTC connectivity from
 the API server to the LiveKit server, covering the full room lifecycle:
@@ -17,6 +25,7 @@ LOCAL DEV — start a throwaway LiveKit server with Docker:
 
     Then run:
 
+    RUN_LIVEKIT_INTEGRATION=1 \\
     LIVEKIT_URL=http://localhost:7880 \\
     LIVEKIT_API_KEY=devkey \\
     LIVEKIT_API_SECRET=secret \\
@@ -32,9 +41,14 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Skip entire module if LiveKit env vars are absent
+# Skip entire module unless explicitly opted in with LiveKit env vars set
 # ---------------------------------------------------------------------------
 
+_RUN_LIVEKIT_INTEGRATION = os.environ.get("RUN_LIVEKIT_INTEGRATION", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 _LIVEKIT_URL = os.environ.get("LIVEKIT_URL", "")
 _LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY", "")
 _LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
@@ -42,8 +56,11 @@ _LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET", "")
 pytestmark = pytest.mark.integration
 
 _skip_unless_livekit = pytest.mark.skipif(
-    not (_LIVEKIT_URL and _LIVEKIT_API_KEY and _LIVEKIT_API_SECRET),
-    reason="LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET not set — skipping integration tests",
+    not (_RUN_LIVEKIT_INTEGRATION and _LIVEKIT_URL and _LIVEKIT_API_KEY and _LIVEKIT_API_SECRET),
+    reason=(
+        "Set RUN_LIVEKIT_INTEGRATION=1 and LIVEKIT_URL, LIVEKIT_API_KEY, "
+        "LIVEKIT_API_SECRET to run live LiveKit integration tests"
+    ),
 )
 
 # Skip RTC tests if the native livekit package cannot be imported

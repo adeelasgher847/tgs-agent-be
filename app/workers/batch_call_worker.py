@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.core.config import settings
@@ -479,6 +479,60 @@ async def startup_recover_callbacks(ctx: dict) -> None:
         db.close()
 
 
+# ── Outbound number reputation monitoring ───────────────────────────────────
+
+async def check_all_phone_numbers_reputation(ctx: dict) -> None:
+    """
+    Daily cron: refresh the reputation record for every active phone number
+    whose last check is missing or older than 24 hours.
+    """
+    from sqlalchemy import or_, select
+
+    from app.db.session import SessionLocal
+    from app.models.phone_number import PhoneNumber
+    from app.models.phone_number_reputation import PhoneNumberReputation
+    from app.services.reputation_service import check_number_reputation
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+        rows = db.execute(
+            select(PhoneNumber)
+            .outerjoin(
+                PhoneNumberReputation,
+                PhoneNumberReputation.phone_number_id == PhoneNumber.id,
+            )
+            .where(
+                PhoneNumber.status == "active",
+                or_(
+                    PhoneNumberReputation.last_checked_at.is_(None),
+                    PhoneNumberReputation.last_checked_at < cutoff,
+                ),
+            )
+        ).scalars().all()
+
+        logger.info("check_all_phone_numbers_reputation: %d number(s) due for a check", len(rows))
+
+        checked = 0
+        for phone_number_obj in rows:
+            try:
+                await check_number_reputation(db, phone_number_obj)
+                checked += 1
+            except Exception as exc:
+                logger.error(
+                    "check_all_phone_numbers_reputation: check failed for %s: %s",
+                    phone_number_obj.id,
+                    exc,
+                    exc_info=True,
+                )
+                db.rollback()
+
+        logger.info("check_all_phone_numbers_reputation: checked %d/%d number(s)", checked, len(rows))
+    finally:
+        db.close()
+
+
 # ── WorkerSettings ────────────────────────────────────────────────────────────
 
 async def purge_old_audit_logs(ctx: dict) -> None:
@@ -532,6 +586,7 @@ class WorkerSettings:
         run_data_export_job,
         # poll_pending_callbacks kept for manual/admin invocation; not in cron_jobs
         poll_pending_callbacks,
+        check_all_phone_numbers_reputation,
     ]
 
     # Replaced at module-load time by the try/except block below
@@ -573,6 +628,8 @@ try:
         _arq.cron(poll_pending_batch_jobs, second={0}, run_at_startup=True),
         # Audit log 90-day retention: runs once per day at 03:00 UTC
         _arq.cron(purge_old_audit_logs, hour={3}, minute={0}, second={0}),
+        # Outbound number reputation refresh: runs once per day at 02:00 UTC
+        _arq.cron(check_all_phone_numbers_reputation, hour={2}, minute={0}, second={0}),
         # Callback recovery is handled by WorkerSettings.on_startup (startup_recover_callbacks),
         # not a periodic cron — no polling loop needed for correctness.
     ]
