@@ -131,7 +131,7 @@ def test_file_upload_returns_202(client, db, kb, workspace_id):
 
     with _auth_ctx(workspace_id):
         with patch("app.routers.knowledge_base.settings") as mock_settings:
-            mock_settings.GCS_KB_BUCKET = ""  # Skip GCS
+            mock_settings.S3_KB_BUCKET = ""  # Skip S3
             mock_settings.OPENAI_API_KEY = "test-key"
             resp = client.post(
                 f"/api/v1/kb/{kb.id}/file",
@@ -165,7 +165,7 @@ def test_file_upload_oversized_returns_422(client, db, kb, workspace_id):
 
     with _auth_ctx(workspace_id):
         with patch("app.routers.knowledge_base.settings") as mock_settings:
-            mock_settings.GCS_KB_BUCKET = ""
+            mock_settings.S3_KB_BUCKET = ""
             resp = client.post(
                 f"/api/v1/kb/{kb.id}/file",
                 files={"file": ("big.pdf", io.BytesIO(oversized), "application/pdf")},

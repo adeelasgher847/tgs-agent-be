@@ -1,15 +1,15 @@
 """
-Call Recording Upload Service — post-call async GCS upload job.
+Call Recording Upload Service — post-call async S3 upload job.
 
 Follows the same pattern as inbound_call_crm_sync_service:
-  schedule_recording_upload() → asyncio.create_task() → run_in_executor()
+  schedule_recording_upload() -> asyncio.create_task() -> run_in_executor()
 
 Flow:
   1. Load call_session
   2. Skip if recording not enabled / already has a path / egress_id missing
   3. Check LiveKit egress status (COMPLETE)
-  4. Update GCS object metadata (callId, workspaceId, agentId, duration)
-  5. On success: set recording_gcs_path, clear recording_error
+  4. Update S3 object metadata (callId, workspaceId, agentId, duration)
+  5. On success: set recording_s3_path, clear recording_error
   6. On failure: log error, set recording_error=True — no auto-retry in Sprint 2
 """
 
@@ -72,9 +72,9 @@ def _upload_recording_sync(call_session_id: uuid.UUID) -> None:
             return
 
         # Skip if already uploaded
-        if session.recording_gcs_path:
+        if session.recording_s3_path:
             logger.debug(
-                "Recording upload: session %s already has recording_gcs_path — skipping",
+                "Recording upload: session %s already has recording_s3_path — skipping",
                 call_session_id,
             )
             return
@@ -121,7 +121,7 @@ def _check_and_finalize(db, session, egress_id: str, gcs_path: str) -> None:
     status check; if FAILED/ABORTED, record the error.  If still in progress,
     we log a warning — no retry in Sprint 2.
     """
-    from app.services import gcs_recording_service
+    from app.services import s3_recording_service
 
     # We need an async loop to call LiveKit's async API from sync context.
     try:
@@ -173,7 +173,7 @@ def _check_and_finalize(db, session, egress_id: str, gcs_path: str) -> None:
         _mark_recording_error(db, session)
         return
 
-    # Egress COMPLETE — update GCS metadata then mark DB
+    # Egress COMPLETE — update S3 metadata then mark DB
     try:
         metadata = {
             "callId": str(session.id),
@@ -181,21 +181,21 @@ def _check_and_finalize(db, session, egress_id: str, gcs_path: str) -> None:
             "agentId": str(session.agent_id),
             "duration": str(session.duration or ""),
         }
-        gcs_recording_service.update_object_metadata(gcs_path, metadata)
+        s3_recording_service.update_object_metadata(gcs_path, metadata)
     except Exception as exc:
         logger.warning(
-            "GCS metadata update failed for %s: %s (continuing — path will still be set)",
+            "S3 metadata update failed for %s: %s (continuing — path will still be set)",
             gcs_path,
             exc,
         )
 
     # Update DB record
     try:
-        session.recording_gcs_path = gcs_path
+        session.recording_s3_path = gcs_path
         session.recording_error = False
         db.commit()
         logger.info(
-            "Recording finalized: session=%s gcs_path=%s",
+            "Recording finalized: session=%s s3_path=%s",
             session.id,
             gcs_path,
         )

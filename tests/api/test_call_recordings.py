@@ -119,7 +119,7 @@ def call_session_with_recording(db, rec_tenant, rec_agent, rec_phone_with_record
         call_type="outbound",
         duration=120,
         assistant_phone_number=rec_phone_with_recording_enabled.phone_number,
-        recording_gcs_path="recordings/tenant1/call1/20260609.opus",
+        recording_s3_path="recordings/tenant1/call1/20260609.opus",
         recording_error=False,
     )
     db.add(session)
@@ -141,7 +141,7 @@ def call_session_no_recording(db, rec_tenant, rec_agent, rec_phone_recording_dis
         call_type="outbound",
         duration=90,
         assistant_phone_number=rec_phone_recording_disabled.phone_number,
-        recording_gcs_path=None,
+        recording_s3_path=None,
         recording_error=False,
     )
     db.add(session)
@@ -257,11 +257,11 @@ class TestGetRecording:
         mock_url = "https://storage.googleapis.com/bucket/recordings/xyz?X-Goog-Signature=abc"
         with (
             patch(
-                "app.services.gcs_recording_service.generate_signed_url",
+                "app.services.s3_recording_service.generate_signed_url",
                 return_value=mock_url,
             ),
             patch(
-                "app.services.gcs_recording_service.get_object_size",
+                "app.services.s3_recording_service.get_object_size",
                 return_value=204800,
             ),
         ):
@@ -316,7 +316,7 @@ class TestGetRecording:
             status="completed",
             call_type="outbound",
             assistant_phone_number=rec_phone_with_recording_enabled.phone_number,
-            recording_gcs_path=None,
+            recording_s3_path=None,
             recording_error=True,
         )
         db.add(session)
@@ -404,7 +404,7 @@ class TestCallRecordingUploadService:
             status="completed",
             call_type="outbound",
             assistant_phone_number=rec_phone_with_recording_enabled.phone_number,
-            recording_gcs_path=None,
+            recording_s3_path=None,
             recording_error=False,
         )
         db.add(session)
@@ -424,13 +424,13 @@ class TestCallRecordingUploadService:
 
         db.refresh(session)
         assert session.recording_error is True
-        assert session.recording_gcs_path is None
+        assert session.recording_s3_path is None
 
         db.delete(session)
         db.commit()
 
-    def test_upload_success_sets_gcs_path(self, db, rec_tenant, rec_agent, rec_phone_with_recording_enabled):
-        """When LiveKit egress completes, recording_gcs_path must be set."""
+    def test_upload_success_sets_s3_path(self, db, rec_tenant, rec_agent, rec_phone_with_recording_enabled):
+        """When LiveKit egress completes, recording_s3_path must be set."""
         from app.services.call_recording_upload_service import _check_and_finalize
 
         session = CallSession(
@@ -441,7 +441,7 @@ class TestCallRecordingUploadService:
             status="completed",
             call_type="outbound",
             assistant_phone_number=rec_phone_with_recording_enabled.phone_number,
-            recording_gcs_path=None,
+            recording_s3_path=None,
             recording_error=False,
         )
         db.add(session)
@@ -464,12 +464,12 @@ class TestCallRecordingUploadService:
                 return_value=mock_egress_info,
             ),
             patch("app.services.call_recording_upload_service.asyncio.sleep", new_callable=AsyncMock),
-            patch("app.services.gcs_recording_service.update_object_metadata"),
+            patch("app.services.s3_recording_service.update_object_metadata"),
         ):
             _check_and_finalize(db, session, "egress-id-456", gcs_path)
 
         db.refresh(session)
-        assert session.recording_gcs_path == gcs_path
+        assert session.recording_s3_path == gcs_path
         assert session.recording_error is False
 
         db.delete(session)

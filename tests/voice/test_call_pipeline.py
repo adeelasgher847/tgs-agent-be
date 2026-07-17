@@ -870,66 +870,6 @@ class TestSlotAvailability:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 11. BLOCKED SLOTS — calendar blocked period respected
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestBlockedSlots:
-    """Verify that blocked time periods are excluded from offered slots."""
-
-    def test_blocked_slot_excluded_from_available_slots(self, db):
-        """End-to-end: create blocked slot, confirm it is hidden from availability."""
-        from app.services.business_hours_service import BusinessHoursService
-        from app.services.calendar_service import calendar_service
-        from app.models.tenant import Tenant
-        from app.models.business_hours import BusinessHours
-        from app.models.blocked_slot import BlockedSlot
-        from app.schemas.calendar import BlockedSlotCreate
-
-        # Create tenant
-        tenant = Tenant(name="BlockedTest", schema_name="blocked_test")
-        db.add(tenant)
-        db.commit()
-        db.refresh(tenant)
-
-        # Set business hours for tomorrow
-        tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date()
-        bh = BusinessHours(
-            tenant_id=tenant.id,
-            day_of_week=tomorrow.weekday(),
-            open_time=dt_time(9, 0),
-            close_time=dt_time(17, 0),
-            is_closed=False,
-            timezone="UTC",
-            slot_duration_minutes=60,
-        )
-        db.add(bh)
-        db.commit()
-
-        # Block 9-10 AM slot
-        slot_start = datetime.combine(tomorrow, dt_time(9, 0, tzinfo=timezone.utc))
-        blocked = BlockedSlot(
-            tenant_id=tenant.id,
-            title="Staff Meeting",
-            blocked_from=slot_start.replace(tzinfo=None),
-            blocked_until=(slot_start + timedelta(hours=1)).replace(tzinfo=None),
-        )
-        db.add(blocked)
-        db.commit()
-
-        result = calendar_service.get_available_slots(
-            db=db,
-            tenant_id=tenant.id,
-            target_date=tomorrow,
-        )
-
-        slot_starts = [s.slot_start for s in result.slots]
-        # 9 AM must not be offered because it is blocked
-        nine_am = dt_time(9, 0)
-        assert not any(s.hour == nine_am.hour and s.minute == nine_am.minute for s in slot_starts), \
-            "Blocked 9AM slot must be excluded from available slots"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # 12. FOLLOW-UP APPOINTMENT SCENARIOS — confirm / cancel / reschedule
 # ─────────────────────────────────────────────────────────────────────────────
 

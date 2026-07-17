@@ -219,6 +219,28 @@ def get_hubspot_oauth_credentials() -> Tuple[str, str]:
     return client_id, client_secret
 
 
+def get_reputation_api_key() -> str:
+    """
+    Return the outbound number reputation API key (First Orion / Hiya) for the
+    current environment.
+
+    - production/staging → GCP Secret Manager (secret: REPUTATION_API_KEY), with
+      env-var fallback so deployments that inject the var directly still work.
+    - development/local  → plain env-var / .env value. Empty string is a valid
+      return here (not raised) — reputation_service treats a missing key as
+      "use the mock provider" rather than a hard startup failure.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        secret_key = _fetch_from_secret_manager("REPUTATION_API_KEY")
+        if secret_key:
+            return secret_key
+        return (getattr(settings, "REPUTATION_API_KEY", "") or "").strip()
+
+    return (getattr(settings, "REPUTATION_API_KEY", "") or "").strip()
+
+
 def get_sso_encryption_key() -> bytes:
     """Return the Fernet key for encrypting SSO OIDC client secrets."""
     env = settings.ENVIRONMENT.lower()

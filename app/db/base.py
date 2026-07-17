@@ -28,10 +28,8 @@ from app.models.kb_file import KbFile  # noqa: F401
 from app.models.knowledge_base_chunk import KbChunk, KnowledgeBaseChunk  # noqa: F401
 
 # Calendar
-from app.models.business_hours import BusinessHours
-from app.models.blocked_slot import BlockedSlot
+from app.models.business_hours import BusinessHours  # noqa: F401  (used by calendar / business hours service)
 from app.models.appointment import Appointment
-from app.models.slot_reservation import SlotReservation
 from app.models.tenant_inbound_crm_config import TenantInboundCRMConfig
 from app.models.call_log_crm_sync import CallLogCRMSync
 from app.models.job_description import JobDescription
@@ -82,8 +80,14 @@ from app.models.allowed_domain import AllowedDomain  # noqa: F401
 # Third-party CRM integrations (HubSpot OAuth, etc.)
 from app.models.workspace_integration import WorkspaceIntegration  # noqa: F401
 
+# Calendly calendar integration
+from app.models.calendly_integration import CalendlyIntegration  # noqa: F401
+
 # SSO configuration
 from app.models.sso_config import SsoConfig  # noqa: F401
 
 # In-call Stripe payment records
 from app.models.payment_record import PaymentRecord  # noqa: F401
+
+# Outbound number reputation monitoring / auto-rotation
+from app.models.phone_number_reputation import PhoneNumberReputation  # noqa: F401

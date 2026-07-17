@@ -132,13 +132,36 @@ async def initiate_call(
                     detail=f"Invalid phone_number_id format: {str(e)}",
                 )
             if requested_id != phone_number_obj.id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "phone_number_id must be the phone number bound to this agent "
-                        f"(bound id: {phone_number_obj.id})."
-                    ),
-                )
+                # System/batch calls may dial out on a rotated number (the agent's
+                # bound number was spam-flagged) rather than the bound number —
+                # bypass the strict agent-binding restriction as long as the
+                # requested number belongs to this tenant and is active.
+                rotated_number_obj = None
+                if is_system_call:
+                    from sqlalchemy import or_ as _or_
+
+                    rotated_number_obj = (
+                        db.query(PhoneNumber)
+                        .filter(
+                            PhoneNumber.id == requested_id,
+                            PhoneNumber.tenant_id == tenant_id_filter,
+                            PhoneNumber.status == "active",
+                            _or_(
+                                PhoneNumber.assistant_id.is_(None),
+                                PhoneNumber.assistant_id == agent.id,
+                            ),
+                        )
+                        .first()
+                    )
+                if rotated_number_obj is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            "phone_number_id must be the phone number bound to this agent "
+                            f"(bound id: {phone_number_obj.id})."
+                        ),
+                    )
+                phone_number_obj = rotated_number_obj
 
         # ── 5. Validate fromNumber body param (GAP 1) ────────────────────
         from_number = phone_number_obj.phone_number
@@ -338,10 +361,10 @@ async def initiate_call(
                 _nc = db.execute(_pn_stmt).scalar_one_or_none()
                 _livekit_recording_enabled = bool(_nc and _nc.recording_enabled)
                 if _livekit_recording_enabled:
-                    from app.services.gcs_recording_service import build_gcs_key
+                    from app.services.s3_recording_service import build_s3_key
                     from app.services.livekit_recording_service import livekit_recording_service
 
-                    _gcs_path = build_gcs_key(
+                    _gcs_path = build_s3_key(
                         workspace_id=tenant_id_filter,
                         call_id=session_id,
                     )
@@ -462,7 +485,7 @@ async def initiate_call(
             db.refresh(call_session)
 
         # Webhook URLs
-        webhook_url = (
+        streaming_webhook_url = (
             f"{base_url}/api/v1/voice/gather/streaming?"
             f"agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         )
@@ -470,6 +493,22 @@ async def initiate_call(
             f"{base_url}/api/v1/voice/webhook/call-events?"
             f"agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
         )
+
+        # Answering Machine Detection (batch calls only) — hold the call on a
+        # pause/redirect loop until the async AMD callback resolves human vs machine.
+        amd_status_callback_url: Optional[str] = None
+        if call_request.enable_amd:
+            batch_record_id_q = call_request.batch_call_record_id or ""
+            amd_status_callback_url = (
+                f"{base_url}/api/v1/webhooks/twilio/amd?"
+                f"callSessionId={call_session.id}&batchCallRecordId={batch_record_id_q}"
+            )
+            webhook_url = (
+                f"{base_url}/api/v1/webhooks/twilio/amd-hold?"
+                f"agentId={agent.id}&userId={user_id_filter}&callSessionId={call_session.id}"
+            )
+        else:
+            webhook_url = streaming_webhook_url
 
         logger.info("Making call with webhook_url: %s", webhook_url)
         logger.info("Making call with status_callback_url: %s", status_callback_url)
@@ -493,6 +532,16 @@ async def initiate_call(
         # ── 10. Initiate Twilio call ──────────────────────────────────────
         _twilio_record = not _livekit_recording_enabled
         try:
+            amd_kwargs = (
+                {
+                    "machine_detection": "Enable",
+                    "machine_detection_timeout": 3,
+                    "async_amd": "true",
+                    "async_amd_status_callback": amd_status_callback_url,
+                }
+                if call_request.enable_amd
+                else {}
+            )
             if use_custom_credentials:
                 call = twilio_service.make_call_with_credentials(
                     to_number=call_request.toNumber,
@@ -502,6 +551,7 @@ async def initiate_call(
                     account_sid=account_sid,
                     auth_token=auth_token,
                     record=_twilio_record,
+                    **amd_kwargs,
                 )
             else:
                 call = twilio_service.make_call(
@@ -510,6 +560,7 @@ async def initiate_call(
                     webhook_url=webhook_url,
                     status_callback_url=status_callback_url,
                     record=_twilio_record,
+                    **amd_kwargs,
                 )
         except Exception as exc:
             logger.error(

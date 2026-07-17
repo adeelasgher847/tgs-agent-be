@@ -394,13 +394,13 @@ def get_data_export_status(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found")
 
     download_url = None
-    if job.status == "ready" and job.gcs_path:
-        from app.services import gcs_data_export_service
-        from app.services.gcs_recording_service import generate_signed_url
+    if job.status == "ready" and job.s3_path:
+        from app.services import s3_data_export_service
+        from app.services.s3_recording_service import generate_signed_url
 
         download_url = generate_signed_url(
-            job.gcs_path,
-            expiry_seconds=gcs_data_export_service.DATA_EXPORT_SIGNED_URL_EXPIRY_SECONDS,
+            job.s3_path,
+            expiry_seconds=s3_data_export_service.DATA_EXPORT_SIGNED_URL_EXPIRY_SECONDS,
         )
 
     return DataExportStatusOut(status=job.status, download_url=download_url)

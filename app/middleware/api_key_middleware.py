@@ -61,6 +61,9 @@ _SKIP_PREFIXES = (
     "/api/v1/billing/webhook",
     "/api/v1/voice/",
     "/api/v1/stream/",
+    # Twilio AMD status callback + hold TwiML — Twilio sends no API key/JWT;
+    # authenticated instead via X-Twilio-Signature verification in the handler.
+    "/api/v1/webhooks/twilio/",
     # Public Web SDK endpoints — security enforced via flow.public_access +
     # allowed_domains Origin check inside the handler, not API credentials.
     "/api/v1/sdk/",

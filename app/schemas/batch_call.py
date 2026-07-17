@@ -4,7 +4,9 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+VOICEMAIL_ACTIONS = ("skip", "leave_message", "continue")
 
 
 # ── Request schemas ──────────────────────────────────────────────────────────
@@ -14,6 +16,15 @@ class BatchJobCreate(BaseModel):
 
     agent_id: uuid.UUID
     scheduled_at: Optional[datetime] = None
+    voicemail_action: str = "skip"
+    voicemail_message: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("voicemail_action")
+    @classmethod
+    def validate_voicemail_action(cls, v: str) -> str:
+        if v not in VOICEMAIL_ACTIONS:
+            raise ValueError(f"voicemail_action must be one of {VOICEMAIL_ACTIONS}")
+        return v
 
 
 # ── Response schemas ─────────────────────────────────────────────────────────
@@ -46,7 +57,9 @@ class BatchJobOut(BaseModel):
     active_count: int
     completed_count: int
     failed_count: int
-    gcs_path: Optional[str] = None
+    voicemail_action: str = "skip"
+    voicemail_message: Optional[str] = None
+    s3_path: Optional[str] = None
     scheduled_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -64,6 +77,8 @@ class BatchJobProgress(BaseModel):
     failed: int
     total: int
     percent_complete: float
+    voicemail_skipped: int = 0
+    voicemail_message_left: int = 0
 
 
 class PaginatedBatchJobs(BaseModel):

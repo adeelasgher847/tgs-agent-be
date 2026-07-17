@@ -11,7 +11,7 @@ import asyncio
 import enum
 import threading
 import time
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -80,6 +80,55 @@ def _classify_vertex_error(exc: Exception) -> VertexLlmError:
     if "blocked" in msg.lower() or "safety" in msg.lower() or "filter" in msg.lower():
         return VertexLlmError(f"Vertex content filter: {msg}", VertexLlmErrorType.CONTENT_FILTER)
     return VertexLlmError(f"Vertex error: {msg}", VertexLlmErrorType.UNKNOWN)
+
+
+def _build_calendly_tool():
+    """
+    Gemini FunctionDeclarations for the Calendly booking flow:
+      - check_availability(date): list bookable slots
+      - book_appointment(slot, attendee_email): schedule on Calendly
+    Lazily imported so environments without google-cloud-aiplatform installed
+    can still import this module (matches the rest of this file's pattern).
+    """
+    from vertexai.generative_models import FunctionDeclaration, Tool
+
+    check_availability = FunctionDeclaration(
+        name="check_availability",
+        description=(
+            "Check available appointment slots on the connected Calendly calendar. "
+            "Slot length is fixed by the connected Calendly event type — it cannot "
+            "be requested per-call."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Date to check availability for, as YYYY-MM-DD (or 'today'/'tomorrow').",
+                },
+            },
+            "required": ["date"],
+        },
+    )
+    book_appointment = FunctionDeclaration(
+        name="book_appointment",
+        description="Schedule an appointment on Calendly for a previously offered slot.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "slot": {
+                    "type": "string",
+                    "description": "The chosen slot start time, ISO-8601 (UTC).",
+                },
+                "attendee_email": {
+                    "type": "string",
+                    "description": "The caller's email address to send the Calendly confirmation to.",
+                },
+            },
+            "required": ["slot", "attendee_email"],
+        },
+    )
+    return Tool(function_declarations=[check_availability, book_appointment])
 
 
 class VertexGeminiService:
@@ -178,6 +227,88 @@ class VertexGeminiService:
 
                 if text:
                     yield text
+        except VertexLlmError:
+            raise
+        except Exception as exc:
+            raise _classify_vertex_error(exc) from exc
+
+    async def generate_with_tools(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        conversation_history: list[tuple[str, str]] | None = None,
+        model_name: str = "gemini-2.5-flash",
+        temperature: float = 0.3,
+        max_tokens: int = 200,
+        tool_executor: Callable[[str, dict], Awaitable[dict]],
+    ) -> str:
+        """
+        One conversational turn with Gemini native function calling enabled
+        (Calendly check_availability / book_appointment tools).
+
+        If the model returns a function_call part, ``tool_executor(name, args)``
+        is awaited to resolve it, the result is fed back as a
+        ``Part.from_function_response``, and generation resumes so the model
+        can produce the final spoken reply. Returns the final text (never a
+        raw function-call JSON blob).
+        """
+        try:
+            _ensure_vertex_init()
+        except Exception as exc:
+            raise VertexLlmError(f"Vertex init failed: {exc}", VertexLlmErrorType.UNKNOWN) from exc
+
+        try:
+            from vertexai.generative_models import GenerativeModel, GenerationConfig, Content, Part
+        except ImportError as exc:
+            raise VertexLlmError(
+                "google-cloud-aiplatform is not installed. Add it to requirements.txt.",
+                VertexLlmErrorType.UNKNOWN,
+            ) from exc
+
+        model_kwargs: dict = {"tools": [_build_calendly_tool()]}
+        if system_prompt:
+            model_kwargs["system_instruction"] = system_prompt
+
+        model = GenerativeModel(model_name=model_name, **model_kwargs)
+
+        max_turns = getattr(settings, "VOICE_LLM_HISTORY_MAX_TURNS", 20)
+        contents = build_vertex_contents(conversation_history, prompt, None, max_turns=max_turns)
+        generation_config = GenerationConfig(
+            temperature=float(temperature), max_output_tokens=int(max_tokens)
+        )
+
+        try:
+            response = await model.generate_content_async(
+                contents, generation_config=generation_config
+            )
+
+            candidate = response.candidates[0] if response.candidates else None
+            parts = list(candidate.content.parts) if candidate and candidate.content else []
+            function_call_part = next((p for p in parts if getattr(p, "function_call", None)), None)
+
+            if function_call_part is None:
+                return (response.text or "").strip()
+
+            fc = function_call_part.function_call
+            fc_name = fc.name
+            fc_args = dict(fc.args) if fc.args else {}
+            logger.info("[VertexGemini] function_call name=%s args=%s", fc_name, fc_args)
+
+            tool_result = await tool_executor(fc_name, fc_args)
+
+            contents.append(candidate.content)
+            contents.append(
+                Content(
+                    role="function",
+                    parts=[Part.from_function_response(name=fc_name, response=tool_result)],
+                )
+            )
+
+            follow_up = await model.generate_content_async(
+                contents, generation_config=generation_config
+            )
+            return (follow_up.text or "").strip()
         except VertexLlmError:
             raise
         except Exception as exc:

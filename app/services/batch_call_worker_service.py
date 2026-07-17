@@ -131,6 +131,43 @@ class BatchCallWorkerService:
         from app.schemas.twilio import CallInitiateRequest
         from app.services.voice_call_service import initiate_call
 
+        job = self._db.get(BatchJob, record.batch_job_id)
+        enable_amd = bool(job and job.voicemail_action in ("skip", "leave_message"))
+
+        # If the outbound number was rotated (spam-flagged bound number), dial
+        # out using the rotated number's phone_number_id instead of the agent's
+        # default bound number.
+        rotated_phone_number_id: Optional[str] = None
+        if job and job.actual_from_number:
+            from app.models.phone_number import PhoneNumber
+
+            rotated_number = (
+                self._db.query(PhoneNumber)
+                .filter(
+                    PhoneNumber.phone_number == job.actual_from_number,
+                    PhoneNumber.tenant_id == workspace_id,
+                    PhoneNumber.status == "active",
+                )
+                .first()
+            )
+            if rotated_number is not None:
+                rotated_phone_number_id = str(rotated_number.id)
+            else:
+                logger.error(
+                    "Batch record %s: rotated number %s for batch job %s is no "
+                    "longer active — refusing to fall back to the original "
+                    "(spam-flagged) bound number",
+                    record.id,
+                    job.actual_from_number,
+                    record.batch_job_id,
+                )
+                await self._mark_failed(
+                    record,
+                    "rotated_number_unavailable",
+                    is_system_error=True,
+                )
+                return
+
         # Build prompt with variable substitution (validated at upload time)
         variables: dict = record.variables or {}
         prompt_override: Optional[str] = None
@@ -154,6 +191,10 @@ class BatchCallWorkerService:
             tenant_id=str(workspace_id),
             batch_call_record_id=str(record.id),
             batch_prompt_override=prompt_override,
+            enable_amd=enable_amd,
+            voicemail_action=job.voicemail_action if job else None,
+            voicemail_message=job.voicemail_message if job else None,
+            phone_number_id=rotated_phone_number_id,
         )
 
         try:
@@ -213,9 +254,13 @@ class BatchCallWorkerService:
 
         Marks the record completed or schedules a retry, and updates job counters.
         Billing is handled inside this method for connected/voicemail calls.
+
+        Re-fetches with populate_existing so a concurrent AMD-driven transition
+        (mark_voicemail_skipped/mark_voicemail_message_left, committed in a
+        separate request) isn't clobbered by a stale in-session identity-map read.
         """
-        record = self._db.get(BatchCallRecord, record_id)
-        if record is None:
+        record = self._db.get(BatchCallRecord, record_id, populate_existing=True)
+        if record is None or record.status != "active":
             return
 
         if ended_reason in _BILLABLE_ENDED_REASONS:
@@ -275,6 +320,46 @@ class BatchCallWorkerService:
 
         _decrement_job_counter(self._db, record.batch_job_id, "active_count")
         _increment_job_counter(self._db, record.batch_job_id, "failed_count")
+        self._db.commit()
+        await _maybe_complete_job(self._db, record.batch_job_id)
+
+    async def mark_voicemail_skipped(self, record_id: uuid.UUID) -> None:
+        """AMD detected a machine and voicemail_action is 'skip' — call was hung up."""
+        record = self._db.get(BatchCallRecord, record_id)
+        if record is None or record.status != "active":
+            return
+
+        now = datetime.now(timezone.utc)
+        record.status = "voicemail_skipped"
+        record.updated_at = now
+        self._db.commit()
+
+        _decrement_job_counter(self._db, record.batch_job_id, "active_count")
+        _increment_job_counter(self._db, record.batch_job_id, "completed_count")
+        _increment_job_counter(self._db, record.batch_job_id, "voicemail_skipped_count")
+        self._db.commit()
+        await _maybe_complete_job(self._db, record.batch_job_id)
+
+    async def mark_voicemail_message_left(self, record_id: uuid.UUID) -> None:
+        """AMD detected the beep and the configured voicemail message was played."""
+        record = self._db.get(BatchCallRecord, record_id)
+        if record is None or record.status != "active":
+            return
+
+        now = datetime.now(timezone.utc)
+        record.status = "voicemail_message_left"
+        record.updated_at = now
+        self._db.commit()
+
+        if record.call_id is not None:
+            try:
+                await _bill_connected_call(record, self._db)
+            except Exception as exc:
+                logger.warning("Billing failed for batch record %s: %s", record.id, exc)
+
+        _decrement_job_counter(self._db, record.batch_job_id, "active_count")
+        _increment_job_counter(self._db, record.batch_job_id, "completed_count")
+        _increment_job_counter(self._db, record.batch_job_id, "voicemail_message_left_count")
         self._db.commit()
         await _maybe_complete_job(self._db, record.batch_job_id)
 

@@ -189,9 +189,15 @@ class PhoneNumberService:
 
         from app.core.config import settings
         from app.services.twilio_service import twilio_service
+        from twilio.base.exceptions import TwilioException
 
-        client = twilio_service.get_client_with_credentials(twilio_account_sid, twilio_auth_token)
-        owned = client.incoming_phone_numbers.list(phone_number=phone_number, limit=1)
+        try:
+            client = twilio_service.get_client_with_credentials(twilio_account_sid, twilio_auth_token)
+            owned = client.incoming_phone_numbers.list(phone_number=phone_number, limit=1)
+        except TwilioException as exc:
+            logger.error("Twilio API authentication failed or error occurred: %s", exc)
+            raise ValueError("Invalid Twilio credentials or Account SID/Auth Token provided.")
+
         if not owned:
             raise ValueError(
                 f"Phone number {phone_number} was not found in the provided Twilio account"

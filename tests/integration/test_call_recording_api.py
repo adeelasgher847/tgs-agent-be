@@ -65,7 +65,7 @@ def test_get_recording_returns_signed_url_format(client: TestClient, db):
         call_type="outbound",
         duration=60,
         assistant_phone_number=pn.phone_number,
-        recording_gcs_path=f"recordings/{tenant.id}/{uuid.uuid4()}/20260609.opus",
+        recording_s3_path=f"recordings/{tenant.id}/{uuid.uuid4()}/20260609.opus",
     )
     db.add(session)
     db.commit()
@@ -77,10 +77,10 @@ def test_get_recording_returns_signed_url_format(client: TestClient, db):
     )
     with (
         patch(
-            "app.services.gcs_recording_service.generate_signed_url",
+            "app.services.s3_recording_service.generate_signed_url",
             return_value=mock_url,
         ),
-        patch("app.services.gcs_recording_service.get_object_size", return_value=1024),
+        patch("app.services.s3_recording_service.get_object_size", return_value=1024),
         patch(
             "app.middleware.api_key_middleware._resolve_api_key",
             return_value={

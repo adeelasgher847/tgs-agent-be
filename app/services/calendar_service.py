@@ -1,48 +1,37 @@
 """
 Calendar Service
-Handles appointment booking, slot availability, and calendar orchestration.
-Business hours / blocked slots CRUD lives in BusinessHoursService (business_hours_service.py).
-All operations are scoped to tenant_id for multi-tenant isolation.
+Local read/log CRUD for the `appointment` table only.
+
+Availability computation, business hours, blocked slots, and in-call slot
+reservations have moved to Calendly (see app/services/calendly_service.py).
+This service no longer validates slot windows against local business hours —
+Calendly owns conflict checking, timezone handling, and calendar sync.
+All operations remain scoped to tenant_id for multi-tenant isolation.
 """
 import html
+import uuid
 from datetime import datetime, date, timedelta, timezone, time as dt_time, tzinfo
-from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import List, Optional, Tuple
+
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-import uuid
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.models.business_hours import BusinessHours
-from app.models.blocked_slot import BlockedSlot
 from app.models.appointment import Appointment
-from app.models.slot_reservation import SlotReservation
+from app.models.business_hours import BusinessHours
 from app.models.call_session import CallSession
 from app.models.user import User
-from app.schemas.calendar import (
-    AppointmentOut,
-    BusinessHoursUpsert,
-    BlockedSlotCreate,
-    AvailableSlot,
-    AvailableSlotsResponse,
-)
+from app.schemas.calendar import AppointmentOut, AvailableSlot, AvailableSlotsResponse
+from app.services.business_hours_service import business_hours_service
 from app.services.email_service import email_service
-from app.services.business_hours_service import BusinessHoursService, BusinessHoursConflictError
 from app.utils.spoken_email import normalize_stored_email
 
-SLOT_BOOKING_BUFFER_MINUTES = 15
+DEFAULT_APPOINTMENT_DURATION_MINUTES = 30
 APPOINTMENT_REVIEW_TOKEN_TTL_HOURS = 24 * 7
-
-
-ALLOWED_STATUS_TRANSITIONS = {
-    "pending":   {"confirmed", "cancelled"},
-    "confirmed": {"completed", "cancelled", "no_show"},
-    "cancelled": set(),
-    "completed": set(),
-    "no_show":   set(),
-}
+SLOT_BOOKING_BUFFER_MINUTES = 15
 
 
 def _safe_tz(tz_str: str) -> tzinfo:
@@ -52,13 +41,13 @@ def _safe_tz(tz_str: str) -> tzinfo:
         return timezone.utc
 
 
-def _parse_time_str(t: str) -> Optional[dt_time]:
-    """Parse 'HH:MM' string into a time object."""
-    try:
-        h, m = t.split(":")
-        return dt_time(int(h), int(m))
-    except Exception:
-        return None
+ALLOWED_STATUS_TRANSITIONS = {
+    "pending":   {"confirmed", "cancelled"},
+    "confirmed": {"completed", "cancelled", "no_show"},
+    "cancelled": set(),
+    "completed": set(),
+    "no_show":   set(),
+}
 
 
 def _fmt_slot_label(dt: datetime) -> str:
@@ -73,186 +62,9 @@ def _ensure_utc(dt_val: datetime) -> datetime:
     return dt_val.astimezone(timezone.utc)
 
 
-class CalendarService(BusinessHoursService):
+class CalendarService:
 
-    # ── Internal validation ───────────────────────────────────────────────────
-
-    def _get_business_hours_for_date(
-        self, db: Session, tenant_id: uuid.UUID, target_date: date
-    ) -> Optional[BusinessHours]:
-        return (
-            db.query(BusinessHours)
-            .filter(
-                BusinessHours.tenant_id == tenant_id,
-                BusinessHours.day_of_week == target_date.weekday(),
-                BusinessHours.is_deleted.is_(False),
-            )
-            .first()
-        )
-
-    def _get_tenant_tz(self, db: Session, tenant_id: uuid.UUID) -> tzinfo:
-        return _safe_tz(self.get_tenant_timezone(db, tenant_id))
-
-    def _localize_input_datetime(
-        self, db: Session, tenant_id: uuid.UUID, dt_val: datetime
-    ) -> datetime:
-        tenant_tz = self._get_tenant_tz(db, tenant_id)
-        if dt_val.tzinfo is None:
-            return dt_val.replace(tzinfo=tenant_tz)
-        return dt_val.astimezone(tenant_tz)
-
-    def _resolve_booking_context(
-        self,
-        db: Session,
-        tenant_id: uuid.UUID,
-        slot_start: datetime,
-        duration_minutes: Optional[int] = None,
-    ) -> tuple[BusinessHours, tzinfo, datetime, datetime, datetime, datetime, int]:
-        slot_local_seed = self._localize_input_datetime(db, tenant_id, slot_start)
-        bh = self._get_business_hours_for_date(db, tenant_id, slot_local_seed.date())
-
-        if not bh or bh.is_closed or not bh.open_time or not bh.close_time:
-            raise ValueError(
-                f"The business is closed on {slot_local_seed.strftime('%A')}. "
-                "Please choose another day."
-            )
-
-        tz_info = _safe_tz(bh.timezone)
-        if slot_start.tzinfo is None:
-            slot_local = slot_start.replace(tzinfo=tz_info)
-        else:
-            slot_local = slot_start.astimezone(tz_info)
-
-        resolved_duration = duration_minutes or bh.slot_duration_minutes
-        slot_end_local = slot_local + timedelta(minutes=resolved_duration)
-        slot_start_utc = slot_local.astimezone(timezone.utc)
-        slot_end_utc = slot_end_local.astimezone(timezone.utc)
-
-        return (
-            bh,
-            tz_info,
-            slot_local,
-            slot_end_local,
-            slot_start_utc,
-            slot_end_utc,
-            resolved_duration,
-        )
-
-    def _get_overlapping_appointment(
-        self,
-        db: Session,
-        tenant_id: uuid.UUID,
-        slot_start: datetime,
-        slot_end: datetime,
-        exclude_appointment_id: Optional[uuid.UUID] = None,
-    ) -> Optional[Appointment]:
-        q = (
-            db.query(Appointment)
-            .filter(
-                Appointment.tenant_id == tenant_id,
-                Appointment.status.notin_(["cancelled"]),
-                Appointment.slot_start < slot_end,
-                Appointment.slot_end > slot_start,
-            )
-        )
-        if exclude_appointment_id is not None:
-            q = q.filter(Appointment.id != exclude_appointment_id)
-        return q.order_by(Appointment.slot_start.asc()).first()
-
-    def _get_overlapping_reservation(
-        self,
-        db: Session,
-        tenant_id: uuid.UUID,
-        slot_start: datetime,
-        slot_end: datetime,
-        exclude_reservation_id: Optional[uuid.UUID] = None,
-    ) -> Optional[SlotReservation]:
-        q = (
-            db.query(SlotReservation)
-            .filter(
-                SlotReservation.tenant_id == tenant_id,
-                SlotReservation.status == "active",
-                SlotReservation.slot_start < slot_end,
-                SlotReservation.slot_end > slot_start,
-            )
-        )
-        if exclude_reservation_id is not None:
-            q = q.filter(SlotReservation.id != exclude_reservation_id)
-        return q.order_by(SlotReservation.slot_start.asc()).first()
-
-    def resolve_slot_window(
-        self,
-        db: Session,
-        tenant_id: uuid.UUID,
-        slot_start: datetime,
-        duration_minutes: Optional[int] = None,
-    ) -> tuple[BusinessHours, tzinfo, datetime, datetime, datetime, datetime, int]:
-        """
-        Public wrapper for booking time-window resolution (same as internal booking path).
-        """
-        return self._resolve_booking_context(
-            db=db,
-            tenant_id=tenant_id,
-            slot_start=slot_start,
-            duration_minutes=duration_minutes,
-        )
-
-    def _validate_slot_bookable(
-        self,
-        db: Session,
-        tenant_id: uuid.UUID,
-        slot_local: datetime,
-        slot_end_local: datetime,
-        slot_start_utc: datetime,
-        slot_end_utc: datetime,
-        bh: BusinessHours,
-        tz_info: tzinfo,
-    ) -> None:
-        """
-        Raises ValueError if the slot cannot be booked:
-        past/too-soon, off-grid, outside business hours, or inside a blocked range.
-        """
-        now_utc = datetime.now(timezone.utc)
-        buffer = timedelta(minutes=SLOT_BOOKING_BUFFER_MINUTES)
-
-        if slot_start_utc <= now_utc + buffer:
-            raise ValueError(
-                "Cannot book a slot in the past or within the next "
-                f"{SLOT_BOOKING_BUFFER_MINUTES} minutes. Please choose a later time."
-            )
-
-        opening_dt = datetime.combine(slot_local.date(), bh.open_time, tzinfo=tz_info)
-        closing_dt = datetime.combine(slot_local.date(), bh.close_time, tzinfo=tz_info)
-
-        if slot_local.second or slot_local.microsecond:
-            raise ValueError("Appointments must start on an exact minute boundary.")
-
-        minutes_from_open = int((slot_local - opening_dt).total_seconds() // 60)
-        if slot_local < opening_dt or slot_end_local > closing_dt:
-            raise ValueError(
-                f"The slot is outside business hours "
-                f"({bh.open_time.strftime('%H:%M')} – {bh.close_time.strftime('%H:%M')})."
-            )
-
-        if minutes_from_open < 0 or minutes_from_open % bh.slot_duration_minutes != 0:
-            raise ValueError(
-                f"Appointments must start on the configured "
-                f"{bh.slot_duration_minutes}-minute slot boundaries."
-            )
-
-        blocked = (
-            db.query(BlockedSlot)
-            .filter(
-                BlockedSlot.tenant_id == tenant_id,
-                BlockedSlot.blocked_from < slot_end_utc,
-                BlockedSlot.blocked_until > slot_start_utc,
-            )
-            .first()
-        )
-        if blocked:
-            raise ValueError(
-                f"This time slot is blocked ({blocked.title}). Please choose another time."
-            )
+    # ── Internal helpers ────────────────────────────────────────────────────
 
     def _resolve_notification_email(
         self,
@@ -483,7 +295,27 @@ class CalendarService(BusinessHoursService):
 
         return appt
 
-    # ── Slot availability ─────────────────────────────────────────────────────
+    # ── Legacy slot availability (non-Calendly tenants only) ───────────────────
+    # Calendly-enabled tenants use calendly_service.get_available_slots instead.
+    # This path no longer excludes BlockedSlot ranges or in-call SlotReservation
+    # holds (both removed) — only BusinessHours windows and already-booked
+    # Appointment rows are honored.
+
+    def get_tenant_timezone(self, db: Session, tenant_id: uuid.UUID) -> str:
+        return business_hours_service.get_tenant_timezone(db, tenant_id)
+
+    def _get_business_hours_for_date(
+        self, db: Session, tenant_id: uuid.UUID, target_date: date
+    ) -> Optional[BusinessHours]:
+        return (
+            db.query(BusinessHours)
+            .filter(
+                BusinessHours.tenant_id == tenant_id,
+                BusinessHours.day_of_week == target_date.weekday(),
+                BusinessHours.is_deleted.is_(False),
+            )
+            .first()
+        )
 
     def get_available_slots(
         self,
@@ -493,10 +325,10 @@ class CalendarService(BusinessHoursService):
         agent_id: Optional[uuid.UUID] = None,
     ) -> AvailableSlotsResponse:
         """
-        Return bookable slots for a given date.
-        Automatically excludes: past slots (with buffer), blocked slots, already-booked slots.
+        Legacy fallback for tenants that have not enabled Calendly. Returns
+        bookable slots for a given date, excluding past slots (with buffer)
+        and already-booked appointments.
         """
-        # Availability is tenant-wide. Keep the parameter for backward compatibility.
         _ = agent_id
 
         bh = self._get_business_hours_for_date(db, tenant_id, target_date)
@@ -522,19 +354,6 @@ class CalendarService(BusinessHoursService):
 
         day_start = datetime.combine(target_date, dt_time.min, tzinfo=tz_info)
         day_end = datetime.combine(target_date, dt_time.max, tzinfo=tz_info)
-        blocked = (
-            db.query(BlockedSlot)
-            .filter(
-                BlockedSlot.tenant_id == tenant_id,
-                BlockedSlot.blocked_from < day_end,
-                BlockedSlot.blocked_until > day_start,
-            )
-            .all()
-        )
-        blocked_ranges = [
-            (_ensure_utc(item.blocked_from), _ensure_utc(item.blocked_until))
-            for item in blocked
-        ]
 
         booked = (
             db.query(Appointment.slot_start, Appointment.slot_end)
@@ -548,18 +367,6 @@ class CalendarService(BusinessHoursService):
         )
         booked_ranges = [(_ensure_utc(bs), _ensure_utc(be)) for bs, be in booked]
 
-        resv = (
-            db.query(SlotReservation.slot_start, SlotReservation.slot_end)
-            .filter(
-                SlotReservation.tenant_id == tenant_id,
-                SlotReservation.status == "active",
-                SlotReservation.slot_start < day_end,
-                SlotReservation.slot_end > day_start,
-            )
-            .all()
-        )
-        reserved_ranges = [(_ensure_utc(bs), _ensure_utc(be)) for bs, be in resv]
-
         available: List[AvailableSlot] = []
         for s_start, s_end in all_slots:
             s_utc = s_start.astimezone(timezone.utc)
@@ -568,13 +375,7 @@ class CalendarService(BusinessHoursService):
             if s_utc <= now_utc + buffer:
                 continue
 
-            if any(blocked_from < s_end_utc and blocked_until > s_utc for blocked_from, blocked_until in blocked_ranges):
-                continue
-
             if any(bs < s_end_utc and be > s_utc for bs, be in booked_ranges):
-                continue
-
-            if any(rs < s_end_utc and re_ > s_utc for rs, re_ in reserved_ranges):
                 continue
 
             available.append(AvailableSlot(
@@ -590,7 +391,58 @@ class CalendarService(BusinessHoursService):
             total=len(available),
         )
 
-    # ── Booking ───────────────────────────────────────────────────────────────
+    # ── Local read-log CRUD (appointments only — availability lives in Calendly) ──
+    #
+    # For Calendly-connected tenants, Calendly is the source of truth for slot
+    # conflicts and business hours. But this service is also the *only* write
+    # path for two flows Calendly never sees: the local web booking endpoint
+    # (POST /api/v1/calendar/appointments) and the legacy voice path for
+    # tenants that haven't enabled Calendly — so it still guards against
+    # past/too-soon slots and overlapping appointments itself.
+
+    def _get_overlapping_appointment(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        slot_start: datetime,
+        slot_end: datetime,
+        exclude_appointment_id: Optional[uuid.UUID] = None,
+    ) -> Optional[Appointment]:
+        q = db.query(Appointment).filter(
+            Appointment.tenant_id == tenant_id,
+            Appointment.status.notin_(["cancelled"]),
+            Appointment.slot_start < slot_end,
+            Appointment.slot_end > slot_start,
+        )
+        if exclude_appointment_id is not None:
+            q = q.filter(Appointment.id != exclude_appointment_id)
+        return q.order_by(Appointment.slot_start.asc()).first()
+
+    def _validate_local_slot_bookable(
+        self,
+        slot_start_utc: datetime,
+        slot_end_utc: datetime,
+        db: Session,
+        tenant_id: uuid.UUID,
+        exclude_appointment_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """Raises ValueError if the slot is in the past or overlaps another appointment."""
+        now_utc = datetime.now(timezone.utc)
+        buffer = timedelta(minutes=SLOT_BOOKING_BUFFER_MINUTES)
+        if slot_start_utc <= now_utc + buffer:
+            raise ValueError(
+                "Cannot book a slot in the past or within the next "
+                f"{SLOT_BOOKING_BUFFER_MINUTES} minutes. Please choose a later time."
+            )
+        conflict = self._get_overlapping_appointment(
+            db, tenant_id, slot_start_utc, slot_end_utc,
+            exclude_appointment_id=exclude_appointment_id,
+        )
+        if conflict:
+            raise ValueError(
+                f"The {_fmt_slot_label(slot_start_utc)} slot is no longer available. "
+                "Please choose another time."
+            )
 
     def book_appointment(
         self,
@@ -607,65 +459,22 @@ class CalendarService(BusinessHoursService):
         created_via: str = "voice_agent",
         duration_minutes: Optional[int] = None,
         notify_user_id: Optional[uuid.UUID] = None,
-        consuming_reservation_id: Optional[uuid.UUID] = None,
+        skip_local_validation: bool = False,
+        **_ignored,
     ) -> Appointment:
         """
-        Book a slot. Raises ValueError if the slot is unavailable, in the past,
-        outside business hours, or blocked.
-        Uses DB-level unique constraints as the final guard against races.
-        `consuming_reservation_id` excludes that active hold when checking conflicts
-        (used when finalizing a voice in-call reservation post-call).
+        Write a local Appointment row. For Calendly-connected tenants this is a
+        read-log of a slot already validated/scheduled on Calendly (pass
+        skip_local_validation=True to skip the redundant local check). For the
+        local web flow and the legacy (non-Calendly) voice path, this is the
+        only conflict guard, so past-date and overlap checks still run here.
         """
-        (
-            bh,
-            tz_info,
-            slot_local,
-            slot_end_local,
-            slot_start_utc,
-            slot_end_utc,
-            resolved_duration,
-        ) = self._resolve_booking_context(
-            db=db,
-            tenant_id=tenant_id,
-            slot_start=slot_start,
-            duration_minutes=duration_minutes,
-        )
+        resolved_duration = duration_minutes or DEFAULT_APPOINTMENT_DURATION_MINUTES
+        slot_start_utc = _ensure_utc(slot_start)
+        slot_end_utc = slot_start_utc + timedelta(minutes=resolved_duration)
 
-        self._validate_slot_bookable(
-            db=db,
-            tenant_id=tenant_id,
-            slot_local=slot_local,
-            slot_end_local=slot_end_local,
-            slot_start_utc=slot_start_utc,
-            slot_end_utc=slot_end_utc,
-            bh=bh,
-            tz_info=tz_info,
-        )
-
-        conflict = self._get_overlapping_appointment(
-            db=db,
-            tenant_id=tenant_id,
-            slot_start=slot_start_utc,
-            slot_end=slot_end_utc,
-        )
-        if conflict:
-            raise ValueError(
-                f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
-                "Please choose another time."
-            )
-
-        res_hold = self._get_overlapping_reservation(
-            db=db,
-            tenant_id=tenant_id,
-            slot_start=slot_start_utc,
-            slot_end=slot_end_utc,
-            exclude_reservation_id=consuming_reservation_id,
-        )
-        if res_hold:
-            raise ValueError(
-                f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
-                "Please choose another time."
-            )
+        if not skip_local_validation:
+            self._validate_local_slot_bookable(slot_start_utc, slot_end_utc, db, tenant_id)
 
         appt = Appointment(
             tenant_id=tenant_id,
@@ -687,14 +496,14 @@ class CalendarService(BusinessHoursService):
             db.commit()
             db.refresh(appt)
             logger.info(
-                "Appointment booked: tenant=%s agent=%s slot=%s customer=%s",
+                "Appointment logged: tenant=%s agent=%s slot=%s customer=%s",
                 tenant_id, agent_id, slot_start_utc, customer_name,
             )
         except IntegrityError:
             db.rollback()
             raise ValueError(
-                f"The {_fmt_slot_label(slot_local)} slot was just taken. "
-                "Please choose another time."
+                f"The {_fmt_slot_label(slot_start_utc)} slot could not be logged. "
+                "Please try again."
             )
         self._send_appointment_confirmation_email(
             db=db,
@@ -736,10 +545,13 @@ class CalendarService(BusinessHoursService):
         notes: Optional[str] = None,
         duration_minutes: Optional[int] = None,
         notify_user_id: Optional[uuid.UUID] = None,
+        skip_local_validation: bool = False,
     ) -> Appointment:
         """
-        Move an existing appointment to a new slot. Same validation as booking;
-        the current appointment is excluded from overlap checks.
+        Move an existing appointment to a new slot. For Calendly-connected
+        tenants Calendly already validated the new slot (pass
+        skip_local_validation=True); otherwise this is the only guard against
+        overlaps/past-dated slots for the local record.
         """
         appt = self.get_appointment_by_id(db, appointment_id, tenant_id)
         if not appt:
@@ -749,59 +561,16 @@ class CalendarService(BusinessHoursService):
                 f"Cannot reschedule an appointment that is {appt.status}."
             )
 
-        eff_duration = (
+        resolved_duration = (
             duration_minutes if duration_minutes is not None else appt.duration_minutes
         )
+        slot_start_utc = _ensure_utc(slot_start)
+        slot_end_utc = slot_start_utc + timedelta(minutes=resolved_duration)
 
-        (
-            bh,
-            tz_info,
-            slot_local,
-            slot_end_local,
-            slot_start_utc,
-            slot_end_utc,
-            resolved_duration,
-        ) = self._resolve_booking_context(
-            db=db,
-            tenant_id=tenant_id,
-            slot_start=slot_start,
-            duration_minutes=eff_duration,
-        )
-
-        self._validate_slot_bookable(
-            db=db,
-            tenant_id=tenant_id,
-            slot_local=slot_local,
-            slot_end_local=slot_end_local,
-            slot_start_utc=slot_start_utc,
-            slot_end_utc=slot_end_utc,
-            bh=bh,
-            tz_info=tz_info,
-        )
-
-        conflict = self._get_overlapping_appointment(
-            db=db,
-            tenant_id=tenant_id,
-            slot_start=slot_start_utc,
-            slot_end=slot_end_utc,
-            exclude_appointment_id=appointment_id,
-        )
-        if conflict:
-            raise ValueError(
-                f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
-                "Please choose another time."
-            )
-
-        res_hold = self._get_overlapping_reservation(
-            db=db,
-            tenant_id=tenant_id,
-            slot_start=slot_start_utc,
-            slot_end=slot_end_utc,
-        )
-        if res_hold:
-            raise ValueError(
-                f"The {_fmt_slot_label(slot_local)} slot is no longer available. "
-                "Please choose another time."
+        if not skip_local_validation:
+            self._validate_local_slot_bookable(
+                slot_start_utc, slot_end_utc, db, tenant_id,
+                exclude_appointment_id=appointment_id,
             )
 
         if customer_name is not None:
@@ -831,8 +600,8 @@ class CalendarService(BusinessHoursService):
         except IntegrityError:
             db.rollback()
             raise ValueError(
-                f"The {_fmt_slot_label(slot_local)} slot was just taken. "
-                "Please choose another time."
+                f"The {_fmt_slot_label(slot_start_utc)} slot could not be logged. "
+                "Please try again."
             )
         self._send_appointment_confirmation_email(
             db=db,
@@ -894,22 +663,13 @@ class CalendarService(BusinessHoursService):
         appt: Appointment,
     ) -> Tuple[str, datetime, datetime]:
         """
-        Same instants as slot_start/slot_end (UTC in DB), expressed in the business-hours
-        timezone for the appointment's local calendar day. Used for additive API fields only.
+        Same instants as slot_start/slot_end (UTC in DB). Local display timezone
+        is now resolved by Calendly at booking time, so this returns UTC.
         """
+        _ = (db, tenant_id)
         utc_start = _ensure_utc(appt.slot_start)
         utc_end = _ensure_utc(appt.slot_end)
-        tenant_tz_str = self.get_tenant_timezone(db, tenant_id)
-        tenant_tz = _safe_tz(tenant_tz_str)
-        local_seed = utc_start.astimezone(tenant_tz)
-        bh = self._get_business_hours_for_date(db, tenant_id, local_seed.date())
-        if bh and bh.timezone:
-            tz_info = _safe_tz(bh.timezone)
-            tz_label = bh.timezone
-        else:
-            tz_info = tenant_tz
-            tz_label = tenant_tz_str
-        return (tz_label, utc_start.astimezone(tz_info), utc_end.astimezone(tz_info))
+        return ("UTC", utc_start, utc_end)
 
     def to_appointment_out(self, db: Session, tenant_id: uuid.UUID, appt: Appointment) -> AppointmentOut:
         """Build AppointmentOut with UTC slot_* plus additive local fields for display."""
@@ -984,6 +744,5 @@ class CalendarService(BusinessHoursService):
         db.commit()
         return True
 
-    # Business hours and blocked slots methods are inherited from BusinessHoursService.
 
 calendar_service = CalendarService()

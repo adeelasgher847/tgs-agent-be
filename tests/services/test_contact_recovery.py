@@ -32,7 +32,7 @@ from app.models.call_session import CallSession
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.calendar import BusinessHoursUpsert
-from app.services.appointment_reservation_service import appointment_reservation_service
+from app.services.business_hours_service import business_hours_service
 from app.services.calendar_service import calendar_service
 from app.services.call_session_contact_state import (
     apply_post_call_recovery,
@@ -93,7 +93,7 @@ def res_db():
     )
     db.add(a)
     db.commit()
-    calendar_service.create_business_hours(
+    business_hours_service.create_business_hours(
         db,
         tenant.id,
         [

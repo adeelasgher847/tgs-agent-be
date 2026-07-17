@@ -151,6 +151,13 @@ class CrmSettings(BaseModel):
     hubspot_token_encryption_key: str = Field(
         default="", validation_alias="HUBSPOT_TOKEN_ENCRYPTION_KEY"
     )
+    # Calendly
+    calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
+    calendly_client_secret: str = Field(default="", validation_alias="CALENDLY_CLIENT_SECRET")
+    calendly_redirect_uri: str = Field(default="", validation_alias="CALENDLY_REDIRECT_URI")
+    calendly_token_encryption_key: str = Field(
+        default="", validation_alias="CALENDLY_TOKEN_ENCRYPTION_KEY"
+    )
     # Monday.com
     monday_api_key: str = Field(default="", validation_alias="MONDAY_API_KEY")
     monday_board_id: str = Field(default="", validation_alias="MONDAY_BOARD_ID")
@@ -232,6 +239,12 @@ class ServerSettings(BaseModel):
     # GCS knowledge base
     gcs_kb_bucket: str = Field(default="", validation_alias="GCS_KB_BUCKET")
     gcs_kb_prefix: str = Field(default="kb-files", validation_alias="GCS_KB_PREFIX")
+    # AWS S3 storage
+    aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str = Field(default="", validation_alias="AWS_SECRET_ACCESS_KEY")
+    aws_region_name: str = Field(default="us-east-1", validation_alias="AWS_REGION_NAME")
+    s3_recordings_bucket: str = Field(default="", validation_alias="S3_RECORDINGS_BUCKET")
+    s3_kb_bucket: str = Field(default="", validation_alias="S3_KB_BUCKET")
     # Concurrency
     outbound_max_concurrent_per_workspace: int = Field(
         default=10, validation_alias="OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE"
@@ -342,6 +355,9 @@ class Settings(BaseSettings):
 
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
+
+    # Outbound number reputation monitoring (First Orion / Hiya)
+    REPUTATION_API_KEY: str = ""
     # Symmetric encryption key for agent.encrypted_elevenlabs_api_key (pgp_sym_encrypt).
     # In production/staging load from Secret Manager; never commit a real value.
     ELEVENLABS_ENCRYPTION_KEY: str = ""
@@ -365,6 +381,14 @@ class Settings(BaseSettings):
     # Symmetric encryption key for workspaceintegration.access_token / refresh_token
     # (pgp_sym_encrypt) — same scheme as ELEVENLABS_ENCRYPTION_KEY above.
     HUBSPOT_TOKEN_ENCRYPTION_KEY: str = ""
+
+    # Calendly calendar OAuth (app/services/calendly_service.py).
+    CALENDLY_CLIENT_ID: str = ""
+    CALENDLY_CLIENT_SECRET: str = ""
+    CALENDLY_REDIRECT_URI: str = ""  # e.g. {WEBHOOK_BASE_URL}/api/v2/integrations/calendly/callback
+    # Symmetric encryption key for calendlyintegration.access_token / refresh_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    CALENDLY_TOKEN_ENCRYPTION_KEY: str = ""
 
     # Google Cloud Speech-to-Text Configuration
     GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file for Vertex AI + STT
@@ -640,6 +664,13 @@ class Settings(BaseSettings):
     GCS_KB_BUCKET: str = ""
     GCS_KB_PREFIX: str = "kb-files"
 
+    # AWS S3 storage (GCS → S3 migration)
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_REGION_NAME: str = "us-east-1"
+    S3_RECORDINGS_BUCKET: str = ""
+    S3_KB_BUCKET: str = ""
+
     # HIPAA — Google Cloud DLP + CMEK
     # GCP_PROJECT_ID is declared above (line ~245); no second declaration here.
 
@@ -798,6 +829,10 @@ class Settings(BaseSettings):
             hubspot_client_secret=self.HUBSPOT_CLIENT_SECRET,
             hubspot_redirect_uri=self.HUBSPOT_REDIRECT_URI,
             hubspot_token_encryption_key=self.HUBSPOT_TOKEN_ENCRYPTION_KEY,
+            calendly_client_id=self.CALENDLY_CLIENT_ID,
+            calendly_client_secret=self.CALENDLY_CLIENT_SECRET,
+            calendly_redirect_uri=self.CALENDLY_REDIRECT_URI,
+            calendly_token_encryption_key=self.CALENDLY_TOKEN_ENCRYPTION_KEY,
             monday_api_key=self.MONDAY_API_KEY,
             monday_board_id=self.MONDAY_BOARD_ID,
             monday_workspace_id=self.MONDAY_WORKSPACE_ID,
@@ -846,6 +881,11 @@ class Settings(BaseSettings):
             gcs_recordings_prefix=self.GCS_RECORDINGS_PREFIX,
             gcs_kb_bucket=self.GCS_KB_BUCKET,
             gcs_kb_prefix=self.GCS_KB_PREFIX,
+            aws_access_key_id=self.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=self.AWS_SECRET_ACCESS_KEY,
+            aws_region_name=self.AWS_REGION_NAME,
+            s3_recordings_bucket=self.S3_RECORDINGS_BUCKET,
+            s3_kb_bucket=self.S3_KB_BUCKET,
             outbound_max_concurrent_per_workspace=self.OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE,
             max_batch_concurrency=self.MAX_BATCH_CONCURRENCY,
         )

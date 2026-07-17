@@ -13,8 +13,6 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.call_session import CallSession
-from app.models.slot_reservation import SlotReservation
-from app.services.appointment_reservation_service import appointment_reservation_service
 from app.services.calendar_service import calendar_service
 from app.services.call_session_contact_state import (
     apply_post_call_recovery,
@@ -301,20 +299,11 @@ class PostCallAppointmentService:
             logger.warning("Post-call booking: no call session %s", call_session_id)
             return
 
-        res: Optional[SlotReservation] = appointment_reservation_service.get_active_for_call_session(
-            db, call_session_id
-        )
         tenant_id = cs.tenant_id
         existing_appt = calendar_service.get_active_appointment_for_call_session(
             db, tenant_id, call_session_id
         )
         if existing_appt:
-            if res:
-                appointment_reservation_service.release_active_for_call_session(db, call_session_id)
-                try:
-                    db.refresh(cs)
-                except Exception:
-                    pass
             self._merge_call_metadata(
                 cs,
                 {
@@ -327,12 +316,10 @@ class PostCallAppointmentService:
 
         transcript = _transcript_to_text(db, call_session_id)
         intent = get_booking_intent(cs)
-        res_meta: Dict[str, Any] = dict((res.metadata_json or {}) if res else {})
 
         if (
             not transcript.strip()
             and not intent.get("slot_start_iso")
-            and not res
             and not (cs.from_number or cs.customer_phone_number)
         ):
             self._merge_call_metadata(
@@ -386,8 +373,7 @@ class PostCallAppointmentService:
 
             booking_signals = bool(
                 intent.get("slot_start_iso")
-                or (res is not None)
-                or res_meta.get("appointment_reason")
+                or intent.get("appointment_reason")
             )
             if (
                 recovered_name
@@ -441,8 +427,6 @@ class PostCallAppointmentService:
                     "post_call_appointment_detail": "contact_not_confident",
                 },
             )
-            if res:
-                appointment_reservation_service.release_active_for_call_session(db, call_session_id)
             db.commit()
             return
 
@@ -455,8 +439,6 @@ class PostCallAppointmentService:
                     "post_call_appointment_detail": "missing_customer_name",
                 },
             )
-            if res:
-                appointment_reservation_service.release_active_for_call_session(db, call_session_id)
             db.commit()
             return
 
@@ -465,7 +447,7 @@ class PostCallAppointmentService:
 
         llm = self._extract_non_pii_from_llm(
             transcript,
-            reserved_slot=res.slot_start if res else None,
+            reserved_slot=_parse_iso_to_utc(intent.get("slot_start_iso")),
         )
 
         phone = ((cs.from_number or "").strip() or (cs.customer_phone_number or "").strip() or None)
@@ -477,26 +459,18 @@ class PostCallAppointmentService:
                     "post_call_appointment_detail": "missing_customer_phone",
                 },
             )
-            if res:
-                appointment_reservation_service.release_active_for_call_session(db, call_session_id)
             db.commit()
             return
 
         reason = (
             (intent.get("appointment_reason") or "").strip()
-            or (res_meta.get("appointment_reason") or "").strip()
             or (llm.get("appointment_reason") or "").strip()
             or ""
         ) or None
         if not reason:
             reason = None
-        notes = (res_meta.get("notes") or "").strip() or None
 
-        slot_utc: Optional[datetime] = None
-        if res:
-            slot_utc = res.slot_start
-        if slot_utc is None:
-            slot_utc = _parse_iso_to_utc(intent.get("slot_start_iso"))
+        slot_utc: Optional[datetime] = _parse_iso_to_utc(intent.get("slot_start_iso"))
         if slot_utc is None:
             slot_utc = _parse_iso_to_utc(llm.get("slot_start_iso") if llm else None)
 
@@ -508,12 +482,9 @@ class PostCallAppointmentService:
                     "post_call_appointment_detail": "missing_or_invalid_slot",
                 },
             )
-            if res:
-                appointment_reservation_service.release_active_for_call_session(db, call_session_id)
             db.commit()
             return
 
-        consuming_id: Optional[uuid.UUID] = res.id if res else None
         try:
             appt = calendar_service.book_appointment(
                 db=db,
@@ -525,11 +496,10 @@ class PostCallAppointmentService:
                 call_session_id=call_session_id,
                 appointment_reason=reason,
                 customer_email=email,
-                notes=notes,
+                notes=None,
                 created_via="voice_agent",
                 duration_minutes=None,
                 notify_user_id=cs.user_id,
-                consuming_reservation_id=consuming_id,
             )
         except ValueError as ve:
             logger.info(
@@ -537,8 +507,6 @@ class PostCallAppointmentService:
                 call_session_id,
                 ve,
             )
-            if res:
-                appointment_reservation_service.release_active_for_call_session(db, call_session_id)
             self._merge_call_metadata(
                 cs,
                 {
@@ -548,8 +516,6 @@ class PostCallAppointmentService:
             )
             db.commit()
             return
-        if consuming_id:
-            appointment_reservation_service.mark_consumed(db, consuming_id)
         try:
             db.refresh(cs)
         except Exception:

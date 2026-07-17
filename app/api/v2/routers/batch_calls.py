@@ -22,14 +22,17 @@ from datetime import datetime
 from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_workspace, require_tenant
+from app.core.error_responses import build_api_error_payload
 from app.core.logger import logger
 from app.core.request_auth import ApiKeyPrincipal
 from app.core.workspace import Workspace
 from app.models.user import User
 from app.services.audit_service import log_audit_event
+from app.services.batch_call_service import AllNumbersFlaggedError
 from app.schemas.batch_call import (
     BatchJobOut,
     BatchJobProgress,
@@ -86,6 +89,8 @@ async def create_batch_job(
     file: UploadFile = File(..., description="UTF-8 CSV file, max 20 MB"),
     agent_id: uuid.UUID = Form(...),
     scheduled_at: Optional[datetime] = Form(default=None),
+    voicemail_action: str = Form(default="skip", description="skip | leave_message | continue"),
+    voicemail_message: Optional[str] = Form(default=None, description="Max 500 chars"),
     workspace: Workspace = Depends(get_workspace),
     db: Session = Depends(get_db),
     svc=Depends(_batch_service_write),
@@ -97,6 +102,19 @@ async def create_batch_job(
     Additional columns are available as {variable} substitutions in the agent prompt.
     Requires admin / member / owner / config role for JWT users; any API key client.
     """
+    from app.schemas.batch_call import VOICEMAIL_ACTIONS
+
+    if voicemail_action not in VOICEMAIL_ACTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"voicemail_action must be one of {VOICEMAIL_ACTIONS}",
+        )
+    if voicemail_message is not None and len(voicemail_message) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="voicemail_message must be at most 500 characters",
+        )
+
     if file.content_type and "csv" not in file.content_type and "text" not in file.content_type:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -124,7 +142,41 @@ async def create_batch_job(
         agent_id=agent_id,
         csv_bytes=raw,
         scheduled_at=scheduled_at,
+        voicemail_action=voicemail_action,
+        voicemail_message=voicemail_message,
     )
+
+    # Rotate the outbound caller ID before dispatch if the agent's bound number
+    # is spam-flagged; 422s out if no clean same-country number is available.
+    try:
+        rotation = await svc.rotate_number_if_flagged(
+            workspace_id=workspace.id,
+            agent_id=agent_id,
+            batch_job_id=job_out.id,
+        )
+    except AllNumbersFlaggedError:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=build_api_error_payload(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "All outbound numbers are spam-flagged. Please add a new number.",
+                error_code="all_numbers_flagged",
+                request_id=getattr(request.state, "request_id", ""),
+            ),
+        )
+
+    if rotation is not None:
+        old_number, new_number = rotation
+        log_audit_event(
+            db,
+            request=request,
+            tenant_id=workspace.id,
+            action="batch.number_rotated",
+            resource_type="batch_job",
+            resource_id=job_out.id,
+            old_value={"from_number": old_number},
+            new_value={"from_number": new_number, "reason": "spam_flagged"},
+        )
 
     await _enqueue_batch_job(str(job_out.id), scheduled_at)
 

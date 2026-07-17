@@ -33,8 +33,8 @@ class CallSession(Base):
     response_times = Column(JSONB, nullable=True)  # Store response times for each interaction
     recording_url = Column(String(500), nullable=True)  # Legacy Twilio recording URL (kept for compat)
 
-    # GCS recording (Sprint 4 — replaces Twilio recording for LiveKit calls)
-    recording_gcs_path = Column(String(500), nullable=True)  # e.g. recordings/{workspaceId}/{callId}/{date}.opus
+    # S3 recording (replaces Twilio recording for LiveKit calls)
+    recording_s3_path = Column(String(500), nullable=True)  # e.g. recordings/{workspaceId}/{callId}/{date}.opus
     recording_error = Column(Boolean, nullable=False, server_default="false")
     
     # Phone numbers and external IDs
@@ -75,7 +75,6 @@ class CallSession(Base):
     tenant = relationship("Tenant", back_populates="call_sessions")
     call_logs = relationship("CallLog", back_populates="call_session", cascade="all, delete-orphan")
     transcript_messages = relationship("TranscriptMessage", back_populates="call_session", cascade="all, delete-orphan")
-    slot_reservations = relationship("SlotReservation", back_populates="call_session", cascade="all, delete-orphan")
     call_flow = relationship("CallFlow", back_populates="call_sessions")
     # Self-referential: retry calls point back to the original missed call
     parent_call = relationship("CallSession", remote_side="CallSession.id", foreign_keys=[parent_call_id])
