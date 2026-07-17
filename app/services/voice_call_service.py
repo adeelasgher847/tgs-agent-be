@@ -132,13 +132,36 @@ async def initiate_call(
                     detail=f"Invalid phone_number_id format: {str(e)}",
                 )
             if requested_id != phone_number_obj.id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "phone_number_id must be the phone number bound to this agent "
-                        f"(bound id: {phone_number_obj.id})."
-                    ),
-                )
+                # System/batch calls may dial out on a rotated number (the agent's
+                # bound number was spam-flagged) rather than the bound number —
+                # bypass the strict agent-binding restriction as long as the
+                # requested number belongs to this tenant and is active.
+                rotated_number_obj = None
+                if is_system_call:
+                    from sqlalchemy import or_ as _or_
+
+                    rotated_number_obj = (
+                        db.query(PhoneNumber)
+                        .filter(
+                            PhoneNumber.id == requested_id,
+                            PhoneNumber.tenant_id == tenant_id_filter,
+                            PhoneNumber.status == "active",
+                            _or_(
+                                PhoneNumber.assistant_id.is_(None),
+                                PhoneNumber.assistant_id == agent.id,
+                            ),
+                        )
+                        .first()
+                    )
+                if rotated_number_obj is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            "phone_number_id must be the phone number bound to this agent "
+                            f"(bound id: {phone_number_obj.id})."
+                        ),
+                    )
+                phone_number_obj = rotated_number_obj
 
         # ── 5. Validate fromNumber body param (GAP 1) ────────────────────
         from_number = phone_number_obj.phone_number

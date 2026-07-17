@@ -134,6 +134,40 @@ class BatchCallWorkerService:
         job = self._db.get(BatchJob, record.batch_job_id)
         enable_amd = bool(job and job.voicemail_action in ("skip", "leave_message"))
 
+        # If the outbound number was rotated (spam-flagged bound number), dial
+        # out using the rotated number's phone_number_id instead of the agent's
+        # default bound number.
+        rotated_phone_number_id: Optional[str] = None
+        if job and job.actual_from_number:
+            from app.models.phone_number import PhoneNumber
+
+            rotated_number = (
+                self._db.query(PhoneNumber)
+                .filter(
+                    PhoneNumber.phone_number == job.actual_from_number,
+                    PhoneNumber.tenant_id == workspace_id,
+                    PhoneNumber.status == "active",
+                )
+                .first()
+            )
+            if rotated_number is not None:
+                rotated_phone_number_id = str(rotated_number.id)
+            else:
+                logger.error(
+                    "Batch record %s: rotated number %s for batch job %s is no "
+                    "longer active — refusing to fall back to the original "
+                    "(spam-flagged) bound number",
+                    record.id,
+                    job.actual_from_number,
+                    record.batch_job_id,
+                )
+                await self._mark_failed(
+                    record,
+                    "rotated_number_unavailable",
+                    is_system_error=True,
+                )
+                return
+
         # Build prompt with variable substitution (validated at upload time)
         variables: dict = record.variables or {}
         prompt_override: Optional[str] = None
@@ -160,6 +194,7 @@ class BatchCallWorkerService:
             enable_amd=enable_amd,
             voicemail_action=job.voicemail_action if job else None,
             voicemail_message=job.voicemail_message if job else None,
+            phone_number_id=rotated_phone_number_id,
         )
 
         try:

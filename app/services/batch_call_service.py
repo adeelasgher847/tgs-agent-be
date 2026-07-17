@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -42,6 +42,11 @@ _TERMINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
 
 # Formatter variable pattern  {variable_name}
 _VAR_PATTERN = re.compile(r"\{(\w+)\}")
+
+
+class AllNumbersFlaggedError(Exception):
+    """Raised when the agent's bound number is spam-flagged and no clean
+    same-country replacement exists in the workspace's phone number pool."""
 
 
 def _extract_prompt_vars(prompt: Optional[str]) -> List[str]:
@@ -382,3 +387,125 @@ class BatchCallService:
             "BatchJob %s cancelled: %d waiting records cancelled", batch_id, cancelled_count
         )
         return BatchJobOut.model_validate(job)
+
+    # ── Outbound number reputation / auto-rotation ────────────────────────────
+
+    async def rotate_number_if_flagged(
+        self,
+        workspace_id: uuid.UUID,
+        agent_id: uuid.UUID,
+        batch_job_id: uuid.UUID,
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Check the reputation of the agent's bound phone number for this batch and,
+        if it's spam-flagged, rotate the batch to a clean number from the
+        workspace's pool (same country code, preferring the same area code).
+
+        Returns (old_number, new_number) if a rotation happened, or None if the
+        bound number is clean (or unbound — nothing to rotate here; call
+        initiation will surface the "agent not ready" error as usual).
+
+        Raises AllNumbersFlaggedError if the bound number is flagged and no
+        clean same-country replacement exists in the pool.
+        """
+        from sqlalchemy import or_
+
+        from app.models.phone_number import PhoneNumber
+        from app.models.phone_number_reputation import PhoneNumberReputation
+        from app.services.reputation_service import check_number_reputation
+        from app.utils.phone_geo import get_area_code, get_country_code
+
+        phone_number_obj = (
+            self._db.query(PhoneNumber)
+            .filter(
+                PhoneNumber.assistant_id == agent_id,
+                PhoneNumber.tenant_id == workspace_id,
+                PhoneNumber.status == "active",
+            )
+            .first()
+        )
+        if phone_number_obj is None:
+            return None
+
+        reputation = (
+            self._db.query(PhoneNumberReputation)
+            .filter(PhoneNumberReputation.phone_number_id == phone_number_obj.id)
+            .first()
+        )
+        if reputation is None:
+            await check_number_reputation(self._db, phone_number_obj)
+            reputation = (
+                self._db.query(PhoneNumberReputation)
+                .filter(PhoneNumberReputation.phone_number_id == phone_number_obj.id)
+                .first()
+            )
+
+        if reputation is None or not reputation.spam_flagged:
+            return None
+
+        country_code = get_country_code(phone_number_obj.phone_number)
+        area_code = get_area_code(phone_number_obj.phone_number)
+
+        candidates = (
+            self._db.query(PhoneNumber)
+            .outerjoin(
+                PhoneNumberReputation,
+                PhoneNumberReputation.phone_number_id == PhoneNumber.id,
+            )
+            .filter(
+                PhoneNumber.tenant_id == workspace_id,
+                PhoneNumber.status == "active",
+                PhoneNumber.id != phone_number_obj.id,
+                PhoneNumber.assistant_id.is_(None),
+                or_(
+                    PhoneNumberReputation.id.is_(None),
+                    PhoneNumberReputation.spam_flagged.is_(False),
+                ),
+            )
+            .all()
+        )
+        same_country = [c for c in candidates if get_country_code(c.phone_number) == country_code]
+
+        replacement: Optional[PhoneNumber] = None
+        if area_code:
+            same_area = [c for c in same_country if get_area_code(c.phone_number) == area_code]
+            if same_area:
+                replacement = same_area[0]
+        if replacement is None and same_country:
+            replacement = same_country[0]
+
+        if replacement is None:
+            logger.warning(
+                "BatchJob %s: bound number %s is spam-flagged and no clean replacement "
+                "exists in workspace %s",
+                batch_job_id,
+                phone_number_obj.phone_number,
+                workspace_id,
+            )
+            job = self._db.get(BatchJob, batch_job_id)
+            if job is not None:
+                self._db.execute(
+                    update(BatchCallRecord)
+                    .where(
+                        BatchCallRecord.batch_job_id == batch_job_id,
+                        BatchCallRecord.status == "waiting",
+                    )
+                    .values(status="cancelled", last_error="all_numbers_flagged")
+                )
+                job.status = "failed"
+                job.waiting_count = 0
+                job.completed_at = datetime.now(timezone.utc)
+                self._db.commit()
+            raise AllNumbersFlaggedError()
+
+        job = self._db.get(BatchJob, batch_job_id)
+        job.actual_from_number = replacement.phone_number
+        self._db.commit()
+
+        logger.info(
+            "BatchJob %s: rotated outbound number %s -> %s (spam_flagged)",
+            batch_job_id,
+            phone_number_obj.phone_number,
+            replacement.phone_number,
+        )
+        return phone_number_obj.phone_number, replacement.phone_number

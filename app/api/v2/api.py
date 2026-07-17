@@ -15,6 +15,7 @@ from app.api.v2.routers.hipaa import workspace_router as hipaa_workspace_router
 from app.api.v2.routers.workspace import router as workspace_gdpr_router
 from app.api.v2.routers.calendly_integration import router as calendly_integration_router
 from app.api.v2.routers.calendly_integration import calendar_router as calendly_calendar_router
+from app.api.v2.routers.telephony import router as telephony_router
 
 v2_router = APIRouter()
 v2_router.include_router(health_router)
@@ -32,3 +33,4 @@ v2_router.include_router(hipaa_workspace_router)
 v2_router.include_router(workspace_gdpr_router)
 v2_router.include_router(calendly_integration_router)
 v2_router.include_router(calendly_calendar_router)
+v2_router.include_router(telephony_router)

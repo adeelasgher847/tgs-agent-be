@@ -9022,6 +9022,55 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v2/telephony/check-reputation:
+    post:
+      tags:
+      - Telephony
+      summary: Check Reputation
+      description: Run a reputation check for a single workspace phone number and
+        persist the result.
+      operationId: check_reputation_api_v2_telephony_check_reputation_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckReputationRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReputationResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/telephony/reputation-summary:
+    get:
+      tags:
+      - Telephony
+      summary: Reputation Summary
+      description: Reputation snapshot for every phone number owned by this workspace.
+      operationId: reputation_summary_api_v2_telephony_reputation_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ReputationSummaryItem'
+                type: array
+                title: Response Reputation Summary Api V2 Telephony Reputation Summary
+                  Get
+      security:
+      - HTTPBearer: []
   /auth/saml/{workspace_slug}/metadata:
     get:
       tags:
@@ -11995,6 +12044,16 @@ components:
       - partially qualified
       - rejected
       title: CandidateStatusEnum
+    CheckReputationRequest:
+      properties:
+        phone_number_id:
+          type: string
+          format: uuid
+          title: Phone Number Id
+      type: object
+      required:
+      - phone_number_id
+      title: CheckReputationRequest
     CreatePaymentSessionRequest:
       properties:
         call_id:
@@ -14737,6 +14796,43 @@ components:
       title: RegisterExternalNumberResponse
       description: External number registration result — sip_password is write-only
         and never returned.
+    ReputationResult:
+      properties:
+        spam_flagged:
+          type: boolean
+          title: Spam Flagged
+        reputation_score:
+          type: integer
+          title: Reputation Score
+        flagged_reason:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - spam_flagged
+      - reputation_score
+      title: ReputationResult
+    ReputationSummaryItem:
+      properties:
+        phone_number:
+          type: string
+          title: Phone Number
+        reputation_score:
+          type: integer
+          title: Reputation Score
+        spam_flagged:
+          type: boolean
+          title: Spam Flagged
+        last_checked_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - phone_number
+      - reputation_score
+      - spam_flagged
+      title: ReputationSummaryItem
     ResetPasswordRequest:
       properties:
         token:

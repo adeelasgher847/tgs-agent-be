@@ -119,6 +119,7 @@ class TestCreateBatchJob:
     def _svc(self, job_out):
         svc = MagicMock()
         svc.create_batch_job.return_value = job_out
+        svc.rotate_number_if_flagged = AsyncMock(return_value=None)
         return svc
 
     def _job_out(self, total: int = 3, voicemail_action: str = "skip", voicemail_message=None) -> dict:
@@ -389,6 +390,7 @@ class TestCreateBatchJob:
 
         mock_svc = MagicMock()
         mock_svc.create_batch_job.return_value = job
+        mock_svc.rotate_number_if_flagged = AsyncMock(return_value=None)
 
         result = asyncio.run(
             create_batch_job(

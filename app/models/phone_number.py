@@ -56,6 +56,12 @@ class PhoneNumber(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    reputation = relationship(
+        "PhoneNumberReputation",
+        back_populates="phone_number",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     # Global unique constraint: a phone number can belong to only one tenant.
     __table_args__ = (

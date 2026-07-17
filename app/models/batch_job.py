@@ -33,6 +33,10 @@ class BatchJob(Base):
     voicemail_skipped_count = Column(Integer, nullable=False, default=0, server_default="0")
     voicemail_message_left_count = Column(Integer, nullable=False, default=0, server_default="0")
 
+    # Rotated outbound caller-ID number actually used for this batch (set when
+    # the agent's bound number was spam-flagged and a clean replacement was found).
+    actual_from_number = Column(String(20), nullable=True)
+
     s3_path = Column(Text, nullable=True)
     scheduled_at = Column(DateTime(timezone=True), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)

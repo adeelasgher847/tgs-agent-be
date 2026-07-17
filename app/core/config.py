@@ -355,6 +355,9 @@ class Settings(BaseSettings):
 
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
+
+    # Outbound number reputation monitoring (First Orion / Hiya)
+    REPUTATION_API_KEY: str = ""
     # Symmetric encryption key for agent.encrypted_elevenlabs_api_key (pgp_sym_encrypt).
     # In production/staging load from Secret Manager; never commit a real value.
     ELEVENLABS_ENCRYPTION_KEY: str = ""
