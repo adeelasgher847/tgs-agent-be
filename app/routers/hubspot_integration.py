@@ -7,15 +7,18 @@ GET    /callback       — public; HubSpot redirects the browser here with no au
 DELETE ""              — revoke at HubSpot and delete the local connection
 GET    ""              — connection status, settings toggles, and field mappings
 GET    /contact        — CRM Search API lookup by phone, used by the dashboard and tests
-POST   /field-mapping  — save HubSpot field -> agent prompt-variable mappings
+PUT    /field-mapping  — save HubSpot field -> agent prompt-variable mappings
+                          (validated against the live HubSpot contact schema)
+POST   /field-mapping  — deprecated alias for PUT, kept for backward compatibility
 PUT    /settings       — toggle contact-lookup / write-back for this workspace
+GET    /sync-status    — last lookup/write-back times, status, rolling 24h error count
 """
 from __future__ import annotations
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_tenant, require_admin
@@ -29,6 +32,7 @@ from app.schemas.hubspot_integration import (
     HubSpotFieldMappingResponse,
     HubSpotIntegrationStatusOut,
     HubSpotSettingsUpdateRequest,
+    HubSpotSyncStatusOut,
 )
 from app.services import hubspot_service
 from app.utils.response import create_success_response
@@ -113,18 +117,40 @@ async def hubspot_get_integration_status(
     return create_success_response(HubSpotIntegrationStatusOut(**integration_settings))
 
 
-@router.post("/field-mapping", response_model=SuccessResponse[HubSpotFieldMappingResponse])
-async def hubspot_save_field_mapping(
-    payload: HubSpotFieldMappingRequest,
-    principal=Depends(require_admin),
-    db: Session = Depends(get_db),
+async def _validate_and_save_field_mapping(
+    payload: HubSpotFieldMappingRequest, principal, db: Session
 ):
-    """Save the HubSpot field -> agent prompt-variable mappings for this workspace."""
+    """Shared handler for PUT and (deprecated) POST /field-mapping."""
     tenant_id = _tenant_id(principal)
     if not hubspot_service.tenant_has_hubspot_connected(db, tenant_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="HubSpot is not connected for this workspace",
+        )
+
+    try:
+        valid_properties = set(
+            await hubspot_service.get_hubspot_contact_properties(db, tenant_id)
+        )
+    except Exception as exc:
+        logger.warning(
+            "HubSpot contact properties fetch failed for tenant=%s: %s", tenant_id, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to fetch HubSpot contact schema for field-mapping validation",
+        )
+
+    invalid_fields = sorted(
+        {m.hubspot_field for m in payload.mappings if m.hubspot_field not in valid_properties}
+    )
+    if invalid_fields:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "detail": f"Invalid HubSpot field names: {invalid_fields}",
+                "invalid_fields": invalid_fields,
+            },
         )
 
     mappings = [m.model_dump() for m in payload.mappings]
@@ -133,6 +159,34 @@ async def hubspot_save_field_mapping(
         HubSpotFieldMappingResponse(field_mappings=payload.mappings),
         "Field mappings saved successfully",
     )
+
+
+@router.put("/field-mapping", response_model=SuccessResponse[HubSpotFieldMappingResponse])
+async def hubspot_save_field_mapping(
+    payload: HubSpotFieldMappingRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Save the HubSpot field -> agent prompt-variable mappings for this workspace.
+
+    Every hubspot_field must exist in the tenant's live HubSpot contact schema;
+    unknown fields return 422 with the list of invalid field names.
+    """
+    return await _validate_and_save_field_mapping(payload, principal, db)
+
+
+@router.post(
+    "/field-mapping",
+    response_model=SuccessResponse[HubSpotFieldMappingResponse],
+    include_in_schema=False,
+)
+async def hubspot_save_field_mapping_legacy(
+    payload: HubSpotFieldMappingRequest,
+    principal=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Deprecated alias for PUT /field-mapping, kept for backward compatibility."""
+    return await _validate_and_save_field_mapping(payload, principal, db)
 
 
 @router.put("/settings", response_model=SuccessResponse[HubSpotIntegrationStatusOut])
@@ -160,6 +214,17 @@ async def hubspot_update_settings(
         HubSpotIntegrationStatusOut(**integration_settings),
         "Settings updated successfully",
     )
+
+
+@router.get("/sync-status", response_model=SuccessResponse[HubSpotSyncStatusOut])
+async def hubspot_sync_status(
+    principal=Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Last contact-lookup/write-back times, write-back status, and rolling 24h error count."""
+    tenant_id = _tenant_id(principal)
+    sync_status = hubspot_service.get_sync_status(db, tenant_id)
+    return create_success_response(HubSpotSyncStatusOut(**sync_status))
 
 
 @router.get("/contact", response_model=SuccessResponse[HubSpotContactOut])

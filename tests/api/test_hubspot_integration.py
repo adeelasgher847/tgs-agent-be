@@ -214,7 +214,7 @@ class TestIntegrationStatusEndpoint:
 
 class TestFieldMappingEndpoint:
     @pytest.mark.anyio
-    async def test_saves_mappings(self):
+    async def test_saves_mappings_when_field_is_valid(self):
         from app.routers.hubspot_integration import hubspot_save_field_mapping
         from app.schemas.hubspot_integration import (
             HubSpotFieldMapping,
@@ -229,6 +229,10 @@ class TestFieldMappingEndpoint:
             patch(
                 "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
                 return_value=True,
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.get_hubspot_contact_properties",
+                new=AsyncMock(return_value=["jobtitle", "company"]),
             ),
             patch(
                 "app.routers.hubspot_integration.hubspot_service.save_field_mappings"
@@ -267,6 +271,151 @@ class TestFieldMappingEndpoint:
                 )
 
         assert exc_info.value.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_invalid_hubspot_field_returns_422_with_invalid_fields_list(self):
+        """PUT /field-mapping must reject fields that don't exist in the tenant's live
+        HubSpot contact schema, returning 422 with the exact FE7-S7-03 body shape."""
+        from app.routers.hubspot_integration import hubspot_save_field_mapping
+        from app.schemas.hubspot_integration import (
+            HubSpotFieldMapping,
+            HubSpotFieldMappingRequest,
+        )
+
+        payload = HubSpotFieldMappingRequest(
+            mappings=[
+                HubSpotFieldMapping(hubspot_field="invalid_field_1", prompt_variable="v1"),
+                HubSpotFieldMapping(hubspot_field="jobtitle", prompt_variable="v2"),
+            ]
+        )
+
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=True,
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.get_hubspot_contact_properties",
+                new=AsyncMock(return_value=["jobtitle", "company"]),
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.save_field_mappings"
+            ) as mock_save,
+        ):
+            response = await hubspot_save_field_mapping(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
+
+        assert response.status_code == 422
+        import json as _json
+        body = _json.loads(response.body)
+        assert body["invalid_fields"] == ["invalid_field_1"]
+        assert "Invalid HubSpot field names" in body["detail"]
+        mock_save.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_properties_fetch_failure_returns_502(self):
+        from app.routers.hubspot_integration import hubspot_save_field_mapping
+        from app.schemas.hubspot_integration import (
+            HubSpotFieldMapping,
+            HubSpotFieldMappingRequest,
+        )
+
+        payload = HubSpotFieldMappingRequest(
+            mappings=[HubSpotFieldMapping(hubspot_field="jobtitle", prompt_variable="job_title")]
+        )
+
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=True,
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.get_hubspot_contact_properties",
+                new=AsyncMock(side_effect=Exception("HubSpot down")),
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await hubspot_save_field_mapping(
+                    payload=payload, principal=_principal(), db=MagicMock()
+                )
+
+        assert exc_info.value.status_code == 502
+
+    @pytest.mark.anyio
+    async def test_post_alias_still_works(self):
+        """POST /field-mapping is kept as a backward-compatible alias for PUT."""
+        from app.routers.hubspot_integration import hubspot_save_field_mapping_legacy
+        from app.schemas.hubspot_integration import (
+            HubSpotFieldMapping,
+            HubSpotFieldMappingRequest,
+        )
+
+        payload = HubSpotFieldMappingRequest(
+            mappings=[HubSpotFieldMapping(hubspot_field="jobtitle", prompt_variable="job_title")]
+        )
+
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=True,
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.get_hubspot_contact_properties",
+                new=AsyncMock(return_value=["jobtitle"]),
+            ),
+            patch("app.routers.hubspot_integration.hubspot_service.save_field_mappings"),
+        ):
+            result = await hubspot_save_field_mapping_legacy(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
+
+        assert result.data.field_mappings[0].hubspot_field == "jobtitle"
+
+
+class TestSyncStatusEndpoint:
+    @pytest.mark.anyio
+    async def test_returns_sync_status_shape(self):
+        from app.routers.hubspot_integration import hubspot_sync_status
+
+        status_data = {
+            "last_lookup_at": "2026-07-20T17:00:00Z",
+            "last_write_back_at": "2026-07-20T17:05:00Z",
+            "last_write_back_status": "success",
+            "error_count_24h": 2,
+        }
+
+        with patch(
+            "app.routers.hubspot_integration.hubspot_service.get_sync_status",
+            return_value=status_data,
+        ):
+            result = await hubspot_sync_status(principal=_principal(), db=MagicMock())
+
+        assert result.data.last_lookup_at == "2026-07-20T17:00:00Z"
+        assert result.data.last_write_back_at == "2026-07-20T17:05:00Z"
+        assert result.data.last_write_back_status == "success"
+        assert result.data.error_count_24h == 2
+
+    @pytest.mark.anyio
+    async def test_returns_nulls_when_never_synced(self):
+        from app.routers.hubspot_integration import hubspot_sync_status
+
+        status_data = {
+            "last_lookup_at": None,
+            "last_write_back_at": None,
+            "last_write_back_status": None,
+            "error_count_24h": 0,
+        }
+
+        with patch(
+            "app.routers.hubspot_integration.hubspot_service.get_sync_status",
+            return_value=status_data,
+        ):
+            result = await hubspot_sync_status(principal=_principal(), db=MagicMock())
+
+        assert result.data.last_lookup_at is None
+        assert result.data.last_write_back_status is None
+        assert result.data.error_count_24h == 0
 
 
 class TestSettingsEndpoint:

@@ -17,6 +17,7 @@ import asyncio
 import json
 import hashlib
 import re
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
@@ -41,6 +42,7 @@ TOKEN_URL = "https://api.hubapi.com/oauth/v1/token"
 REVOKE_URL_TEMPLATE = "https://api.hubapi.com/oauth/v1/refresh-tokens/{token}"
 SEARCH_CONTACTS_URL = "https://api.hubapi.com/crm/v3/objects/contacts/search"
 CREATE_CALL_URL = "https://api.hubapi.com/crm/v3/objects/calls"
+CONTACT_PROPERTIES_URL = "https://api.hubapi.com/crm/v3/properties/contacts"
 
 SCOPES = "crm.objects.contacts.read crm.objects.contacts.write"
 
@@ -63,6 +65,12 @@ _DEFAULT_CONTACT_LOOKUP_ENABLED = True
 _DEFAULT_WRITE_BACK_ENABLED = True
 
 _SUMMARY_CACHE_TTL_SECONDS = 3600  # 1 hour — long enough to cover writeback retries
+
+_PROPERTIES_CACHE_TTL_SECONDS = 3600  # 1 hour, per acceptance criteria
+
+_WRITE_BACK_RETRY_DELAY_SECONDS = 300  # 5 minutes
+_WRITE_BACK_ERROR_WINDOW_SECONDS = 24 * 60 * 60  # rolling 24h window for admin alerting
+_WRITE_BACK_ALERT_THRESHOLD = 5
 
 _HS_CALL_STATUS_MAP = {
     "completed": "COMPLETED",
@@ -187,6 +195,53 @@ async def refresh_access_token(refresh_token: str) -> dict:
     return response.json()
 
 
+def _properties_cache_key(tenant_id: uuid.UUID) -> str:
+    return f"hubspot:properties:{tenant_id}"
+
+
+async def get_hubspot_contact_properties(db: Session, tenant_id: uuid.UUID) -> list[str]:
+    """
+    Fetch the tenant's HubSpot contact property names, Redis-cached for 1 hour.
+
+    Used to validate field-mapping schema against the live CRM. Raises on any
+    failure (unlike the call-time helpers in this module) — mapping validation
+    must not silently accept invalid fields.
+    """
+    redis_client = get_redis()
+    cache_key = _properties_cache_key(tenant_id)
+
+    if redis_client is not None:
+        try:
+            cached = await redis_client.get(cache_key)
+            if cached is not None:
+                return json.loads(cached)
+        except Exception:
+            logger.warning("HubSpot properties cache read failed (continuing)", exc_info=True)
+
+    access_token = await get_valid_access_token(db, tenant_id)
+    if not access_token:
+        raise ValueError("HubSpot is not connected for this workspace")
+
+    response = await _request_with_backoff(
+        "GET",
+        CONTACT_PROPERTIES_URL,
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    response.raise_for_status()
+    results = response.json().get("results") or []
+    property_names = [p["name"] for p in results if p.get("name")]
+
+    if redis_client is not None:
+        try:
+            await redis_client.set(
+                cache_key, json.dumps(property_names), ex=_PROPERTIES_CACHE_TTL_SECONDS
+            )
+        except Exception:
+            logger.warning("HubSpot properties cache write failed (non-critical)", exc_info=True)
+
+    return property_names
+
+
 # ─── WorkspaceIntegration CRUD ────────────────────────────────────────────────
 
 
@@ -271,6 +326,35 @@ async def get_valid_access_token(db: Session, tenant_id: uuid.UUID) -> Optional[
     return decrypt_hubspot_token(row.access_token, db)
 
 
+async def _force_refresh_access_token(db: Session, tenant_id: uuid.UUID) -> Optional[str]:
+    """
+    Unconditionally refresh the HubSpot access token, ignoring token_expires_at.
+
+    HubSpot access tokens expire every 30 minutes; a call can run longer than
+    that, so by the time post-call write-back runs, the token stored on the
+    row may already be stale even though token_expires_at looks fresh (it was
+    computed at the start of the call). Always called immediately before the
+    write-back API call.
+    """
+    row = get_integration(db, tenant_id)
+    if row is None or not row.refresh_token:
+        return await get_valid_access_token(db, tenant_id)
+
+    try:
+        refresh_token_plain = decrypt_hubspot_token(row.refresh_token, db)
+        token_response = await refresh_access_token(refresh_token_plain)
+    except Exception:
+        logger.warning(
+            "HubSpot forced pre-writeback token refresh failed for tenant=%s",
+            tenant_id,
+            exc_info=True,
+        )
+        return None
+
+    row = upsert_tokens(db, tenant_id, token_response)
+    return decrypt_hubspot_token(row.access_token, db)
+
+
 def get_field_mappings(db: Session, tenant_id: uuid.UUID) -> list[dict]:
     row = get_integration(db, tenant_id)
     if row is None or not row.extra_metadata:
@@ -345,10 +429,26 @@ def update_integration_settings(
     return row
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_iso(ts: str) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def set_last_write_back_error(
     db: Session, tenant_id: uuid.UUID, error: Optional[str]
 ) -> None:
-    """Record (or clear, when error is None) the last post-call write-back failure."""
+    """
+    Record (or clear, when error is None) the last post-call write-back failure.
+
+    Also stamps last_write_back_status/last_write_back_at for the sync-status
+    endpoint. error=None means the write-back just succeeded.
+    """
     row = get_integration(db, tenant_id)
     if row is None:
         return
@@ -356,12 +456,158 @@ def set_last_write_back_error(
     updated_metadata = dict(row.extra_metadata or {})
     if error:
         updated_metadata["last_write_back_error"] = error
+        updated_metadata["last_write_back_status"] = "failed"
     else:
         updated_metadata.pop("last_write_back_error", None)
+        updated_metadata["last_write_back_status"] = "success"
+        updated_metadata["last_write_back_at"] = _utc_now_iso()
     row.extra_metadata = updated_metadata
     flag_modified(row, "extra_metadata")
     db.add(row)
     db.commit()
+
+
+def record_write_back_failure(db: Session, tenant_id: uuid.UUID, error_msg: str) -> None:
+    """
+    Persist the structured last-failure error (after retry exhaustion), bump the
+    rolling 24h failure counter, and alert the workspace admin once failures
+    cross _WRITE_BACK_ALERT_THRESHOLD within the window.
+    """
+    row = get_integration(db, tenant_id)
+    if row is None:
+        return
+
+    now = datetime.now(timezone.utc)
+    now_iso = _utc_now_iso()
+    window_start = now - timedelta(seconds=_WRITE_BACK_ERROR_WINDOW_SECONDS)
+
+    updated_metadata = dict(row.extra_metadata or {})
+    updated_metadata["last_write_back_error"] = {"timestamp": now_iso, "error": error_msg}
+    updated_metadata["last_write_back_status"] = "failed"
+    updated_metadata["last_write_back_at"] = now_iso
+
+    failure_timestamps = [
+        ts
+        for ts in updated_metadata.get("write_back_failure_timestamps", [])
+        if _parse_iso(ts) is not None and _parse_iso(ts) > window_start
+    ]
+    failure_timestamps.append(now_iso)
+    updated_metadata["write_back_failure_timestamps"] = failure_timestamps
+
+    row.extra_metadata = updated_metadata
+    flag_modified(row, "extra_metadata")
+    db.add(row)
+    db.commit()
+
+    # Alert only on the exact crossing into the threshold, not on every failure
+    # thereafter — each call here appends exactly one timestamp, so the count
+    # can't skip over the threshold, and this avoids re-alerting the admin on
+    # every single failure once a workspace is already over the limit.
+    if len(failure_timestamps) == _WRITE_BACK_ALERT_THRESHOLD:
+        _send_write_back_failure_alert(db, tenant_id, error_msg, now_iso, len(failure_timestamps))
+
+
+def _send_write_back_failure_alert(
+    db: Session, tenant_id: uuid.UUID, error_msg: str, timestamp_iso: str, failure_count: int
+) -> None:
+    """Best-effort admin email alert. Never raises — a notification failure must not affect write-back."""
+    try:
+        from app.models.tenant import Tenant
+        from app.services.data_export_service import _get_workspace_admin_email
+        from app.services.email_service import email_service
+
+        admin_email = _get_workspace_admin_email(db, tenant_id)
+        tenant = db.get(Tenant, tenant_id)
+        if not admin_email:
+            admin_email = getattr(tenant, "contact_email", None) if tenant else None
+        if not admin_email:
+            logger.warning(
+                "No admin or contact email found for tenant=%s; cannot send "
+                "HubSpot write-back failure alert",
+                tenant_id,
+            )
+            return
+
+        workspace_name = tenant.name if tenant else str(tenant_id)
+        frontend_base = (settings.FRONTEND_URL or "").rstrip("/")
+        reconnect_url = f"{frontend_base}/settings/integrations" if frontend_base else "/settings/integrations"
+
+        email_service.send_generic_email(
+            to_email=admin_email,
+            subject=f"Action Required: HubSpot Integration Write-Back Failures for {workspace_name}",
+            html_body=(
+                f"<p>HubSpot post-call write-back has failed {failure_count} times in the "
+                f"last 24 hours for workspace <strong>{workspace_name}</strong>.</p>"
+                f"<p>Most recent failure at {timestamp_iso}: {error_msg}</p>"
+                f"<p>Please reconnect HubSpot to restore syncing: "
+                f'<a href="{reconnect_url}">{reconnect_url}</a></p>'
+            ),
+        )
+    except Exception:
+        logger.warning(
+            "Failed to send HubSpot write-back failure alert for tenant=%s",
+            tenant_id,
+            exc_info=True,
+        )
+
+
+def get_sync_status(db: Session, tenant_id: uuid.UUID) -> dict:
+    """Sync visibility for the dashboard: last lookup/write-back times, status, 24h error count."""
+    row = get_integration(db, tenant_id)
+    if row is None:
+        return {
+            "last_lookup_at": None,
+            "last_write_back_at": None,
+            "last_write_back_status": None,
+            "error_count_24h": 0,
+        }
+
+    metadata = row.extra_metadata or {}
+    window_start = datetime.now(timezone.utc) - timedelta(seconds=_WRITE_BACK_ERROR_WINDOW_SECONDS)
+    error_count_24h = sum(
+        1
+        for ts in metadata.get("write_back_failure_timestamps", [])
+        if _parse_iso(ts) is not None and _parse_iso(ts) > window_start
+    )
+
+    return {
+        "last_lookup_at": metadata.get("last_lookup_at"),
+        "last_write_back_at": metadata.get("last_write_back_at"),
+        "last_write_back_status": metadata.get("last_write_back_status"),
+        "error_count_24h": error_count_24h,
+    }
+
+
+def _touch_last_lookup_at(db: Session, tenant_id: uuid.UUID, *, commit: bool = True) -> None:
+    """
+    Best-effort timestamp of the last contact lookup, for the sync-status endpoint.
+
+    commit=False must be used when `db` is the shared, long-lived session tied to
+    an in-progress call (see get_crm_context_block_for_call / get_field_mapping_values_for_call),
+    which never call db.commit() directly to avoid prematurely committing the
+    caller's still-open call transaction — this mirrors that begin_nested()/flush()
+    pattern instead.
+    """
+    try:
+        row = get_integration(db, tenant_id)
+        if row is None:
+            return
+        updated_metadata = dict(row.extra_metadata or {})
+        updated_metadata["last_lookup_at"] = _utc_now_iso()
+        row.extra_metadata = updated_metadata
+        flag_modified(row, "extra_metadata")
+        db.add(row)
+        if commit:
+            db.commit()
+        else:
+            with db.begin_nested():
+                db.flush()
+    except Exception:
+        logger.warning(
+            "Failed to record HubSpot last_lookup_at (non-critical) tenant=%s",
+            tenant_id,
+            exc_info=True,
+        )
 
 
 async def disconnect(db: Session, tenant_id: uuid.UUID) -> bool:
@@ -530,9 +776,15 @@ async def search_contact_by_phone(
 
 
 async def get_contact_for_phone(
-    db: Session, tenant_id: uuid.UUID, phone: str
+    db: Session, tenant_id: uuid.UUID, phone: str, *, commit_lookup_timestamp: bool = True
 ) -> Optional[dict]:
-    """Look up a contact by phone, Redis-cached for 5 minutes. Fails open on any error."""
+    """Look up a contact by phone, Redis-cached for 5 minutes. Fails open on any error.
+
+    commit_lookup_timestamp=False must be passed by live in-call callers sharing a
+    long-lived db session (see _touch_last_lookup_at).
+    """
+    _touch_last_lookup_at(db, tenant_id, commit=commit_lookup_timestamp)
+
     # Normalize phone numbers to E.164 format if possible before lookup/caching.
     normalized_phone = normalize_to_e164(phone)
     redis_client = get_redis()
@@ -609,7 +861,10 @@ async def get_crm_context_block_for_call(db: Session, call_session: CallSession)
             db, call_session.tenant_id
         ):
             contact = await get_contact_for_phone(
-                db, call_session.tenant_id, call_session.customer_phone_number
+                db,
+                call_session.tenant_id,
+                call_session.customer_phone_number,
+                commit_lookup_timestamp=False,
             )
             if contact:
                 context_block = (
@@ -651,11 +906,18 @@ async def get_crm_context_block_for_call(db: Session, call_session: CallSession)
 def resolve_field_mapping_values(
     contact: Optional[dict], field_mappings: list[dict]
 ) -> dict[str, str]:
-    """Map configured HubSpot fields to prompt-variable values from a contact record."""
-    if not contact or not field_mappings:
+    """
+    Map configured HubSpot fields to prompt-variable values from a contact record.
+
+    Every configured prompt_variable always gets an entry — "" when the contact
+    is missing, or the mapped field is NULL/empty on it — so callers can blindly
+    replace every `{prompt_variable}` placeholder in the prompt without leaving
+    unreplaced placeholders or injecting the strings "null"/"undefined".
+    """
+    if not field_mappings:
         return {}
 
-    raw_properties = contact.get("raw_properties") or {}
+    raw_properties = (contact or {}).get("raw_properties") or {}
     values: dict[str, str] = {}
     for mapping in field_mappings:
         hubspot_field = mapping.get("hubspot_field")
@@ -663,9 +925,11 @@ def resolve_field_mapping_values(
         if not hubspot_field or not prompt_variable:
             continue
         value = raw_properties.get(hubspot_field)
-        if value is None:
+        if value is None and contact:
             value = contact.get(hubspot_field)
-        if value is not None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            values[prompt_variable] = ""
+        else:
             values[prompt_variable] = str(value)
     return values
 
@@ -693,7 +957,10 @@ async def get_field_mapping_values_for_call(
             field_mappings = integration_settings["field_mappings"]
             if integration_settings["contact_lookup_enabled"] and field_mappings:
                 contact = await get_contact_for_phone(
-                    db, call_session.tenant_id, call_session.customer_phone_number
+                    db,
+                    call_session.tenant_id,
+                    call_session.customer_phone_number,
+                    commit_lookup_timestamp=False,
                 )
                 values = resolve_field_mapping_values(contact, field_mappings)
     except Exception:
@@ -868,7 +1135,10 @@ async def _run_post_call_writeback_async(db: Session, call_session: CallSession)
         )
         return
 
-    access_token = await get_valid_access_token(db, tenant_id)
+    # HubSpot access tokens expire every 30 minutes, and a call can outlast
+    # that — always force a fresh token right before the write-back call
+    # rather than trusting the DB's cached token_expires_at.
+    access_token = await _force_refresh_access_token(db, tenant_id)
     if not access_token:
         return
 
@@ -885,7 +1155,7 @@ async def _run_post_call_writeback_async(db: Session, call_session: CallSession)
     summary = get_cached_transcript_summary(db, call_session)
     body_text = summary or "Call completed — no transcript summary available."
 
-    try:
+    async def _write() -> None:
         await create_call_engagement(
             access_token,
             contact["id"],
@@ -896,15 +1166,43 @@ async def _run_post_call_writeback_async(db: Session, call_session: CallSession)
             title=f"Voice agent call — {call_session.status}",
             body_text=body_text,
         )
+
+    try:
+        await _write()
     except Exception as exc:
-        logger.error(
-            "HubSpot call engagement creation failed for session=%s: %s",
+        logger.warning(
+            "HubSpot call engagement creation failed for session=%s; retrying in %ds: %s",
             call_session.id,
+            _WRITE_BACK_RETRY_DELAY_SECONDS,
             exc,
             exc_info=True,
         )
-        set_last_write_back_error(db, tenant_id, _safe_error_msg(exc))
-        return
+        # Release the checked-out DB connection for the duration of the retry
+        # delay — earlier reads in this function (e.g. get_cached_transcript_summary)
+        # leave the session's transaction open via begin_nested()/flush(), and
+        # holding that connection for 5 real minutes per failing call would
+        # exhaust the pool under any real failure volume (e.g. a HubSpot outage
+        # affecting many concurrent calls). SQLAlchemy transparently checks out
+        # a fresh connection on next use.
+        try:
+            db.rollback()
+        except Exception:
+            logger.warning(
+                "Failed to release DB connection before HubSpot write-back retry (non-critical)",
+                exc_info=True,
+            )
+        await asyncio.sleep(_WRITE_BACK_RETRY_DELAY_SECONDS)
+        try:
+            await _write()
+        except Exception as retry_exc:
+            logger.error(
+                "HubSpot call engagement creation failed after retry for session=%s: %s",
+                call_session.id,
+                retry_exc,
+                exc_info=True,
+            )
+            record_write_back_failure(db, tenant_id, _safe_error_msg(retry_exc))
+            return
 
     set_last_write_back_error(db, tenant_id, None)
     logger.info(
@@ -940,10 +1238,20 @@ async def _run_post_call_writeback_in_thread(call_session_id: uuid.UUID) -> None
 
 
 def schedule_hubspot_writeback(call_session_id: uuid.UUID) -> None:
-    """Fire-and-forget post-call write-back. Never blocks the caller."""
+    """
+    Fire-and-forget post-call write-back. Never blocks the caller.
+
+    Write-back can now retry once after a 5-minute delay on failure (see
+    _run_post_call_writeback_async), so the no-running-loop branch must not
+    run it inline — callers here include the synchronous
+    CallSessionService.update_call_session_status, e.g. from a webhook
+    handler, which must not be held open for minutes on a HubSpot outage.
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        run_post_call_writeback(call_session_id)
+        threading.Thread(
+            target=run_post_call_writeback, args=(call_session_id,), daemon=True
+        ).start()
         return
     asyncio.create_task(_run_post_call_writeback_in_thread(call_session_id))

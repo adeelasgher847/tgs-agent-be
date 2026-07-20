@@ -71,3 +71,10 @@ class HubSpotIntegrationStatusOut(BaseModel):
     contact_lookup_enabled: bool = True
     write_back_enabled: bool = True
     field_mappings: List[HubSpotFieldMapping] = []
+
+
+class HubSpotSyncStatusOut(BaseModel):
+    last_lookup_at: Optional[str] = None
+    last_write_back_at: Optional[str] = None
+    last_write_back_status: Optional[str] = None
+    error_count_24h: int = 0
