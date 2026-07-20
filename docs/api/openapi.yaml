@@ -15,6 +15,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_dict_'
+  /api/v1/health:
+    get:
+      tags:
+      - Health
+      summary: Health Check
+      operationId: health_check_api_v1_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Check Api V1 Health Get
   /api/v1/users/register:
     post:
       tags:

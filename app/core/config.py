@@ -322,6 +322,12 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     APP_VERSION: str = "1.0.0"
 
+    # Betterstack status page badge — surfaced in GET /api/v1/health when set.
+    # Betterstack monitors https://api.yourdomain.com/api/v1/health (HTTP 200
+    # expected, 30s interval) and serves the public status page at
+    # status.yourdomain.com; this URL points at that page's embeddable badge.
+    BETTERSTACK_BADGE_URL: Optional[str] = None
+
     # Swagger / committed OpenAPI at GET /api/docs (HTTP Basic — not dashboard JWT).
     API_DOCS_ENABLED: bool = True
     API_DOCS_USERNAME: str = ""
