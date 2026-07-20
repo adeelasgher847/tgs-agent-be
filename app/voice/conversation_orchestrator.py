@@ -381,10 +381,31 @@ Continue the conversation based on the history above. Be {agent_name}."""
                     "ab_prompt_text"
                 )
 
-            # Use agent's custom system prompt if available, otherwise use base prompt
-            if self._h.agent and self._h.agent.system_prompt:
+            # Resolve call flow prompt override if present on session
+            flow_prompt_override = None
+            call_flow = getattr(self._h, "call_flow", None)
+            if call_flow:
+                if getattr(call_flow, "current_prompt", None) and call_flow.current_prompt.prompt_text:
+                    flow_prompt_override = call_flow.current_prompt.prompt_text
+                elif call_flow.current_prompt_id and getattr(self._h, "db", None):
+                    try:
+                        from sqlalchemy import select
+                        from app.models.prompt_version import PromptVersion
+                        pv = self._h.db.execute(
+                            select(PromptVersion).where(PromptVersion.id == call_flow.current_prompt_id)
+                        ).scalar_one_or_none()
+                        if pv and pv.prompt_text:
+                            flow_prompt_override = pv.prompt_text
+                    except Exception as exc:
+                        logger.debug("Could not resolve call flow current_prompt: %s", exc)
+
+            # Use agent's custom system prompt / flow prompt if available, otherwise use base prompt
+            if (self._h.agent and self._h.agent.system_prompt) or flow_prompt_override:
                 effective_custom_prompt = (
-                    batch_prompt_override or ab_prompt_override or self._h.agent.system_prompt
+                    batch_prompt_override
+                    or ab_prompt_override
+                    or flow_prompt_override
+                    or (self._h.agent.system_prompt if self._h.agent else None)
                 )
                 system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.

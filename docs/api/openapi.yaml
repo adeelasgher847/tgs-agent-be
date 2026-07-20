@@ -15,6 +15,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_dict_'
+  /api/v1/health:
+    get:
+      tags:
+      - Health
+      summary: Health Check
+      operationId: health_check_api_v1_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Check Api V1 Health Get
   /api/v1/users/register:
     post:
       tags:
@@ -6789,13 +6804,18 @@ paths:
       security:
       - HTTPBearer: []
   /api/v1/integrations/hubspot/field-mapping:
-    post:
+    put:
       tags:
       - HubSpot Integration
       summary: Hubspot Save Field Mapping
-      description: Save the HubSpot field -> agent prompt-variable mappings for this
+      description: 'Save the HubSpot field -> agent prompt-variable mappings for this
         workspace.
-      operationId: hubspot_save_field_mapping_api_v1_integrations_hubspot_field_mapping_post
+
+
+        Every hubspot_field must exist in the tenant''s live HubSpot contact schema;
+
+        unknown fields return 422 with the list of invalid field names.'
+      operationId: hubspot_save_field_mapping_api_v1_integrations_hubspot_field_mapping_put
       requestBody:
         content:
           application/json:
@@ -6843,6 +6863,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/hubspot/sync-status:
+    get:
+      tags:
+      - HubSpot Integration
+      summary: Hubspot Sync Status
+      description: Last contact-lookup/write-back times, write-back status, and rolling
+        24h error count.
+      operationId: hubspot_sync_status_api_v1_integrations_hubspot_sync_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_HubSpotSyncStatusOut_'
       security:
       - HTTPBearer: []
   /api/v1/integrations/hubspot/contact:
@@ -12520,6 +12557,23 @@ components:
       - contact_lookup_enabled
       - write_back_enabled
       title: HubSpotSettingsUpdateRequest
+    HubSpotSyncStatusOut:
+      properties:
+        last_lookup_at:
+          type: string
+          nullable: true
+        last_write_back_at:
+          type: string
+          nullable: true
+        last_write_back_status:
+          type: string
+          nullable: true
+        error_count_24h:
+          type: integer
+          title: Error Count 24H
+          default: 0
+      type: object
+      title: HubSpotSyncStatusOut
     ImportTwilioPhoneNumberRequest:
       properties:
         phone_number:
@@ -16387,6 +16441,22 @@ components:
       required:
       - data
       title: SuccessResponse[HubSpotIntegrationStatusOut]
+    SuccessResponse_HubSpotSyncStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/HubSpotSyncStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[HubSpotSyncStatusOut]
     SuccessResponse_ImportTwilioPhoneNumberResponse_:
       properties:
         data:

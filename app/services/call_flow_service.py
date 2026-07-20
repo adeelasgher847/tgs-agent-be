@@ -201,6 +201,21 @@ class CallFlowService:
         )
         return item.model_dump(by_alias=True, mode="json")
 
+    def _sync_agent_system_prompt(self, db: Session, flow: CallFlow) -> None:
+        """Ensure the bound Agent's system_prompt matches the flow's current_prompt_id text."""
+        if not flow.agent_id or not flow.current_prompt_id:
+            return
+        pv_repo = PromptVersionRepository(db)
+        current_version = pv_repo.find_by_id(flow.current_prompt_id)
+        if not current_version or not current_version.prompt_text:
+            return
+        agent = db.execute(
+            select(Agent).where(Agent.id == flow.agent_id)
+        ).scalar_one_or_none()
+        if agent and agent.system_prompt != current_version.prompt_text:
+            agent.system_prompt = current_version.prompt_text
+            db.add(agent)
+
     # ── Public API ────────────────────────────────────────────────────────
 
     def create_flow(
@@ -230,6 +245,7 @@ class CallFlowService:
                 db, flow.id, body.prompt, body.notes, current_prompt_id=None
             )
             flow = repo.update(flow, {"current_prompt_id": version.id})
+            self._sync_agent_system_prompt(db, flow)
 
         db.commit()
         db.refresh(flow)
@@ -325,6 +341,8 @@ class CallFlowService:
 
         if scalar_updates:
             flow = repo.update(flow, scalar_updates)
+            if "current_prompt_id" in scalar_updates or "agent_id" in scalar_updates:
+                self._sync_agent_system_prompt(db, flow)
 
         db.commit()
         db.refresh(flow)
@@ -566,6 +584,7 @@ class CallFlowService:
                 "ab_test_enabled": False,
             },
         )
+        self._sync_agent_system_prompt(db, flow)
         db.commit()
         db.refresh(flow)
         if flow.agent is None:
