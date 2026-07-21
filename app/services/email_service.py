@@ -1,17 +1,28 @@
 import logging
+import re
 from typing import List, Optional
 
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
+from botocore.exceptions import ClientError
+
 from app.core.config import settings
+from app.services.s3_service import get_ses_client
 
 logger = logging.getLogger(__name__)
+
+# SES error codes that indicate a sandbox/verification restriction rather
+# than a transient failure — logged distinctly so they're easy to spot.
+_SANDBOX_ERROR_CODES = {
+    "MessageRejected",
+    "MailFromDomainNotVerifiedException",
+    "AccountSendingPausedException",
+    "LimitExceededException",
+}
 
 
 def build_invite_email_content(
     invite_token: str, inviter_name: str, tenant_name: str
 ) -> tuple[str, str]:
-    """Subject + HTML body for workspace invite (log now, SendGrid later)."""
+    """Subject + HTML body for workspace invite."""
     subject = f"You're invited to join {tenant_name} on Voice Agent Platform"
     invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={invite_token}"
     html_body = f"""
@@ -33,20 +44,28 @@ def build_invite_email_content(
     return subject, html_body
 
 
+def _html_to_text(html_body: str) -> str:
+    """Best-effort plain-text fallback derived from an HTML body."""
+    text = re.sub(r"<[^>]+>", "", html_body)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
+
+
 class EmailService:
     def __init__(self):
-        self.sg_client = SendGridAPIClient(settings.SENDGRID_API_KEY) if settings.SENDGRID_API_KEY else None
-        self.sender_email = settings.SENDGRID_SENDER_EMAIL
-    
+        self.sender_email = settings.AWS_SES_SENDER_EMAIL
+        self.ses_client = get_ses_client()
+
     def send_password_reset_email(self, email: str, reset_token: str, user_name: str) -> bool:
         """
         Send password reset email to user
-        
+
         Args:
             email: User's email address
             reset_token: Password reset token
             user_name: User's name for personalization
-            
+
         Returns:
             bool: True if email sent successfully, False otherwise
         """
@@ -73,16 +92,17 @@ class EmailService:
         except Exception as e:
             logger.error(f"Error sending password reset email to {email}: {str(e)}")
             return False
-    
+
     def _send_email(
         self,
         to_email: str,
         subject: str,
         html_body: str,
         cc_emails: Optional[List[str]] = None,
+        text_body: Optional[str] = None,
     ) -> bool:
         """
-        Send an email using SendGrid API.
+        Send an email using AWS SES.
 
         In staging, emails are logged to the console instead of actually
         sent — avoids real mail going out from a non-production environment.
@@ -93,41 +113,68 @@ class EmailService:
                 to_email, cc_emails or [], subject, html_body,
             )
             return True
+
+        if not self.sender_email:
+            logger.error("AWS SES sender is not configured. Missing AWS_SES_SENDER_EMAIL.")
+            return False
+
+        if not text_body:
+            text_body = _html_to_text(html_body)
+
+        destination = {"ToAddresses": [to_email]}
+        if cc_emails:
+            valid_ccs = [cc for cc in cc_emails if cc and cc.strip()]
+            if valid_ccs:
+                destination["CcAddresses"] = valid_ccs
+
+        body_dict = {
+            "Html": {"Data": html_body, "Charset": "UTF-8"},
+            "Text": {"Data": text_body, "Charset": "UTF-8"},
+        }
+
         try:
-            if not self.sg_client:
-                logger.error("SendGrid client is not configured. Missing SENDGRID_API_KEY.")
-                return False
-            message = Mail(
-                from_email=self.sender_email,
-                to_emails=to_email,
-                subject=subject,
-                html_content=html_body,
+            response = self.ses_client.send_email(
+                Source=self.sender_email,
+                Destination=destination,
+                Message={
+                    "Subject": {"Data": subject, "Charset": "UTF-8"},
+                    "Body": body_dict,
+                },
             )
-            # Optionally add CC recipients
-            if cc_emails:
-                for cc in cc_emails:
-                    if cc:
-                        message.add_cc(cc)
-            response = self.sg_client.send(message)
-            if 200 <= response.status_code < 300:
+            status_code = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 200)
+            if 200 <= status_code < 300:
                 logger.info(f"Email sent successfully to {to_email}")
                 return True
-            logger.error(f"Failed to send email to {to_email}. Status: {response.status_code}")
+            logger.error(f"Failed to send email to {to_email}. Status: {status_code}")
+            return False
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+            if error_code in _SANDBOX_ERROR_CODES:
+                logger.error(
+                    "AWS SES sandbox/restriction error [%s] sending email to %s: %s",
+                    error_code, to_email, error_message,
+                )
+            else:
+                logger.error(
+                    "AWS SES ClientError [%s] sending email to %s: %s",
+                    error_code, to_email, error_message,
+                )
             return False
         except Exception as e:
-            logger.error(f"Error sending email via SendGrid: {str(e)}")
+            logger.error(f"Unexpected error sending email via SES to {to_email}: {str(e)}")
             return False
-    
+
     def send_invite_email(self, email: str, invite_token: str, inviter_name: str, tenant_name: str) -> bool:
         """
-        Send team invitation email via Gmail
-        
+        Send team invitation email
+
         Args:
             email: Invitee's email address
             invite_token: Invitation token
             inviter_name: Name of person sending invite
             tenant_name: Name of the team/tenant
-            
+
         Returns:
             bool: True if email sent successfully, False otherwise
         """
