@@ -351,6 +351,103 @@ class TestUpdateCallFlow:
         assert body["name"] == "Renamed Flow"
         assert body["direction"] == "outbound"
 
+    def test_delete_prompt_version_success(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        created = self._create_flow(authed_client, auth_tenant, test_agent)
+        v1_id = created["currentPromptId"]
+
+        # Create v2 so v1 is no longer active
+        authed_client.put(
+            f"/api/v1/call-flows/{created['id']}",
+            json={"prompt": "v2 prompt"},
+            headers=_headers(auth_tenant),
+        )
+
+        # Delete non-active version v1
+        resp = authed_client.delete(
+            f"/api/v1/call-flows/{created['id']}/prompt-versions/{v1_id}",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 204
+
+        # Confirm v1 is gone from prompt-versions API response
+        versions = authed_client.get(
+            f"/api/v1/call-flows/{created['id']}/prompt-versions",
+            headers=_headers(auth_tenant),
+        ).json()
+        assert len(versions) == 1
+        assert versions[0]["id"] != v1_id
+
+        # Verify soft delete flag is_deleted == True in database
+        soft_deleted_v1 = db.query(PromptVersion).filter(PromptVersion.id == uuid.UUID(v1_id)).first()
+        assert soft_deleted_v1 is not None
+        assert soft_deleted_v1.is_deleted is True
+
+    def test_delete_active_prompt_version_returns_400(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        created = self._create_flow(authed_client, auth_tenant, test_agent)
+        v1_id = created["currentPromptId"]
+
+        # Try deleting active version v1
+        resp = authed_client.delete(
+            f"/api/v1/call-flows/{created['id']}/prompt-versions/{v1_id}",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 400
+
+    def test_delete_only_prompt_version_returns_400(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        created = self._create_flow(authed_client, auth_tenant, test_agent)
+        v1_id = created["currentPromptId"]
+
+        resp = authed_client.delete(
+            f"/api/v1/call-flows/{created['id']}/prompt-versions/{v1_id}",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 400
+
+    def test_delete_nonexistent_prompt_version_returns_404(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        created = self._create_flow(authed_client, auth_tenant, test_agent)
+        dummy_id = str(uuid.uuid4())
+
+        resp = authed_client.delete(
+            f"/api/v1/call-flows/{created['id']}/prompt-versions/{dummy_id}",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+    def test_delete_ab_test_variant_prompt_version_returns_400(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        created = self._create_flow(authed_client, auth_tenant, test_agent)
+        v1_id = created["currentPromptId"]
+
+        # Create v2 so v1 is no longer active
+        authed_client.put(
+            f"/api/v1/call-flows/{created['id']}",
+            json={"prompt": "v2 prompt"},
+            headers=_headers(auth_tenant),
+        )
+
+        # Assign v1 as the A/B test's variant A
+        flow = db.query(CallFlow).filter(CallFlow.id == uuid.UUID(created["id"])).first()
+        flow.ab_test_enabled = True
+        flow.ab_prompt_a_id = uuid.UUID(v1_id)
+        flow.ab_prompt_b_id = uuid.UUID(v1_id)
+        db.add(flow)
+        db.commit()
+
+        resp = authed_client.delete(
+            f"/api/v1/call-flows/{created['id']}/prompt-versions/{v1_id}",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 400
+
 
 @pytest.mark.usefixtures("db")
 class TestGetCallFlow:
