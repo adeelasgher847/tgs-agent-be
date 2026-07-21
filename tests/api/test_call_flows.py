@@ -299,6 +299,25 @@ class TestUpdateCallFlow:
         # Still 2 versions (no new version created)
         assert len(body["promptVersions"]) == 2
 
+    def test_update_notes_via_current_prompt_id(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        created = self._create_flow(authed_client, auth_tenant, test_agent)
+        v1_id = created["currentPromptId"]
+
+        resp = authed_client.put(
+            f"/api/v1/call-flows/{created['id']}",
+            json={"currentPromptId": v1_id, "notes": "updated notes for v1"},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["currentPromptId"] == v1_id
+        matching_ver = next(
+            v for v in body["promptVersions"] if v["id"] == v1_id
+        )
+        assert matching_ver["notes"] == "updated notes for v1"
+
     def test_rollback_with_wrong_flow_version_returns_400(
         self, authed_client, auth_tenant, test_agent, db
     ):

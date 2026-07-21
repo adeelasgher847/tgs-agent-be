@@ -145,6 +145,18 @@ class CallFlowService:
             return True
         return current.prompt_text != new_prompt
 
+    def _update_current_version_notes(
+        self, db: Session, flow: CallFlow, notes: Optional[str]
+    ) -> None:
+        """Patch notes on the flow's currently active prompt version, if any."""
+        if notes is None or flow.current_prompt_id is None:
+            return
+        pv_repo = PromptVersionRepository(db)
+        current_ver = pv_repo.find_by_id(flow.current_prompt_id)
+        if current_ver:
+            current_ver.notes = notes
+            db.add(current_ver)
+
     # ── Serialization helpers ─────────────────────────────────────────────
 
     def _version_to_out(self, v: PromptVersion) -> PromptVersionOut:
@@ -328,8 +340,10 @@ class CallFlowService:
                     current_prompt_id=flow.current_prompt_id,
                 )
                 scalar_updates["current_prompt_id"] = version.id
+            else:
+                self._update_current_version_notes(db, flow, body.notes)
         elif body.current_prompt_id is not None:
-            # Explicit rollback — no prompt text provided
+            # Explicit rollback / version select — no prompt text provided
             pv_repo = PromptVersionRepository(db)
             target = pv_repo.find_by_id(body.current_prompt_id)
             if target is None or target.flow_id != flow.id:
@@ -337,7 +351,12 @@ class CallFlowService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="currentPromptId does not belong to this flow",
                 )
+            if body.notes is not None:
+                target.notes = body.notes
+                db.add(target)
             scalar_updates["current_prompt_id"] = body.current_prompt_id
+        else:
+            self._update_current_version_notes(db, flow, body.notes)
 
         if scalar_updates:
             flow = repo.update(flow, scalar_updates)
