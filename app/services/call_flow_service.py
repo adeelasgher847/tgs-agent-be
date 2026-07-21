@@ -423,6 +423,49 @@ class CallFlowService:
             for v in versions
         ]
 
+    def delete_prompt_version(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        version_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> None:
+        """Delete a single prompt version from a call flow.
+
+        Guards:
+        - Flow must exist and belong to tenant
+        - Version must exist and belong to flow
+        - Cannot delete the currently active version (flow.current_prompt_id)
+        - Cannot delete a version currently assigned as an A/B test variant
+        - Cannot delete the only remaining version of a flow
+        """
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        pv_repo = PromptVersionRepository(db)
+        version = pv_repo.find_by_id(version_id)
+        if version is None or version.flow_id != flow.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Prompt version {version_id} not found in call flow {flow_id}",
+            )
+        if flow.current_prompt_id == version.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the currently active prompt version. Please switch to another version first.",
+            )
+        if version.id in (flow.ab_prompt_a_id, flow.ab_prompt_b_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete a prompt version assigned to an active A/B test. Please update the A/B test first.",
+            )
+        count = pv_repo.count_by_flow(flow.id)
+        if count <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the only prompt version of a call flow.",
+            )
+        pv_repo.soft_delete(version)
+        db.commit()
+
     # ── A/B prompt testing ──────────────────────────────────────────────────
 
     def update_ab_test(
