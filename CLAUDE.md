@@ -12,7 +12,7 @@ Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that ha
 **DB**: PostgreSQL via SQLAlchemy 2.x (sync) + asyncpg (async) + Alembic  
 **Background jobs**: ARQ (Redis-backed) for batch calls; APScheduler (PostgreSQL job store) for smart callbacks  
 **Vector store**: Pinecone + pgvector for RAG  
-**Infra**: S3 for recordings/KB files/data exports (migrated off GCS — `GCS_*` env vars are legacy/unused), Stripe for billing, SendGrid for email, Redis for rate-limiting, Calendly for voice-agent booking (replaced the local appointment/slot-reservation DB flow)
+**Infra**: S3 for recordings/KB files/data exports (migrated off GCS — `GCS_*` env vars are legacy/unused), Stripe for billing, AWS SES for email, Redis for rate-limiting, Calendly for voice-agent booking (replaced the local appointment/slot-reservation DB flow)
 
 ---
 

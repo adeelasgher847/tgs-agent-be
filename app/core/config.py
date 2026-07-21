@@ -167,9 +167,8 @@ class CrmSettings(BaseModel):
     # Trello
     trello_api_key: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_KEY")
     trello_api_token: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_TOKEN")
-    # SendGrid
-    sendgrid_api_key: str = Field(default="", validation_alias="SENDGRID_API_KEY")
-    sendgrid_sender_email: str = Field(default="", validation_alias="SENDGRID_SENDER_EMAIL")
+    # AWS SES
+    aws_ses_sender_email: str = Field(default="", validation_alias="AWS_SES_SENDER_EMAIL")
     # Stripe
     stripe_publishable_key: str = Field(default="", validation_alias="STRIPE_PUBLISHABLE_KEY")
     stripe_secret_key: str = Field(default="", validation_alias="STRIPE_SECRET_KEY")
@@ -341,9 +340,9 @@ class Settings(BaseSettings):
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
     N8N_WEBHOOK_URL: str = ""  # n8n webhook URL for scheduled calls
     N8N_WEBHOOK_SECRET: str = ""  # Secret for verifying n8n webhook requests
-    # Email settings (SendGrid)
-    SENDGRID_API_KEY: str = ""
-    SENDGRID_SENDER_EMAIL: str = ""
+    # Email settings (AWS SES) — sender identity; delivery uses AWS_ACCESS_KEY_ID /
+    # AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME (shared with S3, declared below).
+    AWS_SES_SENDER_EMAIL: str = ""
 
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
@@ -844,8 +843,7 @@ class Settings(BaseSettings):
             monday_workspace_id=self.MONDAY_WORKSPACE_ID,
             trello_api_key=self.TRELLO_PLATFORM_API_KEY,
             trello_api_token=self.TRELLO_PLATFORM_API_TOKEN,
-            sendgrid_api_key=self.SENDGRID_API_KEY,
-            sendgrid_sender_email=self.SENDGRID_SENDER_EMAIL,
+            aws_ses_sender_email=self.AWS_SES_SENDER_EMAIL,
             stripe_publishable_key=self.STRIPE_PUBLISHABLE_KEY,
             stripe_secret_key=self.STRIPE_SECRET_KEY,
             stripe_webhook_secret=self.STRIPE_WEBHOOK_SECRET,
