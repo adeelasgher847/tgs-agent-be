@@ -362,6 +362,10 @@ class TestIntegrationListIncludesSalesforce:
                     "error_count_24h": 0,
                 },
             ),
+            patch(
+                "app.services.ghl_service.get_connection_status",
+                return_value=(False, None),
+            ),
         ):
             result = await list_integrations(request=request, user=_principal(), db=db)
 

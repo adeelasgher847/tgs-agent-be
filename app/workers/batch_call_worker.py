@@ -285,6 +285,19 @@ async def run_data_export_job(ctx: dict, export_job_id: str) -> None:
         db.close()
 
 
+# ── GoHighLevel (GHL) post-call write-back ────────────────────────────────────
+
+
+async def ghl_post_call_writeback(ctx: dict, call_session_id: str) -> None:
+    """
+    ARQ job: create a GHL note summarizing a completed call. Enqueued by
+    app.services.ghl_service.schedule_ghl_writeback on call completion.
+    """
+    from app.services.ghl_service import _post_call_writeback_arq_task
+
+    await _post_call_writeback_arq_task(ctx, call_session_id)
+
+
 # ── Smart Callback tasks (ARQ-based replacement for APScheduler polling) ─────
 
 
@@ -582,6 +595,7 @@ class WorkerSettings:
         retry_webhook_delivery,
         kb_ingestion_task,
         execute_callback,
+        ghl_post_call_writeback,
         purge_old_audit_logs,
         run_data_export_job,
         # poll_pending_callbacks kept for manual/admin invocation; not in cron_jobs

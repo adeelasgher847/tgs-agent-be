@@ -595,6 +595,37 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 else:
                     system_prompt = system_prompt + "\n\n" + salesforce_context_block
 
+            # GoHighLevel (GHL) CRM context injection: same fail-open, once-per-call,
+            # call_metadata-cached pattern as the HubSpot/Salesforce blocks above.
+            ghl_context_block = ""
+            if self._h.call_session and self._h.db:
+                try:
+                    from app.services import ghl_service
+
+                    ghl_context_block = await asyncio.wait_for(
+                        ghl_service.get_crm_context_block_for_call(
+                            self._h.db, self._h.call_session
+                        ),
+                        timeout=0.6,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "GHL CRM context lookup timed out; proceeding without CRM context"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "GHL CRM context lookup failed; proceeding without context: %s", exc
+                    )
+
+            if ghl_context_block:
+                anchor = "# CONVERSATION STATE"
+                if anchor in system_prompt:
+                    system_prompt = system_prompt.replace(
+                        anchor, ghl_context_block + "\n\n" + anchor, 1
+                    )
+                else:
+                    system_prompt = system_prompt + "\n\n" + ghl_context_block
+
             # Cross-session caller memory: fetched once at call start (DB lookup,
             # 100ms timeout budget, fail-open) and cached on call_session.call_metadata
             # so every later turn is a cheap in-memory dict read. Injected right after

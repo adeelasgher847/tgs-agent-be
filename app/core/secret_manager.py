@@ -259,6 +259,44 @@ def get_salesforce_oauth_credentials() -> Tuple[str, str]:
     return client_id, client_secret
 
 
+@lru_cache(maxsize=1)
+def _load_ghl_production_credentials() -> Tuple[str, str]:
+    """Fetch GoHighLevel OAuth app credentials from Secret Manager (cached after first call)."""
+    client_id = _fetch_from_secret_manager("GHL_CLIENT_ID") or settings.GHL_CLIENT_ID
+    client_secret = _fetch_from_secret_manager("GHL_CLIENT_SECRET") or settings.GHL_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "GoHighLevel OAuth credentials unavailable. Set GCP_PROJECT_ID and Secret Manager "
+            "secrets (GHL_CLIENT_ID, GHL_CLIENT_SECRET) or the equivalent env vars."
+        )
+    return client_id, client_secret
+
+
+def get_ghl_oauth_credentials() -> Tuple[str, str]:
+    """
+    Return (client_id, client_secret) appropriate for the current environment.
+
+    - production/staging → GCP Secret Manager with env-var fallback
+    - development         → env-var / .env values
+
+    Raises RuntimeError in staging/production when credentials are absent,
+    ValueError in development.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        return _load_ghl_production_credentials()
+
+    client_id = settings.GHL_CLIENT_ID
+    client_secret = settings.GHL_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise ValueError(
+            "GoHighLevel OAuth credentials not configured. Set GHL_CLIENT_ID and "
+            "GHL_CLIENT_SECRET in your .env file for local development."
+        )
+    return client_id, client_secret
+
+
 def get_reputation_api_key() -> str:
     """
     Return the outbound number reputation API key (First Orion / Hiya) for the
