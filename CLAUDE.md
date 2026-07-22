@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that handle inbound/outbound phone calls via Twilio + LiveKit, transcribe speech (Deepgram / Google STT), generate responses via LLM (OpenAI / Gemini / Groq), and synthesise voice (ElevenLabs / Rime / Google TTS). Post-call data syncs to tenant-configured CRMs.
+Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that handle inbound/outbound phone calls via Twilio + LiveKit, transcribe speech (Deepgram / Google STT), generate responses via LLM (OpenAI / Gemini / Groq), and synthesise voice (ElevenLabs / Rime / Google TTS). Post-call data syncs to tenant-configured CRMs (see "CRM integrations" below — there are three independent CRM stacks).
 
 **Runtime**: Python 3.11 (Docker) / FastAPI, Uvicorn  
 **DB**: PostgreSQL via SQLAlchemy 2.x (sync) + asyncpg (async) + Alembic  
@@ -57,7 +57,7 @@ ruff check . && black .
 - v2 routers live in `app/api/v2/routers/` and carry their own `prefix=` on the `APIRouter`.
 - **Note**: the v1 agents router is registered at `/agent` (singular), not `/agents`.
 
-**v2 router inventory**: `active_calls`, `audit_events`, `batch_calls`, `callback_scheduler`, `webhooks`, `workspace` (branding, pricing, usage, member roles, sub-accounts, GDPR data export / account deletion), `hipaa` (HIPAA flag per call-flow, CMEK KMS key management), `flows` / `flow_data` (A/B prompt testing on call flows), `calendly_integration` (status, event types, availability, event creation — mounted twice, once under its own prefix and once under `calendar`), `health`.
+**v2 router inventory**: `active_calls`, `audit_events`, `batch_calls`, `callback_scheduler`, `webhooks`, `workspace` (branding, pricing, usage, member roles, sub-accounts, GDPR data export / account deletion), `hipaa` (HIPAA flag per call-flow, CMEK KMS key management), `flows` / `flow_data` (A/B prompt testing on call flows), `calendly_integration` (status, event types, availability, event creation — mounted twice, once under its own prefix and once under `calendar`), `telephony` (outbound number reputation checks), `health`.
 
 **v1 recruiting module**: job descriptions, resumes, resume interviews, and recruitment dashboard are all registered under `/api/v1/recruiting/`.
 
@@ -157,6 +157,14 @@ result = agent_service.get_agent_by_id(db, agent_id, tenant_id)
 Services never import `SessionLocal` — they always receive `db: Session` as a parameter.
 
 A handful of domains (`agent`, `call_flow`, `folder`, `prompt_version`, `workspace`) additionally split raw SQL access into a `Repository` class under `app/repositories/`, with the service holding/constructing the repo per-request (`self._repo(db)`). Most services query models directly instead — check whether a repository already exists for a model before adding new query methods on the service.
+
+### CRM integrations — three unrelated stacks
+
+"CRM" refers to three independent subsystems with no shared tables or code paths. When asked to "add CRM support," pick the right one:
+
+- **Sales-contact write-back** (`app/services/hubspot_service.py`, `app/services/salesforce_service.py`, `app/routers/hubspot_integration.py`, `app/routers/salesforce_integration.py`): OAuth 2.0 tokens stored encrypted in `workspace_integration`. Post-call, `CallSessionService.update_call_session_status()` calls `schedule_hubspot_writeback()` / `schedule_salesforce_writeback()`, which look up the matched Contact and write a HubSpot Call engagement or a Salesforce `Task` sObject. All call-time paths fail open — a CRM outage never blocks a call.
+- **Inbound-call → Trello sync** (`app/services/inbound_call_crm_sync_service.py`): a separate, Trello-only config (`TenantInboundCRMConfig` model), triggered by the same post-call hook but otherwise unrelated to the hubspot/salesforce code.
+- **Task-management board integration** (`app/services/base_crm_service.py`, `crm_service_factory.py`, `crm_config_service.py`, plus `monday_service.py` / `clickup_service.py` / `jira_service.py` / `trello_service.py`): API-key-based, configured per-tenant via `CRMConfig` (`app/models/tenant_crm_config.py`). Invoked from `app/routers/scheduled_calls.py` / `scheduled_call_service.py` and `appointment_follow_up_service.py` to create a task/card/issue per scheduled call or follow-up — not tied to call completion. `CRMConfig.crm_type` is schema-locked to `monday`/`clickup`/`jira`/`trello`; don't repurpose it for HubSpot/Salesforce.
 
 ### Outbound call dispatch
 
