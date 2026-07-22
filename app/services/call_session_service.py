@@ -294,6 +294,24 @@ class CallSessionService:
                             "HubSpot write-back schedule failed (non-critical): %s", hubspot_exc
                         )
 
+                # Salesforce post-call write-back: create a Task (Activity) with the
+                # transcript summary once the call has actually completed. Fire-and-forget
+                # (fail open) — see app/services/salesforce_service.py::schedule_salesforce_writeback.
+                if status == "completed":
+                    try:
+                        from app.services.salesforce_service import (
+                            schedule_salesforce_writeback,
+                            tenant_has_salesforce_connected,
+                        )
+
+                        if tenant_has_salesforce_connected(db, call_session.tenant_id):
+                            schedule_salesforce_writeback(call_session.id)
+                    except Exception as salesforce_exc:  # pragma: no cover
+                        logger.warning(
+                            "Salesforce write-back schedule failed (non-critical): %s",
+                            salesforce_exc,
+                        )
+
                 # Smart Callback: schedule a retry for missed outbound calls.
                 # maybe_schedule_callback writes the CallbackSchedule row (sync).
                 # _fire_callback_enqueue then submits the ARQ job on the current

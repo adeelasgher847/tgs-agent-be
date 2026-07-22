@@ -267,9 +267,12 @@ async def list_integrations(
     make_secret = get_make_secret(tenant)
     n8n_secret = get_n8n_secret(tenant)
 
-    from app.services import hubspot_service
+    from app.services import hubspot_service, salesforce_service
 
     hubspot_connected, hubspot_connected_at = hubspot_service.get_connection_status(db, tenant.id)
+    salesforce_connected, salesforce_connected_at = salesforce_service.get_connection_status(
+        db, tenant.id
+    )
 
     integrations = [
         IntegrationItem(
@@ -288,6 +291,16 @@ async def list_integrations(
             name="hubspot",
             connected=hubspot_connected,
             connected_at=hubspot_connected_at,
+        ),
+        IntegrationItem(
+            name="salesforce",
+            connected=salesforce_connected,
+            connected_at=salesforce_connected_at,
+            last_sync_at=(
+                salesforce_service.get_sync_status(db, tenant.id).get("last_write_back_at")
+                if salesforce_connected
+                else None
+            ),
         ),
     ]
 

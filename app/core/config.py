@@ -151,6 +151,13 @@ class CrmSettings(BaseModel):
     hubspot_token_encryption_key: str = Field(
         default="", validation_alias="HUBSPOT_TOKEN_ENCRYPTION_KEY"
     )
+    # Salesforce
+    salesforce_client_id: str = Field(default="", validation_alias="SALESFORCE_CLIENT_ID")
+    salesforce_client_secret: str = Field(default="", validation_alias="SALESFORCE_CLIENT_SECRET")
+    salesforce_redirect_uri: str = Field(default="", validation_alias="SALESFORCE_REDIRECT_URI")
+    salesforce_token_encryption_key: str = Field(
+        default="", validation_alias="SALESFORCE_TOKEN_ENCRYPTION_KEY"
+    )
     # Calendly
     calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
     calendly_client_secret: str = Field(default="", validation_alias="CALENDLY_CLIENT_SECRET")
@@ -386,6 +393,28 @@ class Settings(BaseSettings):
     # Symmetric encryption key for workspaceintegration.access_token / refresh_token
     # (pgp_sym_encrypt) — same scheme as ELEVENLABS_ENCRYPTION_KEY above.
     HUBSPOT_TOKEN_ENCRYPTION_KEY: str = ""
+
+    # Salesforce CRM OAuth (app/services/salesforce_service.py).
+    # client_id/client_secret kept here as local-dev fallbacks only — in
+    # staging/production they are read from Secret Manager (see
+    # app/core/secret_manager.py::get_salesforce_oauth_credentials).
+    SALESFORCE_CLIENT_ID: str = ""
+    SALESFORCE_CLIENT_SECRET: str = ""
+    SALESFORCE_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/salesforce/callback
+    # Symmetric encryption key for workspaceintegration.access_token / refresh_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    SALESFORCE_TOKEN_ENCRYPTION_KEY: str = ""
+    # Fixed OAuth login host — https://login.salesforce.com for production orgs,
+    # https://test.salesforce.com for sandboxes. NOT per-tenant: the data-plane
+    # instance_url returned in the token response is what varies per org.
+    SALESFORCE_LOGIN_URL: str = "https://login.salesforce.com"
+    SALESFORCE_API_VERSION: str = "v59.0"
+    # Salesforce token responses (unlike HubSpot's) do not include expires_in —
+    # session length is an org-configurable setting with no fixed default we can
+    # read via the API. We assume a conservative TTL and rely on AC #4's
+    # refresh-60s-early rule to force a refresh well before typical session
+    # timeouts (Salesforce's own default session timeout is 2 hours).
+    SALESFORCE_ACCESS_TOKEN_TTL_SECONDS: int = 1800
 
     # Calendly calendar OAuth (app/services/calendly_service.py).
     CALENDLY_CLIENT_ID: str = ""
@@ -834,6 +863,10 @@ class Settings(BaseSettings):
             hubspot_client_secret=self.HUBSPOT_CLIENT_SECRET,
             hubspot_redirect_uri=self.HUBSPOT_REDIRECT_URI,
             hubspot_token_encryption_key=self.HUBSPOT_TOKEN_ENCRYPTION_KEY,
+            salesforce_client_id=self.SALESFORCE_CLIENT_ID,
+            salesforce_client_secret=self.SALESFORCE_CLIENT_SECRET,
+            salesforce_redirect_uri=self.SALESFORCE_REDIRECT_URI,
+            salesforce_token_encryption_key=self.SALESFORCE_TOKEN_ENCRYPTION_KEY,
             calendly_client_id=self.CALENDLY_CLIENT_ID,
             calendly_client_secret=self.CALENDLY_CLIENT_SECRET,
             calendly_redirect_uri=self.CALENDLY_REDIRECT_URI,
