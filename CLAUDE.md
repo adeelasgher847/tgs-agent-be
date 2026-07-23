@@ -4,6 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Knowledge base vault
+
+A local-only Obsidian vault documenting this backend lives adjacent to this repo at `../tgs-agent-be-vault/` (i.e. `/Users/mc/tgs-agent-be-vault/`), sibling to `tgs-agent-be/`. Start at `00 Home/Home.md`.
+
+Whenever you're given a prompt about this codebase — especially "update documentation" or anything touching architecture, APIs, database, integrations, or business logic — check the relevant notes in that vault first for existing context, and update them (per the vault's own instructions embedded in its notes) rather than duplicating what's already captured there. The vault is local-only and must never be pushed to GitHub or referenced as if it were repo content.
+
+---
+
 ## Project Overview
 
 Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that handle inbound/outbound phone calls via Twilio + LiveKit, transcribe speech (Deepgram / Google STT), generate responses via LLM (OpenAI / Gemini / Groq), and synthesise voice (ElevenLabs / Rime / Google TTS). Post-call data syncs to tenant-configured CRMs (see "CRM integrations" below — there are three independent CRM stacks).
