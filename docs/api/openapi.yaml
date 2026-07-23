@@ -7055,6 +7055,148 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/leadconnector:
+    get:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Get Integration Status
+      description: Connection status and write-back toggle for this workspace.
+      operationId: ghl_get_integration_status_api_v1_integrations_leadconnector_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlIntegrationStatusOut_'
+      security:
+      - HTTPBearer: []
+    delete:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Disconnect
+      description: Revoke local GHL OAuth credentials and delete the workspaceintegration
+        row.
+      operationId: ghl_disconnect_api_v1_integrations_leadconnector_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/leadconnector/settings:
+    put:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Update Settings
+      description: Toggle post-call write-back for this workspace.
+      operationId: ghl_update_settings_api_v1_integrations_leadconnector_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GhlSettingsUpdateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlIntegrationStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/leadconnector/sync-status:
+    get:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Sync Status
+      description: Last contact-lookup/write-back times, write-back status, and rolling
+        24h error count.
+      operationId: ghl_sync_status_api_v1_integrations_leadconnector_sync_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlSyncStatusOut_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/leadconnector/contact:
+    get:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Get Contact
+      description: Contacts API lookup by phone. Redis-cached for 5 minutes per phone
+        number.
+      operationId: ghl_get_contact_api_v1_integrations_leadconnector_contact_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: phone
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Phone number to search for (E.164 or local format)
+          title: Phone
+        description: Phone number to search for (E.164 or local format)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlContactOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/leadconnector/note:
+    post:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Create Note
+      description: 'Create a note directly against a GHL contact. Writes to the tenant''s
+        live
+
+        CRM, so (like /settings) this requires manager+ rather than any authenticated
+
+        member — a read_only member must not be able to write into GoHighLevel.'
+      operationId: ghl_create_note_api_v1_integrations_leadconnector_note_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GhlNoteCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlNoteCreateResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v1/calls/history:
     get:
       tags:
@@ -12559,6 +12701,120 @@ components:
       type: object
       title: GapInterval
       description: A single time gap between callback attempts.
+    GhlContactOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+          default: []
+        pipeline_stage:
+          type: string
+          nullable: true
+        last_activity_date:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      title: GhlContactOut
+    GhlDisconnectResponse:
+      properties:
+        disconnected:
+          type: boolean
+          title: Disconnected
+        provider:
+          type: string
+          title: Provider
+          default: gohighlevel
+      type: object
+      required:
+      - disconnected
+      title: GhlDisconnectResponse
+    GhlIntegrationStatusOut:
+      properties:
+        connected:
+          type: boolean
+          title: Connected
+        connected_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_sync_at:
+          type: string
+          nullable: true
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+          default: true
+      type: object
+      required:
+      - connected
+      title: GhlIntegrationStatusOut
+    GhlNoteCreateRequest:
+      properties:
+        contact_id:
+          type: string
+          title: Contact Id
+        content:
+          type: string
+          title: Content
+      type: object
+      required:
+      - contact_id
+      - content
+      title: GhlNoteCreateRequest
+    GhlNoteCreateResponse:
+      properties:
+        id:
+          type: string
+          nullable: true
+        contact_id:
+          type: string
+          title: Contact Id
+      type: object
+      required:
+      - contact_id
+      title: GhlNoteCreateResponse
+    GhlSettingsUpdateRequest:
+      properties:
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+      type: object
+      required:
+      - write_back_enabled
+      title: GhlSettingsUpdateRequest
+    GhlSyncStatusOut:
+      properties:
+        last_lookup_at:
+          type: string
+          nullable: true
+        last_write_back_at:
+          type: string
+          nullable: true
+        last_write_back_status:
+          type: string
+          nullable: true
+        last_ghl_error:
+          type: string
+          nullable: true
+        error_count_24h:
+          type: integer
+          title: Error Count 24H
+          default: 0
+      type: object
+      title: GhlSyncStatusOut
     GoogleLoginRequest:
       properties:
         google_token:
@@ -16598,6 +16854,86 @@ components:
       required:
       - data
       title: SuccessResponse[ForgotPasswordResponse]
+    SuccessResponse_GhlContactOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlContactOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlContactOut]
+    SuccessResponse_GhlDisconnectResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlDisconnectResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlDisconnectResponse]
+    SuccessResponse_GhlIntegrationStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlIntegrationStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlIntegrationStatusOut]
+    SuccessResponse_GhlNoteCreateResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlNoteCreateResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlNoteCreateResponse]
+    SuccessResponse_GhlSyncStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlSyncStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlSyncStatusOut]
     SuccessResponse_HubSpotContactOut_:
       properties:
         data:

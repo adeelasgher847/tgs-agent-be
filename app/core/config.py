@@ -158,6 +158,13 @@ class CrmSettings(BaseModel):
     salesforce_token_encryption_key: str = Field(
         default="", validation_alias="SALESFORCE_TOKEN_ENCRYPTION_KEY"
     )
+    # GoHighLevel (GHL)
+    ghl_client_id: str = Field(default="", validation_alias="GHL_CLIENT_ID")
+    ghl_client_secret: str = Field(default="", validation_alias="GHL_CLIENT_SECRET")
+    ghl_redirect_uri: str = Field(default="", validation_alias="GHL_REDIRECT_URI")
+    ghl_token_encryption_key: str = Field(
+        default="", validation_alias="GHL_TOKEN_ENCRYPTION_KEY"
+    )
     # Calendly
     calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
     calendly_client_secret: str = Field(default="", validation_alias="CALENDLY_CLIENT_SECRET")
@@ -415,6 +422,19 @@ class Settings(BaseSettings):
     # refresh-60s-early rule to force a refresh well before typical session
     # timeouts (Salesforce's own default session timeout is 2 hours).
     SALESFORCE_ACCESS_TOKEN_TTL_SECONDS: int = 1800
+
+    # GoHighLevel (GHL) CRM OAuth (app/services/ghl_service.py).
+    # client_id/client_secret kept here as local-dev fallbacks only — in
+    # staging/production they are read from Secret Manager (see
+    # app/core/secret_manager.py::get_ghl_oauth_credentials).
+    GHL_CLIENT_ID: str = ""
+    GHL_CLIENT_SECRET: str = ""
+    GHL_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/leadconnector/callback
+    # Symmetric encryption key for workspaceintegration.access_token / refresh_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    GHL_TOKEN_ENCRYPTION_KEY: str = ""
+    GHL_API_BASE_URL: str = "https://services.leadconnectorhq.com"
+    GHL_API_VERSION: str = "2021-07-28"
 
     # Calendly calendar OAuth (app/services/calendly_service.py).
     CALENDLY_CLIENT_ID: str = ""
@@ -867,6 +887,10 @@ class Settings(BaseSettings):
             salesforce_client_secret=self.SALESFORCE_CLIENT_SECRET,
             salesforce_redirect_uri=self.SALESFORCE_REDIRECT_URI,
             salesforce_token_encryption_key=self.SALESFORCE_TOKEN_ENCRYPTION_KEY,
+            ghl_client_id=self.GHL_CLIENT_ID,
+            ghl_client_secret=self.GHL_CLIENT_SECRET,
+            ghl_redirect_uri=self.GHL_REDIRECT_URI,
+            ghl_token_encryption_key=self.GHL_TOKEN_ENCRYPTION_KEY,
             calendly_client_id=self.CALENDLY_CLIENT_ID,
             calendly_client_secret=self.CALENDLY_CLIENT_SECRET,
             calendly_redirect_uri=self.CALENDLY_REDIRECT_URI,

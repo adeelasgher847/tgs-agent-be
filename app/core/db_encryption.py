@@ -428,6 +428,64 @@ def decrypt_calendly_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001
         raise ValueError(f"Calendly token decryption failed: {exc}") from exc
 
 
+# Tags GoHighLevel (GHL) OAuth token ciphertext. New integration — no legacy
+# pgcrypto rows exist, so unlike HubSpot's decrypt_hubspot_token there is no
+# fallback path.
+_GHL_AESGCM_PREFIX = "gcm1:"
+
+
+def _ghl_aes_key() -> bytes:
+    """Derive a 32-byte AES-256 key from GHL_TOKEN_ENCRYPTION_KEY.
+
+    SECURITY NOTE:
+      For secure AES-256-GCM encryption, GHL_TOKEN_ENCRYPTION_KEY must be
+      configured as a randomly generated 32-byte secret (typically represented
+      as a 64-character hex string, e.g. generated via `secrets.token_hex(32)`).
+    """
+    key = settings.GHL_TOKEN_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "GHL_TOKEN_ENCRYPTION_KEY is not configured — "
+            "cannot encrypt/decrypt GoHighLevel OAuth token."
+        )
+    return hashlib.sha256(key.encode("utf-8")).digest()
+
+
+def encrypt_ghl_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+    """Encrypt *plaintext* GoHighLevel OAuth token with AES-256-GCM.
+
+    Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
+    encryption has no GCM mode). ``db`` is accepted only for parity with the other
+    encrypt_* helpers in this module; it is unused here.
+
+    Raises ``ValueError`` if ``GHL_TOKEN_ENCRYPTION_KEY`` is not configured.
+    """
+    key = _ghl_aes_key()
+    nonce = os.urandom(12)  # 96-bit nonce, the standard size for AES-GCM
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return _GHL_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+
+
+def decrypt_ghl_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+    """Decrypt a GoHighLevel OAuth token written by :func:`encrypt_ghl_token`.
+
+    Raises ``ValueError`` if ``GHL_TOKEN_ENCRYPTION_KEY`` is not configured,
+    the ciphertext is missing/corrupt, or was encrypted with a different key.
+    """
+    if not ciphertext:
+        raise ValueError("ciphertext is empty")
+    if not ciphertext.startswith(_GHL_AESGCM_PREFIX):
+        raise ValueError("Unrecognized GoHighLevel token ciphertext format")
+
+    key = _ghl_aes_key()
+    try:
+        raw = base64.b64decode(ciphertext[len(_GHL_AESGCM_PREFIX):])
+        nonce, body = raw[:12], raw[12:]
+        return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
+    except Exception as exc:
+        raise ValueError(f"GoHighLevel token decryption failed: {exc}") from exc
+
+
 def decrypt_stored_elevenlabs_key(
     ciphertext: str,
     *,
