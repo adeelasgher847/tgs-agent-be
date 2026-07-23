@@ -28,6 +28,7 @@ class IntegrationItem(BaseModel):
     webhook_url: Optional[str] = None
     last_triggered_at: Optional[datetime] = None
     connected_at: Optional[datetime] = None
+    last_sync_at: Optional[str] = None
 
 
 class IntegrationListResponse(BaseModel):

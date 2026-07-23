@@ -6946,6 +6946,115 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/salesforce:
+    get:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Get Integration Status
+      description: Connection status and write-back toggle for this workspace.
+      operationId: salesforce_get_integration_status_api_v1_integrations_salesforce_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceIntegrationStatusOut_'
+      security:
+      - HTTPBearer: []
+    delete:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Disconnect
+      description: Revoke the token at Salesforce and delete the workspaceintegration
+        row.
+      operationId: salesforce_disconnect_api_v1_integrations_salesforce_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/salesforce/settings:
+    put:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Update Settings
+      description: Toggle post-call write-back for this workspace.
+      operationId: salesforce_update_settings_api_v1_integrations_salesforce_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalesforceSettingsUpdateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceIntegrationStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/salesforce/sync-status:
+    get:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Sync Status
+      description: Last contact-lookup/write-back times, write-back status, and rolling
+        24h error count.
+      operationId: salesforce_sync_status_api_v1_integrations_salesforce_sync_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceSyncStatusOut_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/salesforce/contact:
+    get:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Get Contact
+      description: SOQL contact lookup by phone. Redis-cached for 5 minutes per phone
+        number.
+      operationId: salesforce_get_contact_api_v1_integrations_salesforce_contact_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: phone
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Phone number to search for (E.164 or local format)
+          title: Phone
+        description: Phone number to search for (E.164 or local format)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceContactOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/calls/history:
     get:
       tags:
@@ -12695,6 +12804,9 @@ components:
           type: string
           format: date-time
           nullable: true
+        last_sync_at:
+          type: string
+          nullable: true
       type: object
       required:
       - name
@@ -15631,6 +15743,83 @@ components:
       - is_active
       - supports_streaming
       title: STTProviderOut
+    SalesforceContactOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          nullable: true
+        account:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      title: SalesforceContactOut
+    SalesforceDisconnectResponse:
+      properties:
+        disconnected:
+          type: boolean
+          title: Disconnected
+        provider:
+          type: string
+          title: Provider
+          default: salesforce
+      type: object
+      required:
+      - disconnected
+      title: SalesforceDisconnectResponse
+    SalesforceIntegrationStatusOut:
+      properties:
+        connected:
+          type: boolean
+          title: Connected
+        connected_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_sync_at:
+          type: string
+          nullable: true
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+          default: true
+      type: object
+      required:
+      - connected
+      title: SalesforceIntegrationStatusOut
+    SalesforceSettingsUpdateRequest:
+      properties:
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+      type: object
+      required:
+      - write_back_enabled
+      title: SalesforceSettingsUpdateRequest
+    SalesforceSyncStatusOut:
+      properties:
+        last_lookup_at:
+          type: string
+          nullable: true
+        last_write_back_at:
+          type: string
+          nullable: true
+        last_write_back_status:
+          type: string
+          nullable: true
+        error_count_24h:
+          type: integer
+          title: Error Count 24H
+          default: 0
+      type: object
+      title: SalesforceSyncStatusOut
     ScheduleEntry:
       properties:
         day:
@@ -17240,6 +17429,70 @@ components:
       required:
       - data
       title: SuccessResponse[ResumeInterviewTrelloCallMediaResponse]
+    SuccessResponse_SalesforceContactOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceContactOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceContactOut]
+    SuccessResponse_SalesforceDisconnectResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceDisconnectResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceDisconnectResponse]
+    SuccessResponse_SalesforceIntegrationStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceIntegrationStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceIntegrationStatusOut]
+    SuccessResponse_SalesforceSyncStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceSyncStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceSyncStatusOut]
     SuccessResponse_SingleCallResponse_:
       properties:
         data:

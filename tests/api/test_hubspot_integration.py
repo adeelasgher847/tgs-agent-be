@@ -534,6 +534,10 @@ class TestIntegrationListIncludesHubSpot:
                 "app.services.hubspot_service.get_connection_status",
                 return_value=(True, connected_at),
             ),
+            patch(
+                "app.services.salesforce_service.get_connection_status",
+                return_value=(False, None),
+            ),
         ):
             result = await list_integrations(request=request, user=_principal(), db=db)
 
