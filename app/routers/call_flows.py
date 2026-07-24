@@ -94,6 +94,32 @@ def get_prompt_versions(
     return call_flow_service.get_prompt_versions(db, flow_id, _workspace_id(principal))
 
 
+@router.delete(
+    "/{flow_id}/prompt-versions/{version_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_prompt_version(
+    flow_id: uuid.UUID,
+    version_id: uuid.UUID,
+    request: Request,
+    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    db: Session = Depends(get_db),
+):
+    tid = _workspace_id(principal)
+    call_flow_service.delete_prompt_version(db, flow_id, version_id, tid)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.prompt_version_deleted",
+        resource_type="prompt_version",
+        resource_id=version_id,
+        actor_user_id=principal.id if isinstance(principal, User) else None,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{flow_id}")
 def get_call_flow(
     flow_id: uuid.UUID,

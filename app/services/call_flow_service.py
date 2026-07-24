@@ -145,6 +145,18 @@ class CallFlowService:
             return True
         return current.prompt_text != new_prompt
 
+    def _update_current_version_notes(
+        self, db: Session, flow: CallFlow, notes: Optional[str]
+    ) -> None:
+        """Patch notes on the flow's currently active prompt version, if any."""
+        if notes is None or flow.current_prompt_id is None:
+            return
+        pv_repo = PromptVersionRepository(db)
+        current_ver = pv_repo.find_by_id(flow.current_prompt_id)
+        if current_ver:
+            current_ver.notes = notes
+            db.add(current_ver)
+
     # ── Serialization helpers ─────────────────────────────────────────────
 
     def _version_to_out(self, v: PromptVersion) -> PromptVersionOut:
@@ -201,6 +213,21 @@ class CallFlowService:
         )
         return item.model_dump(by_alias=True, mode="json")
 
+    def _sync_agent_system_prompt(self, db: Session, flow: CallFlow) -> None:
+        """Ensure the bound Agent's system_prompt matches the flow's current_prompt_id text."""
+        if not flow.agent_id or not flow.current_prompt_id:
+            return
+        pv_repo = PromptVersionRepository(db)
+        current_version = pv_repo.find_by_id(flow.current_prompt_id)
+        if not current_version or not current_version.prompt_text:
+            return
+        agent = db.execute(
+            select(Agent).where(Agent.id == flow.agent_id)
+        ).scalar_one_or_none()
+        if agent and agent.system_prompt != current_version.prompt_text:
+            agent.system_prompt = current_version.prompt_text
+            db.add(agent)
+
     # ── Public API ────────────────────────────────────────────────────────
 
     def create_flow(
@@ -230,6 +257,7 @@ class CallFlowService:
                 db, flow.id, body.prompt, body.notes, current_prompt_id=None
             )
             flow = repo.update(flow, {"current_prompt_id": version.id})
+            self._sync_agent_system_prompt(db, flow)
 
         db.commit()
         db.refresh(flow)
@@ -312,8 +340,10 @@ class CallFlowService:
                     current_prompt_id=flow.current_prompt_id,
                 )
                 scalar_updates["current_prompt_id"] = version.id
+            else:
+                self._update_current_version_notes(db, flow, body.notes)
         elif body.current_prompt_id is not None:
-            # Explicit rollback — no prompt text provided
+            # Explicit rollback / version select — no prompt text provided
             pv_repo = PromptVersionRepository(db)
             target = pv_repo.find_by_id(body.current_prompt_id)
             if target is None or target.flow_id != flow.id:
@@ -321,10 +351,17 @@ class CallFlowService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="currentPromptId does not belong to this flow",
                 )
+            if body.notes is not None:
+                target.notes = body.notes
+                db.add(target)
             scalar_updates["current_prompt_id"] = body.current_prompt_id
+        else:
+            self._update_current_version_notes(db, flow, body.notes)
 
         if scalar_updates:
             flow = repo.update(flow, scalar_updates)
+            if "current_prompt_id" in scalar_updates or "agent_id" in scalar_updates:
+                self._sync_agent_system_prompt(db, flow)
 
         db.commit()
         db.refresh(flow)
@@ -385,6 +422,49 @@ class CallFlowService:
             self._version_to_out(v).model_dump(by_alias=True, mode="json")
             for v in versions
         ]
+
+    def delete_prompt_version(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        version_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> None:
+        """Delete a single prompt version from a call flow.
+
+        Guards:
+        - Flow must exist and belong to tenant
+        - Version must exist and belong to flow
+        - Cannot delete the currently active version (flow.current_prompt_id)
+        - Cannot delete a version currently assigned as an A/B test variant
+        - Cannot delete the only remaining version of a flow
+        """
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        pv_repo = PromptVersionRepository(db)
+        version = pv_repo.find_by_id(version_id)
+        if version is None or version.flow_id != flow.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Prompt version {version_id} not found in call flow {flow_id}",
+            )
+        if flow.current_prompt_id == version.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the currently active prompt version. Please switch to another version first.",
+            )
+        if version.id in (flow.ab_prompt_a_id, flow.ab_prompt_b_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete a prompt version assigned to an active A/B test. Please update the A/B test first.",
+            )
+        count = pv_repo.count_by_flow(flow.id)
+        if count <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the only prompt version of a call flow.",
+            )
+        pv_repo.soft_delete(version)
+        db.commit()
 
     # ── A/B prompt testing ──────────────────────────────────────────────────
 
@@ -566,6 +646,7 @@ class CallFlowService:
                 "ab_test_enabled": False,
             },
         )
+        self._sync_agent_system_prompt(db, flow)
         db.commit()
         db.refresh(flow)
         if flow.agent is None:

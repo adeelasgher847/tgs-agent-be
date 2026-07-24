@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Text, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Text, DateTime, ForeignKey, Index, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -18,6 +18,7 @@ class PromptVersion(Base):
     # DB-only: sanitized copy for Gemini — never returned in API responses
     gemini_prompt = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
+    is_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     call_flow = relationship(

@@ -1,11 +1,12 @@
 """
-Shared S3 client factory.
+Shared AWS client factory.
 
-Every service that talks to Amazon S3 must obtain its client via
-get_s3_client() rather than instantiating boto3 directly, so credentials
-and region configuration stay centralized in one place.
+Every service that talks to an AWS API must obtain its client via one of
+the get_*_client() helpers below rather than instantiating boto3 directly,
+so credentials and region configuration stay centralized in one place.
 
 Docs: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html
+      https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/ses.html
 """
 from __future__ import annotations
 
@@ -30,3 +31,8 @@ def get_s3_client():
 def get_kms_client():
     """Return a boto3 KMS client configured from application settings."""
     return boto3.client("kms", **_client_kwargs())
+
+
+def get_ses_client():
+    """Return a boto3 SES client configured from application settings."""
+    return boto3.client("ses", **_client_kwargs())

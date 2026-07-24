@@ -151,6 +151,20 @@ class CrmSettings(BaseModel):
     hubspot_token_encryption_key: str = Field(
         default="", validation_alias="HUBSPOT_TOKEN_ENCRYPTION_KEY"
     )
+    # Salesforce
+    salesforce_client_id: str = Field(default="", validation_alias="SALESFORCE_CLIENT_ID")
+    salesforce_client_secret: str = Field(default="", validation_alias="SALESFORCE_CLIENT_SECRET")
+    salesforce_redirect_uri: str = Field(default="", validation_alias="SALESFORCE_REDIRECT_URI")
+    salesforce_token_encryption_key: str = Field(
+        default="", validation_alias="SALESFORCE_TOKEN_ENCRYPTION_KEY"
+    )
+    # GoHighLevel (GHL)
+    ghl_client_id: str = Field(default="", validation_alias="GHL_CLIENT_ID")
+    ghl_client_secret: str = Field(default="", validation_alias="GHL_CLIENT_SECRET")
+    ghl_redirect_uri: str = Field(default="", validation_alias="GHL_REDIRECT_URI")
+    ghl_token_encryption_key: str = Field(
+        default="", validation_alias="GHL_TOKEN_ENCRYPTION_KEY"
+    )
     # Calendly
     calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
     calendly_client_secret: str = Field(default="", validation_alias="CALENDLY_CLIENT_SECRET")
@@ -167,9 +181,8 @@ class CrmSettings(BaseModel):
     # Trello
     trello_api_key: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_KEY")
     trello_api_token: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_TOKEN")
-    # SendGrid
-    sendgrid_api_key: str = Field(default="", validation_alias="SENDGRID_API_KEY")
-    sendgrid_sender_email: str = Field(default="", validation_alias="SENDGRID_SENDER_EMAIL")
+    # AWS SES
+    aws_ses_sender_email: str = Field(default="", validation_alias="AWS_SES_SENDER_EMAIL")
     # Stripe
     stripe_publishable_key: str = Field(default="", validation_alias="STRIPE_PUBLISHABLE_KEY")
     stripe_secret_key: str = Field(default="", validation_alias="STRIPE_SECRET_KEY")
@@ -322,6 +335,12 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     APP_VERSION: str = "1.0.0"
 
+    # Betterstack status page badge — surfaced in GET /api/v1/health when set.
+    # Betterstack monitors https://api.yourdomain.com/api/v1/health (HTTP 200
+    # expected, 30s interval) and serves the public status page at
+    # status.yourdomain.com; this URL points at that page's embeddable badge.
+    BETTERSTACK_BADGE_URL: Optional[str] = None
+
     # Swagger / committed OpenAPI at GET /api/docs (HTTP Basic — not dashboard JWT).
     API_DOCS_ENABLED: bool = True
     API_DOCS_USERNAME: str = ""
@@ -335,9 +354,9 @@ class Settings(BaseSettings):
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
     N8N_WEBHOOK_URL: str = ""  # n8n webhook URL for scheduled calls
     N8N_WEBHOOK_SECRET: str = ""  # Secret for verifying n8n webhook requests
-    # Email settings (SendGrid)
-    SENDGRID_API_KEY: str = ""
-    SENDGRID_SENDER_EMAIL: str = ""
+    # Email settings (AWS SES) — sender identity; delivery uses AWS_ACCESS_KEY_ID /
+    # AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME (shared with S3, declared below).
+    AWS_SES_SENDER_EMAIL: str = ""
 
     # Password reset settings
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
@@ -381,6 +400,41 @@ class Settings(BaseSettings):
     # Symmetric encryption key for workspaceintegration.access_token / refresh_token
     # (pgp_sym_encrypt) — same scheme as ELEVENLABS_ENCRYPTION_KEY above.
     HUBSPOT_TOKEN_ENCRYPTION_KEY: str = ""
+
+    # Salesforce CRM OAuth (app/services/salesforce_service.py).
+    # client_id/client_secret kept here as local-dev fallbacks only — in
+    # staging/production they are read from Secret Manager (see
+    # app/core/secret_manager.py::get_salesforce_oauth_credentials).
+    SALESFORCE_CLIENT_ID: str = ""
+    SALESFORCE_CLIENT_SECRET: str = ""
+    SALESFORCE_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/salesforce/callback
+    # Symmetric encryption key for workspaceintegration.access_token / refresh_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    SALESFORCE_TOKEN_ENCRYPTION_KEY: str = ""
+    # Fixed OAuth login host — https://login.salesforce.com for production orgs,
+    # https://test.salesforce.com for sandboxes. NOT per-tenant: the data-plane
+    # instance_url returned in the token response is what varies per org.
+    SALESFORCE_LOGIN_URL: str = "https://login.salesforce.com"
+    SALESFORCE_API_VERSION: str = "v59.0"
+    # Salesforce token responses (unlike HubSpot's) do not include expires_in —
+    # session length is an org-configurable setting with no fixed default we can
+    # read via the API. We assume a conservative TTL and rely on AC #4's
+    # refresh-60s-early rule to force a refresh well before typical session
+    # timeouts (Salesforce's own default session timeout is 2 hours).
+    SALESFORCE_ACCESS_TOKEN_TTL_SECONDS: int = 1800
+
+    # GoHighLevel (GHL) CRM OAuth (app/services/ghl_service.py).
+    # client_id/client_secret kept here as local-dev fallbacks only — in
+    # staging/production they are read from Secret Manager (see
+    # app/core/secret_manager.py::get_ghl_oauth_credentials).
+    GHL_CLIENT_ID: str = ""
+    GHL_CLIENT_SECRET: str = ""
+    GHL_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/leadconnector/callback
+    # Symmetric encryption key for workspaceintegration.access_token / refresh_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    GHL_TOKEN_ENCRYPTION_KEY: str = ""
+    GHL_API_BASE_URL: str = "https://services.leadconnectorhq.com"
+    GHL_API_VERSION: str = "2021-07-28"
 
     # Calendly calendar OAuth (app/services/calendly_service.py).
     CALENDLY_CLIENT_ID: str = ""
@@ -829,6 +883,14 @@ class Settings(BaseSettings):
             hubspot_client_secret=self.HUBSPOT_CLIENT_SECRET,
             hubspot_redirect_uri=self.HUBSPOT_REDIRECT_URI,
             hubspot_token_encryption_key=self.HUBSPOT_TOKEN_ENCRYPTION_KEY,
+            salesforce_client_id=self.SALESFORCE_CLIENT_ID,
+            salesforce_client_secret=self.SALESFORCE_CLIENT_SECRET,
+            salesforce_redirect_uri=self.SALESFORCE_REDIRECT_URI,
+            salesforce_token_encryption_key=self.SALESFORCE_TOKEN_ENCRYPTION_KEY,
+            ghl_client_id=self.GHL_CLIENT_ID,
+            ghl_client_secret=self.GHL_CLIENT_SECRET,
+            ghl_redirect_uri=self.GHL_REDIRECT_URI,
+            ghl_token_encryption_key=self.GHL_TOKEN_ENCRYPTION_KEY,
             calendly_client_id=self.CALENDLY_CLIENT_ID,
             calendly_client_secret=self.CALENDLY_CLIENT_SECRET,
             calendly_redirect_uri=self.CALENDLY_REDIRECT_URI,
@@ -838,8 +900,7 @@ class Settings(BaseSettings):
             monday_workspace_id=self.MONDAY_WORKSPACE_ID,
             trello_api_key=self.TRELLO_PLATFORM_API_KEY,
             trello_api_token=self.TRELLO_PLATFORM_API_TOKEN,
-            sendgrid_api_key=self.SENDGRID_API_KEY,
-            sendgrid_sender_email=self.SENDGRID_SENDER_EMAIL,
+            aws_ses_sender_email=self.AWS_SES_SENDER_EMAIL,
             stripe_publishable_key=self.STRIPE_PUBLISHABLE_KEY,
             stripe_secret_key=self.STRIPE_SECRET_KEY,
             stripe_webhook_secret=self.STRIPE_WEBHOOK_SECRET,

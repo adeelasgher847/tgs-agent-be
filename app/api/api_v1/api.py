@@ -6,6 +6,7 @@ from app.api.api_v1.endpoints import (
     api_keys,
     billing,
     gemini,
+    health,
     model,
     openai,
     plan,
@@ -50,12 +51,15 @@ from app.routers.business_knowledge import router as business_knowledge_router
 from app.routers.recordings import router as recordings_router
 from app.routers.integrations import router as integrations_router
 from app.routers.hubspot_integration import router as hubspot_integration_router
+from app.routers.salesforce_integration import router as salesforce_integration_router
+from app.routers.ghl_integration import router as ghl_integration_router
 from app.routers.call_history import router as call_history_router
 from app.routers.call_history import batch_router as batch_call_metrics_router
 from app.routers.payments import router as payments_router
 from app.routers.amd_webhook import router as amd_webhook_router
 
 api_router = APIRouter()
+api_router.include_router(health.router, tags=["Health"])
 api_router.include_router(user.router, prefix="/users", tags=["users"])
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
@@ -165,6 +169,16 @@ api_router.include_router(
     hubspot_integration_router,
     prefix="/integrations/hubspot",
     tags=["HubSpot Integration"],
+)
+api_router.include_router(
+    salesforce_integration_router,
+    prefix="/integrations/salesforce",
+    tags=["Salesforce Integration"],
+)
+api_router.include_router(
+    ghl_integration_router,
+    prefix="/integrations/leadconnector",
+    tags=["GoHighLevel Integration"],
 )
 api_router.include_router(call_history_router, prefix="/calls", tags=["Call History Analytics"])
 api_router.include_router(batch_call_metrics_router, prefix="/batch-calls", tags=["Batch Call Analytics"])

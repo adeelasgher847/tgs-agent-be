@@ -294,6 +294,42 @@ class CallSessionService:
                             "HubSpot write-back schedule failed (non-critical): %s", hubspot_exc
                         )
 
+                # Salesforce post-call write-back: create a Task (Activity) with the
+                # transcript summary once the call has actually completed. Fire-and-forget
+                # (fail open) — see app/services/salesforce_service.py::schedule_salesforce_writeback.
+                if status == "completed":
+                    try:
+                        from app.services.salesforce_service import (
+                            schedule_salesforce_writeback,
+                            tenant_has_salesforce_connected,
+                        )
+
+                        if tenant_has_salesforce_connected(db, call_session.tenant_id):
+                            schedule_salesforce_writeback(call_session.id)
+                    except Exception as salesforce_exc:  # pragma: no cover
+                        logger.warning(
+                            "Salesforce write-back schedule failed (non-critical): %s",
+                            salesforce_exc,
+                        )
+
+                # GoHighLevel (GHL) post-call write-back: create a note with the
+                # transcript summary once the call has actually completed. Enqueued
+                # as an ARQ background job (fail open) — see
+                # app/services/ghl_service.py::schedule_ghl_writeback.
+                if status == "completed":
+                    try:
+                        from app.services.ghl_service import (
+                            schedule_ghl_writeback,
+                            tenant_has_ghl_connected,
+                        )
+
+                        if tenant_has_ghl_connected(db, call_session.tenant_id):
+                            schedule_ghl_writeback(call_session.id)
+                    except Exception as ghl_exc:  # pragma: no cover
+                        logger.warning(
+                            "GHL write-back schedule failed (non-critical): %s", ghl_exc
+                        )
+
                 # Smart Callback: schedule a retry for missed outbound calls.
                 # maybe_schedule_callback writes the CallbackSchedule row (sync).
                 # _fire_callback_enqueue then submits the ARQ job on the current

@@ -15,6 +15,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_dict_'
+  /api/v1/health:
+    get:
+      tags:
+      - Health
+      summary: Health Check
+      operationId: health_check_api_v1_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Check Api V1 Health Get
   /api/v1/users/register:
     post:
       tags:
@@ -1403,6 +1418,38 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/call-flows/{flow_id}/prompt-versions/{version_id}:
+    delete:
+      tags:
+      - Call Flows
+      summary: Delete Prompt Version
+      operationId: delete_prompt_version_api_v1_call_flows__flow_id__prompt_versions__version_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      - name: version_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Version Id
+      responses:
+        '204':
+          description: Successful Response
         '422':
           description: Validation Error
           content:
@@ -6789,13 +6836,18 @@ paths:
       security:
       - HTTPBearer: []
   /api/v1/integrations/hubspot/field-mapping:
-    post:
+    put:
       tags:
       - HubSpot Integration
       summary: Hubspot Save Field Mapping
-      description: Save the HubSpot field -> agent prompt-variable mappings for this
+      description: 'Save the HubSpot field -> agent prompt-variable mappings for this
         workspace.
-      operationId: hubspot_save_field_mapping_api_v1_integrations_hubspot_field_mapping_post
+
+
+        Every hubspot_field must exist in the tenant''s live HubSpot contact schema;
+
+        unknown fields return 422 with the list of invalid field names.'
+      operationId: hubspot_save_field_mapping_api_v1_integrations_hubspot_field_mapping_put
       requestBody:
         content:
           application/json:
@@ -6845,6 +6897,23 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v1/integrations/hubspot/sync-status:
+    get:
+      tags:
+      - HubSpot Integration
+      summary: Hubspot Sync Status
+      description: Last contact-lookup/write-back times, write-back status, and rolling
+        24h error count.
+      operationId: hubspot_sync_status_api_v1_integrations_hubspot_sync_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_HubSpotSyncStatusOut_'
+      security:
+      - HTTPBearer: []
   /api/v1/integrations/hubspot/contact:
     get:
       tags:
@@ -6877,6 +6946,257 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/salesforce:
+    get:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Get Integration Status
+      description: Connection status and write-back toggle for this workspace.
+      operationId: salesforce_get_integration_status_api_v1_integrations_salesforce_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceIntegrationStatusOut_'
+      security:
+      - HTTPBearer: []
+    delete:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Disconnect
+      description: Revoke the token at Salesforce and delete the workspaceintegration
+        row.
+      operationId: salesforce_disconnect_api_v1_integrations_salesforce_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/salesforce/settings:
+    put:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Update Settings
+      description: Toggle post-call write-back for this workspace.
+      operationId: salesforce_update_settings_api_v1_integrations_salesforce_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalesforceSettingsUpdateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceIntegrationStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/salesforce/sync-status:
+    get:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Sync Status
+      description: Last contact-lookup/write-back times, write-back status, and rolling
+        24h error count.
+      operationId: salesforce_sync_status_api_v1_integrations_salesforce_sync_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceSyncStatusOut_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/salesforce/contact:
+    get:
+      tags:
+      - Salesforce Integration
+      summary: Salesforce Get Contact
+      description: SOQL contact lookup by phone. Redis-cached for 5 minutes per phone
+        number.
+      operationId: salesforce_get_contact_api_v1_integrations_salesforce_contact_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: phone
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Phone number to search for (E.164 or local format)
+          title: Phone
+        description: Phone number to search for (E.164 or local format)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SalesforceContactOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/leadconnector:
+    get:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Get Integration Status
+      description: Connection status and write-back toggle for this workspace.
+      operationId: ghl_get_integration_status_api_v1_integrations_leadconnector_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlIntegrationStatusOut_'
+      security:
+      - HTTPBearer: []
+    delete:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Disconnect
+      description: Revoke local GHL OAuth credentials and delete the workspaceintegration
+        row.
+      operationId: ghl_disconnect_api_v1_integrations_leadconnector_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/leadconnector/settings:
+    put:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Update Settings
+      description: Toggle post-call write-back for this workspace.
+      operationId: ghl_update_settings_api_v1_integrations_leadconnector_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GhlSettingsUpdateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlIntegrationStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/leadconnector/sync-status:
+    get:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Sync Status
+      description: Last contact-lookup/write-back times, write-back status, and rolling
+        24h error count.
+      operationId: ghl_sync_status_api_v1_integrations_leadconnector_sync_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlSyncStatusOut_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/leadconnector/contact:
+    get:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Get Contact
+      description: Contacts API lookup by phone. Redis-cached for 5 minutes per phone
+        number.
+      operationId: ghl_get_contact_api_v1_integrations_leadconnector_contact_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: phone
+        in: query
+        required: true
+        schema:
+          type: string
+          description: Phone number to search for (E.164 or local format)
+          title: Phone
+        description: Phone number to search for (E.164 or local format)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlContactOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/leadconnector/note:
+    post:
+      tags:
+      - GoHighLevel Integration
+      summary: Ghl Create Note
+      description: 'Create a note directly against a GHL contact. Writes to the tenant''s
+        live
+
+        CRM, so (like /settings) this requires manager+ rather than any authenticated
+
+        member — a read_only member must not be able to write into GoHighLevel.'
+      operationId: ghl_create_note_api_v1_integrations_leadconnector_note_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GhlNoteCreateRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_GhlNoteCreateResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v1/calls/history:
     get:
       tags:
@@ -12381,6 +12701,120 @@ components:
       type: object
       title: GapInterval
       description: A single time gap between callback attempts.
+    GhlContactOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        tags:
+          items:
+            type: string
+          type: array
+          title: Tags
+          default: []
+        pipeline_stage:
+          type: string
+          nullable: true
+        last_activity_date:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      title: GhlContactOut
+    GhlDisconnectResponse:
+      properties:
+        disconnected:
+          type: boolean
+          title: Disconnected
+        provider:
+          type: string
+          title: Provider
+          default: gohighlevel
+      type: object
+      required:
+      - disconnected
+      title: GhlDisconnectResponse
+    GhlIntegrationStatusOut:
+      properties:
+        connected:
+          type: boolean
+          title: Connected
+        connected_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_sync_at:
+          type: string
+          nullable: true
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+          default: true
+      type: object
+      required:
+      - connected
+      title: GhlIntegrationStatusOut
+    GhlNoteCreateRequest:
+      properties:
+        contact_id:
+          type: string
+          title: Contact Id
+        content:
+          type: string
+          title: Content
+      type: object
+      required:
+      - contact_id
+      - content
+      title: GhlNoteCreateRequest
+    GhlNoteCreateResponse:
+      properties:
+        id:
+          type: string
+          nullable: true
+        contact_id:
+          type: string
+          title: Contact Id
+      type: object
+      required:
+      - contact_id
+      title: GhlNoteCreateResponse
+    GhlSettingsUpdateRequest:
+      properties:
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+      type: object
+      required:
+      - write_back_enabled
+      title: GhlSettingsUpdateRequest
+    GhlSyncStatusOut:
+      properties:
+        last_lookup_at:
+          type: string
+          nullable: true
+        last_write_back_at:
+          type: string
+          nullable: true
+        last_write_back_status:
+          type: string
+          nullable: true
+        last_ghl_error:
+          type: string
+          nullable: true
+        error_count_24h:
+          type: integer
+          title: Error Count 24H
+          default: 0
+      type: object
+      title: GhlSyncStatusOut
     GoogleLoginRequest:
       properties:
         google_token:
@@ -12520,6 +12954,23 @@ components:
       - contact_lookup_enabled
       - write_back_enabled
       title: HubSpotSettingsUpdateRequest
+    HubSpotSyncStatusOut:
+      properties:
+        last_lookup_at:
+          type: string
+          nullable: true
+        last_write_back_at:
+          type: string
+          nullable: true
+        last_write_back_status:
+          type: string
+          nullable: true
+        error_count_24h:
+          type: integer
+          title: Error Count 24H
+          default: 0
+      type: object
+      title: HubSpotSyncStatusOut
     ImportTwilioPhoneNumberRequest:
       properties:
         phone_number:
@@ -12608,6 +13059,9 @@ components:
         connected_at:
           type: string
           format: date-time
+          nullable: true
+        last_sync_at:
+          type: string
           nullable: true
       type: object
       required:
@@ -15545,6 +15999,83 @@ components:
       - is_active
       - supports_streaming
       title: STTProviderOut
+    SalesforceContactOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          nullable: true
+        account:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      title: SalesforceContactOut
+    SalesforceDisconnectResponse:
+      properties:
+        disconnected:
+          type: boolean
+          title: Disconnected
+        provider:
+          type: string
+          title: Provider
+          default: salesforce
+      type: object
+      required:
+      - disconnected
+      title: SalesforceDisconnectResponse
+    SalesforceIntegrationStatusOut:
+      properties:
+        connected:
+          type: boolean
+          title: Connected
+        connected_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_sync_at:
+          type: string
+          nullable: true
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+          default: true
+      type: object
+      required:
+      - connected
+      title: SalesforceIntegrationStatusOut
+    SalesforceSettingsUpdateRequest:
+      properties:
+        write_back_enabled:
+          type: boolean
+          title: Write Back Enabled
+      type: object
+      required:
+      - write_back_enabled
+      title: SalesforceSettingsUpdateRequest
+    SalesforceSyncStatusOut:
+      properties:
+        last_lookup_at:
+          type: string
+          nullable: true
+        last_write_back_at:
+          type: string
+          nullable: true
+        last_write_back_status:
+          type: string
+          nullable: true
+        error_count_24h:
+          type: integer
+          title: Error Count 24H
+          default: 0
+      type: object
+      title: SalesforceSyncStatusOut
     ScheduleEntry:
       properties:
         day:
@@ -16323,6 +16854,86 @@ components:
       required:
       - data
       title: SuccessResponse[ForgotPasswordResponse]
+    SuccessResponse_GhlContactOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlContactOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlContactOut]
+    SuccessResponse_GhlDisconnectResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlDisconnectResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlDisconnectResponse]
+    SuccessResponse_GhlIntegrationStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlIntegrationStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlIntegrationStatusOut]
+    SuccessResponse_GhlNoteCreateResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlNoteCreateResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlNoteCreateResponse]
+    SuccessResponse_GhlSyncStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/GhlSyncStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[GhlSyncStatusOut]
     SuccessResponse_HubSpotContactOut_:
       properties:
         data:
@@ -16387,6 +16998,22 @@ components:
       required:
       - data
       title: SuccessResponse[HubSpotIntegrationStatusOut]
+    SuccessResponse_HubSpotSyncStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/HubSpotSyncStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[HubSpotSyncStatusOut]
     SuccessResponse_ImportTwilioPhoneNumberResponse_:
       properties:
         data:
@@ -17138,6 +17765,70 @@ components:
       required:
       - data
       title: SuccessResponse[ResumeInterviewTrelloCallMediaResponse]
+    SuccessResponse_SalesforceContactOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceContactOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceContactOut]
+    SuccessResponse_SalesforceDisconnectResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceDisconnectResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceDisconnectResponse]
+    SuccessResponse_SalesforceIntegrationStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceIntegrationStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceIntegrationStatusOut]
+    SuccessResponse_SalesforceSyncStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SalesforceSyncStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SalesforceSyncStatusOut]
     SuccessResponse_SingleCallResponse_:
       properties:
         data:

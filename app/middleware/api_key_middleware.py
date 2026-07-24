@@ -49,6 +49,7 @@ _AsyncSessionLocal: Optional[sessionmaker] = None
 _SKIP_EXACT = {
     "/",
     "/api/v1/tenants/create",
+    "/api/v1/health",
 }
 
 _SKIP_PREFIXES = (
