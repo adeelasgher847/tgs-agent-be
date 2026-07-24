@@ -18,7 +18,7 @@ import json
 import os
 import subprocess
 import sys
-from typing import Any, Optional
+from typing import Any
 
 import anthropic
 
@@ -28,7 +28,7 @@ import anthropic
 
 def _run(cmd: list[str], cwd: str = ".", timeout: int = 120) -> str:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout, check=False)
         out = result.stdout + result.stderr
         return out.strip() if out.strip() else "(no output)"
     except subprocess.TimeoutExpired:
@@ -40,7 +40,7 @@ def list_changed_files(base: str) -> str:
     return _run(["git", "diff", "--name-only", base, "HEAD"])
 
 
-def get_git_diff(base: str, file_path: Optional[str] = None) -> str:
+def get_git_diff(base: str, file_path: str | None = None) -> str:
     """Return unified diff vs base ref, optionally scoped to one file."""
     # --diff-filter=d excludes deleted; --text forces text output but we handle errors
     cmd = (
@@ -49,7 +49,7 @@ def get_git_diff(base: str, file_path: Optional[str] = None) -> str:
         else ["git", "diff", "--text", "--diff-filter=d", base, "HEAD"]
     )
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
         diff = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         return "git diff timed out"
@@ -73,14 +73,14 @@ def get_file_content(file_path: str) -> str:
         return f"File not found: {file_path}"
 
 
-def run_linter(file_path: Optional[str] = None) -> str:
+def run_linter(file_path: str | None = None) -> str:
     """Run flake8 on a file or the whole project."""
     target = file_path or "."
     out = _run([sys.executable, "-m", "flake8", "--max-line-length=100", target])
     return out if out else "No linting issues found."
 
 
-def run_type_check(file_path: Optional[str] = None) -> str:
+def run_type_check(file_path: str | None = None) -> str:
     """Run mypy for type checking."""
     target = file_path or "app"
     out = _run([sys.executable, "-m", "mypy", "--ignore-missing-imports", target])
@@ -298,6 +298,7 @@ def main() -> None:
             ["gh", "pr", "view", str(args.pr), "--json", "baseRefName", "-q", ".baseRefName"],
             capture_output=True,
             text=True,
+            check=False,
         )
         if result.returncode != 0:
             print(f"Could not fetch PR #{args.pr}: {result.stderr}", file=sys.stderr)
