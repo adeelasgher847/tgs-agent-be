@@ -228,14 +228,13 @@ class TestMakeTrigger:
         request.scope = {"type": "http", "headers": []}
         request.receive = AsyncMock()
 
-        with _patch_resolve_tenant():
-            with pytest.raises(HTTPException) as exc_info:
-                await make_trigger(
-                    body=body,
-                    request=request,
-                    db=_db(),
-                    x_make_secret="wrong-secret",
-                )
+        with _patch_resolve_tenant(), pytest.raises(HTTPException) as exc_info:
+            await make_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_make_secret="wrong-secret",
+            )
 
         assert exc_info.value.status_code == 403
         assert exc_info.value.detail["code"] == "unauthorized"
@@ -252,14 +251,13 @@ class TestMakeTrigger:
         request.scope = {"type": "http", "headers": []}
         request.receive = AsyncMock()
 
-        with _patch_resolve_tenant():
-            with pytest.raises(HTTPException) as exc_info:
-                await make_trigger(
-                    body=body,
-                    request=request,
-                    db=_db(),
-                    x_make_secret=None,
-                )
+        with _patch_resolve_tenant(), pytest.raises(HTTPException) as exc_info:
+            await make_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_make_secret=None,
+            )
 
         assert exc_info.value.status_code == 403
 
@@ -349,14 +347,13 @@ class TestN8nTrigger:
         body = CallInitiateRequest(agentId=str(_AGENT_ID), toNumber="+15550002222")
         request = MagicMock()
 
-        with _patch_resolve_tenant():
-            with pytest.raises(HTTPException) as exc_info:
-                await n8n_trigger(
-                    body=body,
-                    request=request,
-                    db=_db(),
-                    x_n8n_webhook_secret="wrong-secret",
-                )
+        with _patch_resolve_tenant(), pytest.raises(HTTPException) as exc_info:
+            await n8n_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_n8n_webhook_secret="wrong-secret",
+            )
 
         assert exc_info.value.status_code == 403
         assert exc_info.value.detail["code"] == "unauthorized"
@@ -370,14 +367,13 @@ class TestN8nTrigger:
         body = CallInitiateRequest(agentId=str(_AGENT_ID), toNumber="+15550002222")
         request = MagicMock()
 
-        with _patch_resolve_tenant():
-            with pytest.raises(HTTPException) as exc_info:
-                await n8n_trigger(
-                    body=body,
-                    request=request,
-                    db=_db(),
-                    x_n8n_webhook_secret=None,
-                )
+        with _patch_resolve_tenant(), pytest.raises(HTTPException) as exc_info:
+            await n8n_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_n8n_webhook_secret=None,
+            )
 
         assert exc_info.value.status_code == 403
 

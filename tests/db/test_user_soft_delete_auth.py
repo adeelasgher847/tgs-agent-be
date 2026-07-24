@@ -10,6 +10,7 @@ Covers:
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -38,6 +39,8 @@ from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
 from app.models.user import User, user_tenant_association
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------ fixtures
@@ -119,9 +122,8 @@ class TestRequireWriteAccessUnit:
         role.name = "read_only"
         with patch(
             "app.api.deps.rbac.get_user_role_in_tenant", return_value=role
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                require_write_access(request=request, user=user, db=db)
+        ), pytest.raises(HTTPException) as exc_info:
+            require_write_access(request=request, user=user, db=db)
         assert exc_info.value.status_code == 403
 
     def test_readonly_get_allowed(self, db):
@@ -341,8 +343,10 @@ class TestInitRoles:
         with patch("app.db.session.SessionLocal"):
             try:
                 spec.loader.exec_module(mod)
-            except Exception:
-                pass
+            except Exception as e:
+                # Only the source text is checked below; a patched-out DB
+                # dependency failing at import time is expected here.
+                logger.debug("init_roles.py exec_module failed under test patch: %s", e)
 
         # We read the source directly to check role names
         src = path.read_text()

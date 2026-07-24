@@ -30,6 +30,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.models.role import Role
 from app.models.sso_config import SsoConfig
@@ -224,7 +225,7 @@ class TestSsoConfigDbConstraints:
             is_active=False,
         )
         pg_session.add(bad_config)
-        with pytest.raises(Exception):
+        with pytest.raises(IntegrityError):
             pg_session.flush()
         pg_session.rollback()
 
@@ -239,7 +240,7 @@ class TestSsoConfigDbConstraints:
         pg_session.add(
             SsoConfig(workspace_id=tenant.id, protocol="oidc", is_active=False)
         )
-        with pytest.raises(Exception):
+        with pytest.raises(IntegrityError):
             pg_session.flush()
         pg_session.rollback()
 
@@ -252,7 +253,7 @@ class TestSsoConfigDbConstraints:
             is_active=False,
         )
         pg_session.add(bad)
-        with pytest.raises(Exception):
+        with pytest.raises(IntegrityError):
             pg_session.flush()
         pg_session.rollback()
 

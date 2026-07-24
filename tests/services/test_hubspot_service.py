@@ -1343,10 +1343,9 @@ class TestGetHubSpotContactProperties:
             patch(
                 "app.services.hubspot_service.get_valid_access_token",
                 new=AsyncMock(return_value=None),
-            ),
+            ),pytest.raises(ValueError)
         ):
-            with pytest.raises(ValueError):
-                await hubspot_service.get_hubspot_contact_properties(db, _TENANT_ID)
+            await hubspot_service.get_hubspot_contact_properties(db, _TENANT_ID)
 
 
 # ── Forced pre-writeback token refresh ──────────────────────────────────────────
