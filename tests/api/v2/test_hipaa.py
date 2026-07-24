@@ -16,6 +16,7 @@ Coverage:
 """
 from __future__ import annotations
 
+import logging
 import sys
 import uuid
 from unittest.mock import MagicMock, patch, call
@@ -25,6 +26,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.exception_handlers import register_exception_handlers
+
+logger = logging.getLogger(__name__)
 
 # ── Shared IDs ────────────────────────────────────────────────────────────────
 
@@ -474,8 +477,10 @@ class TestVoiceAnalysisHipaaRedaction:
                             VoiceAnalysisService().analyze_call_transcript(
                                 db=db, call_session=session, user_id=USER_ID
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            # Only redaction calls are asserted below; downstream
+                            # assembly against the stub db is allowed to fail.
+                            logger.debug("analyze_call_transcript failed in test stub: %s", e)
 
         # At least the summary, sentiment, and caller_name fields must have been
         # passed to redact_phi_if_hipaa with hipaa_enabled=True
@@ -504,8 +509,10 @@ class TestVoiceAnalysisHipaaRedaction:
                         VoiceAnalysisService().analyze_call_transcript(
                             db=db, call_session=session, user_id=USER_ID
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # Only redaction calls are asserted below; downstream
+                        # assembly against the stub db is allowed to fail.
+                        logger.debug("analyze_call_transcript failed in test stub: %s", e)
 
             # If redact was called, it must have been with hipaa_enabled=False
             for c in mock_redact.call_args_list:

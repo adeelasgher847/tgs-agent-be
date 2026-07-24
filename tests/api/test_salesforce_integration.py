@@ -95,11 +95,10 @@ class TestCallback:
         with patch(
             "app.routers.salesforce_integration.salesforce_service.verify_oauth_state",
             side_effect=ValueError("Invalid or expired OAuth state"),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await salesforce_callback(
-                    code="mock-auth-code", state="bad-state", db=MagicMock()
-                )
+        ), pytest.raises(HTTPException) as exc_info:
+            await salesforce_callback(
+                code="mock-auth-code", state="bad-state", db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 
@@ -318,9 +317,8 @@ class TestDisconnectEndpoint:
         with patch(
             "app.routers.salesforce_integration.salesforce_service.disconnect",
             new=AsyncMock(return_value=False),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await salesforce_disconnect(principal=_principal(), db=MagicMock())
+        ), pytest.raises(HTTPException) as exc_info:
+            await salesforce_disconnect(principal=_principal(), db=MagicMock())
 
         assert exc_info.value.status_code == 404
 

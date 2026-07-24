@@ -95,9 +95,8 @@ class TestCallback:
         with patch(
             "app.routers.ghl_integration.ghl_service.verify_oauth_state",
             side_effect=ValueError("Invalid or expired OAuth state"),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_callback(code="mock-auth-code", state="bad-state", db=MagicMock())
+        ), pytest.raises(HTTPException) as exc_info:
+            await ghl_callback(code="mock-auth-code", state="bad-state", db=MagicMock())
 
         assert exc_info.value.status_code == 400
 
@@ -161,11 +160,10 @@ class TestContactEndpoint:
         with patch(
             "app.routers.ghl_integration.ghl_service.tenant_has_ghl_connected",
             return_value=False,
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_get_contact(
-                    phone="+61412345678", principal=_principal(), db=MagicMock()
-                )
+        ), pytest.raises(HTTPException) as exc_info:
+            await ghl_get_contact(
+                phone="+61412345678", principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 
@@ -181,12 +179,11 @@ class TestContactEndpoint:
             patch(
                 "app.routers.ghl_integration.ghl_service.get_contact_for_phone",
                 new=AsyncMock(return_value=None),
-            ),
+            ),pytest.raises(HTTPException) as exc_info
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_get_contact(
-                    phone="+61412345678", principal=_principal(), db=MagicMock()
-                )
+            await ghl_get_contact(
+                phone="+61412345678", principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 404
 
@@ -367,11 +364,10 @@ class TestSettingsEndpoint:
         with patch(
             "app.routers.ghl_integration.ghl_service.tenant_has_ghl_connected",
             return_value=False,
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_update_settings(
-                    payload=payload, principal=_principal(), db=MagicMock()
-                )
+        ), pytest.raises(HTTPException) as exc_info:
+            await ghl_update_settings(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 
@@ -421,9 +417,8 @@ class TestDisconnectEndpoint:
         with patch(
             "app.routers.ghl_integration.ghl_service.disconnect",
             new=AsyncMock(return_value=False),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_disconnect(principal=_principal(), db=MagicMock())
+        ), pytest.raises(HTTPException) as exc_info:
+            await ghl_disconnect(principal=_principal(), db=MagicMock())
 
         assert exc_info.value.status_code == 404
 
