@@ -127,9 +127,8 @@ class TestRimeTTSAdapter:
         with patch(
             "app.utils.tts_adapter.get_rime_api_key",
             side_effect=ValueError("RIME_API_KEY is not set"),
-        ):
-            with pytest.raises(ValueError, match="RIME_API_KEY is not set"):
-                RimeTTSAdapter()
+        ), pytest.raises(ValueError, match="RIME_API_KEY is not set"):
+            RimeTTSAdapter()
 
     def test_rime_default_voice_fallback(self):
         from app.utils.tts_adapter import RimeTTSAdapter

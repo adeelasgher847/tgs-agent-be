@@ -503,9 +503,8 @@ class TestDisconnectEndpoint:
         with patch(
             "app.routers.hubspot_integration.hubspot_service.disconnect",
             new=AsyncMock(return_value=False),
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_disconnect(principal=_principal(), db=MagicMock())
+        ), pytest.raises(HTTPException) as exc_info:
+            await hubspot_disconnect(principal=_principal(), db=MagicMock())
 
         assert exc_info.value.status_code == 404
 

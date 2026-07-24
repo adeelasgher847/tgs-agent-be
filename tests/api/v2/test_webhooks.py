@@ -596,9 +596,8 @@ class TestSSRFGuard:
         with patch(
             "socket.getaddrinfo",
             return_value=self._make_getaddrinfo("169.254.169.254"),
-        ):
-            with pytest.raises(SSRFBlockedError, match="blocked"):
-                assert_public_url("https://169.254.169.254/latest/meta-data/")
+        ), pytest.raises(SSRFBlockedError, match="blocked"):
+            assert_public_url("https://169.254.169.254/latest/meta-data/")
 
     def test_other_link_local_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
@@ -623,9 +622,8 @@ class TestSSRFGuard:
         with patch(
             "socket.getaddrinfo",
             side_effect=socket.gaierror("Name or service not known"),
-        ):
-            with pytest.raises(SSRFBlockedError, match="could not be resolved"):
-                assert_public_url("https://no-such-host.invalid/hook")
+        ), pytest.raises(SSRFBlockedError, match="could not be resolved"):
+            assert_public_url("https://no-such-host.invalid/hook")
 
     def test_ssrf_is_blocked_at_schema_validation(self):
         """A URL resolving to a private IP must be rejected by WebhookEndpointCreate."""
@@ -635,11 +633,10 @@ class TestSSRFGuard:
         with patch(
             "socket.getaddrinfo",
             return_value=self._make_getaddrinfo("192.168.0.1"),
-        ):
-            with pytest.raises((ValueError, Exception)):
-                WebhookEndpointCreate(
-                    url="https://internal.corp/hook", secret=SECRET
-                )
+        ), pytest.raises((SSRFBlockedError, ValueError)):
+            WebhookEndpointCreate(
+                url="https://internal.corp/hook", secret=SECRET
+            )
 
     def test_ssrf_blocked_delivery_is_logged_as_failed(self):
         """When SSRF blocks a delivery, it must be persisted as status=failed."""
@@ -826,17 +823,16 @@ class TestSecretEncryption:
         with patch(
             "app.services.webhook_service.encrypt_webhook_secret",
             return_value="pgcrypto-ciphertext",
-        ) as mock_enc:
-            with patch("app.core.security.encrypt_api_key") as mock_jwt_enc:
-                # Patch WebhookEndpoint so instantiation doesn't trigger SQLAlchemy
-                # mapper configuration (which fails in isolated tests due to
-                # unresolved Tenant relationships with partially-imported models).
-                with patch(
-                    "app.services.webhook_service.WebhookEndpoint",
-                    _FakeEndpoint,
-                ):
-                    svc = WebhookService(db)
-                    svc.create_endpoint(WORKSPACE_ID, "https://example.com/hook", SECRET)
+        ) as mock_enc, patch("app.core.security.encrypt_api_key") as mock_jwt_enc:
+            # Patch WebhookEndpoint so instantiation doesn't trigger SQLAlchemy
+            # mapper configuration (which fails in isolated tests due to
+            # unresolved Tenant relationships with partially-imported models).
+            with patch(
+                "app.services.webhook_service.WebhookEndpoint",
+                _FakeEndpoint,
+            ):
+                svc = WebhookService(db)
+                svc.create_endpoint(WORKSPACE_ID, "https://example.com/hook", SECRET)
 
         mock_enc.assert_called_once_with(SECRET, db)
         mock_jwt_enc.assert_not_called()

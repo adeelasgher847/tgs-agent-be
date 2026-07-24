@@ -23,9 +23,8 @@ def test_v2_health_response_schema_all_ok():
         "app.api.v2.routers.health._probe_redis", AsyncMock(return_value=True)
     ), patch(
         "app.api.v2.routers.health._probe_voice_pipeline", AsyncMock(return_value=True)
-    ):
-        with TestClient(app, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v2/health")
+    ), TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get("/api/v2/health")
 
     body = resp.json()
     assert body["status"] == "ok"
@@ -45,9 +44,8 @@ def test_v2_health_degraded_when_redis_fails():
         "app.api.v2.routers.health._probe_redis", AsyncMock(return_value=False)
     ), patch(
         "app.api.v2.routers.health._probe_voice_pipeline", AsyncMock(return_value=True)
-    ):
-        with TestClient(app, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v2/health")
+    ), TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get("/api/v2/health")
 
     body = resp.json()
     assert body["status"] == "degraded"
@@ -67,9 +65,8 @@ def test_v2_health_degraded_when_voice_pipeline_times_out():
     ), patch(
         "app.services.livekit_service.livekit_service.health_check",
         side_effect=_slow_health_check,
-    ):
-        with TestClient(app, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v2/health")
+    ), TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get("/api/v2/health")
 
     body = resp.json()
     assert body["status"] == "degraded"
@@ -83,9 +80,8 @@ def test_v2_health_down_when_database_fails():
         "app.api.v2.routers.health._probe_redis", AsyncMock(return_value=True)
     ), patch(
         "app.api.v2.routers.health._probe_voice_pipeline", AsyncMock(return_value=True)
-    ):
-        with TestClient(app, raise_server_exceptions=False) as client:
-            resp = client.get("/api/v2/health")
+    ), TestClient(app, raise_server_exceptions=False) as client:
+        resp = client.get("/api/v2/health")
 
     body = resp.json()
     assert body["status"] == "down"
