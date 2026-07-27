@@ -66,7 +66,7 @@ async def process_batch_job(ctx: dict, batch_job_id: str) -> None:
 
         # Load agent once for prompt-variable substitution
         agent = db.get(Agent, job.agent_id)
-        agent_system_prompt: Optional[str] = agent.system_prompt if agent else None
+        agent_system_prompt: str | None = agent.system_prompt if agent else None
 
         svc = BatchCallWorkerService(db)
         batch_limit = settings.MAX_BATCH_CONCURRENCY
@@ -200,7 +200,7 @@ async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
             return
 
         # Download bytes from S3
-        file_bytes: Optional[bytes] = None
+        file_bytes: bytes | None = None
         if kb_file.s3_path and settings.S3_KB_BUCKET:
             try:
                 from app.services.s3_service import get_s3_client

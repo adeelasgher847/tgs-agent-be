@@ -5,6 +5,7 @@ Handles text-to-speech operations using ElevenLabs API
 
 import requests
 from app.core.config import settings
+from app.core.logger import logger
 from typing import AsyncIterator, Dict, Any, Optional, Iterator
 
 class ElevenLabsService:
@@ -15,7 +16,7 @@ class ElevenLabsService:
         self._base_url = "https://api.elevenlabs.io/v1"
         self._session = requests.Session()
     
-    def get_api_key(self, override: Optional[str] = None) -> str:
+    def get_api_key(self, override: str | None = None) -> str:
         """Get ElevenLabs API key (tenant BYO override or platform env)."""
         if override and str(override).strip():
             return str(override).strip()
@@ -46,14 +47,14 @@ class ElevenLabsService:
         *,
         text: str,
         model_id: str,
-        voice_settings: Optional[Dict[str, Any]],
-        language_code: Optional[str] = None,
-        previous_text: Optional[str] = None,
-        next_text: Optional[str] = None,
-        previous_request_ids: Optional[list[str]] = None,
-        next_request_ids: Optional[list[str]] = None,
-        apply_text_normalization: Optional[str] = None,
-        apply_language_text_normalization: Optional[bool] = None,
+        voice_settings: Dict[str, Any] | None,
+        language_code: str | None = None,
+        previous_text: str | None = None,
+        next_text: str | None = None,
+        previous_request_ids: list[str] | None = None,
+        next_request_ids: list[str] | None = None,
+        apply_text_normalization: str | None = None,
+        apply_language_text_normalization: bool | None = None,
     ) -> Dict[str, Any]:
         settings_payload = self._default_voice_settings()
         if voice_settings:
@@ -96,17 +97,17 @@ class ElevenLabsService:
         voice_id: str,
         model_id: str = "eleven_flash_v2_5",
         output_format: str = "ulaw_8000",
-        voice_settings: Optional[Dict[str, Any]] = None,
-        language_code: Optional[str] = None,
-        previous_text: Optional[str] = None,
-        next_text: Optional[str] = None,
-        previous_request_ids: Optional[list[str]] = None,
-        next_request_ids: Optional[list[str]] = None,
-        apply_text_normalization: Optional[str] = None,
-        apply_language_text_normalization: Optional[bool] = None,
+        voice_settings: Dict[str, Any] | None = None,
+        language_code: str | None = None,
+        previous_text: str | None = None,
+        next_text: str | None = None,
+        previous_request_ids: list[str] | None = None,
+        next_request_ids: list[str] | None = None,
+        apply_text_normalization: str | None = None,
+        apply_language_text_normalization: bool | None = None,
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
-        api_key_override: Optional[str] = None,
+        api_key_override: str | None = None,
     ) -> bytes:
         """
         Convert text to speech using ElevenLabs low-latency stream endpoint.
@@ -168,18 +169,18 @@ class ElevenLabsService:
         voice_id: str,
         model_id: str = "eleven_flash_v2_5",
         output_format: str = "ulaw_8000",
-        voice_settings: Optional[Dict[str, Any]] = None,
-        language_code: Optional[str] = None,
-        previous_text: Optional[str] = None,
-        next_text: Optional[str] = None,
-        previous_request_ids: Optional[list[str]] = None,
-        next_request_ids: Optional[list[str]] = None,
-        apply_text_normalization: Optional[str] = None,
-        apply_language_text_normalization: Optional[bool] = None,
+        voice_settings: Dict[str, Any] | None = None,
+        language_code: str | None = None,
+        previous_text: str | None = None,
+        next_text: str | None = None,
+        previous_request_ids: list[str] | None = None,
+        next_request_ids: list[str] | None = None,
+        apply_text_normalization: str | None = None,
+        apply_language_text_normalization: bool | None = None,
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
         chunk_size: int = 320,
-        api_key_override: Optional[str] = None,
+        api_key_override: str | None = None,
     ) -> Iterator[bytes]:
         """
         Stream ElevenLabs synthesized audio as byte chunks.
@@ -231,18 +232,18 @@ class ElevenLabsService:
         voice_id: str,
         model_id: str = "eleven_flash_v2_5",
         output_format: str = "ulaw_8000",
-        voice_settings: Optional[Dict[str, Any]] = None,
-        language_code: Optional[str] = None,
-        previous_text: Optional[str] = None,
-        next_text: Optional[str] = None,
-        previous_request_ids: Optional[list] = None,
-        next_request_ids: Optional[list] = None,
-        apply_text_normalization: Optional[str] = None,
-        apply_language_text_normalization: Optional[bool] = None,
+        voice_settings: Dict[str, Any] | None = None,
+        language_code: str | None = None,
+        previous_text: str | None = None,
+        next_text: str | None = None,
+        previous_request_ids: list | None = None,
+        next_request_ids: list | None = None,
+        apply_text_normalization: str | None = None,
+        apply_language_text_normalization: bool | None = None,
         optimize_streaming_latency: int = 4,
         request_timeout_seconds: int = 25,
         chunk_size: int = 320,
-        api_key_override: Optional[str] = None,
+        api_key_override: str | None = None,
     ) -> AsyncIterator[bytes]:
         """
         True async streaming via httpx.AsyncClient.

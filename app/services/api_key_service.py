@@ -64,7 +64,7 @@ def get_api_key_for_tenant(
     *,
     key_id: uuid.UUID,
     tenant_id: uuid.UUID,
-) -> Optional[Apikey]:
+) -> Apikey | None:
     return (
         db.query(Apikey)
         .filter(Apikey.id == key_id, Apikey.tenant_id == tenant_id)

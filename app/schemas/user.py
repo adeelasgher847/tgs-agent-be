@@ -9,7 +9,7 @@ class UserBase(BaseModel):
     first_name: str = Field(..., min_length=1, description="First name is required")
     last_name: str = Field(..., min_length=1, description="Last name is required")
     email: EmailStr = Field(..., description="Valid email address is required")
-    phone: Optional[str] = None
+    phone: str | None = None
 
 
 class UserCreate(UserBase):
@@ -26,14 +26,14 @@ class UserCreate(UserBase):
 
 
 class UserUpdate(BaseModel):
-    first_name: Optional[str] = Field(None, min_length=1, description="First name")
-    last_name: Optional[str] = Field(None, min_length=1, description="Last name")
-    email: Optional[EmailStr] = Field(None, description="Valid email address")
-    phone: Optional[str] = Field(None, description="Phone number")
+    first_name: str | None = Field(None, min_length=1, description="First name")
+    last_name: str | None = Field(None, min_length=1, description="Last name")
+    email: EmailStr | None = Field(None, description="Valid email address")
+    phone: str | None = Field(None, description="Phone number")
 
 class UserOut(UserBase):
     id: uuid.UUID
-    role_id: Optional[uuid.UUID] = None
+    role_id: uuid.UUID | None = None
     join_date: datetime
     created_at: datetime
     
@@ -43,7 +43,7 @@ class UserOut(UserBase):
 class RoleInfo(BaseModel):
     id: uuid.UUID = Field(exclude=True)
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,20 +51,20 @@ class RoleInfo(BaseModel):
 class TenantInfo(BaseModel):
     id: uuid.UUID
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     
     model_config = ConfigDict(from_attributes=True)
 
 
 class UserProfile(UserBase):
     id: uuid.UUID
-    role_id: Optional[uuid.UUID] = None
-    current_tenant_id: Optional[uuid.UUID] = None
+    role_id: uuid.UUID | None = None
+    current_tenant_id: uuid.UUID | None = None
     join_date: datetime
     created_at: datetime
-    role: Optional[RoleInfo] = None
+    role: RoleInfo | None = None
     # role: Optional[RoleInfo]  = None
-    current_tenant: Optional[TenantInfo] = None
+    current_tenant: TenantInfo | None = None
     tenants: list[TenantInfo] = []
     
     model_config = ConfigDict(from_attributes=True) 
@@ -75,7 +75,7 @@ class TenantMember(BaseModel):
     first_name: str
     last_name: str
     email: str
-    role: Optional[RoleInfo] = None
+    role: RoleInfo | None = None
     join_date: datetime
     created_at: datetime
     

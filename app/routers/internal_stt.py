@@ -62,7 +62,7 @@ def list_stt_providers(
 @router.get("/providers/{provider_id}/models", response_model=List[STTModelOut])
 def list_stt_models(
     provider_id: uuid.UUID,
-    language_code: Optional[str] = None,
+    language_code: str | None = None,
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
 ) -> List[STTModel]:

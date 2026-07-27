@@ -245,7 +245,7 @@ async def get_hubspot_contact_properties(db: Session, tenant_id: uuid.UUID) -> l
 # ─── WorkspaceIntegration CRUD ────────────────────────────────────────────────
 
 
-def get_integration(db: Session, tenant_id: uuid.UUID) -> Optional[WorkspaceIntegration]:
+def get_integration(db: Session, tenant_id: uuid.UUID) -> WorkspaceIntegration | None:
     return (
         db.query(WorkspaceIntegration)
         .filter(
@@ -262,7 +262,7 @@ def tenant_has_hubspot_connected(db: Session, tenant_id: uuid.UUID) -> bool:
 
 def get_connection_status(
     db: Session, tenant_id: uuid.UUID
-) -> Tuple[bool, Optional[datetime]]:
+) -> Tuple[bool, datetime | None]:
     row = get_integration(db, tenant_id)
     if row is None:
         return False, None
@@ -292,7 +292,7 @@ def upsert_tokens(
     return row
 
 
-async def get_valid_access_token(db: Session, tenant_id: uuid.UUID) -> Optional[str]:
+async def get_valid_access_token(db: Session, tenant_id: uuid.UUID) -> str | None:
     """Return a usable access token, refreshing it first if it's expired (or near-expiry)."""
     row = get_integration(db, tenant_id)
     if row is None or not row.access_token:
@@ -326,7 +326,7 @@ async def get_valid_access_token(db: Session, tenant_id: uuid.UUID) -> Optional[
     return decrypt_hubspot_token(row.access_token, db)
 
 
-async def _force_refresh_access_token(db: Session, tenant_id: uuid.UUID) -> Optional[str]:
+async def _force_refresh_access_token(db: Session, tenant_id: uuid.UUID) -> str | None:
     """
     Unconditionally refresh the HubSpot access token, ignoring token_expires_at.
 
@@ -433,7 +433,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_iso(ts: str) -> Optional[datetime]:
+def _parse_iso(ts: str) -> datetime | None:
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError):
@@ -441,7 +441,7 @@ def _parse_iso(ts: str) -> Optional[datetime]:
 
 
 def set_last_write_back_error(
-    db: Session, tenant_id: uuid.UUID, error: Optional[str]
+    db: Session, tenant_id: uuid.UUID, error: str | None
 ) -> None:
     """
     Record (or clear, when error is None) the last post-call write-back failure.
@@ -717,8 +717,8 @@ def _contact_dict_from_hubspot(raw: dict) -> dict:
 
 
 async def search_contact_by_phone(
-    access_token: str, phone: str, extra_properties: Optional[list[str]] = None
-) -> Optional[dict]:
+    access_token: str, phone: str, extra_properties: list[str] | None = None
+) -> dict | None:
     search_vals = _get_phone_search_values(phone)
     if not search_vals:
         return None
@@ -777,7 +777,7 @@ async def search_contact_by_phone(
 
 async def get_contact_for_phone(
     db: Session, tenant_id: uuid.UUID, phone: str, *, commit_lookup_timestamp: bool = True
-) -> Optional[dict]:
+) -> dict | None:
     """Look up a contact by phone, Redis-cached for 5 minutes. Fails open on any error.
 
     commit_lookup_timestamp=False must be passed by live in-call callers sharing a
@@ -904,7 +904,7 @@ async def get_crm_context_block_for_call(db: Session, call_session: CallSession)
 
 
 def resolve_field_mapping_values(
-    contact: Optional[dict], field_mappings: list[dict]
+    contact: dict | None, field_mappings: list[dict]
 ) -> dict[str, str]:
     """
     Map configured HubSpot fields to prompt-variable values from a contact record.
@@ -999,11 +999,11 @@ def apply_field_mapping_values(prompt: str, values: dict[str, str]) -> str:
 # ─── Post-call write-back (Engagements/Calls API + Gemini summary) ────────────
 
 
-def _hs_call_status(status: Optional[str]) -> str:
+def _hs_call_status(status: str | None) -> str:
     return _HS_CALL_STATUS_MAP.get((status or "").lower(), "COMPLETED")
 
 
-def _hs_call_direction(call_type: Optional[str]) -> str:
+def _hs_call_direction(call_type: str | None) -> str:
     return "INBOUND" if (call_type or "").lower() == "inbound" else "OUTBOUND"
 
 

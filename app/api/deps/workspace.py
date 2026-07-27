@@ -47,8 +47,8 @@ def get_workspace_api_key(request: Request) -> Workspace:
 
 async def get_current_workspace(
     request: Request,
-    x_api_key: Optional[str] = Header(default=None, alias="x-api-key"),
-    x_workspace_id: Optional[str] = Header(default=None, alias="x-workspace-id"),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+    x_workspace_id: str | None = Header(default=None, alias="x-workspace-id"),
     db: AsyncSession = Depends(get_async_db),
 ) -> Workspace:
     """v2 M2M auth — API key headers; reuses middleware state when already resolved."""

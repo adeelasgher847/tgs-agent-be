@@ -85,18 +85,18 @@ class EmailObservation:
 
 @dataclass(frozen=True)
 class BookingEmailResolution:
-    verified_email: Optional[str]
-    pending_email: Optional[str]
+    verified_email: str | None
+    pending_email: str | None
     source: str
     trust_score: int
-    token_email: Optional[str]
-    transcript_email: Optional[str]
+    token_email: str | None
+    transcript_email: str | None
     suspicious_token_email: bool
     should_attempt_llm_repair: bool
     reason: str
 
     @property
-    def final_email(self) -> Optional[str]:
+    def final_email(self) -> str | None:
         return self.verified_email
 
 
@@ -122,7 +122,7 @@ def _expand_spoken_forms(text: str) -> str:
     return t
 
 
-def _validate(email: str) -> Optional[str]:
+def _validate(email: str) -> str | None:
     from email_validator import EmailNotValidError, validate_email
 
     try:
@@ -131,7 +131,7 @@ def _validate(email: str) -> Optional[str]:
         return None
 
 
-def _normalize_token_placeholder(raw: Optional[str]) -> Optional[str]:
+def _normalize_token_placeholder(raw: str | None) -> str | None:
     if raw is None:
         return None
     cleaned = str(raw).strip()
@@ -140,7 +140,7 @@ def _normalize_token_placeholder(raw: Optional[str]) -> Optional[str]:
     return cleaned
 
 
-def _first_literal_email(text: str) -> Optional[str]:
+def _first_literal_email(text: str) -> str | None:
     if not text:
         return None
     for match in _EMAIL_LIKE.finditer(text):
@@ -229,7 +229,7 @@ def _spoken_email_fragments(text: str) -> list[str]:
 def _explicitly_confirmed_email(
     utterances_newest_first: list[str],
     observations: list[EmailObservation],
-) -> Optional[str]:
+) -> str | None:
     if not observations:
         return None
 
@@ -262,7 +262,7 @@ def _looks_suspicious_local_part(email: str) -> bool:
     return bool(_SUSPICIOUS_LOCAL_PART.search(local_part))
 
 
-def coerce_email_from_text(text: str) -> Optional[str]:
+def coerce_email_from_text(text: str) -> str | None:
     """Return the first syntactically valid email found in *text* (plain or spoken)."""
     if not (text or "").strip():
         return None
@@ -283,7 +283,7 @@ def coerce_email_from_text(text: str) -> Optional[str]:
     return None
 
 
-def best_email_from_client_utterances(utterances_newest_first: list[str]) -> Optional[str]:
+def best_email_from_client_utterances(utterances_newest_first: list[str]) -> str | None:
     """
     Pick the best email from recent client lines, preferring the newest valid hit.
     """
@@ -293,7 +293,7 @@ def best_email_from_client_utterances(utterances_newest_first: list[str]) -> Opt
 
 def resolve_customer_email_for_booking(
     *,
-    token_email_raw: Optional[str],
+    token_email_raw: str | None,
     transcript_client_lines_newest_first: list[str],
 ) -> BookingEmailResolution:
     """
@@ -387,7 +387,7 @@ def resolve_customer_email_for_booking(
     )
 
 
-def normalize_stored_email(raw: Optional[str]) -> Optional[str]:
+def normalize_stored_email(raw: str | None) -> str | None:
     """
     Validate an email stored on a model (DB/API) before sending notifications.
     Returns normalized form or None if missing/invalid.

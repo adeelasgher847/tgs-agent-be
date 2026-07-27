@@ -68,7 +68,7 @@ class GoogleSttService:
         sample_rate_hz: int = 16000,
         encoding: str = "LINEAR16",
         interim_results: bool = True,
-        api_config: Optional[Dict[str, Any]] = None,
+        api_config: Dict[str, Any] | None = None,
         silence_threshold_ms: int = 1500,
     ) -> "GoogleSttService.StreamingSTTSession":
         self._initialize_credentials()
@@ -100,12 +100,12 @@ class GoogleSttService:
             self._api_config = api_config
             self._silence_threshold_ms = silence_threshold_ms
 
-            self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue()
+            self._audio_q: "queue.Queue[bytes | None]" = queue.Queue()
             self._results_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
             self._audio_finished = False
             self._closed = False
             self._task_started = False
-            self._thread: Optional[threading.Thread] = None
+            self._thread: threading.Thread | None = None
 
             self._stream_started_at: float = 0.0
             self._restart_buffer: List[bytes] = []
@@ -209,7 +209,7 @@ class GoogleSttService:
 
         def _run_single_stream(
             self,
-            replay_chunks: Optional[List[bytes]] = None,
+            replay_chunks: List[bytes] | None = None,
         ) -> bool:
             """Run one stream. Returns True when a restart (time or recoverable error) is needed."""
             from google.cloud import speech_v1p1beta1 as speech
@@ -271,7 +271,7 @@ class GoogleSttService:
                         if not transcript:
                             continue
 
-                        speech_end_to_final_ms: Optional[int] = None
+                        speech_end_to_final_ms: int | None = None
                         if is_final and self._audio_finished and self._speech_end_mono > 0:
                             speech_end_to_final_ms = int(
                                 (time.monotonic() - self._speech_end_mono) * 1000
@@ -347,7 +347,7 @@ class GoogleSttService:
                 self._api_config.get("google_model", "phone_call"),
             )
 
-            replay_chunks: Optional[List[bytes]] = None
+            replay_chunks: List[bytes] | None = None
             restart_count = 0
 
             while not self._closed:

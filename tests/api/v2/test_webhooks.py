@@ -956,7 +956,7 @@ class TestConcurrentDelivery:
 
             asyncio.run(retry_webhook_delivery(uuid.uuid4(), attempt_number=1))
 
-        delivery.status == "failed"
+        assert delivery.status == "failed"
         db.commit.assert_called()
 
     def test_one_endpoint_failure_does_not_block_others(self):

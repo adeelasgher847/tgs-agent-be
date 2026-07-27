@@ -63,7 +63,7 @@ def _merge_nested_tts_settings(raw: dict[str, Any]) -> dict[str, Any]:
 class ResolvedLlmRuntime:
     model_name: str
     provider_slug: str
-    api_key: Optional[str]
+    api_key: str | None
     temperature: float
     max_tokens: int
     used_ticket_llm: bool
@@ -85,7 +85,7 @@ class ResolvedSttRuntime:
 @dataclass(frozen=True)
 class ResolvedTtsRuntime:
     adapter_slug: str
-    voice_external_id: Optional[str]
+    voice_external_id: str | None
     language: str
     settings_json: dict[str, Any]
     used_ticket_tts: bool
@@ -126,7 +126,7 @@ def _is_gemini_provider(provider_slug: str) -> bool:
     return (provider_slug or "").lower() == "gemini"
 
 
-def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
+def resolve_llm_runtime(agent: Agent | None) -> ResolvedLlmRuntime:
     """Pick LLM model + provider for conversation / scheduling paths."""
     _default_temperature = float(
         getattr(app_settings, "VOICE_LLM_DEFAULT_TEMPERATURE", 0.3)
@@ -155,7 +155,7 @@ def resolve_llm_runtime(agent: Optional[Agent]) -> ResolvedLlmRuntime:
 
     if agent.llm_model:
         provider_slug = infer_llm_provider(agent.llm_model)
-        api_key: Optional[str] = None
+        api_key: str | None = None
         # Gemini/Google models authenticate via ADC (GOOGLE_APPLICATION_CREDENTIALS).
         # Never use model.api_key for the voice Vertex path — ignore it even if set.
         if not _is_gemini_provider(provider_slug) and agent.model and agent.model.api_key:
@@ -231,7 +231,7 @@ def llm_service_for_provider(provider_slug: str) -> Any:
 
 
 def resolve_tts_runtime(
-    agent: Optional[Agent],
+    agent: Agent | None,
     db: "Session | None" = None,
 ) -> ResolvedTtsRuntime:
     """Map ticket ``ttsModel`` (or legacy relations) to adapter + voice id.
@@ -339,9 +339,9 @@ def resolve_tts_runtime(
 
 
 def resolve_tts_adapter_slug(
-    agent: Optional[Agent],
+    agent: Agent | None,
     db: "Session | None" = None,
-) -> Optional[str]:
+) -> str | None:
     """Convenience for call sites that only need the adapter slug string."""
     return resolve_tts_runtime(agent, db=db).adapter_slug
 
@@ -355,9 +355,9 @@ _DEFAULT_SILENCE_THRESHOLD_MS = 1500
 
 
 def resolve_stt_runtime(
-    agent: Optional[Agent],
+    agent: Agent | None,
     *,
-    flow_language_code: Optional[str] = None,
+    flow_language_code: str | None = None,
     db: "Session | None" = None,
 ) -> ResolvedSttRuntime:
     """Resolve STT runtime config from agent + optional callflow language override.

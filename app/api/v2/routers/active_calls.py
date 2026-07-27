@@ -38,8 +38,8 @@ class ActiveCallItem(BaseModel):
     call_id: str
     agent_name: str
     duration_seconds: int
-    from_number: Optional[str]
-    to_number: Optional[str]
+    from_number: str | None
+    to_number: str | None
     started_at: datetime
 
 
@@ -183,7 +183,7 @@ async def get_call_insights(
 
     # Workspace isolation: verify this room belongs to the caller's workspace.
     call_session_id = _room_to_call_session_id(room_name)
-    session: Optional[CallSession] = db.get(CallSession, call_session_id)
+    session: CallSession | None = db.get(CallSession, call_session_id)
     if session is None or session.tenant_id != workspace.id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

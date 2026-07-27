@@ -27,7 +27,7 @@ class FolderRepository:
         folder_id: uuid.UUID,
         *,
         include_deleted: bool = False,
-    ) -> Optional[Folder]:
+    ) -> Folder | None:
         stmt = select(Folder).where(Folder.id == folder_id)
         if not include_deleted:
             stmt = stmt.where(Folder.is_deleted == False)  # noqa: E712
@@ -56,7 +56,7 @@ class FolderRepository:
 
     def find_folder_flow(
         self, folder_id: uuid.UUID, flow_id: uuid.UUID
-    ) -> Optional[FolderFlow]:
+    ) -> FolderFlow | None:
         stmt = select(FolderFlow).where(
             FolderFlow.folder_id == folder_id,
             FolderFlow.flow_id == flow_id,

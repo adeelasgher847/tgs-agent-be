@@ -17,10 +17,13 @@ def test_stt_latency_p95_passes_under_400ms(tmp_path):
             for ms in [120, 180, 200, 150, 190, 210, 170, 160, 140, 130]
         )
     )
-    proc = subprocess.run(
+    # S603: no shell=True; args are the fixed interpreter/script paths plus a path
+    # from pytest's own tmp_path fixture (OS-generated, not external input).
+    proc = subprocess.run(  # noqa: S603
         [sys.executable, str(SCRIPT), "--log", str(log), "--min-samples", "5"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "p95" in proc.stdout
@@ -35,10 +38,13 @@ def test_stt_latency_p95_fails_over_400ms(tmp_path):
             for ms in [500, 520, 480, 510, 490, 505, 495, 515, 530, 600]
         )
     )
-    proc = subprocess.run(
+    # S603: no shell=True; args are the fixed interpreter/script paths plus a path
+    # from pytest's own tmp_path fixture (OS-generated, not external input).
+    proc = subprocess.run(  # noqa: S603
         [sys.executable, str(SCRIPT), "--log", str(log), "--min-samples", "5"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert proc.returncode == 1
     assert "FAIL" in proc.stdout

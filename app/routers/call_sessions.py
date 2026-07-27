@@ -24,8 +24,8 @@ router = APIRouter()
 async def list_call_sessions(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    agent_id: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
+    agent_id: str | None = Query(None),
+    status: str | None = Query(None),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):

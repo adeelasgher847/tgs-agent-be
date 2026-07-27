@@ -39,7 +39,7 @@ def list_tts_providers(
 @router.get("/voices", response_model=SuccessResponse[TTSVoiceListOut])
 def list_tts_voices(
     provider_id: uuid.UUID = Query(..., description="TTS provider ID"),
-    language: Optional[str] = Query(None, description="Optional language code filter"),
+    language: str | None = Query(None, description="Optional language code filter"),
     user: User = Depends(require_tenant),
     member_user: User = Depends(require_member_or_admin),
     db: Session = Depends(get_db),

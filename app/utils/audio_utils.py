@@ -48,8 +48,11 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
             mp3_file.write(mp3_bytes)
             mp3_path = mp3_file.name
 
-        result = subprocess.run(
-            [
+        # S603: no shell=True; all args are either fixed literals or `mp3_path`, an
+        # OS-generated tempfile path (not derived from any external/request input).
+        # S607: relies on `ffmpeg` being on PATH, which the container image guarantees.
+        result = subprocess.run(  # noqa: S603
+            [  # noqa: S607
                 "ffmpeg",
                 "-nostdin",
                 "-loglevel",
@@ -442,9 +445,9 @@ async def stream_mulaw_bytes_over_twilio(
     stream_sid: str,
     audio_bytes: bytes,
     pace_20ms: bool = True,
-    cancel: Optional[asyncio.Event] = None,
+    cancel: asyncio.Event | None = None,
     prime_frames: int = 0,
-    mirror_mulaw: Optional[Callable[[bytes], Awaitable[None]]] = None,
+    mirror_mulaw: Callable[[bytes], Awaitable[None]] | None = None,
 ):
     """
     Send mu-law audio to Twilio as 20ms 'media' frames.

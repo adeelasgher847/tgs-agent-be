@@ -247,7 +247,7 @@ class ScheduledCallService:
         try:
             field_map = crm_service.ensure_required_fields(board_record.crm_container_id)
         except Exception as exc:
-            logger.error(f"❌ Error ensuring required fields", exc_info=True)
+            logger.error("❌ Error ensuring required fields", exc_info=True)
             raise HTTPException(
                 status_code=500, 
                 detail=f"Failed to prepare {board_record.crm_type} container: {exc}"
@@ -257,8 +257,8 @@ class ScheduledCallService:
 
     @staticmethod
     def get_board_for_user(
-        db: Session, user_id: uuid.UUID, tenant_crm_config_id: Optional[uuid.UUID] = None
-    ) -> Optional[ScheduledCall]:
+        db: Session, user_id: uuid.UUID, tenant_crm_config_id: uuid.UUID | None = None
+    ) -> ScheduledCall | None:
         """Get board for a user. If tenant_crm_config_id given, return that CRM's board; else first (backward compat)."""
         q = db.query(ScheduledCall).filter(ScheduledCall.user_id == user_id)
         q = q.filter(ScheduledCall.resume_interview_id.is_(None))
@@ -284,7 +284,7 @@ class ScheduledCallService:
         db: Session,
         user_id: uuid.UUID,
         tenant_id: uuid.UUID,
-        tenant_crm_config_id: Optional[uuid.UUID] = None,
+        tenant_crm_config_id: uuid.UUID | None = None,
     ) -> Tuple[ScheduledCall, int]:
         """
         Delete only items belonging to this tenant from user's container.
@@ -382,7 +382,7 @@ class ScheduledCallService:
         csv_content: str,
         crm_config_id: uuid.UUID,
         default_agent_id: uuid.UUID,  # Required parameter - agent selected before upload
-        default_phone_number_id: Optional[str] = None  # ✅ Optional phone number ID for all calls in CSV
+        default_phone_number_id: str | None = None  # ✅ Optional phone number ID for all calls in CSV
     ) -> CSVUploadResponse:
         """
         Parse CSV file and create items in CRM container (Monday.com, ClickUp, Jira, Trello).
@@ -424,7 +424,7 @@ class ScheduledCallService:
             and_(
                 Agent.id == default_agent_id,
                 Agent.tenant_id == tenant_id,
-                Agent.is_deleted == False
+                ~Agent.is_deleted
             )
         ).first()
         
@@ -440,7 +440,7 @@ class ScheduledCallService:
             )
         ).all()
 
-        def _normalize_phone(value: Optional[str]) -> str:
+        def _normalize_phone(value: str | None) -> str:
             if not value:
                 return ""
             raw = value.strip()
@@ -566,8 +566,8 @@ class ScheduledCallService:
         agent_id: uuid.UUID,
         call_time_utc: str,
         crm_config_id: uuid.UUID,
-        phone_number_id: Optional[str] = None,
-        jd_context: Optional[Dict[str, Any]] = None,
+        phone_number_id: str | None = None,
+        jd_context: Dict[str, Any] | None = None,
     ) -> dict:
         """
         Synchronous variant for use from non-async code paths (e.g. calendar booking).
@@ -588,7 +588,7 @@ class ScheduledCallService:
             and_(
                 Agent.id == agent_id,
                 Agent.tenant_id == tenant_id,
-                Agent.is_deleted == False,
+                ~Agent.is_deleted,
             )
         ).first()
 
@@ -680,8 +680,8 @@ class ScheduledCallService:
         agent_id: uuid.UUID,
         call_time_utc: str,
         crm_config_id: uuid.UUID,
-        phone_number_id: Optional[str] = None,  # ✅ Add phone_number_id parameter
-        jd_context: Optional[Dict[str, Any]] = None,
+        phone_number_id: str | None = None,  # ✅ Add phone_number_id parameter
+        jd_context: Dict[str, Any] | None = None,
     ) -> dict:
         """
         Create a single scheduled call item in CRM container (Monday.com, ClickUp, Jira, Trello).
@@ -703,7 +703,7 @@ class ScheduledCallService:
     async def create_scheduled_call_from_session_if_needed(
         db: Session,
         call_session: CallSession,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Inspect a completed call session and, if it contains a scheduling request
         in call_metadata, create a scheduled call item in the user's CRM.
@@ -823,10 +823,10 @@ class ScheduledCallService:
 
     @staticmethod
     def _resolve_timezone_for_schedule(
-        tz_name: Optional[str],
-        city: Optional[str],
-        country: Optional[str],
-    ) -> Optional[str]:
+        tz_name: str | None,
+        city: str | None,
+        country: str | None,
+    ) -> str | None:
         """Resolve IANA timezone from explicit timezone or city/country."""
         if (tz_name or "").strip():
             return tz_name.strip()
@@ -838,7 +838,7 @@ class ScheduledCallService:
     async def _extract_schedule_from_transcript(
         db: Session,
         transcript_text: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any] | None:
         """
         Use LLM to extract scheduling intent from transcript.
         Returns dict with local_date, local_time, timezone?, city?, country?, phone_number? or None.
@@ -850,7 +850,7 @@ class ScheduledCallService:
         if not (transcript_text or "").strip() or transcript_text.strip() == "No transcript available.":
             return None
         model_name = "gpt-4o-mini"
-        api_key: Optional[str] = None
+        api_key: str | None = None
         try:
             model = model_service.get_model_by_name(db, model_name)
             if model and model.api_key:
@@ -897,7 +897,7 @@ Output ONLY valid JSON, no markdown or explanation."""
         call_session_id: uuid.UUID,
         current_tenant_id: uuid.UUID,
         current_user_id: uuid.UUID,
-        agent_id_override: Optional[uuid.UUID] = None,
+        agent_id_override: uuid.UUID | None = None,
     ) -> dict:
         """
         Create a scheduled call in CRM from a completed call session.
@@ -985,7 +985,7 @@ Output ONLY valid JSON, no markdown or explanation."""
             agent = db.query(Agent).filter(
                 Agent.id == agent_id_override,
                 Agent.tenant_id == current_tenant_id,
-                Agent.is_deleted == False,
+                ~Agent.is_deleted,
             ).first()
             if not agent:
                 raise HTTPException(status_code=404, detail="Agent not found or does not belong to tenant")

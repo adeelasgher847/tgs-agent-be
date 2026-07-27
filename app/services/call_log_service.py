@@ -35,18 +35,18 @@ class CallLogService:
         db.refresh(call_log)
         return call_log
     
-    def get_call_log_by_id(self, db: Session, log_id: uuid.UUID) -> Optional[CallLog]:
+    def get_call_log_by_id(self, db: Session, log_id: uuid.UUID) -> CallLog | None:
         """Get call log by ID"""
         return db.query(CallLog).filter(CallLog.id == log_id).first()
     
-    def get_call_log_by_call_id(self, db: Session, call_id: str, tenant_id: uuid.UUID) -> Optional[CallLog]:
+    def get_call_log_by_call_id(self, db: Session, call_id: str, tenant_id: uuid.UUID) -> CallLog | None:
         """Get call log by call ID and tenant"""
         return db.query(CallLog).filter(
             CallLog.call_id == call_id,
             CallLog.tenant_id == tenant_id
         ).first()
     
-    def update_call_log(self, db: Session, log_id: uuid.UUID, update_data: CallLogUpdate) -> Optional[CallLog]:
+    def update_call_log(self, db: Session, log_id: uuid.UUID, update_data: CallLogUpdate) -> CallLog | None:
         """Update call log"""
         call_log = self.get_call_log_by_id(db, log_id)
         if call_log:
@@ -177,7 +177,7 @@ class CallLogService:
         failed_calls = query.filter(CallLog.success_evaluation == "fail").count()
         
         # Transferred calls
-        transferred_calls = query.filter(CallLog.transferred == True).count()
+        transferred_calls = query.filter(CallLog.transferred).count()
         
         # Total cost
         total_cost_result = query.with_entities(func.sum(CallLog.cost)).scalar()

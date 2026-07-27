@@ -32,7 +32,7 @@ class PhoneNumberService:
 
     def _get_by_id(
         self, db: Session, phone_number_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> Optional[PhoneNumber]:
+    ) -> PhoneNumber | None:
         stmt = select(PhoneNumber).where(
             PhoneNumber.id == phone_number_id,
             PhoneNumber.tenant_id == tenant_id,
@@ -136,7 +136,7 @@ class PhoneNumberService:
 
     def get_phone_number_by_id(
         self, db: Session, phone_number_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> Optional[PhoneNumber]:
+    ) -> PhoneNumber | None:
         return self._get_by_id(db, phone_number_id, tenant_id)
 
     def update_phone_number(
@@ -145,7 +145,7 @@ class PhoneNumberService:
         phone_number_id: uuid.UUID,
         tenant_id: uuid.UUID,
         update_data: PhoneNumberUpdate,
-    ) -> Optional[PhoneNumber]:
+    ) -> PhoneNumber | None:
         pn = self._get_by_id(db, phone_number_id, tenant_id)
         if not pn:
             return None
@@ -173,7 +173,7 @@ class PhoneNumberService:
         self,
         db: Session,
         phone_number: str,
-        label: Optional[str],
+        label: str | None,
         tenant_id: uuid.UUID,
         twilio_account_sid: str,
         twilio_auth_token: str,
@@ -251,7 +251,7 @@ class PhoneNumberService:
         db: Session,
         phone_number: str,
         tenant_id: uuid.UUID,
-        label: Optional[str] = None,
+        label: str | None = None,
     ) -> PhoneNumber:
         """
         Atomically purchase a Twilio number and persist a phone_numbers row.
@@ -319,8 +319,8 @@ class PhoneNumberService:
         phone_number: str,
         tenant_id: uuid.UUID,
         sip_username: str,
-        sip_password: Optional[str] = None,
-        label: Optional[str] = None,
+        sip_password: str | None = None,
+        label: str | None = None,
     ) -> PhoneNumber:
         """Register a BYO / SIP external number (provider='external')."""
         from fastapi import HTTPException
@@ -462,8 +462,8 @@ class PhoneNumberService:
 
         result = []
         for pn in numbers:
-            agent_name: Optional[str] = None
-            agent_status: Optional[str] = None
+            agent_name: str | None = None
+            agent_status: str | None = None
             if pn.assistant_id:
                 agent = db.execute(
                     select(Agent).where(Agent.id == pn.assistant_id)
@@ -508,7 +508,7 @@ class PhoneNumberService:
         tenant_id: uuid.UUID,
         recording_enabled: bool,
         max_duration_seconds: int,
-        business_hours: Optional[dict],
+        business_hours: dict | None,
     ) -> NumberConfiguration:
         from fastapi import HTTPException
 

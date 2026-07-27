@@ -30,10 +30,10 @@ class BackgroundAudioState:
     enabled: bool = False
     user_level: float = 0.5
     ramp_gain: float = 0.0
-    mulaw_bytes: Optional[bytes] = None
+    mulaw_bytes: bytes | None = None
     length: int = 0
     offset: int = 0
-    task: Optional[asyncio.Task] = None
+    task: asyncio.Task | None = None
 
 
 class BackgroundAudioManager:

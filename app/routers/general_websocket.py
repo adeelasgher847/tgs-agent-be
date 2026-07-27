@@ -113,7 +113,7 @@ class GeneralWebSocketManager:
         # logger.debug(f"📡 WebSocket manager ID: {id(self)}")
         
         if len(self.active_connections) == 0:
-            logger.warning(f"⚠️ No active WebSocket connections to broadcast to!")
+            logger.warning("⚠️ No active WebSocket connections to broadcast to!")
             return
         
         disconnected_websockets = []
@@ -326,7 +326,7 @@ async def broadcast_call_status_update(call_session_id: str, status: str, metada
     
     try:
         await websocket_manager.broadcast_to_all(message, "call_status_update")
-        logger.debug(f"✅ broadcast_call_status_update completed successfully")
+        logger.debug("✅ broadcast_call_status_update completed successfully")
     except Exception as e:
         logger.error(f"❌ broadcast_call_status_update failed: {e}", exc_info=True)
         # import traceback
@@ -347,7 +347,7 @@ async def broadcast_transcript_update(call_session_id: str, transcript: list, ne
     
     try:
         await websocket_manager.broadcast_to_all(message, "transcript_update")
-        logger.debug(f"✅ broadcast_transcript_update completed successfully")
+        logger.debug("✅ broadcast_transcript_update completed successfully")
     except Exception as e:
         logger.error(f"❌ broadcast_transcript_update failed: {e}", exc_info=True)
         # import traceback

@@ -56,7 +56,7 @@ def _principal_from_middleware_api_key(request: Request) -> ApiKeyPrincipal:
 
 def get_current_user_jwt(
     request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
     db: Session = Depends(get_db),
 ) -> User:
     """JWT-based user authentication (middleware-validated or Bearer header)."""
@@ -115,7 +115,7 @@ def get_current_user_jwt(
 
 def require_tenant(
     request: Request,
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
     db: Session = Depends(get_db),
 ) -> Union[User, ApiKeyPrincipal]:
     """Ensure the request is scoped to a workspace (JWT user or API key)."""
@@ -188,9 +188,9 @@ def require_user_tenant(
 
 
 def get_optional_tenant_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: Session = Depends(get_db),
-) -> Optional[User]:
+) -> User | None:
     """Return the authenticated user, or None when auth is absent/invalid.
 
     Used for endpoints that support both JWT and webhook secret auth.

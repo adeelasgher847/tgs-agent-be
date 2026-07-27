@@ -29,7 +29,7 @@ class AgentRepository:
         *,
         include_deleted: bool = False,
         load_transfer_route: bool = False,
-    ) -> Optional[Agent]:
+    ) -> Agent | None:
         stmt = select(Agent).where(Agent.id == agent_id)
         if not include_deleted:
             stmt = stmt.where(Agent.is_deleted == False)  # noqa: E712
@@ -43,7 +43,7 @@ class AgentRepository:
         *,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
+        search: str | None = None,
     ) -> tuple[list[Agent], int]:
         offset = (page - 1) * limit
         filters = [
@@ -79,7 +79,7 @@ class AgentRepository:
 
     def find_by_name_in_workspace(
         self, workspace_id: uuid.UUID, name: str
-    ) -> Optional[Agent]:
+    ) -> Agent | None:
         normalized = name.strip().lower()
         stmt = select(Agent).where(
             Agent.tenant_id == workspace_id,
@@ -95,7 +95,7 @@ class AgentRepository:
         self.db.refresh(agent)
         return agent
 
-    def soft_delete(self, agent: Agent, *, updated_by: Optional[uuid.UUID] = None) -> None:
+    def soft_delete(self, agent: Agent, *, updated_by: uuid.UUID | None = None) -> None:
         agent.is_deleted = True
         if updated_by is not None:
             agent.updated_by = updated_by

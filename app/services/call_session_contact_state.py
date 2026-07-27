@@ -100,7 +100,7 @@ _SELF_INTRO_NON_NAME_FIRST_WORDS = frozenset({
 })
 
 
-def _extract_self_intro_name(client_text: str) -> Optional[str]:
+def _extract_self_intro_name(client_text: str) -> str | None:
     """
     Return a Title-Cased name candidate when the caller introduces themselves
     with phrases like "My name is X", "I'm X", "I am X", "This is X",
@@ -141,7 +141,7 @@ def _agent_echoes_name(agent_text: str, candidate: str) -> bool:
     return bool(re.search(rf"\b{re.escape(first)}\b", text, flags=re.IGNORECASE))
 
 
-def _extract_confirmed_name_from_agent_text(agent_text: str) -> Optional[str]:
+def _extract_confirmed_name_from_agent_text(agent_text: str) -> str | None:
     """
     Pull the most recent capitalized name candidate that the agent stated
     after a confirmation trigger. Conservative: requires Title-Case tokens
@@ -187,7 +187,7 @@ def default_contact_intake() -> dict[str, Any]:
     }
 
 
-def _normalize_intake(raw: Optional[dict]) -> dict[str, Any]:
+def _normalize_intake(raw: dict | None) -> dict[str, Any]:
     base = default_contact_intake()
     if isinstance(raw, dict):
         for k in base:
@@ -234,8 +234,8 @@ def _save_booking_intent(db: Session, call_session: CallSession, intent: dict[st
 def merge_booking_intent(
     existing: dict[str, Any],
     *,
-    slot_start_iso: Optional[str] = None,
-    appointment_reason: Optional[str] = None,
+    slot_start_iso: str | None = None,
+    appointment_reason: str | None = None,
 ) -> dict[str, Any]:
     out = dict(existing) if existing else {}
     if slot_start_iso:
@@ -251,7 +251,7 @@ def apply_transcript_turn(
     *,
     role: str,
     message: str,
-    preceding_agent_text: Optional[str],
+    preceding_agent_text: str | None,
 ) -> None:
     """
     Update contact_intake after a transcript line is committed.
@@ -362,8 +362,8 @@ def apply_post_call_recovery(
     db: Session,
     call_session: CallSession,
     *,
-    name: Optional[str] = None,
-    email: Optional[str] = None,
+    name: str | None = None,
+    email: str | None = None,
     name_confident: bool = False,
     email_confident: bool = False,
 ) -> dict[str, Any]:
@@ -420,7 +420,7 @@ def sync_contact_intake_after_message(
     )
 
 
-def _get_preceding_agent_message(db: Session, call_session_id: uuid.UUID) -> Optional[str]:
+def _get_preceding_agent_message(db: Session, call_session_id: uuid.UUID) -> str | None:
     rows = (
         db.query(TranscriptMessage)
         .filter(TranscriptMessage.call_session_id == call_session_id)
@@ -476,8 +476,8 @@ def persist_booking_intent_fields(
     db: Session,
     call_session: CallSession,
     *,
-    slot_start_iso: Optional[str],
-    appointment_reason: Optional[str],
+    slot_start_iso: str | None,
+    appointment_reason: str | None,
 ) -> None:
     prev = get_booking_intent(call_session)
     merged = merge_booking_intent(

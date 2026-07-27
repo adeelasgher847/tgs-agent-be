@@ -76,7 +76,7 @@ class TTSCatalogService:
         self,
         db: Session,
         provider_id: uuid.UUID,
-        language_code: Optional[str] = None,
+        language_code: str | None = None,
         active_only: bool = True,
     ) -> list[TTSVoice]:
         query = db.query(TTSVoice).filter(TTSVoice.provider_id == provider_id)
@@ -86,13 +86,13 @@ class TTSCatalogService:
             query = query.filter(TTSVoice.language_code == language_code)
         return query.order_by(TTSVoice.display_name.asc()).all()
 
-    def get_provider_by_id(self, db: Session, provider_id: uuid.UUID) -> Optional[TTSProvider]:
+    def get_provider_by_id(self, db: Session, provider_id: uuid.UUID) -> TTSProvider | None:
         return db.query(TTSProvider).filter(TTSProvider.id == provider_id).first()
 
-    def get_provider_by_slug(self, db: Session, slug: str) -> Optional[TTSProvider]:
+    def get_provider_by_slug(self, db: Session, slug: str) -> TTSProvider | None:
         return db.query(TTSProvider).filter(TTSProvider.slug == slug).first()
 
-    def get_voice_by_id(self, db: Session, voice_id: uuid.UUID) -> Optional[TTSVoice]:
+    def get_voice_by_id(self, db: Session, voice_id: uuid.UUID) -> TTSVoice | None:
         return db.query(TTSVoice).filter(TTSVoice.id == voice_id).first()
 
     def sync_provider_voices(self, db: Session, provider_slug: str) -> dict[str, int]:

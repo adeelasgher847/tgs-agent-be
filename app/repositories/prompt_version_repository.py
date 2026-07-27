@@ -21,7 +21,7 @@ class PromptVersionRepository:
         self.db.refresh(version)
         return version
 
-    def find_by_id(self, version_id: uuid.UUID) -> Optional[PromptVersion]:
+    def find_by_id(self, version_id: uuid.UUID) -> PromptVersion | None:
         stmt = select(PromptVersion).where(
             PromptVersion.id == version_id,
             PromptVersion.is_deleted == False,  # noqa: E712
@@ -50,7 +50,7 @@ class PromptVersionRepository:
         )
         return int(self.db.execute(stmt).scalar_one())
 
-    def find_oldest_by_flow(self, flow_id: uuid.UUID) -> Optional[PromptVersion]:
+    def find_oldest_by_flow(self, flow_id: uuid.UUID) -> PromptVersion | None:
         stmt = (
             select(PromptVersion)
             .where(
@@ -65,8 +65,8 @@ class PromptVersionRepository:
     def find_oldest_deletable(
         self,
         flow_id: uuid.UUID,
-        exclude_version_id: Optional[uuid.UUID],
-    ) -> Optional[PromptVersion]:
+        exclude_version_id: uuid.UUID | None,
+    ) -> PromptVersion | None:
         """Oldest version by created_at that is NOT the current active version."""
         stmt = select(PromptVersion).where(
             PromptVersion.flow_id == flow_id,

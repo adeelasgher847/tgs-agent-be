@@ -342,23 +342,29 @@ def google_login(
         # Update social fields if they were missing/outdated
         updated = False
         if user.provider != "google":
-            user.provider = "google"; updated = True
+            user.provider = "google"
+            updated = True
         if not user.provider_user_id and sub:
-            user.provider_user_id = sub; updated = True
+            user.provider_user_id = sub
+            updated = True
         # Keep names synced from provider when available (no email-based fallback)
         if given_name and user.first_name != given_name:
-            user.first_name = given_name; updated = True
+            user.first_name = given_name
+            updated = True
         if family_name and user.last_name != family_name:
-            user.last_name = family_name; updated = True
+            user.last_name = family_name
+            updated = True
         elif (not family_name) and name:
             parts = name.split()
             if len(parts) > 1 and user.last_name != " ".join(parts[1:]):
-                user.last_name = " ".join(parts[1:]); updated = True
+                user.last_name = " ".join(parts[1:])
+                updated = True
         # light profile snapshot
         profile = user.provider_profile or {}
         new_profile = { "name": name, "given_name": given_name, "family_name": family_name, "email": email, "picture": picture }
         if any(profile.get(k) != v for k, v in new_profile.items()):
-            user.provider_profile = { **profile, **new_profile }; updated = True
+            user.provider_profile = { **profile, **new_profile }
+            updated = True
         if updated:
             db.add(user)
             db.commit()
@@ -452,7 +458,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
         try:
             db.query(RefreshToken).filter(
                 RefreshToken.user_id == rt.user_id,
-                RefreshToken.revoked == False,
+                ~RefreshToken.revoked,
             ).update({"revoked": True}, synchronize_session=False)
             db.commit()
         except Exception:
@@ -481,7 +487,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
     role_info = None
-    current_role: Optional[str] = None
+    current_role: str | None = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         from app.services.role_service import get_display_role_details
@@ -550,7 +556,7 @@ def logout(current_user: User = Depends(get_current_user_jwt), db: Session = Dep
     # Find and revoke all active refresh tokens for the user
     active_tokens = db.query(RefreshToken).filter(
         RefreshToken.user_id == current_user.id,
-        RefreshToken.revoked == False,
+        ~RefreshToken.revoked,
         RefreshToken.expires_at > datetime.now(timezone.utc)
     ).all()
     
@@ -674,7 +680,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     # Invalidate any existing reset tokens for this user
     existing_tokens = db.query(PasswordResetToken).filter(
         PasswordResetToken.user_id == user.id,
-        PasswordResetToken.used == False
+        ~PasswordResetToken.used
     ).all()
     
     for token in existing_tokens:
@@ -729,7 +735,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     # Find valid reset token
     reset_token = db.query(PasswordResetToken).filter(
         PasswordResetToken.token == request.token,
-        PasswordResetToken.used == False,
+        ~PasswordResetToken.used,
         PasswordResetToken.expires_at > datetime.now(timezone.utc)
     ).first()
     
@@ -761,7 +767,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     # Revoke all user's refresh tokens on password change
     active_rts = db.query(RefreshToken).filter(
         RefreshToken.user_id == user.id,
-        RefreshToken.revoked == False,
+        ~RefreshToken.revoked,
         RefreshToken.expires_at > datetime.now(timezone.utc)
     ).all()
     

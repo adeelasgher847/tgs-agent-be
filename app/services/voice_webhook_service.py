@@ -40,10 +40,10 @@ from twilio.twiml.voice_response import VoiceResponse
 
 async def handle_call_events_webhook(
     request: Request,
-    agentId: Optional[str],
-    userId: Optional[str],
-    callSessionId: Optional[str],
-    timeout: Optional[str],
+    agentId: str | None,
+    userId: str | None,
+    callSessionId: str | None,
+    timeout: str | None,
     body: str,
     db: Session,
 ) -> HTMLResponse:

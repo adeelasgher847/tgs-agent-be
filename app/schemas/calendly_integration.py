@@ -7,8 +7,8 @@ from pydantic import BaseModel
 
 class CalendlyIntegrationStatusOut(BaseModel):
     connected: bool
-    user_uri: Optional[str] = None
-    event_type_uri: Optional[str] = None
+    user_uri: str | None = None
+    event_type_uri: str | None = None
 
 
 class CalendlyDisconnectResponse(BaseModel):

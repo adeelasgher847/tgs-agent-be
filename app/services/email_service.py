@@ -98,8 +98,8 @@ class EmailService:
         to_email: str,
         subject: str,
         html_body: str,
-        cc_emails: Optional[List[str]] = None,
-        text_body: Optional[str] = None,
+        cc_emails: List[str] | None = None,
+        text_body: str | None = None,
     ) -> bool:
         """
         Send an email using AWS SES.
@@ -217,7 +217,7 @@ class EmailService:
         to_email: str,
         subject: str,
         html_body: str,
-        cc_emails: Optional[List[str]] = None,
+        cc_emails: List[str] | None = None,
     ) -> bool:
         """
         Send a generic email, optionally CC'ing additional recipients.

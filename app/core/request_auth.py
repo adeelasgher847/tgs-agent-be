@@ -28,16 +28,16 @@ def is_api_key_principal(obj: object) -> bool:
     return isinstance(obj, ApiKeyPrincipal)
 
 
-def get_auth_method(request) -> Optional[AuthMethod]:
+def get_auth_method(request) -> AuthMethod | None:
     return getattr(request.state, "auth_method", None)
 
 
-def get_workspace_id_from_request(request) -> Optional[uuid.UUID]:
+def get_workspace_id_from_request(request) -> uuid.UUID | None:
     workspace = get_workspace_from_request(request)
     if workspace is not None:
         return workspace.id
     return getattr(request.state, "workspace_id", None)
 
 
-def get_workspace_from_request(request) -> Optional[Workspace]:
+def get_workspace_from_request(request) -> Workspace | None:
     return getattr(request.state, "workspace", None)
