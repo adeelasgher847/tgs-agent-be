@@ -45,7 +45,7 @@ def _clean_email_stt_artifacts(text: str) -> str:
     return raw[: match.start()] + cleaned + raw[match.end():]
 
 
-def strict_contact_email_from_text(text: str) -> str | None:
+def strict_contact_email_from_text(text: str) -> Optional[str]:
     """
     Return normalized email or None. Rules: exactly one '@', at least one '.',
     syntactically valid via email_validator (via spoken_email helpers).
@@ -60,7 +60,7 @@ def strict_contact_email_from_text(text: str) -> str | None:
         return None
     candidate = coerce_email_from_text(text)
 
-    cleaned_candidate: str | None = None
+    cleaned_candidate: Optional[str] = None
     if getattr(settings, "EMAIL_STT_CLEANUP_ENABLED", True):
         cleaned_text = _clean_email_stt_artifacts(text)
         if cleaned_text != text:
@@ -82,7 +82,7 @@ def strict_contact_email_from_text(text: str) -> str | None:
     return chosen
 
 
-def extract_spelled_name_from_line(line: str) -> str | None:
+def extract_spelled_name_from_line(line: str) -> Optional[str]:
     """
     If the line looks like letter-by-letter spelling (e.g. "J O H N"),
     join into a single capitalized word. Returns None if the pattern is weak.
@@ -151,8 +151,8 @@ def extract_contact_from_client_lines(lines_newest_first: list[str]) -> dict[str
     """
     Scan client lines (newest first) for a strict email and a spelled name.
     """
-    name: str | None = None
-    email: str | None = None
+    name: Optional[str] = None
+    email: Optional[str] = None
     for line in lines_newest_first:
         if not line or not str(line).strip():
             continue

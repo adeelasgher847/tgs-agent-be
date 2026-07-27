@@ -30,7 +30,7 @@ class VoiceAnalysisService:
         call_session: CallSession,
         user_id,
         raise_on_no_transcript: bool = True,
-    ) -> Dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """Behavior-preserving refactor of `analyze_call_transcript` logic from `voice.py`."""
         from uuid import UUID
 
@@ -66,9 +66,9 @@ class VoiceAnalysisService:
                 "is_cached": True
             }
 
-        preferred_model: str | None = None
+        preferred_model: Optional[str] = None
         agent = None
-        agent_prompt: str | None = None
+        agent_prompt: Optional[str] = None
 
         if call_session.agent_id:
             try:
@@ -111,7 +111,7 @@ class VoiceAnalysisService:
         ]
 
         model = None
-        last_error: Exception | None = None
+        last_error: Optional[Exception] = None
 
         # Try each model until one works (for presence)
         for model_name in fallback_models:
@@ -291,7 +291,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
         outcome_result = None
         recommendations_result = None
         used_model = None
-        last_error_local: Exception | None = None
+        last_error_local: Optional[Exception] = None
 
         for model_name in fallback_models:
             try:
@@ -386,7 +386,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             summary_lines.append(line)
         display_summary = "\n".join(summary_lines).strip()
 
-        success_eval_llm: str | None = None
+        success_eval_llm: Optional[str] = None
         if outcome_result:
             raw_o = (outcome_result.get("content") or "").strip()
             om = re.search(r"^\s*OUTCOME:\s*(\S+)", raw_o, re.MULTILINE | re.IGNORECASE)

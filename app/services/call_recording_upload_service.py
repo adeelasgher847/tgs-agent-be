@@ -58,7 +58,7 @@ def _upload_recording_sync(call_session_id: uuid.UUID) -> None:
 
     db = SessionLocal()
     try:
-        session: CallSession | None = db.get(CallSession, call_session_id)
+        session: Optional[CallSession] = db.get(CallSession, call_session_id)
         if session is None:
             logger.warning("Recording upload: call_session %s not found", call_session_id)
             return
@@ -105,7 +105,7 @@ def _upload_recording_sync(call_session_id: uuid.UUID) -> None:
         db.close()
 
 
-def _get_recording_meta(session) -> dict | None:
+def _get_recording_meta(session) -> Optional[dict]:
     """Extract the recording sub-dict from call_session.call_metadata."""
     meta = session.call_metadata
     if not isinstance(meta, dict):

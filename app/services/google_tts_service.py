@@ -255,7 +255,7 @@ class GoogleTTSService:
         pitch: float = 0.0,
         output_format: str = "mp3",
         use_chirp3_hd: bool = False,
-        voice_name_override: str | None = None,
+        voice_name_override: Optional[str] = None,
     ) -> bytes:
         """
         Convert text to speech using Google Cloud TTS API with Chirp 3: HD model
@@ -336,7 +336,7 @@ class GoogleTTSService:
         output_format: str = "mulaw",
         use_chirp3_hd: bool = True,
         sample_rate_hz: int = 8000,
-        voice_name_override: str | None = None,
+        voice_name_override: Optional[str] = None,
     ) -> AsyncIterator[bytes]:
         """
         Bidirectional streaming TTS (StreamingSynthesize).

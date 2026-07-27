@@ -18,7 +18,7 @@ from app.core.request_auth import AUTH_METHOD_API_KEY, get_auth_method
 from app.models.audit_log import AuditLog
 
 
-def _extract_ip(request: Request) -> str | None:
+def _extract_ip(request: Request) -> Optional[str]:
     """Return the real client IP, respecting X-Forwarded-For from load balancers."""
     forwarded_for = request.headers.get("x-forwarded-for", "").strip()
     if forwarded_for:
@@ -34,10 +34,10 @@ def log_audit_event(
     tenant_id: uuid.UUID,
     action: str,
     resource_type: str,
-    resource_id: uuid.UUID | None = None,
-    old_value: dict[str, Any] | None = None,
-    new_value: dict[str, Any] | None = None,
-    actor_user_id: uuid.UUID | None = None,
+    resource_id: Optional[uuid.UUID] = None,
+    old_value: Optional[dict[str, Any]] = None,
+    new_value: Optional[dict[str, Any]] = None,
+    actor_user_id: Optional[uuid.UUID] = None,
 ) -> None:
     """
     Append one row to the auditlog table.
@@ -52,7 +52,7 @@ def log_audit_event(
         ip = _extract_ip(request)
         user_agent = request.headers.get("user-agent", "")[:512] or None
 
-        api_key_prefix: str | None = None
+        api_key_prefix: Optional[str] = None
         if get_auth_method(request) == AUTH_METHOD_API_KEY:
             api_key_prefix = getattr(request.state, "api_key_prefix", None)
 

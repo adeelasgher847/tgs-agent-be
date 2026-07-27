@@ -123,7 +123,7 @@ async def add_to_transcript(
     message: str, 
     db: Session, 
     message_type: str = "speech",
-    confidence: float | None = None
+    confidence: Optional[float] = None
 ):
     """Add a message to the transcript"""
     try:
@@ -151,9 +151,9 @@ async def add_to_transcript(
 @router.post("/gather/greeting", response_class=HTMLResponse, include_in_schema=False)
 async def gather_greeting_webhook(
     request: Request,
-    agentId: str | None = Query(None),
-    userId: str | None = Query(None),
-    callSessionId: str | None = Query(None),
+    agentId: Optional[str] = Query(None),
+    userId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -163,7 +163,7 @@ async def gather_greeting_webhook(
     This is called when the call first connects (in-progress status).
     """
     logger.info("=" * 80)
-    logger.info("🎤 GATHER GREETING WEBHOOK - Low Latency Flow")
+    logger.info(f"🎤 GATHER GREETING WEBHOOK - Low Latency Flow")
     logger.info(f"📞 Call Session: {callSessionId}")
     logger.info(f"🤖 Agent: {agentId}")
     logger.info(f"⏰ Timestamp: {datetime.now(timezone.utc).isoformat()}")
@@ -283,7 +283,7 @@ async def gather_greeting_webhook(
         response.play(tts_url)
         response.hangup()
         
-        logger.info("✅ TwiML generated - Playing greeting and waiting for speech")
+        logger.info(f"✅ TwiML generated - Playing greeting and waiting for speech")
         logger.debug(f"📝 TwiML: {str(response)[:300]}...")
         
         return HTMLResponse(str(response), media_type="application/xml")
@@ -303,9 +303,9 @@ async def gather_greeting_webhook(
 @router.post("/gather/speech-callback", response_class=HTMLResponse, include_in_schema=False)
 async def gather_speech_callback_webhook(
     request: Request,
-    agentId: str | None = Query(None),
-    userId: str | None = Query(None),
-    callSessionId: str | None = Query(None),
+    agentId: Optional[str] = Query(None),
+    userId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -322,7 +322,7 @@ async def gather_speech_callback_webhook(
     """
 
     logger.info("=" * 80)
-    logger.info("🎙️ GATHER SPEECH CALLBACK - Processing User Input")
+    logger.info(f"🎙️ GATHER SPEECH CALLBACK - Processing User Input")
     logger.info(f"📞 Call Session: {callSessionId}")
     logger.info(f"🤖 Agent: {agentId}")
     logger.info(f"⏰ Processing Start: {datetime.now(timezone.utc).isoformat()}")
@@ -387,7 +387,7 @@ async def gather_speech_callback_webhook(
                 else:
                     auth_url = recording_url.replace('https://api.twilio.com', f'https://{account_sid}:{auth_token}@api.twilio.com') + '.wav'
                 
-                logger.info("📥 Downloading audio from Twilio...")
+                logger.info(f"📥 Downloading audio from Twilio...")
                 
                 # Download audio with reduced timeout for faster response
                 audio_response = requests.get(auth_url, timeout=2)  # 2s timeout for speed
@@ -429,7 +429,7 @@ async def gather_speech_callback_webhook(
         
         # Check if we have a valid transcript
         if not transcript:
-            logger.warning("⚠️ No transcript available")
+            logger.warning(f"⚠️ No transcript available")
             
             # Ask user to repeat
             response = VoiceResponse()
@@ -496,7 +496,7 @@ async def gather_speech_callback_webhook(
         # STEP 6: Generate AI response using LLM (start immediately - don't wait for DB)
         llm_start = datetime.now(timezone.utc)
         
-        logger.info("🤖 Generating AI response...")
+        logger.info(f"🤖 Generating AI response...")
         
         # Use the voice logging service to generate response (handles Gemini/OpenAI)
         response_text = await VoiceLoggingService.generate_agent_response(
@@ -582,7 +582,7 @@ async def gather_speech_callback_webhook(
         # Check if this is a goodbye
         is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
         if is_goodbye or "goodbye" in response_text.lower() or "bye" in response_text.lower():
-            logger.info("👋 Goodbye detected - ending call")
+            logger.info(f"👋 Goodbye detected - ending call")
             response = VoiceResponse()
             response.hangup()
             return HTMLResponse(str(response), media_type="application/xml")
@@ -639,9 +639,9 @@ async def gather_speech_callback_webhook(
 @router.post("/gather/streaming", response_class=HTMLResponse, include_in_schema=False)
 async def streaming_greeting_webhook(
     request: Request,
-    agentId: str | None = Query(None),
-    userId: str | None = Query(None),
-    callSessionId: str | None = Query(None),
+    agentId: Optional[str] = Query(None),
+    userId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -652,10 +652,10 @@ async def streaming_greeting_webhook(
     Target: <3 seconds response time
     """
     logger.info("=" * 80)
-    logger.info("🎙️ BIDIRECTIONAL STREAMING WEBHOOK")
+    logger.info(f"🎙️ BIDIRECTIONAL STREAMING WEBHOOK")
     logger.info(f"📞 Call Session: {callSessionId}")
     logger.info(f"🤖 Agent: {agentId}")
-    logger.info("⚡ Using real-time WebSocket streaming")
+    logger.info(f"⚡ Using real-time WebSocket streaming")
     logger.info("=" * 80)
     
     try:

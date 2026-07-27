@@ -12,9 +12,9 @@ class CallHistoryMetrics(BaseModel):
     completed: int
     failed: int
     no_answer: int
-    avg_duration_seconds: float | None
-    total_duration_seconds: int | None
-    success_rate_percent: float | None
+    avg_duration_seconds: Optional[float]
+    total_duration_seconds: Optional[int]
+    success_rate_percent: Optional[float]
 
 
 class CallHistoryTimeSeriesPoint(BaseModel):
@@ -29,15 +29,15 @@ class CallHistoryItem(BaseModel):
 
     call_id: uuid.UUID
     direction: str
-    from_number: str | None
-    to_number: str | None
-    agent_name: str | None
-    flow_name: str | None
+    from_number: Optional[str]
+    to_number: Optional[str]
+    agent_name: Optional[str]
+    flow_name: Optional[str]
     status: str
-    duration_seconds: int | None
-    started_at: datetime | None
-    ended_at: datetime | None
-    ab_variant: str | None = None
+    duration_seconds: Optional[int]
+    started_at: Optional[datetime]
+    ended_at: Optional[datetime]
+    ab_variant: Optional[str] = None
 
 
 class CallHistoryList(BaseModel):
@@ -50,6 +50,6 @@ class CallHistoryList(BaseModel):
 
 class BatchCallMetrics(BaseModel):
     total_batches: int
-    avg_completion_rate_percent: float | None
+    avg_completion_rate_percent: Optional[float]
     total_calls_dispatched: int
     total_failed: int

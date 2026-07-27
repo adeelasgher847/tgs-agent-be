@@ -272,7 +272,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
-        self._stt_pipeline: SttPipeline | None = None
+        self._stt_pipeline: Optional[SttPipeline] = None
         # Interim → early LLM (optional; default off in settings for Deepgram stability)
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
@@ -308,7 +308,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
         self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
-        self._tts_pipeline: TtsPipeline | None = None
+        self._tts_pipeline: Optional[TtsPipeline] = None
         self._elevenlabs_prev_tts_text = ""
         self._use_ssml = True                # Enable SSML by default
         # Quick-ack dedup guard: prevent repeated acknowledgements for the same
@@ -330,8 +330,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._flow_executor = None
         self._flow_state = None
         self._last_offered_calendar_slots: List[datetime] = []
-        self._last_requested_calendar_date: date | None = None
-        self._last_selected_calendar_slot: datetime | None = None
+        self._last_requested_calendar_date: Optional[date] = None
+        self._last_selected_calendar_slot: Optional[datetime] = None
         self._load_session_data()
         
         # User pickup detection (VAPI-style: actual user audio = user picked up)
@@ -414,13 +414,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._post_call_orchestration_scheduled = False
         # Longer Deepgram endpointing after agent asks for email (one-time upgrade per call).
         self._email_stt_endpointing_upgraded = False
-        self._stt_deferred_endpointing_ms: int | None = None
+        self._stt_deferred_endpointing_ms: Optional[int] = None
 
         # One response per turn: first interim that passes gates starts the LLM (dev-style: commit agent at stream end)
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         self._turn_response_seed_text = ""
         # In-flight LLM+TTS; wrapped in a task so barge-in can cancel while we await (like dev, but cancelable)
-        self._llm_response_task: asyncio.Task | None = None
+        self._llm_response_task: Optional[asyncio.Task] = None
         self._auto_greeting_sent = False
         self._recording_started = False
         self._lk_caller_publisher = None
@@ -447,7 +447,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
         # RAG prefetch: fired on the first qualifying interim so vector-DB retrieval
         # overlaps Deepgram endpointing time instead of blocking LLM start.
-        self._rag_prefetch_task: asyncio.Task | None = None
+        self._rag_prefetch_task: Optional[asyncio.Task] = None
         self._rag_prefetch_user_text: str = ""
 
         # Speculative TTS prefetch: fired on STT final (and on qualifying interim)
@@ -455,7 +455,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # prediction is correct the first TtsPipeline chunk is a cache hit → zero
         # synthesis latency for chunk 0.  Wrong predictions cost one wasted TTS API
         # call and are silently discarded.
-        self._speculative_prefetch_task: asyncio.Task | None = None
+        self._speculative_prefetch_task: Optional[asyncio.Task] = None
 
         # Duplicate-transcript guard for _complete_llm_turn_after_stt_final.
         # Set INSIDE _llm_turn_serial_lock so tasks 2/3 that queued up behind
@@ -521,7 +521,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._voice_orchestrator = VoiceOrchestrator(self)
         self._wire_stt_runtime()
 
-    def _flow_stt_language_code(self) -> str | None:
+    def _flow_stt_language_code(self) -> Optional[str]:
         """Read optional STT language override from call flow settings JSON."""
         if not self.call_session or not self.call_session.call_flow_id:
             return None
@@ -739,7 +739,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
     # ── Speculative TTS prefetch ──────────────────────────────────────────────
 
     @staticmethod
-    def _predict_opener_phrase(user_text: str) -> str | None:
+    def _predict_opener_phrase(user_text: str) -> Optional[str]:
         """
         Fast rule-based prediction of the most likely first TTS chunk text.
 
@@ -2880,7 +2880,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
 async def _receive_or_stop(
     ws: WebSocket, stop_event: asyncio.Event
-) -> str | None:
+) -> Optional[str]:
     """
     Race websocket.receive_text() against an internal stop_event.
 

@@ -15,7 +15,7 @@ from app.services import role_service
 # For authlib OIDC
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 
-def get_sso_config(db: Session, workspace_id: uuid.UUID) -> SsoConfig | None:
+def get_sso_config(db: Session, workspace_id: uuid.UUID) -> Optional[SsoConfig]:
     return db.query(SsoConfig).filter(SsoConfig.workspace_id == workspace_id).first()
 
 

@@ -29,12 +29,12 @@ def _base_filter(
     stmt,
     tenant_id: uuid.UUID,
     *,
-    agent_id: uuid.UUID | None = None,
-    flow_id: uuid.UUID | None = None,
-    direction: str | None = None,
-    date_from: datetime | None = None,
-    date_to: datetime | None = None,
-    status: str | None = None,
+    agent_id: Optional[uuid.UUID] = None,
+    flow_id: Optional[uuid.UUID] = None,
+    direction: Optional[str] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    status: Optional[str] = None,
 ):
     """Apply the common WHERE predicates to any statement that touches callsession."""
     stmt = stmt.where(CallSession.tenant_id == tenant_id)
@@ -64,12 +64,12 @@ class CallHistoryService:
         db: Session,
         tenant_id: uuid.UUID,
         *,
-        agent_id: uuid.UUID | None = None,
-        flow_id: uuid.UUID | None = None,
-        direction: str | None = None,
-        date_from: datetime | None = None,
-        date_to: datetime | None = None,
-        status: str | None = None,
+        agent_id: Optional[uuid.UUID] = None,
+        flow_id: Optional[uuid.UUID] = None,
+        direction: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        status: Optional[str] = None,
     ) -> CallHistoryMetrics:
         completed_expr = case((CallSession.status == "completed", 1), else_=None)
         failed_expr = case((CallSession.status == "failed", 1), else_=None)
@@ -133,11 +133,11 @@ class CallHistoryService:
         db: Session,
         tenant_id: uuid.UUID,
         *,
-        date_from: datetime | None = None,
-        date_to: datetime | None = None,
-        agent_id: uuid.UUID | None = None,
-        flow_id: uuid.UUID | None = None,
-        direction: str | None = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        agent_id: Optional[uuid.UUID] = None,
+        flow_id: Optional[uuid.UUID] = None,
+        direction: Optional[str] = None,
     ) -> List[CallHistoryTimeSeriesPoint]:
         date_col = func.date(CallSession.start_time).label("date")
         completed_expr = case((CallSession.status == "completed", 1), else_=None)
@@ -194,12 +194,12 @@ class CallHistoryService:
         per_page: int = 25,
         sort_by: str = "started_at",
         sort_dir: str = "desc",
-        agent_id: uuid.UUID | None = None,
-        flow_id: uuid.UUID | None = None,
-        direction: str | None = None,
-        date_from: datetime | None = None,
-        date_to: datetime | None = None,
-        status: str | None = None,
+        agent_id: Optional[uuid.UUID] = None,
+        flow_id: Optional[uuid.UUID] = None,
+        direction: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        status: Optional[str] = None,
     ) -> CallHistoryList:
         sort_col = self._SORT_COLUMNS.get(sort_by, CallSession.start_time)
         order_expr = sort_col.desc() if sort_dir == "desc" else sort_col.asc()
@@ -299,12 +299,12 @@ class CallHistoryService:
         db: Session,
         tenant_id: uuid.UUID,
         *,
-        agent_id: uuid.UUID | None = None,
-        flow_id: uuid.UUID | None = None,
-        direction: str | None = None,
-        date_from: datetime | None = None,
-        date_to: datetime | None = None,
-        status: str | None = None,
+        agent_id: Optional[uuid.UUID] = None,
+        flow_id: Optional[uuid.UUID] = None,
+        direction: Optional[str] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        status: Optional[str] = None,
     ):
         """Yield CSV lines (str) one at a time — header first, then one row per call."""
         stmt = (
@@ -369,8 +369,8 @@ class CallHistoryService:
         db: Session,
         tenant_id: uuid.UUID,
         *,
-        date_from: datetime | None = None,
-        date_to: datetime | None = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
     ) -> BatchCallMetrics:
         stmt = select(
             func.count().label("total_batches"),

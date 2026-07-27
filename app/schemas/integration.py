@@ -9,7 +9,7 @@ from pydantic import BaseModel
 class MakeTriggerRequest(BaseModel):
     agent_id: str
     to_number: str
-    variables: Dict[str, Any] | None = None
+    variables: Optional[Dict[str, Any]] = None
 
 
 class MakeTriggerResponse(BaseModel):
@@ -25,10 +25,10 @@ class N8nTriggerResponse(BaseModel):
 class IntegrationItem(BaseModel):
     name: str
     connected: bool
-    webhook_url: str | None = None
-    last_triggered_at: datetime | None = None
-    connected_at: datetime | None = None
-    last_sync_at: str | None = None
+    webhook_url: Optional[str] = None
+    last_triggered_at: Optional[datetime] = None
+    connected_at: Optional[datetime] = None
+    last_sync_at: Optional[str] = None
 
 
 class IntegrationListResponse(BaseModel):

@@ -13,13 +13,13 @@ class UsageRecordCreate(UsageRecordBase):
     subscription_id: uuid.UUID
 
 class UsageRecordUpdate(BaseModel):
-    calls_used: int | None = None
-    agents_created: int | None = None
+    calls_used: Optional[int] = None
+    agents_created: Optional[int] = None
 
 class UsageRecordOut(UsageRecordBase):
     id: uuid.UUID
     subscription_id: uuid.UUID
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
     
     model_config = ConfigDict(from_attributes=True)

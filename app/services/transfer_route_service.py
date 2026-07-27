@@ -23,7 +23,7 @@ class TransferRouteService:
             .all()
         )
 
-    def get(self, db: Session, route_id: uuid.UUID, tenant_id: uuid.UUID) -> TransferRoute | None:
+    def get(self, db: Session, route_id: uuid.UUID, tenant_id: uuid.UUID) -> Optional[TransferRoute]:
         return (
             db.query(TransferRoute)
             .filter(

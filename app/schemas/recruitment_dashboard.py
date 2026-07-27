@@ -22,7 +22,7 @@ class UpcomingInterviewItem(BaseModel):
     interview_id: uuid.UUID
     candidate_name: str
     candidate_initials: str
-    job_title: str | None = None
+    job_title: Optional[str] = None
     scheduled_at: datetime
     time_label: str = Field(
         description='Human label such as "Today 3:00 PM" in UTC calendar'
@@ -55,15 +55,15 @@ class AccountSnapshot(BaseModel):
 
 class RecruitmentKpiBlock(BaseModel):
     open_positions: int
-    open_positions_subtitle: str | None = None
+    open_positions_subtitle: Optional[str] = None
     total_candidates: int
-    total_candidates_subtitle: str | None = None
+    total_candidates_subtitle: Optional[str] = None
     interviews_scheduled: int
     interviews_today: int
-    interviews_scheduled_subtitle: str | None = None
+    interviews_scheduled_subtitle: Optional[str] = None
     offers_sent: int
     offers_awaiting_feedback: int
-    offers_subtitle: str | None = None
+    offers_subtitle: Optional[str] = None
 
 
 class RecruitmentDashboardData(BaseModel):

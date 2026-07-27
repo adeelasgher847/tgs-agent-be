@@ -19,10 +19,10 @@ from sqlalchemy.orm import Session
 INTEGRATION_RATE_LIMIT = 10
 INTEGRATION_RATE_WINDOW = 60  # seconds
 
-_redis: aioredis.Redis | None = None
+_redis: Optional[aioredis.Redis] = None
 
 
-def _get_redis() -> aioredis.Redis | None:
+def _get_redis() -> Optional[aioredis.Redis]:
     global _redis
     if _redis is None:
         try:
@@ -92,7 +92,7 @@ def store_make_secret(db: Session, tenant: Tenant, secret: str) -> None:
     db.refresh(tenant)
 
 
-def get_make_secret(tenant: Tenant) -> str | None:
+def get_make_secret(tenant: Tenant) -> Optional[str]:
     return get_workspace_settings(tenant).get("make_secret")
 
 
@@ -104,7 +104,7 @@ def store_n8n_secret(db: Session, tenant: Tenant, secret: str) -> None:
     db.refresh(tenant)
 
 
-def get_n8n_secret(tenant: Tenant) -> str | None:
+def get_n8n_secret(tenant: Tenant) -> Optional[str]:
     return get_workspace_settings(tenant).get("n8n_secret")
 
 
@@ -116,7 +116,7 @@ def record_last_triggered(db: Session, tenant: Tenant, integration: str) -> None
     db.commit()
 
 
-def get_last_triggered_at(tenant: Tenant, integration: str) -> datetime | None:
+def get_last_triggered_at(tenant: Tenant, integration: str) -> Optional[datetime]:
     raw = get_workspace_settings(tenant).get(f"{integration}_last_triggered_at")
     if raw is None:
         return None
@@ -126,7 +126,7 @@ def get_last_triggered_at(tenant: Tenant, integration: str) -> datetime | None:
         return None
 
 
-def resolve_tenant_by_agent(db: Session, agent_id: str) -> tuple[Agent | None, Tenant | None]:
+def resolve_tenant_by_agent(db: Session, agent_id: str) -> tuple[Optional[Agent], Optional[Tenant]]:
     """Look up an agent and its owning tenant by agent_id string."""
     try:
         agent_uuid = uuid.UUID(agent_id)

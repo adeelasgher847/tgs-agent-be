@@ -291,7 +291,7 @@ def seed(db: Session) -> None:
         print("   Workspaces and Admin users are still fully configured and ready!\n")
 
     print("[seed] Done.")
-    print("\n[seed] Hierarchical environment active:")
+    print(f"\n[seed] Hierarchical environment active:")
     print(f"   Parent Agency ID:      {agency_id_str}")
     print(f"   Linked Sub-Account ID: {sub_account_id_str}")
     print(f"   Admin Credentials:     {SEED_ADMIN_EMAIL} / {SEED_ADMIN_PASSWORD}")

@@ -184,7 +184,7 @@ async def refresh_access_token(refresh_token: str) -> dict:
 # ─── WorkspaceIntegration CRUD ────────────────────────────────────────────────
 
 
-def get_integration(db: Session, tenant_id: uuid.UUID) -> WorkspaceIntegration | None:
+def get_integration(db: Session, tenant_id: uuid.UUID) -> Optional[WorkspaceIntegration]:
     return (
         db.query(WorkspaceIntegration)
         .filter(
@@ -201,7 +201,7 @@ def tenant_has_salesforce_connected(db: Session, tenant_id: uuid.UUID) -> bool:
 
 def get_connection_status(
     db: Session, tenant_id: uuid.UUID
-) -> Tuple[bool, datetime | None]:
+) -> Tuple[bool, Optional[datetime]]:
     row = get_integration(db, tenant_id)
     if row is None:
         return False, None
@@ -241,7 +241,7 @@ def upsert_tokens(
 
 async def get_valid_access_token(
     db: Session, tenant_id: uuid.UUID
-) -> Tuple[str, str] | None:
+) -> Optional[Tuple[str, str]]:
     """Return (access_token, instance_url), refreshing the token first if it's near-expiry."""
     row = get_integration(db, tenant_id)
     if row is None or not row.access_token:
@@ -285,7 +285,7 @@ async def get_valid_access_token(
 
 async def _force_refresh_access_token(
     db: Session, tenant_id: uuid.UUID
-) -> Tuple[str, str] | None:
+) -> Optional[Tuple[str, str]]:
     """
     Unconditionally refresh the Salesforce access token, ignoring token_expires_at.
 
@@ -357,7 +357,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_iso(ts: str) -> datetime | None:
+def _parse_iso(ts: str) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError):
@@ -365,7 +365,7 @@ def _parse_iso(ts: str) -> datetime | None:
 
 
 def set_last_write_back_error(
-    db: Session, tenant_id: uuid.UUID, error: str | None
+    db: Session, tenant_id: uuid.UUID, error: Optional[str]
 ) -> None:
     """
     Record (or clear, when error is None) the last post-call write-back failure.
@@ -632,7 +632,7 @@ def _contact_dict_from_salesforce(raw: dict) -> dict:
 
 async def search_contact_by_phone(
     access_token: str, instance_url: str, phone: str
-) -> dict | None:
+) -> Optional[dict]:
     search_vals = _get_phone_search_values(phone)
     if not search_vals:
         return None
@@ -654,7 +654,7 @@ async def search_contact_by_phone(
 
 async def get_contact_for_phone(
     db: Session, tenant_id: uuid.UUID, phone: str, *, commit_lookup_timestamp: bool = True
-) -> dict | None:
+) -> Optional[dict]:
     """Look up a contact by phone, Redis-cached for 5 minutes. Fails open on any error.
 
     commit_lookup_timestamp=False must be passed by live in-call callers sharing a
@@ -829,7 +829,7 @@ def get_cached_transcript_summary(db: Session, call_session: CallSession) -> str
     return summary
 
 
-def _sf_call_type(call_type: str | None) -> str:
+def _sf_call_type(call_type: Optional[str]) -> str:
     return "Inbound" if (call_type or "").lower() == "inbound" else "Outbound"
 
 
@@ -841,7 +841,7 @@ async def create_call_task(
     occurred_at: datetime,
     duration_seconds: int,
     description: str,
-    call_type: str | None = None,
+    call_type: Optional[str] = None,
 ) -> dict:
     payload = {
         "WhoId": contact_id,

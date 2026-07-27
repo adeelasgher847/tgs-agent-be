@@ -174,13 +174,13 @@ class WebhookService:
         raw_secret: str,
         event_type: str,
         payload: dict,
-        existing_delivery: WebhookDelivery | None,
+        existing_delivery: Optional[WebhookDelivery],
     ) -> WebhookDelivery:
         payload_json = json.dumps(payload, default=str)
         signature = self.sign_payload(raw_secret, payload_json)
 
-        http_status: int | None = None
-        response_body: str | None = None
+        http_status: Optional[int] = None
+        response_body: Optional[str] = None
         delivered = False
 
         # SSRF guard — re-validate on every delivery attempt.

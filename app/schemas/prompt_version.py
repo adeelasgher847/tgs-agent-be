@@ -15,5 +15,5 @@ class PromptVersionOut(BaseModel):
     id: uuid.UUID
     flow_id: uuid.UUID = Field(..., serialization_alias="flowId")
     prompt_text: str = Field(..., serialization_alias="promptText")
-    notes: str | None = None
+    notes: Optional[str] = None
     created_at: datetime = Field(..., serialization_alias="createdAt")

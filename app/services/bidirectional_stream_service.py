@@ -19,9 +19,9 @@ from app.utils.audio_utils import add_ambient_noise_to_mulaw
 
 
 def _resolve_tts_provider_slug(
-    agent: Any | None,
+    agent: Optional[Any],
     db: "Session | None" = None,
-) -> str | None:
+) -> Optional[str]:
     if not agent:
         return None
     return resolve_tts_runtime(agent, db=db).adapter_slug
@@ -35,7 +35,7 @@ async def generate_mulaw_tts(
     speaking_rate: float = 0.95,
     use_ssml: bool = False,
     add_office_bg: bool = False,
-    agent: Any | None = None,
+    agent: Optional[Any] = None,
     db: "Session | None" = None,
 ) -> bytes:
     """

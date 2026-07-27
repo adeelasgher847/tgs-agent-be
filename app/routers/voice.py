@@ -76,7 +76,7 @@ model_service = ModelService()
 async def initiate_call(
     call_request: CallInitiateRequest,
     http_request: Request,
-    user: User | None = Depends(get_optional_tenant_user),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -222,7 +222,7 @@ async def handle_incoming_call(
                 db.query(Agent)
                 .filter(
                     Agent.id == phone_number.assistant_id,
-                    ~Agent.is_deleted,
+                    Agent.is_deleted == False,
                 )
                 .first()
             )
@@ -308,10 +308,10 @@ _TWILIO_TO_INTERNAL_STATUS: dict[str, str] = {
 async def handle_call_events_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
-    agentId: str | None = Query(None),
-    userId: str | None = Query(None),
-    callSessionId: str | None = Query(None),
-    timeout: str | None = Query(None),
+    agentId: Optional[str] = Query(None),
+    userId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
+    timeout: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -347,7 +347,7 @@ async def handle_call_events_webhook(
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
         ))
-        logger.info("✅ WebSocket broadcast queued at webhook start")
+        logger.info(f"✅ WebSocket broadcast queued at webhook start")
     except Exception as e:
         logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
         # Don't print traceback - this is not critical for call processing
@@ -368,7 +368,7 @@ async def handle_call_events_webhook(
         # confidence = form_data.get("Confidence", "")
         # speech_duration = form_data.get("SpeechDuration", "")
         
-        logger.info("🎤 Speech handling is now managed by Deepgram STT WebSocket")
+        logger.info(f"🎤 Speech handling is now managed by Deepgram STT WebSocket")
         
         # Get call session using callSessionId first, then fallback to Twilio CallSid.
         call_session = None
@@ -394,7 +394,7 @@ async def handle_call_events_webhook(
             except ValueError:
                 logger.warning(f"⚠️ Invalid call session ID format: {callSessionId}")
         else:
-            logger.info("⚠️ No callSessionId provided in query parameters")
+            logger.info(f"⚠️ No callSessionId provided in query parameters")
 
         # Fallback lookup by Twilio SID for inbound and legacy callback URLs
         if not call_session and call_sid:
@@ -434,7 +434,7 @@ async def handle_call_events_webhook(
         
         # 🔍 DEBUG: Track all incoming statuses for troubleshooting
         logger.debug("=" * 60)
-        logger.debug("🔍 DEBUG WEBHOOK RECEIVED:")
+        logger.debug(f"🔍 DEBUG WEBHOOK RECEIVED:")
         logger.debug(f"   Status: '{call_status}'")
         logger.debug(f"   Direction: '{direction}'")
         logger.debug(f"   Call SID: {call_sid}")
@@ -442,7 +442,7 @@ async def handle_call_events_webhook(
             logger.debug(f"   Current DB Status: '{call_session.status}'")
             logger.debug(f"   Call Session ID: {call_session.id}")
         else:
-            logger.debug("   Call Session: Not found")
+            logger.debug(f"   Call Session: Not found")
         logger.debug("=" * 60)
         
         # Test WebSocket connection if we have a call session (non-blocking - fire and forget)
@@ -545,7 +545,7 @@ async def handle_call_events_webhook(
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
             # SKIP "in-progress" status here - it will be sent when media stream starts
             if call_status == "in-progress":
-                logger.info("ℹ️ Skipping 'in-progress' broadcast here - will be sent by media stream handler")
+                logger.info(f"ℹ️ Skipping 'in-progress' broadcast here - will be sent by media stream handler")
             else:
                 try:
                     logger.info(f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}")
@@ -593,9 +593,9 @@ async def handle_call_events_webhook(
                     logger.error(f"❌ Failed to broadcast call status update: {e}", exc_info=True)
         else:
             if not call_session:
-                logger.warning("⚠️ No call session found - cannot update status or broadcast")
+                logger.warning(f"⚠️ No call session found - cannot update status or broadcast")
             if not call_status:
-                logger.warning("⚠️ No call status provided - cannot update status or broadcast")
+                logger.warning(f"⚠️ No call status provided - cannot update status or broadcast")
         
         # Speech input is now handled by Deepgram STT via WebSocket
         # The WebSocket will transcribe audio and generate responses
@@ -670,9 +670,9 @@ async def handle_call_events_webhook(
 
         elif call_status == "answered" and direction == "outbound-api":
             # ⚠️ IGNORE - We use first media packet detection instead (VAPI-style)
-            logger.info("ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug("🔍 DEBUG: Will wait for first media packet from WebSocket stream")
-            logger.debug("🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
+            logger.info(f"ℹ️ ANSWERED STATUS RECEIVED (ignored - using first media packet instead)")
+            logger.debug(f"🔍 DEBUG: Will wait for first media packet from WebSocket stream")
+            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
             
             # Don't start credit monitoring or update status here
             # Wait for first media packet event from WebSocket stream
@@ -682,9 +682,9 @@ async def handle_call_events_webhook(
         elif call_status == "in-progress" and direction != "inbound":
             # ⚠️ IGNORE - This is Twilio's media-active notification
             # We use first media packet detection instead (VAPI-style)
-            logger.info("ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
-            logger.debug("🔍 DEBUG: Media stream status from Twilio (not user pickup)")
-            logger.debug("🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
+            logger.info(f"ℹ️ IN-PROGRESS STATUS RECEIVED (ignored - using first media packet instead)")
+            logger.debug(f"🔍 DEBUG: Media stream status from Twilio (not user pickup)")
+            logger.debug(f"🔍 DEBUG: User pickup detection happens in bidirectional_stream.py")
             
             # Don't do anything - first media packet will handle it
             
@@ -867,7 +867,7 @@ async def handle_call_events_webhook(
 
 @router.get("/dashboard/analytics", response_model=SuccessResponse[dict])
 async def get_dashboard_analytics(
-    agent_id: str | None = Query(None, description="Filter by specific agent ID"),
+    agent_id: Optional[str] = Query(None, description="Filter by specific agent ID"),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
@@ -907,9 +907,9 @@ async def get_dashboard_analytics(
 @router.post("/webhook/recording-callback", response_class=HTMLResponse)
 async def handle_recording_callback(
     request: Request,
-    agentId: str | None = Query(None),
-    userId: str | None = Query(None),
-    callSessionId: str | None = Query(None),
+    agentId: Optional[str] = Query(None),
+    userId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -921,7 +921,7 @@ async def handle_recording_callback(
     
     This is the simple, synchronous approach similar to feature/openai branch.
     """
-    logger.info("🎙️ RECORDING CALLBACK WEBHOOK - VAPI-style")
+    logger.info(f"🎙️ RECORDING CALLBACK WEBHOOK - VAPI-style")
     logger.debug(f"📞 Call Session: {callSessionId}")
     logger.debug(f"🤖 Agent: {agentId}")
     
@@ -952,12 +952,12 @@ async def handle_recording_callback(
         
         # If no recording URL at all, something is wrong
         if not recording_url:
-            logger.warning("⚠️ No recording URL provided - cannot process")
+            logger.warning(f"⚠️ No recording URL provided - cannot process")
             return HTMLResponse("", media_type="application/xml")
         
         # This is the 'action' callback - user finished speaking
         # Process this for TTS response
-        logger.info("✅ Action callback detected - processing for TTS response")
+        logger.info(f"✅ Action callback detected - processing for TTS response")
         
         # Get call session
         call_session = None
@@ -991,7 +991,7 @@ async def handle_recording_callback(
                     # Full URL - add auth
                     auth_url = recording_url.replace('https://api.twilio.com', f'https://{account_sid}:{auth_token}@api.twilio.com') + '.wav'
                 
-                logger.debug("📥 Downloading audio from Twilio...")
+                logger.debug(f"📥 Downloading audio from Twilio...")
                 
                 # Download the recording
                 audio_response = requests.get(auth_url, timeout=10)
@@ -1049,7 +1049,7 @@ async def handle_recording_callback(
                     )
                     
                     # Generate agent response using LLM
-                    logger.debug("🤖 Generating agent response...")
+                    logger.debug(f"🤖 Generating agent response...")
                     response_text = await VoiceLoggingService.generate_agent_response(
                         speech_text=transcript,
                         confidence=confidence,
@@ -1072,7 +1072,7 @@ async def handle_recording_callback(
                     # Check if this is a goodbye
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
                     if is_goodbye:
-                        logger.info("🛑 Goodbye detected - ending call")
+                        logger.info(f"🛑 Goodbye detected - ending call")
                         response = VoiceResponse()
                         response.hangup()
                         twiml_str = str(response)
@@ -1105,13 +1105,13 @@ async def handle_recording_callback(
                         record_callback_url=recording_callback_url
                     )
                     
-                    logger.debug("🎵 Returning TwiML with TTS WebSocket streaming")
+                    logger.debug(f"🎵 Returning TwiML with TTS WebSocket streaming")
                     logger.debug(f"📤 TwiML: {twiml_str[:200]}...")
                     return HTMLResponse(twiml_str, media_type="application/xml")
                 
                 else:
                     # No transcript - ask user to repeat
-                    logger.info("⚠️ No transcript from Deepgram STT")
+                    logger.info(f"⚠️ No transcript from Deepgram STT")
                     response = VoiceResponse()
 
                     # Natural "didn't catch that" response
@@ -1166,7 +1166,7 @@ async def handle_recording_callback(
                 return HTMLResponse(str(response), media_type="application/xml")
         
         # Fallback if no recording URL
-        logger.warning("⚠️ No recording URL provided")
+        logger.warning(f"⚠️ No recording URL provided")
         response = VoiceResponse()
         text = "I didn't hear anything. Please try speaking again."
         lang = agent.language if agent and agent.language else "en"
@@ -1208,8 +1208,8 @@ async def handle_recording_callback(
 @router.post("/webhook/gather-speech", response_class=HTMLResponse)
 async def handle_gather_speech_webhook(
     request: Request,
-    agentId: str | None = Query(None),
-    callSessionId: str | None = Query(None),
+    agentId: Optional[str] = Query(None),
+    callSessionId: Optional[str] = Query(None),
     body: str = Depends(get_request_body),
     db: Session = Depends(get_db)
 ):
@@ -1219,8 +1219,8 @@ async def handle_gather_speech_webhook(
     
     Keeping this for backward compatibility with feature/openai branch style.
     """
-    logger.warning("⚠️ DEPRECATED: GATHER SPEECH WEBHOOK CALLED")
-    logger.warning("Use /webhook/recording-callback instead")
+    logger.warning(f"⚠️ DEPRECATED: GATHER SPEECH WEBHOOK CALLED")
+    logger.warning(f"Use /webhook/recording-callback instead")
     
     try:
         form_data = await request.form()
@@ -1267,7 +1267,7 @@ async def handle_gather_speech_webhook(
                 
                 # Download recording with authentication
                 auth_url = f"https://{account_sid}:{auth_token}@api.twilio.com{recording_url}.wav"
-                logger.debug("📥 Downloading audio from Twilio...")
+                logger.debug(f"📥 Downloading audio from Twilio...")
                 
                 audio_response = requests.get(auth_url)
                 audio_content = audio_response.content
@@ -1338,7 +1338,7 @@ async def handle_gather_speech_webhook(
                     is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
                     if is_goodbye:
                         response.hangup()
-                        logger.info("🛑 Goodbye detected - ending call")
+                        logger.info(f"🛑 Goodbye detected - ending call")
                         return HTMLResponse(str(response), media_type="application/xml")
                     
                     # Continue conversation - gather next input
@@ -1415,7 +1415,7 @@ async def handle_recording_status_webhook(
         recording_url = form_data.get("RecordingUrl")
         recording_duration = form_data.get("RecordingDuration")
         
-        logger.info("🎙️ RECORDING STATUS UPDATE")
+        logger.info(f"🎙️ RECORDING STATUS UPDATE")
         logger.debug(f"Recording SID: {recording_sid}")
         logger.debug(f"Call SID: {call_sid}")
         logger.debug(f"Status: {recording_status}")
@@ -1576,7 +1576,7 @@ async def transfer_webhook_dial_complete(
 ):
     """After cold Dial ends (busy/no-answer), hang up gracefully. Twilio-signed."""
 
-    def _hangup_twiml(message: str | None = None) -> HTMLResponse:
+    def _hangup_twiml(message: Optional[str] = None) -> HTMLResponse:
         vr = VoiceResponse()
         if message:
             vr.say(message)
@@ -1878,7 +1878,7 @@ async def get_recording_access(
                 detail=f"Failed to fetch recording from Twilio: HTTP {response.status_code}"
             )
         
-        logger.info("✅ Streaming recording to user (no login required)")
+        logger.info(f"✅ Streaming recording to user (no login required)")
         
         # Stream audio directly to user (NO authentication required on user's end!)
         return StreamingResponse(

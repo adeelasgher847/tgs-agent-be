@@ -17,7 +17,7 @@ def create_success_response(
 def create_error_response(
     message: str, 
     status_code: int = status.HTTP_400_BAD_REQUEST,
-    error: str | None = None
+    error: Optional[str] = None
 ) -> ErrorResponse:
     """Create a standardized error response"""
     return ErrorResponse(

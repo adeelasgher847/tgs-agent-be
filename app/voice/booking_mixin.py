@@ -243,7 +243,7 @@ class BookingMixin:
                 return True
         return False
 
-    def _is_duplicate_agent_line(self, user_text: str | None, agent_text: str) -> bool:
+    def _is_duplicate_agent_line(self, user_text: Optional[str], agent_text: str) -> bool:
         """
         Transcript-level guard: within `_AGENT_LINE_DEDUP_WINDOW_SEC`, the same agent
         line (normalized) is treated as a duplicate even if the user turn differs. This
@@ -400,7 +400,7 @@ class BookingMixin:
         m = _re.search(r"Service Areas \(verbatim\):\s*(.+)", block)
         return m.group(1).strip() if m else ""
 
-    def _remember_agent_turn(self, user_text: str | None, agent_text: str) -> None:
+    def _remember_agent_turn(self, user_text: Optional[str], agent_text: str) -> None:
         """Append (user_norm, agent_norm, ts) and bound the buffer to the last few entries."""
         if not agent_text:
             return
@@ -758,12 +758,12 @@ class BookingMixin:
         *,
         llm_service,
         model_name: str,
-        api_key: str | None,
+        api_key: Optional[str],
         user_text: str,
         assistant_text: str,
         history_text: str,
         temperature: float,
-    ) -> str | None:
+    ) -> Optional[str]:
         """Second-pass action extraction. Returns one action token or None."""
         if not self.call_session:
             return None
@@ -817,7 +817,7 @@ class BookingMixin:
             logger.warning("Calendar action extraction pass failed: %s", e)
             return None
 
-    def _resolve_cached_calendar_slot(self, slot_raw: str) -> datetime | None:
+    def _resolve_cached_calendar_slot(self, slot_raw: str) -> Optional[datetime]:
         normalized = self._normalize_calendar_slot_key(slot_raw)
         if not normalized or not self._last_offered_calendar_slots:
             return None
@@ -975,7 +975,7 @@ class BookingMixin:
                     break
         return out
 
-    def _follow_up_appointment_uuid(self) -> uuid.UUID | None:
+    def _follow_up_appointment_uuid(self) -> Optional[uuid.UUID]:
         if not self.call_session or not self.call_session.call_metadata:
             return None
         raw = (self.call_session.call_metadata.get("appointment_id") or "").strip()

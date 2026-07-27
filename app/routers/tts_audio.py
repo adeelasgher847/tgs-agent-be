@@ -97,7 +97,7 @@ async def serve_google_tts_audio(
                 # Remove oldest entry
                 oldest_key = next(iter(audio_cache))
                 audio_cache.pop(oldest_key)
-                logger.info("🗑️ Removed oldest cache entry (cache full)")
+                logger.info(f"🗑️ Removed oldest cache entry (cache full)")
             
             audio_cache[cache_key] = audio_content
             logger.info(f"💾 Cached Google TTS audio ({len(audio_content)} bytes)")

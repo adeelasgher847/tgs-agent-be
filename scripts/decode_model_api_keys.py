@@ -19,7 +19,7 @@ from app.models.model import Model
 from app.models.provider import Provider
 
 
-def _parse_uuid(value: str | None, field_name: str) -> uuid.UUID | None:
+def _parse_uuid(value: Optional[str], field_name: str) -> Optional[uuid.UUID]:
     if not value:
         return None
     try:

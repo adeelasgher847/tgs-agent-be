@@ -84,8 +84,8 @@ def create_appointment(
 
 @router.get("/appointments", response_model=SuccessResponse[AppointmentListResponse],include_in_schema=False)
 def list_appointments(
-    date_from: date | None = Query(None),
-    date_to: date | None = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):

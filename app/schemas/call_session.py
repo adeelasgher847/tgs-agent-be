@@ -9,62 +9,62 @@ class CallSessionBase(BaseModel):
     tenant_id: uuid.UUID
     status: str
     call_type: str = Field(default="inbound", description="inbound, outbound, web")
-    success_evaluation: str | None = Field(None, description="success, fail, null")
-    ended_reason: str | None = None
-    cost: float | None = Field(default=0.0, description="Cost in USD")
-    cost_currency: str | None = Field(default="USD", description="Currency code")
+    success_evaluation: Optional[str] = Field(None, description="success, fail, null")
+    ended_reason: Optional[str] = None
+    cost: Optional[float] = Field(default=0.0, description="Cost in USD")
+    cost_currency: Optional[str] = Field(default="USD", description="Currency code")
     transferred: bool = Field(default=False, description="Whether call was transferred")
-    twilio_call_sid: str | None = None
-    from_number: str | None = None
-    to_number: str | None = None
-    assistant_phone_number: str | None = None
-    customer_phone_number: str | None = None
-    call_metadata: Dict[str, Any] | None = None
+    twilio_call_sid: Optional[str] = None
+    from_number: Optional[str] = None
+    to_number: Optional[str] = None
+    assistant_phone_number: Optional[str] = None
+    customer_phone_number: Optional[str] = None
+    call_metadata: Optional[Dict[str, Any]] = None
 
 class CallSessionCreate(BaseModel):
     user_id: uuid.UUID
     agent_id: uuid.UUID
     tenant_id: uuid.UUID
     call_type: str = Field(default="inbound", description="inbound, outbound, web")
-    twilio_call_sid: str | None = None
-    from_number: str | None = None
-    to_number: str | None = None
-    assistant_phone_number: str | None = None
-    customer_phone_number: str | None = None
-    call_metadata: Dict[str, Any] | None = None
+    twilio_call_sid: Optional[str] = None
+    from_number: Optional[str] = None
+    to_number: Optional[str] = None
+    assistant_phone_number: Optional[str] = None
+    customer_phone_number: Optional[str] = None
+    call_metadata: Optional[Dict[str, Any]] = None
 
 class CallSessionUpdate(BaseModel):
-    status: str | None = None
-    end_time: datetime | None = None
-    duration: int | None = None
-    success_evaluation: str | None = None
-    ended_reason: str | None = None
-    cost: float | None = None
-    transferred: bool | None = None
-    call_transcript: List[Dict[str, Any]] | None = None
-    response_times: List[Dict[str, Any]] | None = None
-    call_metadata: Dict[str, Any] | None = None
+    status: Optional[str] = None
+    end_time: Optional[datetime] = None
+    duration: Optional[int] = None
+    success_evaluation: Optional[str] = None
+    ended_reason: Optional[str] = None
+    cost: Optional[float] = None
+    transferred: Optional[bool] = None
+    call_transcript: Optional[List[Dict[str, Any]]] = None
+    response_times: Optional[List[Dict[str, Any]]] = None
+    call_metadata: Optional[Dict[str, Any]] = None
 
 class CallSessionResponse(CallSessionBase):
     id: uuid.UUID
     start_time: datetime
-    end_time: datetime | None = None
-    duration: int | None = None
-    call_transcript: List[Dict[str, Any]] | None = None
-    response_times: List[Dict[str, Any]] | None = None
+    end_time: Optional[datetime] = None
+    duration: Optional[int] = None
+    call_transcript: Optional[List[Dict[str, Any]]] = None
+    response_times: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
 
 class CallSessionStats(BaseModel):
     session_id: str
     status: str
-    duration: int | None = None
-    start_time: str | None = None
-    end_time: str | None = None
+    duration: Optional[int] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
     total_messages: int
     user_messages: int
     assistant_messages: int
-    average_response_time: float | None = None
+    average_response_time: Optional[float] = None
     total_response_time_entries: int
 
 class TranscriptEntry(BaseModel):
@@ -86,26 +86,26 @@ class CallLogResponse(BaseModel):
     id: uuid.UUID
     call_id: str = Field(description="Shortened call ID for display")
     assistant_name: str = Field(description="Name of the assistant")
-    assistant_phone_number: str | None = None
-    customer_phone_number: str | None = None
+    assistant_phone_number: Optional[str] = None
+    customer_phone_number: Optional[str] = None
     call_type: str = Field(description="inbound, outbound, web")
-    ended_reason: str | None = None
-    success_evaluation: str | None = None
-    start_time: datetime | None = None
-    duration: int | None = Field(description="Duration in seconds")
-    cost: float | None = Field(description="Cost in USD")
+    ended_reason: Optional[str] = None
+    success_evaluation: Optional[str] = None
+    start_time: Optional[datetime] = None
+    duration: Optional[int] = Field(description="Duration in seconds")
+    cost: Optional[float] = Field(description="Cost in USD")
     transferred: bool = False
     created_at: datetime
 
 class CallLogFilters(BaseModel):
     """Filters for call logs query"""
-    call_type: str | None = None  # inbound, outbound, web
-    success_evaluation: str | None = None  # success, fail
-    agent_id: uuid.UUID | None = None
-    date_from: datetime | None = None
-    date_to: datetime | None = None
-    transferred: bool | None = None
-    ended_reason: str | None = None
+    call_type: Optional[str] = None  # inbound, outbound, web
+    success_evaluation: Optional[str] = None  # success, fail
+    agent_id: Optional[uuid.UUID] = None
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    transferred: Optional[bool] = None
+    ended_reason: Optional[str] = None
 
 class CallLogStats(BaseModel):
     """Statistics for call logs dashboard"""
@@ -114,7 +114,7 @@ class CallLogStats(BaseModel):
     failed_calls: int
     transferred_calls: int
     total_cost: float
-    average_duration: float | None = None
+    average_duration: Optional[float] = None
     calls_by_type: Dict[str, int] = Field(default_factory=dict)
     calls_by_agent: Dict[str, int] = Field(default_factory=dict)
 
@@ -138,7 +138,7 @@ class CallLogAnalysisEmailRequest(BaseModel):
     call_session_id: uuid.UUID = Field(..., description="Call session whose data will be used.")
     target_email: EmailStr = Field(..., description="Recipient email address.")
 
-    transform_prompt: str | None = Field(
+    transform_prompt: Optional[str] = Field(
         None,
         description=(
             "Optional custom instruction for AI. If provided, the model will use the call analysis and this prompt "

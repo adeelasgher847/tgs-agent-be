@@ -39,7 +39,7 @@ class MondayService(BaseCRMService):
         },
     ]
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: Optional[str] = None):
         """
         Initialize MondayService with optional API key.
         If not provided, uses settings.MONDAY_API_KEY (for backward compatibility).
@@ -169,7 +169,7 @@ class MondayService(BaseCRMService):
         workspace_id = kwargs.get("workspace_id")
         return self.create_board(container_name, workspace_id)
 
-    def create_board(self, board_name: str, workspace_id: str | None = None) -> Dict[str, str]:
+    def create_board(self, board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
         """
         Create a dedicated Monday.com board for a tenant (instance method).
         """
@@ -181,7 +181,7 @@ class MondayService(BaseCRMService):
             }
         }
         """
-        variables: Dict[str, str | None] = {"boardName": board_name, "workspaceId": workspace_id}
+        variables: Dict[str, Optional[str]] = {"boardName": board_name, "workspaceId": workspace_id}
 
         data = self._execute(query, variables)
         
@@ -193,7 +193,7 @@ class MondayService(BaseCRMService):
         return {"id": board_id, "url": self.build_container_url(board_id)}
 
     @staticmethod
-    def create_board_static(board_name: str, workspace_id: str | None = None) -> Dict[str, str]:
+    def create_board_static(board_name: str, workspace_id: Optional[str] = None) -> Dict[str, str]:
         """
         Create a dedicated Monday.com board for a tenant (static method for backward compatibility).
         """
@@ -205,7 +205,7 @@ class MondayService(BaseCRMService):
             }
         }
         """
-        variables: Dict[str, str | None] = {"boardName": board_name, "workspaceId": workspace_id}
+        variables: Dict[str, Optional[str]] = {"boardName": board_name, "workspaceId": workspace_id}
 
         data = MondayService._execute_static(query, variables)
         board = data.get("create_board")
@@ -254,7 +254,7 @@ class MondayService(BaseCRMService):
             raise ValueError(f"Board {board_id} not found")
         return boards[0].get("columns", [])
 
-    def create_column(self, board_id: str, title: str, column_type: str, defaults: Dict | None = None) -> Dict:
+    def create_column(self, board_id: str, title: str, column_type: str, defaults: Optional[Dict] = None) -> Dict:
         """Create column (instance method - uses DB API key)"""
         query = """
         mutation ($boardId: ID!, $title: String!, $type: ColumnType!, $defaults: JSON) {
@@ -281,7 +281,7 @@ class MondayService(BaseCRMService):
         return column
     
     @staticmethod
-    def create_column_static(board_id: str, title: str, column_type: str, defaults: Dict | None = None) -> Dict:
+    def create_column_static(board_id: str, title: str, column_type: str, defaults: Optional[Dict] = None) -> Dict:
         """Create column (static method for backward compatibility)"""
         query = """
         mutation ($boardId: ID!, $title: String!, $type: ColumnType!, $defaults: JSON) {
@@ -402,9 +402,9 @@ class MondayService(BaseCRMService):
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
-        batch_id: str | None = None,
-        phone_number_id: str | None = None,  # ✅ Add phone_number_id parameter
-    ) -> dict | None:
+        batch_id: Optional[str] = None,
+        phone_number_id: Optional[str] = None,  # ✅ Add phone_number_id parameter
+    ) -> Optional[dict]:
         """Create a scheduled call item in the tenant's Monday.com board."""
         required_keys = {"status", "agent_id", "call_time_utc", "tenant_id", "user_id"}
         missing = required_keys - set(column_map.keys())
@@ -459,9 +459,9 @@ class MondayService(BaseCRMService):
     def update_item_status(
         item_id: str,
         status: str,
-        board_id: str | None,
-        column_map: Dict[str, str] | None = None,
-    ) -> dict | None:
+        board_id: Optional[str],
+        column_map: Optional[Dict[str, str]] = None,
+    ) -> Optional[dict]:
         """Update the status column for a Monday.com item."""
         target_board_id = board_id or settings.MONDAY_BOARD_ID
         if not target_board_id:
@@ -497,7 +497,7 @@ class MondayService(BaseCRMService):
             return None
 
     @staticmethod
-    def _fetch_item_page(board_id: str, cursor: str | None, limit: int) -> Tuple[List[str], str | None]:
+    def _fetch_item_page(board_id: str, cursor: Optional[str], limit: int) -> Tuple[List[str], Optional[str]]:
         query = """
         query ($boardId: [ID!], $cursor: String, $limit: Int!) {
             boards (ids: $boardId) {
@@ -535,7 +535,7 @@ class MondayService(BaseCRMService):
             Number of items deleted.
         """
         deleted = 0
-        cursor: str | None = None
+        cursor: Optional[str] = None
 
         while True:
             item_ids, cursor = MondayService._fetch_item_page(board_id, cursor, batch_size)
@@ -555,7 +555,7 @@ class MondayService(BaseCRMService):
         return deleted
 
     @staticmethod
-    def _fetch_items_with_columns(board_id: str, cursor: str | None, limit: int, column_ids: List[str]) -> Tuple[List[Dict], str | None]:
+    def _fetch_items_with_columns(board_id: str, cursor: Optional[str], limit: int, column_ids: List[str]) -> Tuple[List[Dict], Optional[str]]:
         """Fetch items with specific column values for filtering."""
         query = """
         query ($boardId: [ID!], $cursor: String, $limit: Int!, $columnIds: [String!]) {
@@ -618,7 +618,7 @@ class MondayService(BaseCRMService):
             raise ValueError("tenant_id column not found in board column map")
 
         deleted = 0
-        cursor: str | None = None
+        cursor: Optional[str] = None
 
         while True:
             # Fetch items with tenant_id column
@@ -681,7 +681,7 @@ class MondayService(BaseCRMService):
             raise ValueError("tenant_id or status column not found in board column map")
 
         pending_count = 0
-        cursor: str | None = None
+        cursor: Optional[str] = None
 
         while True:
             items, cursor = MondayService._fetch_items_with_columns(
@@ -741,7 +741,7 @@ class MondayService(BaseCRMService):
             raise ValueError("batch_id or tenant_id column not found in board column map")
         
         items = []
-        cursor: str | None = None
+        cursor: Optional[str] = None
         
         # Also fetch call_session_id column if available
         call_session_column_id = column_map.get("call_session_id")
@@ -786,7 +786,7 @@ class MondayService(BaseCRMService):
         item_id: str,
         call_session_id: str,
         column_map: Dict[str, str]
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """
         Update call_session_id column for a Monday.com item.
         
@@ -833,9 +833,9 @@ class MondayService(BaseCRMService):
         board_id: str,
         item_id: str,
         status: str,
-        call_session_id: str | None,
+        call_session_id: Optional[str],
         column_map: Dict[str, str]
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """
         Update both status and call_session_id for a Monday.com item in one call.
         
@@ -1017,9 +1017,9 @@ class MondayService(BaseCRMService):
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
-        batch_id: str | None = None,
-        phone_number_id: str | None = None,
-    ) -> dict | None:
+        batch_id: Optional[str] = None,
+        phone_number_id: Optional[str] = None,
+    ) -> Optional[dict]:
         """Create scheduled call item (implements BaseCRMService)"""
         # Use instance _execute which uses instance API key
         required_keys = {"status", "agent_id", "call_time_utc", "tenant_id", "user_id"}
@@ -1072,7 +1072,7 @@ class MondayService(BaseCRMService):
         item_id: str,
         status: str,
         field_map: Dict[str, str],
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """Update item status (implements BaseCRMService)"""
         status_column_id = field_map.get("status", "status")
         column_values = {status_column_id: {"label": status}}
@@ -1106,7 +1106,7 @@ class MondayService(BaseCRMService):
         item_id: str,
         call_session_id: str,
         field_map: Dict[str, str],
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """Update call_session_id (implements BaseCRMService)"""
         call_session_column_id = field_map.get("call_session_id")
         if not call_session_column_id:
@@ -1151,7 +1151,7 @@ class MondayService(BaseCRMService):
         """Delete items by tenant (implements BaseCRMService)"""
         return MondayService.delete_items_by_tenant_static(container_id, tenant_id, field_map, batch_size)
 
-    def _fetch_items_with_columns_instance(self, board_id: str, cursor: str | None, limit: int, column_ids: List[str]) -> Tuple[List[Dict], str | None]:
+    def _fetch_items_with_columns_instance(self, board_id: str, cursor: Optional[str], limit: int, column_ids: List[str]) -> Tuple[List[Dict], Optional[str]]:
         """Fetch items with specific column values for filtering (instance method - uses instance API key)."""
         query = """
         query ($boardId: [ID!], $cursor: String, $limit: Int!, $columnIds: [String!]) {
@@ -1199,7 +1199,7 @@ class MondayService(BaseCRMService):
             raise ValueError("tenant_id or status column not found in field map")
 
         pending_count = 0
-        cursor: str | None = None
+        cursor: Optional[str] = None
 
         while True:
             items, cursor = self._fetch_items_with_columns_instance(
@@ -1259,7 +1259,7 @@ class MondayService(BaseCRMService):
             raise ValueError("batch_id or tenant_id column not found in board column map")
         
         items = []
-        cursor: str | None = None
+        cursor: Optional[str] = None
         
         # Also fetch call_session_id and status columns if available
         call_session_column_id = field_map.get("call_session_id")
@@ -1304,10 +1304,10 @@ class MondayService(BaseCRMService):
     def _fetch_items_with_columns_instance(
         self, 
         board_id: str, 
-        cursor: str | None, 
+        cursor: Optional[str], 
         limit: int, 
         column_ids: List[str]
-    ) -> Tuple[List[Dict], str | None]:
+    ) -> Tuple[List[Dict], Optional[str]]:
         """Fetch items with specific column values for filtering (instance method)."""
         query = """
         query ($boardId: [ID!], $cursor: String, $limit: Int!, $columnIds: [String!]) {

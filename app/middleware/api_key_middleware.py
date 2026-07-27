@@ -39,12 +39,12 @@ from app.middleware.request_id_middleware import get_request_id
 from app.models.api_key import Apikey
 from app.models.tenant import Tenant
 
-_redis: aioredis.Redis | None = None
+_redis: Optional[aioredis.Redis] = None
 
 CACHE_TTL = 60  # seconds
 
 _async_engine = None
-_AsyncSessionLocal: sessionmaker | None = None
+_AsyncSessionLocal: Optional[sessionmaker] = None
 
 _SKIP_EXACT = {
     "/",
@@ -80,7 +80,7 @@ _SKIP_PREFIXES = (
     "/api/v1/payments/stripe-webhook",
 )
 
-def _get_redis() -> aioredis.Redis | None:
+def _get_redis() -> Optional[aioredis.Redis]:
     global _redis
     if _redis is None:
         try:
@@ -155,9 +155,9 @@ def _attach_workspace_context(
     *,
     workspace: Workspace,
     auth_method: str,
-    user_id: uuid.UUID | None = None,
-    api_key_id: uuid.UUID | None = None,
-    api_key_prefix: str | None = None,
+    user_id: Optional[uuid.UUID] = None,
+    api_key_id: Optional[uuid.UUID] = None,
+    api_key_prefix: Optional[str] = None,
 ) -> None:
     request.state.workspace = workspace
     request.state.workspace_id = workspace.id
@@ -167,7 +167,7 @@ def _attach_workspace_context(
     request.state.api_key_prefix = api_key_prefix
 
 
-def _workspace_from_api_key_payload(payload: dict) -> Workspace | None:
+def _workspace_from_api_key_payload(payload: dict) -> Optional[Workspace]:
     workspace_data = payload.get("workspace")
     if workspace_data is None:
         return None
@@ -196,7 +196,7 @@ def _apikey_cache_key(key_hash: str, workspace_id: uuid.UUID) -> str:
     return f"apikey:{key_hash}:{workspace_id}"
 
 
-async def _apikey_cache_get(key_hash: str, workspace_id: uuid.UUID) -> dict | None:
+async def _apikey_cache_get(key_hash: str, workspace_id: uuid.UUID) -> Optional[dict]:
     r = _get_redis()
     if r is None:
         return None
@@ -248,7 +248,7 @@ def _workspace_cache_key(workspace_id: uuid.UUID) -> str:
     return f"workspace:{workspace_id}"
 
 
-async def _workspace_cache_get(workspace_id: uuid.UUID) -> Workspace | None:
+async def _workspace_cache_get(workspace_id: uuid.UUID) -> Optional[Workspace]:
     r = _get_redis()
     if r is None:
         return None
@@ -287,7 +287,7 @@ async def invalidate_workspace_cache(workspace_id: uuid.UUID) -> None:
         logger.debug("Redis workspace delete failed: %s", exc)
 
 
-async def _load_workspace(workspace_id: uuid.UUID) -> Workspace | None:
+async def _load_workspace(workspace_id: uuid.UUID) -> Optional[Workspace]:
     cached = await _workspace_cache_get(workspace_id)
     if cached is not None:
         return cached
@@ -317,7 +317,7 @@ def _build_api_key_payload(api_key_obj: Apikey, tenant_obj: Tenant) -> dict[str,
     }
 
 
-async def _resolve_api_key(key_hash: str, workspace_id: uuid.UUID) -> dict | None:
+async def _resolve_api_key(key_hash: str, workspace_id: uuid.UUID) -> Optional[dict]:
     cached = await _apikey_cache_get(key_hash, workspace_id)
     if cached is not None and cached.get("workspace") is not None:
         return cached

@@ -27,7 +27,7 @@ def _reject_readonly_on_write(request: Request, role_name: str) -> None:
         )
 
 
-def _forbidden(role_required: str, user_role: str | None) -> HTTPException:
+def _forbidden(role_required: str, user_role: Optional[str]) -> HTTPException:
     """Structured 403 per the RBAC matrix: detail.code/role_required/user_role/message."""
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -47,7 +47,7 @@ def _not_a_member() -> HTTPException:
     )
 
 
-def _resolve_effective_role(user: User, db: Session) -> str | None:
+def _resolve_effective_role(user: User, db: Session) -> Optional[str]:
     """Cached effective role for the user's current tenant (None = not a member)."""
     if not user.current_tenant_id:
         raise HTTPException(

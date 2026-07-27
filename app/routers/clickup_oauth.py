@@ -96,7 +96,7 @@ async def clickup_authorize(
 @router.get("/callback")
 async def clickup_oauth_callback(
     code: str = Query(..., description="Authorization code from ClickUp"),
-    state: str | None = Query(None, description="State parameter (optional)"),
+    state: Optional[str] = Query(None, description="State parameter (optional)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -192,7 +192,7 @@ async def clickup_oauth_callback(
         
         # After storing access token, automatically fetch and store space_id
         try:
-            logger.info("🔍 Auto-detecting ClickUp space after OAuth...")
+            logger.info(f"🔍 Auto-detecting ClickUp space after OAuth...")
             
             # Create headers with access token
             auth_headers = {
@@ -232,7 +232,7 @@ async def clickup_oauth_callback(
                     else:
                         logger.warning(f"⚠️ Failed to fetch spaces: HTTP {spaces_response.status_code}")
                 else:
-                    logger.warning("⚠️ No teams found for this access token")
+                    logger.warning(f"⚠️ No teams found for this access token")
             else:
                 logger.warning(f"⚠️ Failed to fetch teams: HTTP {team_response.status_code}")
         except Exception as e:

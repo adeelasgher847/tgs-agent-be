@@ -137,7 +137,7 @@ class GeminiService:
         self,
         text: str,
         model_name: str = "gemini-embedding-001",
-        output_dimensionality: int | None = None,
+        output_dimensionality: Optional[int] = None,
         api_key: str = None,
     ) -> List[float]:
         """

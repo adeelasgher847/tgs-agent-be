@@ -29,14 +29,14 @@ class ExtractedSkill(BaseModel):
 class JobDescriptionBase(BaseModel):
     job_title: str = Field(..., min_length=1, max_length=255)
     required_skills: List[str] = Field(default_factory=list)
-    years_experience_min: int | None = Field(None, ge=0, le=60)
-    years_experience_max: int | None = Field(None, ge=0, le=60)
-    education_requirements: str | None = None
-    location: str | None = Field(None, max_length=255)
-    salary_min: Decimal | None = Field(None, ge=0)
-    salary_max: Decimal | None = Field(None, ge=0)
-    currency: str | None = Field(None, min_length=3, max_length=12)
-    employment_type: EmploymentTypeEnum | None = None
+    years_experience_min: Optional[int] = Field(None, ge=0, le=60)
+    years_experience_max: Optional[int] = Field(None, ge=0, le=60)
+    education_requirements: Optional[str] = None
+    location: Optional[str] = Field(None, max_length=255)
+    salary_min: Optional[Decimal] = Field(None, ge=0)
+    salary_max: Optional[Decimal] = Field(None, ge=0)
+    currency: Optional[str] = Field(None, min_length=3, max_length=12)
+    employment_type: Optional[EmploymentTypeEnum] = None
     key_responsibilities: List[str] = Field(default_factory=list)
     required_certifications: List[str] = Field(default_factory=list)
     pass_match_threshold: float = Field(
@@ -60,29 +60,29 @@ class JobDescriptionBase(BaseModel):
 
 
 class JobDescriptionCreateManual(JobDescriptionBase):
-    raw_text: str | None = None
+    raw_text: Optional[str] = None
 
 
 class JobDescriptionUpdate(BaseModel):
-    job_title: str | None = Field(None, min_length=1, max_length=255)
-    required_skills: List[str] | None = None
-    years_experience_min: int | None = Field(None, ge=0, le=60)
-    years_experience_max: int | None = Field(None, ge=0, le=60)
-    education_requirements: str | None = None
-    location: str | None = Field(None, max_length=255)
-    salary_min: Decimal | None = Field(None, ge=0)
-    salary_max: Decimal | None = Field(None, ge=0)
-    currency: str | None = Field(None, min_length=3, max_length=12)
-    employment_type: EmploymentTypeEnum | None = None
-    key_responsibilities: List[str] | None = None
-    required_certifications: List[str] | None = None
-    raw_text: str | None = None
-    extracted_skills: List[ExtractedSkill] | None = None
-    keywords: List[str] | None = None
-    skill_weight_matrix: Dict[str, float] | None = None
-    matching_criteria: Dict[str, Any] | None = None
-    processing_status: ProcessingStatusEnum | None = None
-    pass_match_threshold: float | None = Field(
+    job_title: Optional[str] = Field(None, min_length=1, max_length=255)
+    required_skills: Optional[List[str]] = None
+    years_experience_min: Optional[int] = Field(None, ge=0, le=60)
+    years_experience_max: Optional[int] = Field(None, ge=0, le=60)
+    education_requirements: Optional[str] = None
+    location: Optional[str] = Field(None, max_length=255)
+    salary_min: Optional[Decimal] = Field(None, ge=0)
+    salary_max: Optional[Decimal] = Field(None, ge=0)
+    currency: Optional[str] = Field(None, min_length=3, max_length=12)
+    employment_type: Optional[EmploymentTypeEnum] = None
+    key_responsibilities: Optional[List[str]] = None
+    required_certifications: Optional[List[str]] = None
+    raw_text: Optional[str] = None
+    extracted_skills: Optional[List[ExtractedSkill]] = None
+    keywords: Optional[List[str]] = None
+    skill_weight_matrix: Optional[Dict[str, float]] = None
+    matching_criteria: Optional[Dict[str, Any]] = None
+    processing_status: Optional[ProcessingStatusEnum] = None
+    pass_match_threshold: Optional[float] = Field(
         default=None,
         ge=1.0,
         le=100.0,
@@ -105,7 +105,7 @@ class JobDescriptionUpdate(BaseModel):
 class JobDescriptionOut(JobDescriptionBase):
     id: uuid.UUID
     tenant_id: uuid.UUID
-    raw_text: str | None = None
+    raw_text: Optional[str] = None
     extracted_skills: List[ExtractedSkill] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
     skill_weight_matrix: Dict[str, float] = Field(default_factory=dict)
@@ -113,7 +113,7 @@ class JobDescriptionOut(JobDescriptionBase):
     processing_status: ProcessingStatusEnum
     version: int
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
     created_by: uuid.UUID
     updated_by: uuid.UUID
 
@@ -125,18 +125,18 @@ class JobDescriptionListOut(BaseModel):
     id: uuid.UUID
     job_title: str
     required_skills: List[str] = Field(default_factory=list)
-    years_experience_min: int | None = None
-    years_experience_max: int | None = None
-    education_requirements: str | None = None
-    location: str | None = None
-    salary_min: Decimal | None = None
-    salary_max: Decimal | None = None
-    currency: str | None = None
-    employment_type: EmploymentTypeEnum | None = None
+    years_experience_min: Optional[int] = None
+    years_experience_max: Optional[int] = None
+    education_requirements: Optional[str] = None
+    location: Optional[str] = None
+    salary_min: Optional[Decimal] = None
+    salary_max: Optional[Decimal] = None
+    currency: Optional[str] = None
+    employment_type: Optional[EmploymentTypeEnum] = None
     key_responsibilities: List[str] = Field(default_factory=list)
     required_certifications: List[str] = Field(default_factory=list)
     matching_criteria: Dict[str, Any] = Field(default_factory=dict)
-    raw_text: str | None = None
+    raw_text: Optional[str] = None
     pass_match_threshold: float = 50.0
     created_at: datetime
 

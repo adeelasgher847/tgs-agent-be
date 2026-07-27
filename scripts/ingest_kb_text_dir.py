@@ -86,7 +86,7 @@ def load_pdf_text(path: Path) -> str:
     return text
 
 
-def _parse_uuid(value: str | None) -> uuid.UUID | None:
+def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
     if not value:
         return None
     return uuid.UUID(value)
@@ -94,9 +94,9 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
 
 def _resolve_agent_and_tenant(
     db,
-    tenant_id: uuid.UUID | None,
-    agent_id: uuid.UUID | None,
-) -> tuple[uuid.UUID, uuid.UUID | None, str]:
+    tenant_id: Optional[uuid.UUID],
+    agent_id: Optional[uuid.UUID],
+) -> tuple[uuid.UUID, Optional[uuid.UUID], str]:
     """
     Returns: (tenant_id, agent_id, resolved_by)
     """

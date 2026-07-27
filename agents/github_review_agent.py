@@ -26,25 +26,9 @@ import anthropic
 # Tool implementations
 # ---------------------------------------------------------------------------
 
-def _reject_flag_like(value: str, label: str) -> str:
-    """Refuse values that could be interpreted as a CLI flag by the subprocess.
-
-    `base`/`file_path` originate from tool-call arguments the LLM supplies while
-    reviewing a PR, so a crafted PR could attempt to prompt-inject a flag-like
-    value (e.g. `--upload-pack=...`) into the underlying git/flake8/mypy call.
-    A legitimate git ref or file path never starts with `-`.
-    """
-    if value.startswith("-"):
-        raise ValueError(f"Refusing to pass flag-like {label} to subprocess: {value!r}")
-    return value
-
-
 def _run(cmd: list[str], cwd: str = ".", timeout: int = 120) -> str:
     try:
-        # S603: no shell=True (list-form argv, no shell metacharacter risk); callers that
-        # forward LLM/tool-supplied values (base ref, file_path) validate via
-        # _reject_flag_like() before reaching this shared helper.
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout, check=False)  # noqa: S603
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout, check=False)
         out = result.stdout + result.stderr
         return out.strip() if out.strip() else "(no output)"
     except subprocess.TimeoutExpired:
@@ -53,15 +37,11 @@ def _run(cmd: list[str], cwd: str = ".", timeout: int = 120) -> str:
 
 def list_changed_files(base: str) -> str:
     """Return newline-separated list of files changed vs base ref."""
-    _reject_flag_like(base, "base ref")
     return _run(["git", "diff", "--name-only", base, "HEAD"])
 
 
 def get_git_diff(base: str, file_path: str | None = None) -> str:
     """Return unified diff vs base ref, optionally scoped to one file."""
-    _reject_flag_like(base, "base ref")
-    if file_path:
-        _reject_flag_like(file_path, "file_path")
     # --diff-filter=d excludes deleted; --text forces text output but we handle errors
     cmd = (
         ["git", "diff", "--text", base, "HEAD", "--", file_path]
@@ -69,8 +49,7 @@ def get_git_diff(base: str, file_path: str | None = None) -> str:
         else ["git", "diff", "--text", "--diff-filter=d", base, "HEAD"]
     )
     try:
-        # S603: no shell=True; base/file_path validated above via _reject_flag_like().
-        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)  # noqa: S603
+        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
         diff = result.stdout.decode("utf-8", errors="replace") + result.stderr.decode("utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         return "git diff timed out"
@@ -97,8 +76,6 @@ def get_file_content(file_path: str) -> str:
 def run_linter(file_path: str | None = None) -> str:
     """Run flake8 on a file or the whole project."""
     target = file_path or "."
-    if file_path:
-        _reject_flag_like(file_path, "file_path")
     out = _run([sys.executable, "-m", "flake8", "--max-line-length=100", target])
     return out if out else "No linting issues found."
 
@@ -106,8 +83,6 @@ def run_linter(file_path: str | None = None) -> str:
 def run_type_check(file_path: str | None = None) -> str:
     """Run mypy for type checking."""
     target = file_path or "app"
-    if file_path:
-        _reject_flag_like(file_path, "file_path")
     out = _run([sys.executable, "-m", "mypy", "--ignore-missing-imports", target])
     return out if out else "No type errors found."
 
@@ -319,13 +294,8 @@ def main() -> None:
 
     if args.pr:
         # Resolve the base branch for the PR using the GitHub CLI
-        # S603: args.pr is argparse `type=int` (a trusted local CLI arg, not external
-        # input), so it can only ever be an integer literal here — no injection surface.
-        # S607: relies on `gh` being on PATH, matching every other tool invocation in
-        # this script (git, flake8, mypy, pytest) — intentional for portability across
-        # dev machines and CI runner images that don't share a fixed install prefix.
-        result = subprocess.run(  # noqa: S603
-            ["gh", "pr", "view", str(args.pr), "--json", "baseRefName", "-q", ".baseRefName"],  # noqa: S607
+        result = subprocess.run(
+            ["gh", "pr", "view", str(args.pr), "--json", "baseRefName", "-q", ".baseRefName"],
             capture_output=True,
             text=True,
             check=False,

@@ -67,14 +67,14 @@ def create_required_roles():
         
         db.commit()
         
-        print("\n📊 Summary:")
+        print(f"\n📊 Summary:")
         print(f"   - Created: {created_count} roles")
         print(f"   - Already existed: {existing_count} roles")
         print(f"   - Total roles: {created_count + existing_count}")
         
         # List all roles
         all_roles = db.query(Role).all()
-        print("\n📋 All roles in database:")
+        print(f"\n📋 All roles in database:")
         for role in all_roles:
             print(f"   - {role.name}: {role.description}")
         

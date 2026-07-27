@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 class CreatePaymentSessionRequest(BaseModel):
     """Body for POST /api/v1/payments/session."""
 
-    call_id: uuid.UUID | None = Field(
+    call_id: Optional[uuid.UUID] = Field(
         default=None,
         description="The live call session that triggered this payment (optional).",
     )
@@ -74,16 +74,16 @@ class PaymentRecordOut(BaseModel):
 
     id: uuid.UUID
     workspace_id: uuid.UUID
-    call_id: uuid.UUID | None
+    call_id: Optional[uuid.UUID]
     payment_intent_id: str
     amount_cents: int
     currency: str
-    description: str | None
+    description: Optional[str]
     status: str
-    card_last4: str | None
-    card_brand: str | None
+    card_last4: Optional[str]
+    card_brand: Optional[str]
     created_at: str  # ISO-8601 string
-    updated_at: str | None
+    updated_at: Optional[str]
 
     model_config = {"from_attributes": True}
 

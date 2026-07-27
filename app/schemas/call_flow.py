@@ -46,31 +46,31 @@ class CallFlowCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     direction: DirectionEnum
     agent_id: uuid.UUID = Field(..., alias="agentId")
-    welcome_message_type: WelcomeMessageTypeEnum | None = Field(None, alias="welcomeMessageType")
-    custom_welcome_message: str | None = Field(None, alias="customWelcomeMessage")
-    prompt: str | None = None
-    notes: str | None = None  # notes for the initial prompt version
-    flow_data: FlowDataSchema | None = Field(None, alias="flowData")
+    welcome_message_type: Optional[WelcomeMessageTypeEnum] = Field(None, alias="welcomeMessageType")
+    custom_welcome_message: Optional[str] = Field(None, alias="customWelcomeMessage")
+    prompt: Optional[str] = None
+    notes: Optional[str] = None  # notes for the initial prompt version
+    flow_data: Optional[FlowDataSchema] = Field(None, alias="flowData")
     # Free-form flow settings. Recognized keys include:
     #   calendly_integration_enabled: bool — routes booking through Gemini
     #   function-calling + Calendly instead of the legacy [BOOK_APPOINTMENT:...]
     #   regex-token pipeline (see app/voice/booking_mixin.py::_calendly_enabled).
-    settings: Dict[str, Any] | None = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 class CallFlowUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    name: str | None = Field(None, min_length=1, max_length=255)
-    direction: DirectionEnum | None = None
-    agent_id: uuid.UUID | None = Field(None, alias="agentId")
-    welcome_message_type: WelcomeMessageTypeEnum | None = Field(None, alias="welcomeMessageType")
-    custom_welcome_message: str | None = Field(None, alias="customWelcomeMessage")
-    prompt: str | None = None
-    notes: str | None = None  # notes for the new prompt version
-    current_prompt_id: uuid.UUID | None = Field(None, alias="currentPromptId")
-    flow_data: FlowDataSchema | None = Field(None, alias="flowData")
-    settings: Dict[str, Any] | None = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    direction: Optional[DirectionEnum] = None
+    agent_id: Optional[uuid.UUID] = Field(None, alias="agentId")
+    welcome_message_type: Optional[WelcomeMessageTypeEnum] = Field(None, alias="welcomeMessageType")
+    custom_welcome_message: Optional[str] = Field(None, alias="customWelcomeMessage")
+    prompt: Optional[str] = None
+    notes: Optional[str] = None  # notes for the new prompt version
+    current_prompt_id: Optional[uuid.UUID] = Field(None, alias="currentPromptId")
+    flow_data: Optional[FlowDataSchema] = Field(None, alias="flowData")
+    settings: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="after")
     def prompt_and_rollback_exclusive(self) -> "CallFlowUpdate":
@@ -116,17 +116,17 @@ class CallFlowOut(BaseModel):
     direction: str
     agent_id: uuid.UUID = Field(..., serialization_alias="agentId")
     # Full AgentOut shape on detail endpoints; slim AgentRef on list
-    agent: Dict[str, Any] | None = None
-    welcome_message_type: str | None = Field(None, serialization_alias="welcomeMessageType")
-    custom_welcome_message: str | None = Field(None, serialization_alias="customWelcomeMessage")
-    current_prompt_id: uuid.UUID | None = Field(None, serialization_alias="currentPromptId")
+    agent: Optional[Dict[str, Any]] = None
+    welcome_message_type: Optional[str] = Field(None, serialization_alias="welcomeMessageType")
+    custom_welcome_message: Optional[str] = Field(None, serialization_alias="customWelcomeMessage")
+    current_prompt_id: Optional[uuid.UUID] = Field(None, serialization_alias="currentPromptId")
     prompt_versions: List[PromptVersionOut] = Field(default_factory=list, serialization_alias="promptVersions")
-    flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
-    settings: Dict[str, Any] | None = None
+    flow_data: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowData")
+    settings: Optional[Dict[str, Any]] = None
     knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
     created_at: datetime = Field(..., serialization_alias="createdAt")
-    updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
+    updated_at: Optional[datetime] = Field(None, serialization_alias="updatedAt")
 
 
 class CallFlowListItem(BaseModel):
@@ -138,16 +138,16 @@ class CallFlowListItem(BaseModel):
     name: str
     direction: str
     agent_id: uuid.UUID = Field(..., serialization_alias="agentId")
-    agent: AgentRef | None = None
-    welcome_message_type: str | None = Field(None, serialization_alias="welcomeMessageType")
-    custom_welcome_message: str | None = Field(None, serialization_alias="customWelcomeMessage")
-    current_prompt_id: uuid.UUID | None = Field(None, serialization_alias="currentPromptId")
-    flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
-    settings: Dict[str, Any] | None = None
+    agent: Optional[AgentRef] = None
+    welcome_message_type: Optional[str] = Field(None, serialization_alias="welcomeMessageType")
+    custom_welcome_message: Optional[str] = Field(None, serialization_alias="customWelcomeMessage")
+    current_prompt_id: Optional[uuid.UUID] = Field(None, serialization_alias="currentPromptId")
+    flow_data: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowData")
+    settings: Optional[Dict[str, Any]] = None
     knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
     created_at: datetime = Field(..., serialization_alias="createdAt")
-    updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
+    updated_at: Optional[datetime] = Field(None, serialization_alias="updatedAt")
 
 
 class CallFlowListResponse(BaseModel):
@@ -166,7 +166,7 @@ class FlowValidationError(BaseModel):
 
     code: str
     message: str
-    node_id: str | None = Field(None, serialization_alias="nodeId")
+    node_id: Optional[str] = Field(None, serialization_alias="nodeId")
 
 
 class FlowDataUpdate(BaseModel):
@@ -182,8 +182,8 @@ class FlowDataResponse(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
-    flow_data_compiled: Dict[str, Any] | None = Field(None, serialization_alias="flowDataCompiled")
+    flow_data: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowData")
+    flow_data_compiled: Optional[Dict[str, Any]] = Field(None, serialization_alias="flowDataCompiled")
     validation_errors: List[FlowValidationError] = Field(
         default_factory=list, serialization_alias="validationErrors"
     )

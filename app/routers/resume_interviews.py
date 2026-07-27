@@ -880,8 +880,8 @@ def get_resume_interview_call_media(
     Latest resume interview for this resume → linked call session → transcript and recording URL.
     Transcript prefers `TranscriptMessage` rows; falls back to `CallSession.call_transcript`.
     """
-    logger.warning("⚠️ DEPRECATED: GET RESUME INTERVIEW CALL MEDIA CALLED")
-    logger.warning("Use /by-resume/{resume_id}/transcript and /by-resume/{resume_id}/recording instead")
+    logger.warning(f"⚠️ DEPRECATED: GET RESUME INTERVIEW CALL MEDIA CALLED")
+    logger.warning(f"Use /by-resume/{{resume_id}}/transcript and /by-resume/{{resume_id}}/recording instead")
     if not user.current_tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current tenant is required")
 

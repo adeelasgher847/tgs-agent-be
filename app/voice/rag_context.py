@@ -11,8 +11,8 @@ from app.services.rag_service import rag_service
 
 def build_rag_context_block_with_trace(
     user_text: str,
-    tenant_id: uuid.UUID | None,
-    agent_id: uuid.UUID | None,
+    tenant_id: Optional[uuid.UUID],
+    agent_id: Optional[uuid.UUID],
 ) -> tuple[str, dict]:
     """
     Build a RAG context block string and a small trace payload for auditing/debugging.
@@ -163,8 +163,8 @@ respond that this information is not available instead of guessing or inventing 
 
 def build_rag_context_block(
     user_text: str,
-    tenant_id: uuid.UUID | None,
-    agent_id: uuid.UUID | None,
+    tenant_id: Optional[uuid.UUID],
+    agent_id: Optional[uuid.UUID],
 ) -> str:
     # Backwards compatible wrapper used by existing call paths.
     context_block, _trace = build_rag_context_block_with_trace(

@@ -49,7 +49,7 @@ _EMAIL_RE = re.compile(
 )
 
 
-def _scrub_email_literals(value: str | None) -> str | None:
+def _scrub_email_literals(value: Optional[str]) -> Optional[str]:
     """
     Remove literal email addresses from summary text fields.
     Keeps PII handling deterministic even if the LLM ignores prompt instructions.
@@ -137,7 +137,7 @@ def _generate_with_provider(
     *,
     provider_name: str,
     model_name: str,
-    api_key: str | None,
+    api_key: Optional[str],
     user_prompt: str,
     max_tokens: int,
 ) -> Dict[str, Any]:
@@ -242,7 +242,7 @@ class AppointmentIntakeSummaryService:
             transcript_text=transcript_text, appointment=appointment
         )
 
-        preferred_model: str | None = None
+        preferred_model: Optional[str] = None
         if appointment.agent_id:
             try:
                 agent = agent_service.get_agent_by_id(
@@ -264,9 +264,9 @@ class AppointmentIntakeSummaryService:
             if m
         ]
 
-        last_error: Exception | None = None
-        used_model: str | None = None
-        raw_content: str | None = None
+        last_error: Optional[Exception] = None
+        used_model: Optional[str] = None
+        raw_content: Optional[str] = None
 
         for model_name in fallback_models:
             try:

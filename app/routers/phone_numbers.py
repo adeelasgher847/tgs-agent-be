@@ -56,7 +56,7 @@ router = APIRouter()
 async def search_phone_numbers(
     country: str = Query(default="AU", description="ISO country code e.g. AU, US, GB"),
     type: str = Query(default="local", description="Number type: local | toll_free | mobile"),
-    areaCode: str | None = Query(default=None, description="Area code to filter by e.g. 02"),
+    areaCode: Optional[str] = Query(default=None, description="Area code to filter by e.g. 02"),
     limit: int = Query(default=20, ge=1, le=100),
     user: User = Depends(require_readonly),
 ) -> SuccessResponse[PhoneNumberSearchResponse]:
@@ -240,8 +240,8 @@ async def import_twilio_phone_number(
 @router.get("/available-numbers", include_in_schema=False)
 async def get_available_phone_numbers_legacy(
     country_code: str = Query(default="US"),
-    area_code: str | None = Query(default=None),
-    contains: str | None = Query(default=None),
+    area_code: Optional[str] = Query(default=None),
+    contains: Optional[str] = Query(default=None),
     voice_enabled: bool = Query(default=True),
     sms_enabled: bool = Query(default=True),
     limit: int = Query(default=20, ge=1, le=100),
@@ -268,8 +268,8 @@ async def get_available_phone_numbers_legacy(
 @router.post("/twilio/purchase", include_in_schema=False)
 async def purchase_phone_number_legacy(
     phone_number: str = Query(...),
-    webhook_url: str | None = Query(default=None),
-    status_callback_url: str | None = Query(default=None),
+    webhook_url: Optional[str] = Query(default=None),
+    status_callback_url: Optional[str] = Query(default=None),
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):

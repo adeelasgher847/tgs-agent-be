@@ -27,11 +27,11 @@ EmbeddingFunc = Callable[[str], Sequence[float]]
 @dataclass
 class RagChunkDTO:
     text: str
-    source_title: str | None
-    source_ref: str | None
-    score: float | None = None
-    vector_id: str | None = None
-    chunk_index: int | None = None
+    source_title: Optional[str]
+    source_ref: Optional[str]
+    score: Optional[float] = None
+    vector_id: Optional[str] = None
+    chunk_index: Optional[int] = None
 
 
 class RagService:
@@ -46,7 +46,7 @@ class RagService:
 
     # ── Session helper ────────────────────────────────────────────────────────
 
-    def _session(self, provided: Session | None) -> tuple[Session, bool]:
+    def _session(self, provided: Optional[Session]) -> tuple[Session, bool]:
         """Return (session, should_close). If we create it, caller must close it."""
         if provided is not None:
             return provided, False
@@ -86,12 +86,12 @@ class RagService:
     def retrieve(
         self,
         user_text: str,
-        tenant_id: uuid.UUID | None,
-        agent_id: uuid.UUID | None,
+        tenant_id: Optional[uuid.UUID],
+        agent_id: Optional[uuid.UUID],
         embedding_func: EmbeddingFunc,
         top_k: int = 5,
-        trace: dict | None = None,
-        db_session: Session | None = None,
+        trace: Optional[dict] = None,
+        db_session: Optional[Session] = None,
     ) -> List[RagChunkDTO]:
         query_text = (user_text or "").strip()
         if not query_text or not tenant_id:
@@ -176,14 +176,14 @@ class RagService:
     def ingest_document(
         self,
         tenant_id: uuid.UUID,
-        agent_id: uuid.UUID | None,
+        agent_id: Optional[uuid.UUID],
         title: str,
         source_type: str,
-        source_ref: str | None,
+        source_ref: Optional[str],
         full_text: str,
         embedding_func: EmbeddingFunc,
         version: str = "v1",
-        db_session: Session | None = None,
+        db_session: Optional[Session] = None,
         replace_existing: bool = True,
         max_chars: int = 1000,
         overlap_chars: int = 100,
@@ -303,7 +303,7 @@ class RagService:
     def delete_vectors(
         self,
         vector_ids: List[str],
-        db_session: Session | None = None,
+        db_session: Optional[Session] = None,
     ) -> None:
         if not vector_ids:
             return
@@ -326,7 +326,7 @@ class RagService:
     # ── Context formatting ────────────────────────────────────────────────────
 
     def format_rag_context(
-        self, chunks: List[RagChunkDTO], max_chars: int | None = None
+        self, chunks: List[RagChunkDTO], max_chars: Optional[int] = None
     ) -> str:
         if not chunks:
             return ""

@@ -20,7 +20,7 @@ class VoiceAgentManager:
         }
         return True
     
-    def get_agent(self, agent_id: str) -> Dict[str, Any] | None:
+    def get_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Get agent information"""
         return self.active_agents.get(agent_id)
     

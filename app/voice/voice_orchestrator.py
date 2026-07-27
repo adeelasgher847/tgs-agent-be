@@ -85,15 +85,15 @@ class VoiceOrchestrator:
         self._h = handler  # BidirectionalStreamHandler
 
         # ── STT state ────────────────────────────────────────────────────────
-        self._stt_pipeline: SttPipeline | None = None
+        self._stt_pipeline: Optional[SttPipeline] = None
         self._stt_active: bool = True
-        self._stt_deferred_endpointing_ms: int | None = None
+        self._stt_deferred_endpointing_ms: Optional[int] = None
         self._email_stt_endpointing_upgraded: bool = False
         # Resolved STT config (set by caller before first audio arrives)
-        self._resolved_stt: "ResolvedSttRuntime" | None = None
+        self._resolved_stt: Optional["ResolvedSttRuntime"] = None
         self._stt_event_bus: SttEventBus = SttEventBus()
         # LiveKit audio subscriber task (Google STT path only)
-        self._livekit_audio_task: asyncio.Task | None = None
+        self._livekit_audio_task: Optional[asyncio.Task] = None
 
         # ── User-pickup detection ─────────────────────────────────────────────
         # We use a short RMS window to detect real pickup before forwarding audio.
@@ -104,7 +104,7 @@ class VoiceOrchestrator:
         self._audio_level_samples: list[int] = []
         # Absolute time.time() until which we discard audio after pickup
         # (Twilio can still send system messages in the first moments).
-        self._skip_audio_until: float | None = None
+        self._skip_audio_until: Optional[float] = None
 
         # Pull thresholds from the handler so they stay in one config place.
         self._min_audio_level_threshold: int = handler._min_audio_level_threshold

@@ -39,9 +39,9 @@ async def initiate_call(
     call_request: CallInitiateRequest,
     db: Session,
     is_system_call: bool,
-    tenant_id: uuid.UUID | None,
-    user_id: uuid.UUID | None,
-    request_id: str | None = None,
+    tenant_id: Optional[uuid.UUID],
+    user_id: Optional[uuid.UUID],
+    request_id: Optional[str] = None,
 ) -> SuccessResponse[CallInitiateResponse] | JSONResponse:
     """
     Outbound call dispatch: LiveKit room → DB record → Twilio call.
@@ -238,7 +238,7 @@ async def initiate_call(
             )
 
         # ── Resolve optional callFlowId so we can pass to LiveKit ────────
-        flow_uuid: uuid.UUID | None = None
+        flow_uuid: Optional[uuid.UUID] = None
         if call_request.callFlowId:
             try:
                 flow_uuid = uuid.UUID(call_request.callFlowId)
@@ -250,8 +250,8 @@ async def initiate_call(
 
         # ── Resolve Twilio credentials upfront ───────────────────────────
         use_custom_credentials = False
-        account_sid: str | None = None
-        auth_token: str | None = None
+        account_sid: Optional[str] = None
+        auth_token: Optional[str] = None
 
         if phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
             from app.core.security import decrypt_api_key
@@ -279,7 +279,7 @@ async def initiate_call(
         session_id = uuid.uuid4()
 
         # ── 8a. Create LiveKit room FIRST — fail fast before any side effects ─
-        lk_meta: dict | None = None
+        lk_meta: Optional[dict] = None
         if settings.LIVEKIT_ENABLED:
             from app.services.livekit_service import livekit_service
 
@@ -496,7 +496,7 @@ async def initiate_call(
 
         # Answering Machine Detection (batch calls only) — hold the call on a
         # pause/redirect loop until the async AMD callback resolves human vs machine.
-        amd_status_callback_url: str | None = None
+        amd_status_callback_url: Optional[str] = None
         if call_request.enable_amd:
             batch_record_id_q = call_request.batch_call_record_id or ""
             amd_status_callback_url = (

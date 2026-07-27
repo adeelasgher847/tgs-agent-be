@@ -29,14 +29,14 @@ class WorkspaceRepository:
 
     # ------------------------------------------------------------------ reads
 
-    def find_by_id(self, workspace_id: uuid.UUID) -> Tenant | None:
+    def find_by_id(self, workspace_id: uuid.UUID) -> Optional[Tenant]:
         stmt = select(Tenant).where(
             Tenant.id == workspace_id,
             Tenant.deleted_at.is_(None),
         )
         return self.db.execute(stmt).scalar_one_or_none()
 
-    def find_by_name(self, name: str) -> Tenant | None:
+    def find_by_name(self, name: str) -> Optional[Tenant]:
         stmt = select(Tenant).where(
             Tenant.name == name,
             Tenant.deleted_at.is_(None),

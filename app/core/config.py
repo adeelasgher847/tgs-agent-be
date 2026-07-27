@@ -74,7 +74,7 @@ class TwilioSettings(BaseModel):
     )
     test_account_sid: str = Field(default="", validation_alias="TWILIO_TEST_ACCOUNT_SID")
     test_auth_token: str = Field(default="", validation_alias="TWILIO_TEST_AUTH_TOKEN")
-    edge: str | None = Field(default="umatilla", validation_alias="TWILIO_EDGE")
+    edge: Optional[str] = Field(default="umatilla", validation_alias="TWILIO_EDGE")
 
 
 class LlmSettings(BaseModel):
@@ -175,7 +175,7 @@ class CrmSettings(BaseModel):
     # Monday.com
     monday_api_key: str = Field(default="", validation_alias="MONDAY_API_KEY")
     monday_board_id: str = Field(default="", validation_alias="MONDAY_BOARD_ID")
-    monday_workspace_id: str | None = Field(
+    monday_workspace_id: Optional[str] = Field(
         default=None, validation_alias="MONDAY_WORKSPACE_ID"
     )
     # Trello
@@ -339,7 +339,7 @@ class Settings(BaseSettings):
     # Betterstack monitors https://api.yourdomain.com/api/v1/health (HTTP 200
     # expected, 30s interval) and serves the public status page at
     # status.yourdomain.com; this URL points at that page's embeddable badge.
-    BETTERSTACK_BADGE_URL: str | None = None
+    BETTERSTACK_BADGE_URL: Optional[str] = None
 
     # Swagger / committed OpenAPI at GET /api/docs (HTTP Basic — not dashboard JWT).
     API_DOCS_ENABLED: bool = True
@@ -625,7 +625,7 @@ class Settings(BaseSettings):
 
     # Vector / RAG configuration
     # Optional generic vector DB URL (used as a fallback host for Pinecone).
-    VECTOR_DB_URL: str | None = None
+    VECTOR_DB_URL: Optional[str] = None
     # Default embedding dimension for text-embedding models
     VECTOR_DIMENSION: int = 1536  # e.g. OpenAI text-embedding-3-small
 
@@ -633,12 +633,12 @@ class Settings(BaseSettings):
     PINECONE_API_KEY: str = ""
     # Optional: direct index host, if you copy it from Pinecone console.
     # Example: "your-index-host.svc.us-east-1-aws.pinecone.io"
-    PINECONE_INDEX_HOST: str | None = None
+    PINECONE_INDEX_HOST: Optional[str] = None
     # Optional: index name; if host is not provided, we can resolve host from this.
-    PINECONE_INDEX_NAME: str | None = None
+    PINECONE_INDEX_NAME: Optional[str] = None
 
     # Twilio Edge hint (for logging/observability; set actual edge in Twilio Console)
-    TWILIO_EDGE: str | None = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
+    TWILIO_EDGE: Optional[str] = "umatilla"  # e.g., "ashburn", "singapore", "dublin"
     # App deployment region hint for latency diagnostics.
     SERVER_REGION: str = "us-west-2"  # Oregon
     # If enabled, log warnings when Twilio edge does not match expected regional edge.
@@ -696,7 +696,7 @@ class Settings(BaseSettings):
     # Monday.com Configuration
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
-    MONDAY_WORKSPACE_ID: str | None = None  # Optional workspace to create tenant boards in
+    MONDAY_WORKSPACE_ID: Optional[str] = None  # Optional workspace to create tenant boards in
 
     # LiveKit — self-hosted real-time audio transport (GKE internal, port 7880)
     LIVEKIT_URL: str = ""
@@ -787,14 +787,14 @@ class Settings(BaseSettings):
     # Use settings.db.url, settings.auth.secret_key, etc. in new code;
     # flat names above remain available for all existing callers.
     # ------------------------------------------------------------------
-    db: DbSettings | None = None
-    auth: AuthSettings | None = None
-    twilio: TwilioSettings | None = None
-    llm: LlmSettings | None = None
-    tts: TtsSettings | None = None
-    crm: CrmSettings | None = None
-    server: ServerSettings | None = None
-    redis: RedisSettings | None = None
+    db: Optional[DbSettings] = None
+    auth: Optional[AuthSettings] = None
+    twilio: Optional[TwilioSettings] = None
+    llm: Optional[LlmSettings] = None
+    tts: Optional[TtsSettings] = None
+    crm: Optional[CrmSettings] = None
+    server: Optional[ServerSettings] = None
+    redis: Optional[RedisSettings] = None
 
     @model_validator(mode="after")
     def _apply_byo_tts_api_key(self) -> "Settings":

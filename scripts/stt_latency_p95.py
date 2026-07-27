@@ -65,7 +65,7 @@ def _report(latencies: List[float], threshold: float = P95_THRESHOLD_MS) -> int:
     p99 = _percentile(latencies, 99)
 
     verdict = "✓ PASS" if p95 < threshold else "✗ FAIL"
-    print("Metric  : stt_speech_end_to_final")
+    print(f"Metric  : stt_speech_end_to_final")
     print(f"Samples : {n}")
     print(f"Min     : {mn:6.0f} ms")
     print(f"Mean    : {mean:6.0f} ms")

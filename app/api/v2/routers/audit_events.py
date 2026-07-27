@@ -36,15 +36,15 @@ class AuditEventOut(BaseModel):
     id: uuid.UUID
     timestamp: datetime
     tenant_id: uuid.UUID
-    user_id: uuid.UUID | None
-    actor_api_key_prefix: str | None
+    user_id: Optional[uuid.UUID]
+    actor_api_key_prefix: Optional[str]
     action: str
-    resource_type: str | None
-    resource_id: uuid.UUID | None
-    old_value: Any | None
-    new_value: Any | None
-    ip_address: str | None
-    user_agent: str | None
+    resource_type: Optional[str]
+    resource_id: Optional[uuid.UUID]
+    old_value: Optional[Any]
+    new_value: Optional[Any]
+    ip_address: Optional[str]
+    user_agent: Optional[str]
 
     model_config = {"from_attributes": True}
 
@@ -61,11 +61,11 @@ class PaginatedAuditEvents(BaseModel):
 
 def _build_filters(
     tenant_id: uuid.UUID,
-    action: str | None,
-    resource_type: str | None,
-    actor_api_key_prefix: str | None,
-    date_from: datetime | None,
-    date_to: datetime | None,
+    action: Optional[str],
+    resource_type: Optional[str],
+    actor_api_key_prefix: Optional[str],
+    date_from: Optional[datetime],
+    date_to: Optional[datetime],
 ) -> list:
     clauses = [AuditLog.tenant_id == tenant_id]
     if action:
@@ -86,11 +86,11 @@ def _build_filters(
 @router.get("", response_model=PaginatedAuditEvents)
 def list_audit_events(
     page: int = Query(1, ge=1),
-    action: str | None = Query(None),
-    resource_type: str | None = Query(None),
-    actor_api_key_prefix: str | None = Query(None),
-    date_from: datetime | None = Query(None),
-    date_to: datetime | None = Query(None),
+    action: Optional[str] = Query(None),
+    resource_type: Optional[str] = Query(None),
+    actor_api_key_prefix: Optional[str] = Query(None),
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> PaginatedAuditEvents:
@@ -149,11 +149,11 @@ def get_audit_event(
 
 @router.post("/export")
 def export_audit_events(
-    action: str | None = Query(None),
-    resource_type: str | None = Query(None),
-    actor_api_key_prefix: str | None = Query(None),
-    date_from: datetime | None = Query(None),
-    date_to: datetime | None = Query(None),
+    action: Optional[str] = Query(None),
+    resource_type: Optional[str] = Query(None),
+    actor_api_key_prefix: Optional[str] = Query(None),
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
     user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:

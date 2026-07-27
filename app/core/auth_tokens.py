@@ -7,7 +7,7 @@ from typing import Optional
 from app.core.security import verify_token
 
 
-def extract_bearer_token(authorization_header: str | None) -> str | None:
+def extract_bearer_token(authorization_header: Optional[str]) -> Optional[str]:
     if not authorization_header:
         return None
     parts = authorization_header.strip().split(None, 1)
@@ -17,7 +17,7 @@ def extract_bearer_token(authorization_header: str | None) -> str | None:
     return token or None
 
 
-def resolve_jwt_auth(token: str) -> dict | None:
+def resolve_jwt_auth(token: str) -> Optional[dict]:
     """
     Validate JWT and return auth context dict.
 

@@ -13,8 +13,8 @@ from app.services.role_service import get_user_product_in_tenant
 def issue_tokens_for_user(
     db: Session,
     user: User,
-    current_tenant_id: uuid.UUID | None,
-    role_info: RoleInfo | None,
+    current_tenant_id: Optional[uuid.UUID],
+    role_info: Optional[RoleInfo],
 ) -> TokenResponse:
     """Issue access and refresh tokens for a user without password checks.
 

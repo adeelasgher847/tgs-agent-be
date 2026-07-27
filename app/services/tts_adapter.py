@@ -22,7 +22,7 @@ class BaseTTSProviderAdapter(ABC):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: dict[str, Any] | None = None,
+        settings_json: Optional[dict[str, Any]] = None,
     ) -> bytes:
         """Synthesize speech and return telephony-ready bytes."""
 
@@ -53,7 +53,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: dict[str, Any] | None = None,
+        settings_json: Optional[dict[str, Any]] = None,
     ) -> bytes:
         cfg = dict(settings_json or {})
         model_id = cfg.pop("model", "eleven_flash_v2_5")
@@ -88,7 +88,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: dict[str, Any] | None = None,
+        settings_json: Optional[dict[str, Any]] = None,
     ):
         cfg = dict(settings_json or {})
         model_id = cfg.pop("model", "eleven_flash_v2_5")
@@ -141,7 +141,7 @@ class GoogleTTSAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: dict[str, Any] | None = None,
+        settings_json: Optional[dict[str, Any]] = None,
     ) -> bytes:
         cfg = dict(settings_json or {})
         language = cfg.pop("language", "en")
@@ -165,7 +165,7 @@ class GoogleTTSAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: dict[str, Any] | None = None,
+        settings_json: Optional[dict[str, Any]] = None,
     ):
         cfg = dict(settings_json or {})
         language = cfg.pop("language", "en")

@@ -51,7 +51,7 @@ _MAX_HOLD_SECONDS = 20
 
 def _resolve_credentials(
     db: Session, call_session
-) -> tuple[str | None, str | None]:
+) -> tuple[Optional[str], Optional[str]]:
     """Best-effort per-tenant Twilio credentials; falls back to global creds inside twilio_service."""
     if call_session is None:
         return None, None
@@ -79,7 +79,7 @@ async def _validate_amd_signature(
 
 
 def _streaming_url(
-    agentId: str | None, userId: str | None, callSessionId: str | None
+    agentId: Optional[str], userId: Optional[str], callSessionId: Optional[str]
 ) -> str:
     return (
         f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/streaming?"
@@ -88,7 +88,7 @@ def _streaming_url(
 
 
 def _amd_hold_url(
-    agentId: str | None, userId: str | None, callSessionId: str | None
+    agentId: Optional[str], userId: Optional[str], callSessionId: Optional[str]
 ) -> str:
     return (
         f"{settings.WEBHOOK_BASE_URL}/api/v1/webhooks/twilio/amd-hold?"
@@ -99,9 +99,9 @@ def _amd_hold_url(
 @router.post("/amd-hold", response_class=HTMLResponse, include_in_schema=False)
 async def amd_hold(
     request: Request,
-    agentId: str | None = None,
-    userId: str | None = None,
-    callSessionId: str | None = None,
+    agentId: Optional[str] = None,
+    userId: Optional[str] = None,
+    callSessionId: Optional[str] = None,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     """Keep the call alive (pause + redirect loop) until the async AMD callback resolves."""
@@ -151,8 +151,8 @@ async def amd_hold(
 @router.post("/amd", response_class=HTMLResponse)
 async def amd_callback(
     request: Request,
-    callSessionId: str | None = None,
-    batchCallRecordId: str | None = None,
+    callSessionId: Optional[str] = None,
+    batchCallRecordId: Optional[str] = None,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     """Twilio async AMD status callback — see module docstring."""
@@ -176,8 +176,8 @@ async def amd_callback(
         )
 
     record_uuid = parse_optional_uuid(batchCallRecordId)
-    record: BatchCallRecord | None = None
-    job: BatchJob | None = None
+    record: Optional[BatchCallRecord] = None
+    job: Optional[BatchJob] = None
     if record_uuid:
         record = (
             db.query(BatchCallRecord)

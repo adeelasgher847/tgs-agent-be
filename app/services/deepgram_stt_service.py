@@ -25,7 +25,7 @@ class DeepgramSTTService:
     def __init__(self) -> None:
         key = (settings.DEEPGRAM_API_KEY or "").strip()
         if key:
-            self._client: DeepgramClient | None = DeepgramClient(api_key=key)
+            self._client: Optional[DeepgramClient] = DeepgramClient(api_key=key)
             logger.info("Deepgram STT client initialized")
         else:
             self._client = None
@@ -41,12 +41,12 @@ class DeepgramSTTService:
             self,
             *,
             client: DeepgramClient,
-            language_code: str | None,
+            language_code: Optional[str],
             encoding: str,
             sample_rate: int,
             interim_results: bool,
             single_utterance: bool,
-            endpointing_ms: int | None = None,
+            endpointing_ms: Optional[int] = None,
         ) -> None:
             self._client = client
             self._language_code = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en"
@@ -55,14 +55,14 @@ class DeepgramSTTService:
             self._interim_results = interim_results
             self._single_utterance = single_utterance  # unused — stream stays open like Google
             # None → use settings.DEEPGRAM_STT_ENDPOINTING_MS at connect time
-            self._endpointing_ms: int | None = endpointing_ms
+            self._endpointing_ms: Optional[int] = endpointing_ms
 
-            self._audio_q: "queue.Queue[bytes | None]" = queue.Queue()
+            self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue()
             self._results_q: "queue.Queue[dict]" = queue.Queue()
             self._closed = False
             self._task_started = False
-            self._thread: threading.Thread | None = None
-            self._session_started_monotonic: float | None = None
+            self._thread: Optional[threading.Thread] = None
+            self._session_started_monotonic: Optional[float] = None
             self._first_interim_logged = False
             self._first_final_logged = False
             self._session_end_reason = "unknown"
@@ -251,12 +251,12 @@ class DeepgramSTTService:
 
     def create_streaming_session(
         self,
-        language_code: str | None = None,
-        encoding: str | None = None,
-        sample_rate: int | None = None,
+        language_code: Optional[str] = None,
+        encoding: Optional[str] = None,
+        sample_rate: Optional[int] = None,
         interim_results: bool = True,
         single_utterance: bool = False,
-        endpointing_ms: int | None = None,
+        endpointing_ms: Optional[int] = None,
     ) -> "DeepgramSTTService.StreamingSTTSession":
         if not self._client:
             raise RuntimeError("Deepgram client not initialized — set DEEPGRAM_API_KEY")
@@ -273,16 +273,16 @@ class DeepgramSTTService:
     def _transcribe_sync(
         self,
         audio_content: bytes,
-        language_code: str | None,
-        encoding: str | None,
-        sample_rate: int | None,
+        language_code: Optional[str],
+        encoding: Optional[str],
+        sample_rate: Optional[int],
     ) -> Dict[str, Any]:
         if not self._client:
             return {"error": "Deepgram client not initialized", "transcript": "", "confidence": 0.0}
 
         lang = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en"
         model = settings.DEEPGRAM_STT_MODEL or "nova-3"
-        enc: str | None = None
+        enc: Optional[str] = None
         rate: int = 8000
 
         if encoding is None or sample_rate is None:
@@ -330,9 +330,9 @@ class DeepgramSTTService:
     async def transcribe_audio_chunk(
         self,
         audio_content: bytes,
-        language_code: str | None = None,
-        encoding: str | None = None,
-        sample_rate: int | None = None,
+        language_code: Optional[str] = None,
+        encoding: Optional[str] = None,
+        sample_rate: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Batch / prerecorded transcription (replaces Google transcribe_audio_chunk_streaming)."""
         loop = asyncio.get_event_loop()

@@ -38,7 +38,7 @@ class StripeService:
             return {}
     
     @staticmethod
-    def create_customer(tenant: Tenant, email: str, user: User | None = None) -> str:
+    def create_customer(tenant: Tenant, email: str, user: Optional[User] = None) -> str:
         """Create a Stripe customer for a tenant"""
         try:
             customer_data = {
@@ -120,7 +120,7 @@ class StripeService:
         success_url: str,
         cancel_url: str,
         db: Session,
-        customer_id: str | None = None
+        customer_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a Stripe checkout session for subscription"""
         try:
@@ -263,7 +263,7 @@ class StripeService:
             raise Exception(f"Failed to get invoices: {str(e)}")
     
     @staticmethod
-    def create_usage_record(subscription_item_id: str, quantity: int, timestamp: int | None = None) -> Dict[str, Any]:
+    def create_usage_record(subscription_item_id: str, quantity: int, timestamp: Optional[int] = None) -> Dict[str, Any]:
         """Create a usage record for metered billing"""
         try:
             usage_record = stripe.UsageRecord.create(
@@ -339,7 +339,7 @@ class StripeService:
         amount_cents: int,
         currency: str,
         description: str,
-        metadata: Dict[str, str] | None = None,
+        metadata: Optional[Dict[str, str]] = None,
     ) -> Any:
         """
         Create a Stripe PaymentIntent for in-call payment collection.

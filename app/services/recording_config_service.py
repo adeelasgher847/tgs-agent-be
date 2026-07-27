@@ -54,7 +54,7 @@ def get_recording_enabled_for_call(db: Session, call_session: CallSession) -> bo
         return False
 
 
-def _resolve_phone_number(call_session: CallSession) -> str | None:
+def _resolve_phone_number(call_session: CallSession) -> Optional[str]:
     for field in ("assistant_phone_number", "to_number", "from_number"):
         val = getattr(call_session, field, None)
         if val and str(val).strip():

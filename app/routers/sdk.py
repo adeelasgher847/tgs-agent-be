@@ -61,7 +61,7 @@ def _error(request: Request, code: int, message: str, error_code: str) -> JSONRe
     )
 
 
-def _origin_allowed(db: Session, origin: str | None, workspace_id: uuid.UUID) -> bool:
+def _origin_allowed(db: Session, origin: Optional[str], workspace_id: uuid.UUID) -> bool:
     if not origin:
         return False
     if settings.ENVIRONMENT.lower() == "development" and is_localhost_origin(origin):

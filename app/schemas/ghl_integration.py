@@ -12,11 +12,11 @@ class GhlAuthorizeResponse(BaseModel):
 
 class GhlContactOut(BaseModel):
     id: str
-    name: str | None = None
-    email: str | None = None
+    name: Optional[str] = None
+    email: Optional[str] = None
     tags: List[str] = []
-    pipeline_stage: str | None = None
-    last_activity_date: str | None = None
+    pipeline_stage: Optional[str] = None
+    last_activity_date: Optional[str] = None
 
 
 class GhlNoteCreateRequest(BaseModel):
@@ -25,7 +25,7 @@ class GhlNoteCreateRequest(BaseModel):
 
 
 class GhlNoteCreateResponse(BaseModel):
-    id: str | None = None
+    id: Optional[str] = None
     contact_id: str
 
 
@@ -40,14 +40,14 @@ class GhlSettingsUpdateRequest(BaseModel):
 
 class GhlIntegrationStatusOut(BaseModel):
     connected: bool
-    connected_at: datetime | None = None
-    last_sync_at: str | None = None
+    connected_at: Optional[datetime] = None
+    last_sync_at: Optional[str] = None
     write_back_enabled: bool = True
 
 
 class GhlSyncStatusOut(BaseModel):
-    last_lookup_at: str | None = None
-    last_write_back_at: str | None = None
-    last_write_back_status: str | None = None
-    last_ghl_error: str | None = None
+    last_lookup_at: Optional[str] = None
+    last_write_back_at: Optional[str] = None
+    last_write_back_status: Optional[str] = None
+    last_ghl_error: Optional[str] = None
     error_count_24h: int = 0

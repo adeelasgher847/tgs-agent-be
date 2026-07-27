@@ -115,7 +115,7 @@ class CallbackSchedulerService:
             )
         ).scalar_one()
 
-        next_scheduled_at: datetime | None = db.execute(
+        next_scheduled_at: Optional[datetime] = db.execute(
             select(func.min(CallbackSchedule.scheduled_at)).where(
                 CallbackSchedule.agent_id == agent_id,
                 CallbackSchedule.status == "pending",
@@ -179,7 +179,7 @@ class CallbackSchedulerService:
         self,
         db: Session,
         call_session: CallSession,
-    ) -> CallbackSchedule | None:
+    ) -> Optional[CallbackSchedule]:
         """
         Called when a CallSession's status is updated.
         Creates the first CallbackSchedule record if the agent has smart
@@ -190,7 +190,7 @@ class CallbackSchedulerService:
         if call_session.status not in CALLBACK_TRIGGER_STATUSES:
             return None
 
-        agent: Agent | None = db.get(Agent, call_session.agent_id)
+        agent: Optional[Agent] = db.get(Agent, call_session.agent_id)
         if agent is None or not agent.smart_callback_enabled:
             return None
 
@@ -290,7 +290,7 @@ class CallbackSchedulerService:
         4. If more attempts remain, insert the next CallbackSchedule.
            Otherwise mark the chain exhausted.
         """
-        agent: Agent | None = db.get(Agent, schedule.agent_id)
+        agent: Optional[Agent] = db.get(Agent, schedule.agent_id)
         if agent is None:
             schedule.status = "cancelled"
             db.commit()
@@ -504,7 +504,7 @@ class CallbackSchedulerService:
         self,
         db: Session,
         schedule: CallbackSchedule,
-    ) -> CallbackSchedule | None:
+    ) -> Optional[CallbackSchedule]:
         """
         Async replacement for _dispatch_and_advance, called by the ARQ
         ``execute_callback`` task.
@@ -516,7 +516,7 @@ class CallbackSchedulerService:
           - A newly created ``CallbackSchedule`` when the next retry was chained.
           - ``None`` when the retry chain is exhausted or the agent was removed.
         """
-        agent: Agent | None = db.get(Agent, schedule.agent_id)
+        agent: Optional[Agent] = db.get(Agent, schedule.agent_id)
         if agent is None:
             schedule.status = "cancelled"
             db.commit()
@@ -754,7 +754,7 @@ class CallbackSchedulerService:
             ),
         )
 
-    def _is_us_workspace(self, tenant: Tenant | None) -> bool:
+    def _is_us_workspace(self, tenant: Optional[Tenant]) -> bool:
         if tenant is None or not tenant.workspace_settings:
             return False
         ws = tenant.workspace_settings
@@ -765,13 +765,13 @@ class CallbackSchedulerService:
         db: Session,
         agent: Agent,
         original_call,
-    ) -> CallFlow | None:
+    ) -> Optional[CallFlow]:
         """
         Resolve the CallFlow whose settings.business_hours governs this
         callback: prefer the flow the original call ran on, falling back to
         any active flow belonging to the agent.
         """
-        flow: CallFlow | None = None
+        flow: Optional[CallFlow] = None
         call_flow_id = (
             getattr(original_call, "call_flow_id", None)
             if original_call is not None
@@ -801,7 +801,7 @@ class CallbackSchedulerService:
         db: Session,
         agent: Agent,
         original_call,
-    ) -> Tuple[CallFlow | None, bool]:
+    ) -> Tuple[Optional[CallFlow], bool]:
         """
         Resolve the (flow, is_us_workspace) pair once per dispatch so the
         business-hours check and the reschedule computation agree on the
@@ -812,7 +812,7 @@ class CallbackSchedulerService:
         flow = self._get_flow_for_dispatch(db, agent, original_call)
         return flow, is_us
 
-    def _lookup_day_config(self, business_hours, dow: int) -> dict | None:
+    def _lookup_day_config(self, business_hours, dow: int) -> Optional[dict]:
         if isinstance(business_hours, dict):
             cfg = business_hours.get(str(dow))
             if cfg is None:
@@ -824,7 +824,7 @@ class CallbackSchedulerService:
                     return entry
         return None
 
-    def _parse_time(self, value) -> time | None:
+    def _parse_time(self, value) -> Optional[time]:
         if value is None:
             return None
         if isinstance(value, time):
@@ -837,10 +837,10 @@ class CallbackSchedulerService:
 
     def _resolve_day_window(
         self,
-        flow: CallFlow | None,
+        flow: Optional[CallFlow],
         dow: int,
         is_us: bool,
-    ) -> Tuple[time, time] | None:
+    ) -> Optional[Tuple[time, time]]:
         """
         Return the (open, close) local-time window for the given weekday
         (0=Monday…6=Sunday), or None if the day is closed.
@@ -880,7 +880,7 @@ class CallbackSchedulerService:
     def _is_within_business_hours(
         self,
         local_dt: datetime,
-        flow: CallFlow | None,
+        flow: Optional[CallFlow],
         is_us: bool,
     ) -> bool:
         """
@@ -898,9 +898,9 @@ class CallbackSchedulerService:
         self,
         from_utc: datetime,
         tz_name: str,
-        flow: CallFlow | None,
+        flow: Optional[CallFlow],
         is_us: bool,
-        agent_id: uuid.UUID | None = None,
+        agent_id: Optional[uuid.UUID] = None,
     ) -> datetime:
         """
         Resolve the next compliant dispatch time:

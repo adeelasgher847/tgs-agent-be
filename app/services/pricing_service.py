@@ -70,7 +70,7 @@ class PricingService:
     # -----------------------------
     # Helpers
     # -----------------------------
-    def _lookup_token_prices(self, model_name: str) -> tuple | None:
+    def _lookup_token_prices(self, model_name: str) -> Optional[tuple]:
         key = model_name.lower().strip()
         if key in self.openai:
             return self.openai[key]
@@ -78,7 +78,7 @@ class PricingService:
             return self.gemini[key]
         return None
 
-    def llm_cost_per_min(self, model_name: str) -> float | None:
+    def llm_cost_per_min(self, model_name: str) -> Optional[float]:
         """
         Compute LLM cost per minute using formula:
           (input $/1M + output $/1M) * TOKENS_FRACTION
@@ -91,7 +91,7 @@ class PricingService:
         cost = (input_price + output_price) * TOKENS_FRACTION
         return round(cost, 6)
 
-    def tts_cost_per_min(self, plan_name: str | None, chars_per_min: int | None = None, turbo: bool = False) -> float:
+    def tts_cost_per_min(self, plan_name: Optional[str], chars_per_min: Optional[int] = None, turbo: bool = False) -> float:
         """
         Compute ElevenLabs TTS cost per minute from plan cost per 1K chars.
         - plan_name: e.g. 'Business' or 'creator' (case-insensitive)
@@ -117,9 +117,9 @@ class PricingService:
                               model_name: str,
                               *,
                               include_twilio: bool = True,
-                              eleven_plan: str | None = None,
+                              eleven_plan: Optional[str] = None,
                               tts_turbo: bool = False,
-                              chars_per_min: int | None = None) -> Dict[str, float | None]:
+                              chars_per_min: Optional[int] = None) -> Dict[str, Optional[float]]:
         """
         Return pricing breakdown for a model.
         - model_name: the model stored in DB (e.g. 'gpt-5', 'gemini-2.5-pro', 'eleven_multilingual_v2')

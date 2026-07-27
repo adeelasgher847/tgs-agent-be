@@ -592,7 +592,7 @@ class TtsStreamMixin:
         except Exception as e:
             logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
 
-    async def _prefetch_tts_audio(self, task: Dict[str, Any]) -> bytes | None:
+    async def _prefetch_tts_audio(self, task: Dict[str, Any]) -> Optional[bytes]:
         """
         Generate TTS audio bytes in the background WITHOUT acquiring _tts_lock
         and WITHOUT streaming to Twilio.

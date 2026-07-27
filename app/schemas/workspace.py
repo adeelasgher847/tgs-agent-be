@@ -107,7 +107,7 @@ class PricingConfigOut(BaseModel):
 class WorkspaceUsageOut(BaseModel):
     """Response shape for cycle usage"""
     minutes_used_this_cycle: Decimal
-    minutes_included: Decimal | None = None
+    minutes_included: Optional[Decimal] = None
     overage_minutes: Decimal
     overage_cost: Decimal
 
@@ -116,15 +116,15 @@ class SubAccountCreate(BaseModel):
     contact_email: EmailStr
 
 class SubAccountUpdate(BaseModel):
-    name: str | None = Field(None, min_length=3, max_length=50)
-    contact_email: EmailStr | None = None
+    name: Optional[str] = Field(None, min_length=3, max_length=50)
+    contact_email: Optional[EmailStr] = None
 
 class SubAccountOut(BaseModel):
     id: uuid.UUID
     name: str
-    contact_email: str | None = None
+    contact_email: Optional[str] = None
     status: str
-    api_key_prefix: str | None = None
+    api_key_prefix: Optional[str] = None
     usage_this_cycle_minutes: float
 
     model_config = {

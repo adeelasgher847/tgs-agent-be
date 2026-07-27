@@ -15,9 +15,9 @@ class BatchJobCreate(BaseModel):
     """Parsed from multipart/form-data after CSV is validated."""
 
     agent_id: uuid.UUID
-    scheduled_at: datetime | None = None
+    scheduled_at: Optional[datetime] = None
     voicemail_action: str = "skip"
-    voicemail_message: str | None = Field(default=None, max_length=500)
+    voicemail_message: Optional[str] = Field(default=None, max_length=500)
 
     @field_validator("voicemail_action")
     @classmethod
@@ -35,14 +35,14 @@ class BatchCallRecordOut(BaseModel):
     id: uuid.UUID
     batch_job_id: uuid.UUID
     phone_number: str
-    variables: Dict[str, Any] | None = None
+    variables: Optional[Dict[str, Any]] = None
     status: str
-    call_id: uuid.UUID | None = None
+    call_id: Optional[uuid.UUID] = None
     attempts: int
-    last_error: str | None = None
-    next_attempt_at: datetime | None = None
+    last_error: Optional[str] = None
+    next_attempt_at: Optional[datetime] = None
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
 
 
 class BatchJobOut(BaseModel):
@@ -50,7 +50,7 @@ class BatchJobOut(BaseModel):
 
     id: uuid.UUID
     workspace_id: uuid.UUID
-    agent_id: uuid.UUID | None = None
+    agent_id: Optional[uuid.UUID] = None
     status: str
     total_count: int
     waiting_count: int
@@ -58,11 +58,11 @@ class BatchJobOut(BaseModel):
     completed_count: int
     failed_count: int
     voicemail_action: str = "skip"
-    voicemail_message: str | None = None
-    s3_path: str | None = None
-    scheduled_at: datetime | None = None
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
+    voicemail_message: Optional[str] = None
+    s3_path: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     created_at: datetime
 
 

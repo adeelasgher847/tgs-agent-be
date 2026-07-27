@@ -12,11 +12,11 @@ from app.services.pricing_service import pricing_service
 class ModelBase(BaseModel):
     """Base model schema with common fields"""
     model_name: str = Field(..., max_length=100, description="Name of the AI model")
-    api_key: str | None = Field(None, max_length=500, description="Model-specific API key")
-    description: str | None = Field(None, description="Model description including free tokens, efficiency, pricing details")
-    system_prompt: str | None = Field(None, max_length=1000, description="Default system prompt for the model")
-    temperature: int | None = Field(None, ge=0, le=100, description="Temperature setting (0-100)")
-    max_tokens: int | None = Field(None, gt=0, description="Maximum tokens for responses")
+    api_key: Optional[str] = Field(None, max_length=500, description="Model-specific API key")
+    description: Optional[str] = Field(None, description="Model description including free tokens, efficiency, pricing details")
+    system_prompt: Optional[str] = Field(None, max_length=1000, description="Default system prompt for the model")
+    temperature: Optional[int] = Field(None, ge=0, le=100, description="Temperature setting (0-100)")
+    max_tokens: Optional[int] = Field(None, gt=0, description="Maximum tokens for responses")
     archive: bool = Field(True, description="Whether the model is archived")
 
 
@@ -27,13 +27,13 @@ class ModelCreate(ModelBase):
 
 class ModelUpdate(BaseModel):
     """Schema for updating a model"""
-    model_name: str | None = Field(None, max_length=100)
-    api_key: str | None = Field(None, max_length=500)
-    description: str | None = None
-    system_prompt: str | None = Field(None, max_length=1000)
-    temperature: int | None = Field(None, ge=0, le=100)
-    max_tokens: int | None = Field(None, gt=0)
-    archive: bool | None = None
+    model_name: Optional[str] = Field(None, max_length=100)
+    api_key: Optional[str] = Field(None, max_length=500)
+    description: Optional[str] = None
+    system_prompt: Optional[str] = Field(None, max_length=1000)
+    temperature: Optional[int] = Field(None, ge=0, le=100)
+    max_tokens: Optional[int] = Field(None, gt=0)
+    archive: Optional[bool] = None
 
 
 class ModelResponse(BaseModel):
@@ -41,14 +41,14 @@ class ModelResponse(BaseModel):
     id: uuid.UUID
     provider_id: uuid.UUID
     model_name: str = Field(..., max_length=100, description="Name of the AI model")
-    description: str | None = Field(None, description="Model description including free tokens, efficiency, pricing details")
-    system_prompt: str | None = Field(None, max_length=1000, description="Default system prompt for the model")
-    temperature: int | None = Field(None, ge=0, le=100, description="Temperature setting (0-100)")
-    max_tokens: int | None = Field(None, gt=0, description="Maximum tokens for responses")
+    description: Optional[str] = Field(None, description="Model description including free tokens, efficiency, pricing details")
+    system_prompt: Optional[str] = Field(None, max_length=1000, description="Default system prompt for the model")
+    temperature: Optional[int] = Field(None, ge=0, le=100, description="Temperature setting (0-100)")
+    max_tokens: Optional[int] = Field(None, gt=0, description="Maximum tokens for responses")
     archive: bool = Field(True, description="Whether the model is archived")
     created_at: datetime
-    updated_at: datetime | None = None
-    pricing: dict | None = Field(None, description="Dynamic pricing details for the model") 
+    updated_at: Optional[datetime] = None
+    pricing: Optional[dict] = Field(None, description="Dynamic pricing details for the model") 
 
     # ✅ Correct inject_pricing for Pydantic v2
     @model_validator(mode='wrap')

@@ -26,10 +26,10 @@ class CallFlowRepository:
         self,
         flow_id: uuid.UUID,
         *,
-        tenant_id: uuid.UUID | None = None,
+        tenant_id: Optional[uuid.UUID] = None,
         include_deleted: bool = False,
         load_relations: bool = False,
-    ) -> CallFlow | None:
+    ) -> Optional[CallFlow]:
         stmt = select(CallFlow).where(CallFlow.id == flow_id)
         if tenant_id is not None:
             stmt = stmt.where(CallFlow.tenant_id == tenant_id)

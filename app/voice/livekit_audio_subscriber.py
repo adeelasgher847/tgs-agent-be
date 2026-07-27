@@ -36,7 +36,7 @@ class LiveKitAudioSubscriber:
         self._stt_pipeline = stt_pipeline
         self._output_sample_rate = output_sample_rate
         self._stop_event = asyncio.Event()
-        self._processor: LiveKitAudioProcessor | None = None
+        self._processor: Optional[LiveKitAudioProcessor] = None
 
     async def run(self) -> None:
         """Connect to LiveKit room, subscribe to caller audio, feed STT."""
@@ -72,7 +72,7 @@ class LiveKitAudioSubscriber:
             return
 
         room = rtc.Room()
-        audio_stream: Any | None = None
+        audio_stream: Optional[Any] = None
         caller_track_found = asyncio.Event()
 
         def on_track_subscribed(track, publication, participant):

@@ -29,7 +29,7 @@ from app.models.tenant_inbound_crm_config import TenantInboundCRMConfig
 from app.services.trello_service import TrelloService
 
 
-def _extract_llm_analysis(call_log: CallLog, session: CallSession) -> Dict[str, Any] | None:
+def _extract_llm_analysis(call_log: CallLog, session: CallSession) -> Optional[Dict[str, Any]]:
     for meta in (call_log.call_metadata, session.call_metadata):
         if not isinstance(meta, dict):
             continue
@@ -167,7 +167,7 @@ def _release_inbound_sync_lock(db: Session, call_log_id: uuid.UUID) -> None:
 
 def sync_inbound_call_to_crm(call_session_id: uuid.UUID) -> None:
     db: Session = SessionLocal()
-    lock_log_id: uuid.UUID | None = None
+    lock_log_id: Optional[uuid.UUID] = None
     try:
         session = db.query(CallSession).filter(CallSession.id == call_session_id).first()
         if not session or (session.call_type or "").lower() != "inbound":
@@ -345,7 +345,7 @@ def schedule_inbound_crm_sync(call_session_id: uuid.UUID) -> None:
     asyncio.create_task(sync_inbound_call_to_crm_async(call_session_id))
 
 
-def delete_tenant_inbound_crm_config(db: Session, tenant_id: uuid.UUID) -> dict | None:
+def delete_tenant_inbound_crm_config(db: Session, tenant_id: uuid.UUID) -> Optional[dict]:
     """
     Clear this tenant's inbound CRM logs: delete tracked Trello cards (not the board),
     and remove sync rows. Keeps the tenant config row and board mapping intact.

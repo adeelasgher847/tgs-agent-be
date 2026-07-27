@@ -38,7 +38,7 @@ def _validate_e164(v: str) -> str:
 
 class PhoneNumberBase(BaseModel):
     phone_number: str = Field(..., description="Phone number in E.164 format")
-    label: str | None = Field(None)
+    label: Optional[str] = Field(None)
     status: str = Field(default="active")
 
     @field_validator("phone_number")
@@ -51,7 +51,7 @@ class PhoneNumberCreate(PhoneNumberBase):
     """Internal create payload; maps agent_id to DB column assistant_id."""
 
     tenant_id: uuid.UUID
-    assistant_id: uuid.UUID | None = None
+    assistant_id: Optional[uuid.UUID] = None
 
     @field_validator("assistant_id", mode="before")
     @classmethod
@@ -62,9 +62,9 @@ class PhoneNumberCreate(PhoneNumberBase):
 class PhoneNumberUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    label: str | None = None
-    status: str | None = None
-    agent_id: uuid.UUID | None = Field(
+    label: Optional[str] = None
+    status: Optional[str] = None
+    agent_id: Optional[uuid.UUID] = Field(
         default=None,
         validation_alias=AliasChoices("agent_id", "agentId"),
         description="Agent to bind (stored as assistant_id in DB)",
@@ -82,15 +82,15 @@ class PhoneNumberResponse(PhoneNumberBase):
     id: uuid.UUID
     tenant_id: uuid.UUID
     provider: str = "twilio"
-    agent_id: uuid.UUID | None = Field(
+    agent_id: Optional[uuid.UUID] = Field(
         default=None,
         validation_alias=AliasChoices("assistant_id", "agent_id", "agentId"),
         description="Bound agent id (maps from DB column assistant_id)",
     )
-    twilio_phone_number_sid: str | None = None
-    twilio_account_sid: str | None = None
+    twilio_phone_number_sid: Optional[str] = None
+    twilio_account_sid: Optional[str] = None
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -104,8 +104,8 @@ class CreatePhoneNumberRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     phone_number: str
-    label: str | None = None
-    agent_id: uuid.UUID | None = Field(
+    label: Optional[str] = None
+    agent_id: Optional[uuid.UUID] = Field(
         default=None,
         validation_alias=AliasChoices("agent_id", "agentId"),
         description="Optional agent to bind on create",
@@ -125,7 +125,7 @@ class CreatePhoneNumberRequest(BaseModel):
 class CreatePhoneNumberResponse(BaseModel):
     id: uuid.UUID
     phone_number: str
-    label: str | None
+    label: Optional[str]
     status: str
     created_at: datetime
     message: str
@@ -133,7 +133,7 @@ class CreatePhoneNumberResponse(BaseModel):
 
 class ImportTwilioPhoneNumberRequest(BaseModel):
     phone_number: str = Field(..., description="E.164 phone number")
-    label: str | None = None
+    label: Optional[str] = None
     twilio_account_sid: str
     twilio_auth_token: str
 
@@ -146,7 +146,7 @@ class ImportTwilioPhoneNumberRequest(BaseModel):
 class ImportTwilioPhoneNumberResponse(BaseModel):
     id: uuid.UUID
     phone_number: str
-    label: str | None
+    label: Optional[str]
     status: str
     twilio_account_sid: str
     created_at: datetime
@@ -179,7 +179,7 @@ class BusinessHoursSchema(BaseModel):
 class NumberConfigurationRequest(BaseModel):
     recording_enabled: bool = False
     max_duration_seconds: int = Field(default=3600, ge=60, le=86400)
-    business_hours: BusinessHoursSchema | None = None
+    business_hours: Optional[BusinessHoursSchema] = None
 
 
 class NumberConfigurationResponse(BaseModel):
@@ -187,9 +187,9 @@ class NumberConfigurationResponse(BaseModel):
     phone_number_id: uuid.UUID
     recording_enabled: bool
     max_duration_seconds: int
-    business_hours: Dict[str, Any] | None = None
+    business_hours: Optional[Dict[str, Any]] = None
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -201,9 +201,9 @@ class NumberConfigurationResponse(BaseModel):
 
 class PhoneNumberSearchResult(BaseModel):
     phone_number: str
-    friendly_name: str | None = None
-    locality: str | None = None
-    region: str | None = None
+    friendly_name: Optional[str] = None
+    locality: Optional[str] = None
+    region: Optional[str] = None
     country: str
     capabilities: Dict[str, bool]
     beta: bool = False
@@ -218,7 +218,7 @@ class PurchasePhoneNumberRequest(BaseModel):
     """POST /api/v1/phone-numbers/purchase"""
 
     phone_number: str = Field(..., description="E.164 number to purchase e.g. +61412345678")
-    label: str | None = None
+    label: Optional[str] = None
 
     @field_validator("phone_number")
     @classmethod
@@ -230,7 +230,7 @@ class PurchasePhoneNumberResponse(BaseModel):
     id: uuid.UUID
     phone_number: str
     provider: str
-    twilio_sid: str | None
+    twilio_sid: Optional[str]
     status: str
     workspace_id: uuid.UUID
     created_at: datetime
@@ -246,7 +246,7 @@ class RegisterExternalNumberRequest(BaseModel):
     """POST /api/v1/telephony/external"""
 
     phone_number: str = Field(..., description="E.164 number e.g. +61412345678")
-    label: str | None = None
+    label: Optional[str] = None
     sip_username: str = Field(..., description="SIP username for inbound routing")
     sip_password: str = Field(..., description="SIP password (stored encrypted)")
 
@@ -305,9 +305,9 @@ class UnbindNumberRequest(BaseModel):
 class BindingStatusResponse(BaseModel):
     number_id: uuid.UUID
     phone_number: str
-    agent_id: uuid.UUID | None
-    agent_name: str | None
-    agent_status: str | None
+    agent_id: Optional[uuid.UUID]
+    agent_name: Optional[str]
+    agent_status: Optional[str]
     message: str
 
 
@@ -315,8 +315,8 @@ class BoundAgentBinding(BaseModel):
     """GET /api/v1/telephony/bindings — one row per bound number ↔ agent."""
 
     agent_id: uuid.UUID
-    agent_name: str | None = None
-    agent_status: str | None = None
+    agent_name: Optional[str] = None
+    agent_status: Optional[str] = None
     number_id: uuid.UUID
     phone_number: str
 
@@ -335,14 +335,14 @@ class PhoneNumberWithBinding(BaseModel):
     id: uuid.UUID
     phone_number: str
     provider: str
-    label: str | None
+    label: Optional[str]
     status: str
     workspace_id: uuid.UUID
-    twilio_sid: str | None
+    twilio_sid: Optional[str]
     binding_status: str  # bound | unbound
-    agent_id: uuid.UUID | None
-    agent_name: str | None
-    agent_status: str | None
+    agent_id: Optional[uuid.UUID]
+    agent_name: Optional[str]
+    agent_status: Optional[str]
     created_at: datetime
 
     model_config = {"from_attributes": True}

@@ -83,7 +83,7 @@ def get_flow_data(
 )
 def validate_flow_data(
     flow_id: uuid.UUID,
-    body: FlowDataUpdate | None = Body(default=None),
+    body: Optional[FlowDataUpdate] = Body(default=None),
     principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ) -> FlowValidationResponse:

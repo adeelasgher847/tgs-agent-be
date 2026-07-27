@@ -54,7 +54,7 @@ async def analyze_call_transcript_internal(
     db: Session,
     call_session: CallSession,
     user: User
-) -> Dict[str, Any] | None:
+) -> Optional[Dict[str, Any]]:
     """
     Internal helper function to analyze a call transcript.
     Returns analysis dict or None if analysis fails.
@@ -278,7 +278,7 @@ async def upload_scheduled_calls_csv(
     file: UploadFile = File(..., description="CSV file with scheduled calls"),
     crm_config_id: str = Query(..., description="CRM configuration ID (UUID)"),
     agent_id: str = Query(..., description="Agent ID to use for all calls in this CSV (required)"),
-    phone_number_id: str | None = Query(None, description="Optional phone number ID to use for all calls in CSV"),
+    phone_number_id: Optional[str] = Query(None, description="Optional phone number ID to use for all calls in CSV"),
     user: User = Depends(require_manager),
     db: Session = Depends(get_db)
 ):
@@ -358,7 +358,7 @@ async def upload_scheduled_calls_csv(
                 and_(
                     Agent.id == agent_uuid,
                     Agent.tenant_id == user.current_tenant_id,
-                    ~Agent.is_deleted
+                    Agent.is_deleted == False
                 )
             ).first()
             if not agent:
@@ -423,7 +423,7 @@ async def create_single_scheduled_call(
     agent_id: str = Query(..., description="Agent ID (UUID)"),
     phone_number: str = Query(..., description="Phone number to call (e.g., +1234567890)"),
     call_time_utc: str = Query(..., description="Scheduled time in UTC - ISO format or YYYY-MM-DD HH:MM:SS"),
-    phone_number_id: str | None = Query(None, description="Optional phone number ID from DB to use for call"),
+    phone_number_id: Optional[str] = Query(None, description="Optional phone number ID from DB to use for call"),
     user: User = Depends(require_manager),
     db: Session = Depends(get_db)
 ):
@@ -551,7 +551,7 @@ async def create_scheduled_call_from_call_session(
             session_uuid = uuid.UUID(body.call_session_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid call_session_id format")
-        agent_override: uuid.UUID | None = None
+        agent_override: Optional[uuid.UUID] = None
         if body.agent_id:
             try:
                 agent_override = uuid.UUID(body.agent_id)
@@ -622,7 +622,7 @@ async def get_crm_config(
 
 @router.get("/board", response_model=SuccessResponse[BoardInfoResponse])
 async def get_board_url(
-    crm_config_id: str | None = Query(None, description="CRM config ID. Pass to get that CRM's board URL; omit for first linked board."),
+    crm_config_id: Optional[str] = Query(None, description="CRM config ID. Pass to get that CRM's board URL; omit for first linked board."),
     user: User = Depends(require_readonly),
     db: Session = Depends(get_db),
 ):
@@ -827,7 +827,7 @@ async def get_pending_scheduled_calls_count(
 
 @router.delete("/board/items", response_model=SuccessResponse[DeleteBoardItemsResponse])
 async def clear_board_items(
-    crm_config_id: str | None = Query(None, description="CRM config ID to clear. If omitted, first linked board is used."),
+    crm_config_id: Optional[str] = Query(None, description="CRM config ID to clear. If omitted, first linked board is used."),
     user: User = Depends(require_manager),
     db: Session = Depends(get_db),
 ):
@@ -875,9 +875,9 @@ async def clear_board_items(
 async def get_batch_analysis(
     batch_id: str,
     http_request: Request,
-    tenant_id: str | None = Query(None, description="Tenant ID (required when using webhook secret)"),
-    user_id: str | None = Query(None, description="User ID (required when using webhook secret)"),
-    user: User | None = Depends(get_optional_tenant_user),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -1146,8 +1146,8 @@ async def get_batch_analysis(
 async def get_batch_analysis_jira(
     batch_id: str,
     http_request: Request,
-    tenant_id: str | None = Query(..., description="Tenant ID (required)"),
-    user_id: str | None = Query(..., description="User ID (required)"),
+    tenant_id: Optional[str] = Query(..., description="Tenant ID (required)"),
+    user_id: Optional[str] = Query(..., description="User ID (required)"),
     db: Session = Depends(get_db),
     request_body: JiraBatchAnalysisRequest = Body(..., description="Request body with call_session_ids and other data")
 ):
@@ -1358,9 +1358,9 @@ async def get_batch_analysis_jira(
 async def mark_batch_email_sent(
     batch_id: str,
     http_request: Request,
-    tenant_id: str | None = Query(None, description="Tenant ID (required when using webhook secret)"),
-    user_id: str | None = Query(None, description="User ID (required when using webhook secret)"),
-    user: User | None = Depends(get_optional_tenant_user),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -1505,9 +1505,9 @@ async def mark_batch_email_sent(
 async def mark_batch_email_sent_clickup(
     batch_id: str,
     http_request: Request,
-    tenant_id: str | None = Query(None, description="Tenant ID (required when using webhook secret)"),
-    user_id: str | None = Query(None, description="User ID (required when using webhook secret)"),
-    user: User | None = Depends(get_optional_tenant_user),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -1642,9 +1642,9 @@ async def mark_batch_email_sent_clickup(
 async def mark_batch_email_sent_trello(
     batch_id: str,
     http_request: Request,
-    tenant_id: str | None = Query(None, description="Tenant ID (required when using webhook secret)"),
-    user_id: str | None = Query(None, description="User ID (required when using webhook secret)"),
-    user: User | None = Depends(get_optional_tenant_user),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -1777,9 +1777,9 @@ async def mark_batch_email_sent_trello(
 async def mark_batch_email_sent_jira(
     batch_id: str,
     http_request: Request,
-    tenant_id: str | None = Query(None, description="Tenant ID (required when using webhook secret)"),
-    user_id: str | None = Query(None, description="User ID (required when using webhook secret)"),
-    user: User | None = Depends(get_optional_tenant_user),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (required when using webhook secret)"),
+    user_id: Optional[str] = Query(None, description="User ID (required when using webhook secret)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db),
     issue_keys: List[str] = Body(..., description="List of Jira issue keys to update")
 ):
@@ -2004,9 +2004,9 @@ async def get_selected_crm_config(
 @router.get("/jira-credentials", response_model=SuccessResponse[dict], include_in_schema=False)
 async def get_jira_credentials(
     http_request: Request,
-    tenant_id: str | None = Query(None, description="Tenant ID (optional - if not provided, returns all Jira users)"),
-    user_id: str | None = Query(None, description="User ID (optional - if not provided, returns all Jira users)"),
-    user: User | None = Depends(get_optional_tenant_user),
+    tenant_id: Optional[str] = Query(None, description="Tenant ID (optional - if not provided, returns all Jira users)"),
+    user_id: Optional[str] = Query(None, description="User ID (optional - if not provided, returns all Jira users)"),
+    user: Optional[User] = Depends(get_optional_tenant_user),
     db: Session = Depends(get_db)
 ):
     """

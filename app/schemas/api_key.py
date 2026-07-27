@@ -18,7 +18,7 @@ class ApiKeyOut(BaseModel):
     masked_key: str
     is_active: bool
     created_at: datetime
-    last_used_at: datetime | None = None
+    last_used_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 

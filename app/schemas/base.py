@@ -15,4 +15,4 @@ class SuccessResponse(BaseResponse[T]):
 class ErrorResponse(BaseModel):
     message: str
     status_code: int = status.HTTP_400_BAD_REQUEST
-    error: str | None = None
+    error: Optional[str] = None

@@ -128,7 +128,7 @@ class AgentService:
     def _resolve_stt_model(
         self,
         db: Session,
-        stt: SttModelSchema | None,
+        stt: Optional[SttModelSchema],
     ) -> Dict[str, Any]:
         """Validate and resolve STT provider + model to DB FK ids + slug triad.
 
@@ -198,10 +198,10 @@ class AgentService:
         model = self._resolve_llm_model(db, agent_in.llm_model)
         tts_fields = self._resolve_tts_model(db, agent_in.tts_model)
         stt_fields = self._resolve_stt_model(db, agent_in.stt_model)
-        encrypted_key: str | None = None
+        encrypted_key: Optional[str] = None
         if agent_in.tts_model.provider == TtsProviderEnum.elevenlabs_byo:
             encrypted_key = self._encrypt_byo_key(agent_in.eleven_labs_api_key or "", db)
-        stt_settings: Dict[str, Any] | None = None
+        stt_settings: Optional[Dict[str, Any]] = None
         if agent_in.stt_settings is not None:
             stt_settings = agent_in.stt_settings.model_dump(by_alias=False, exclude_none=True)
         return {
@@ -266,7 +266,7 @@ class AgentService:
         )
         return db.execute(stmt).first() is not None
 
-    def _validate_tts_settings_payload(self, tts_settings_json: Dict[str, Any] | None) -> None:
+    def _validate_tts_settings_payload(self, tts_settings_json: Optional[Dict[str, Any]]) -> None:
         if not tts_settings_json:
             return
         suspicious_key_pattern = re.compile(r"(api[_-]?key|token|secret|authorization|credential|xi[_-]?api[_-]?key)", re.IGNORECASE)
@@ -387,7 +387,7 @@ class AgentService:
         self,
         db: Session,
         tenant_id: uuid.UUID,
-        route_id: uuid.UUID | None,
+        route_id: Optional[uuid.UUID],
     ) -> None:
         """Ensure transfer_route_id belongs to the same tenant (or is null)."""
         if route_id is None:
@@ -472,7 +472,7 @@ class AgentService:
         db: Session,
         agent_in: AgentCreate,
         tenant_id: uuid.UUID,
-        user_id: uuid.UUID | None = None,
+        user_id: Optional[uuid.UUID] = None,
     ) -> Agent:
         """
         Create a new agent with tenant context and audit trail.
@@ -535,8 +535,8 @@ class AgentService:
         if agent_data.get("is_follow_up_agent"):
             existing_fu = db.query(Agent).filter(
                 Agent.tenant_id == tenant_id,
-                ~Agent.is_deleted,
-                Agent.is_follow_up_agent,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
             ).first()
             if existing_fu:
                 raise HTTPException(
@@ -583,7 +583,7 @@ class AgentService:
         tenant_id: uuid.UUID,
         page: int = 1,
         limit: int = 20,
-        search: str | None = None
+        search: Optional[str] = None
     ) -> AgentListResponse:
         """
         List agents with pagination, search, and tenant isolation
@@ -606,7 +606,7 @@ class AgentService:
         agent_id: uuid.UUID, 
         agent_update: AgentUpdate, 
         tenant_id: uuid.UUID,
-        user_id: uuid.UUID | None = None,
+        user_id: Optional[uuid.UUID] = None,
     ) -> Agent:
         """
         Update agent with tenant isolation and audit trail
@@ -625,8 +625,8 @@ class AgentService:
         if update_dict.get("is_follow_up_agent") is True:
             existing_fu = db.query(Agent).filter(
                 Agent.tenant_id == tenant_id,
-                ~Agent.is_deleted,
-                Agent.is_follow_up_agent,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
                 Agent.id != agent_id,
             ).first()
             if existing_fu:
@@ -649,7 +649,7 @@ class AgentService:
                 Agent.tenant_id == tenant_id,
                 func.lower(Agent.name) == new_name.lower(),
                 Agent.id != agent_id,
-                ~Agent.is_deleted
+                Agent.is_deleted == False
             ).first()
             if existing:
                 raise HTTPException(
@@ -711,7 +711,7 @@ class AgentService:
 
         agent_prompts = db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
-            ~Agent.is_deleted,
+            Agent.is_deleted == False,
             Agent.id != inbound_agent_id,
         ).all()
 
@@ -811,7 +811,7 @@ No active tenant knowledge base documents were found.
         agent_id: uuid.UUID,
         tenant_id: uuid.UUID,
         *,
-        user_id: uuid.UUID | None = None,
+        user_id: Optional[uuid.UUID] = None,
     ) -> None:
         """Soft delete; raises 409 when an active phone number is still bound."""
         agent = self.get_agent_by_id(db, agent_id, tenant_id)
@@ -833,10 +833,10 @@ No active tenant knowledge base documents were found.
         """
         return db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
-            ~Agent.is_deleted
+            Agent.is_deleted == False
         ).all()
 
-    def get_inbound_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Agent | None:
+    def get_inbound_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Optional[Agent]:
         """
         Get the dedicated inbound agent for a tenant.
         Returns None if no inbound agent is configured.
@@ -845,20 +845,20 @@ No active tenant knowledge base documents were found.
             db.query(Agent)
             .filter(
                 Agent.tenant_id == tenant_id,
-                ~Agent.is_deleted,
-                Agent.is_inbound_agent,
+                Agent.is_deleted == False,
+                Agent.is_inbound_agent == True,
             )
             .first()
         )
 
-    def get_follow_up_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Agent | None:
+    def get_follow_up_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Optional[Agent]:
         """Tenant's single appointment follow-up / reminder agent, if configured."""
         return (
             db.query(Agent)
             .filter(
                 Agent.tenant_id == tenant_id,
-                ~Agent.is_deleted,
-                Agent.is_follow_up_agent,
+                Agent.is_deleted == False,
+                Agent.is_follow_up_agent == True,
             )
             .first()
         )
@@ -878,7 +878,7 @@ No active tenant knowledge base documents were found.
         clean_search_term = search_term.strip().lower()
         return db.query(Agent).filter(
             Agent.tenant_id == tenant_id,
-            ~Agent.is_deleted,
+            Agent.is_deleted == False,
             func.lower(Agent.name).like(f"%{clean_search_term}%")
         ).all()
     
@@ -890,7 +890,7 @@ No active tenant knowledge base documents were found.
         agent = db.query(Agent).options(joinedload(Agent.model)).filter(
             Agent.id == agent_id,
             Agent.tenant_id == tenant_id,
-            ~Agent.is_deleted
+            Agent.is_deleted == False
         ).first()
         
         if not agent:
@@ -928,7 +928,7 @@ No active tenant knowledge base documents were found.
         self,
         db: Session,
         tenant_id: uuid.UUID,
-        agent_id: uuid.UUID | None = None,
+        agent_id: Optional[uuid.UUID] = None,
     ) -> List[BusinessKnowledge]:
         """
         Return active business knowledge records for the given tenant/agent.
@@ -968,7 +968,7 @@ No active tenant knowledge base documents were found.
         self,
         db: Session,
         tenant_id: uuid.UUID,
-        agent_id: uuid.UUID | None = None,
+        agent_id: Optional[uuid.UUID] = None,
     ) -> str:
         """
         Build a prompt block containing active business knowledge for the agent.
@@ -1230,7 +1230,7 @@ No active tenant knowledge base documents were found.
         self,
         *,
         business_knowledge_block: str = "",
-        transfer_route: TransferRoute | None = None,
+        transfer_route: Optional[TransferRoute] = None,
     ) -> str:
         """
         Top-of-prompt operational gates that take priority over style, tone,

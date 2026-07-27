@@ -101,7 +101,7 @@ def _transcript_to_text(db: Session, call_session_id: uuid.UUID) -> str:
     return "\n".join(parts)
 
 
-def _parse_iso_to_utc(s: str | None) -> datetime | None:
+def _parse_iso_to_utc(s: Optional[str]) -> Optional[datetime]:
     if not s or not str(s).strip():
         return None
     try:
@@ -143,7 +143,7 @@ class PostCallAppointmentService:
     def _extract_non_pii_from_llm(
         self,
         transcript: str,
-        reserved_slot: datetime | None = None,
+        reserved_slot: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """
         Optional LLM pass for non-PII fields only (reason, slot hint).
@@ -470,7 +470,7 @@ class PostCallAppointmentService:
         if not reason:
             reason = None
 
-        slot_utc: datetime | None = _parse_iso_to_utc(intent.get("slot_start_iso"))
+        slot_utc: Optional[datetime] = _parse_iso_to_utc(intent.get("slot_start_iso"))
         if slot_utc is None:
             slot_utc = _parse_iso_to_utc(llm.get("slot_start_iso") if llm else None)
 

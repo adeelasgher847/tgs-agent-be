@@ -21,7 +21,7 @@ class STTCatalogService:
         self,
         db: Session,
         provider_id: uuid.UUID,
-        language_code: str | None = None,
+        language_code: Optional[str] = None,
         active_only: bool = True,
     ) -> list[STTModel]:
         query = db.query(STTModel).filter(STTModel.provider_id == provider_id)
@@ -31,7 +31,7 @@ class STTCatalogService:
             query = query.filter(STTModel.language_code == language_code)
         return query.order_by(STTModel.display_name.asc()).all()
 
-    def get_provider_by_slug(self, db: Session, slug: str) -> STTProvider | None:
+    def get_provider_by_slug(self, db: Session, slug: str) -> Optional[STTProvider]:
         return (
             db.query(STTProvider)
             .filter(STTProvider.slug == slug)
@@ -43,7 +43,7 @@ class STTCatalogService:
         db: Session,
         provider_id: uuid.UUID,
         external_model_id: str,
-    ) -> STTModel | None:
+    ) -> Optional[STTModel]:
         return (
             db.query(STTModel)
             .filter(

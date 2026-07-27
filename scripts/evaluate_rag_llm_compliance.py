@@ -61,7 +61,7 @@ Do not guess.
 """.strip()
 
 
-def _parse_uuid(value: str | None) -> uuid.UUID | None:
+def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
     if not value:
         return None
     return uuid.UUID(value)

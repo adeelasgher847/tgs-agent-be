@@ -25,7 +25,7 @@ from app.core.config import settings
 from app.core.logger import logger
 
 
-def _fetch_from_secret_manager(secret_id: str) -> str | None:
+def _fetch_from_secret_manager(secret_id: str) -> Optional[str]:
     """Fetch a single secret value from GCP Secret Manager."""
     if not settings.GCP_PROJECT_ID:
         return None

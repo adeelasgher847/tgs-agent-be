@@ -32,7 +32,7 @@ class TurnContext:
     conversation_phase: str
     stt_confidence: float
     # Optional 0.0–1.0 for future TTS prosody mapping; no extra API in this path.
-    tts_stability_hint: float | None = None
+    tts_stability_hint: Optional[float] = None
     is_final: bool = True
 
     def mood_label(self) -> str:
@@ -96,7 +96,7 @@ def _respond_briefly(user_text: str, mood: UserMood, stt_confidence: float) -> b
     return False
 
 
-def _tts_stability_for_mood(mood: UserMood) -> float | None:
+def _tts_stability_for_mood(mood: UserMood) -> Optional[float]:
     """Slightly lower = more variable prosody; higher = calmer. For future ElevenLabs mapping."""
     if mood in (UserMood.ANGRY, UserMood.FRUSTRATED, UserMood.URGENT):
         return 0.42

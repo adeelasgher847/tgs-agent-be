@@ -82,12 +82,12 @@ class CRMConfigService:
         return crm_config
 
     @staticmethod
-    def get_crm_config_by_id(db: Session, crm_config_id: uuid.UUID) -> CRMConfig | None:
+    def get_crm_config_by_id(db: Session, crm_config_id: uuid.UUID) -> Optional[CRMConfig]:
         """Get CRM config by ID"""
         return db.query(CRMConfig).filter(CRMConfig.id == crm_config_id).first()
 
     @staticmethod
-    def get_crm_config_by_type(db: Session, crm_type: str) -> CRMConfig | None:
+    def get_crm_config_by_type(db: Session, crm_type: str) -> Optional[CRMConfig]:
         """Get CRM config by CRM type"""
         return db.query(CRMConfig).filter(
             CRMConfig.crm_type == crm_type.lower()

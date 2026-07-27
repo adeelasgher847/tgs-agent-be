@@ -100,10 +100,10 @@ def _sha256(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-_redis: aioredis.Redis | None = None
+_redis: Optional[aioredis.Redis] = None
 
 
-def _get_redis() -> aioredis.Redis | None:
+def _get_redis() -> Optional[aioredis.Redis]:
     global _redis
     if _redis is None:
         try:

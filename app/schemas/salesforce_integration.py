@@ -12,9 +12,9 @@ class SalesforceAuthorizeResponse(BaseModel):
 
 class SalesforceContactOut(BaseModel):
     id: str
-    name: str | None = None
-    account: str | None = None
-    email: str | None = None
+    name: Optional[str] = None
+    account: Optional[str] = None
+    email: Optional[str] = None
 
 
 class SalesforceDisconnectResponse(BaseModel):
@@ -28,13 +28,13 @@ class SalesforceSettingsUpdateRequest(BaseModel):
 
 class SalesforceIntegrationStatusOut(BaseModel):
     connected: bool
-    connected_at: datetime | None = None
-    last_sync_at: str | None = None
+    connected_at: Optional[datetime] = None
+    last_sync_at: Optional[str] = None
     write_back_enabled: bool = True
 
 
 class SalesforceSyncStatusOut(BaseModel):
-    last_lookup_at: str | None = None
-    last_write_back_at: str | None = None
-    last_write_back_status: str | None = None
+    last_lookup_at: Optional[str] = None
+    last_write_back_at: Optional[str] = None
+    last_write_back_status: Optional[str] = None
     error_count_24h: int = 0

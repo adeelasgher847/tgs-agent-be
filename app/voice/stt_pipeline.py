@@ -45,25 +45,25 @@ class SttPipeline:
 
     def __init__(
         self,
-        language_code: str | None,
+        language_code: Optional[str],
         on_interim: InterimCallback,
         on_final: FinalCallback,
-        call_session_id: str | None = None,
-        agent_id: str | None = None,
-        endpointing_ms: int | None = None,
+        call_session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        endpointing_ms: Optional[int] = None,
         provider_slug: str = "deepgram",
         sample_rate_hz: int = 8000,
         encoding: str = "MULAW",
         silence_threshold_ms: int = 1500,
-        api_config: dict | None = None,
-        event_bus: SttEventBus | None = None,
+        api_config: Optional[dict] = None,
+        event_bus: Optional[SttEventBus] = None,
     ) -> None:
         self._language_code = language_code
         self._on_interim = on_interim
         self._on_final = on_final
         self._call_session_id = call_session_id
         self._agent_id = agent_id
-        self._endpointing_ms: int | None = endpointing_ms
+        self._endpointing_ms: Optional[int] = endpointing_ms
         self._provider_slug = provider_slug.lower()
         self._sample_rate_hz = sample_rate_hz
         self._encoding = encoding.upper()
@@ -72,7 +72,7 @@ class SttPipeline:
         self._event_bus = event_bus or SttEventBus()
 
         self._stt_session = None
-        self._reader_task: asyncio.Task | None = None
+        self._reader_task: Optional[asyncio.Task] = None
 
         # Normalized-final dedup — catches re-endpoints within window
         self._last_final_norm_key: str = ""
@@ -90,10 +90,10 @@ class SttPipeline:
         resolved: "ResolvedSttRuntime",
         on_interim: InterimCallback,
         on_final: FinalCallback,
-        call_session_id: str | None = None,
-        agent_id: str | None = None,
-        endpointing_ms: int | None = None,
-        event_bus: SttEventBus | None = None,
+        call_session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        endpointing_ms: Optional[int] = None,
+        event_bus: Optional[SttEventBus] = None,
     ) -> "SttPipeline":
         """Factory: build SttPipeline from a ResolvedSttRuntime."""
         return cls(

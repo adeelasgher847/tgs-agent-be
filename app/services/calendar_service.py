@@ -69,9 +69,9 @@ class CalendarService:
     def _resolve_notification_email(
         self,
         db: Session,
-        notify_user_id: uuid.UUID | None = None,
-        call_session_id: uuid.UUID | None = None,
-    ) -> str | None:
+        notify_user_id: Optional[uuid.UUID] = None,
+        call_session_id: Optional[uuid.UUID] = None,
+    ) -> Optional[str]:
         if notify_user_id:
             user = db.query(User).filter(User.id == notify_user_id).first()
             if user and user.email:
@@ -89,8 +89,8 @@ class CalendarService:
         db: Session,
         tenant_id: uuid.UUID,
         appt: Appointment,
-        notify_user_id: uuid.UUID | None = None,
-        call_session_id: uuid.UUID | None = None,
+        notify_user_id: Optional[uuid.UUID] = None,
+        call_session_id: Optional[uuid.UUID] = None,
     ) -> None:
         """
         Send tenant-facing review request email for pending appointments.
@@ -166,7 +166,7 @@ class CalendarService:
         *,
         appointment_id: uuid.UUID,
         tenant_id: uuid.UUID,
-        reviewer_user_id: uuid.UUID | None = None,
+        reviewer_user_id: Optional[uuid.UUID] = None,
     ) -> str:
         now = datetime.now(timezone.utc)
         payload = {
@@ -306,7 +306,7 @@ class CalendarService:
 
     def _get_business_hours_for_date(
         self, db: Session, tenant_id: uuid.UUID, target_date: date
-    ) -> BusinessHours | None:
+    ) -> Optional[BusinessHours]:
         return (
             db.query(BusinessHours)
             .filter(
@@ -322,7 +322,7 @@ class CalendarService:
         db: Session,
         tenant_id: uuid.UUID,
         target_date: date,
-        agent_id: uuid.UUID | None = None,
+        agent_id: Optional[uuid.UUID] = None,
     ) -> AvailableSlotsResponse:
         """
         Legacy fallback for tenants that have not enabled Calendly. Returns
@@ -406,8 +406,8 @@ class CalendarService:
         tenant_id: uuid.UUID,
         slot_start: datetime,
         slot_end: datetime,
-        exclude_appointment_id: uuid.UUID | None = None,
-    ) -> Appointment | None:
+        exclude_appointment_id: Optional[uuid.UUID] = None,
+    ) -> Optional[Appointment]:
         q = db.query(Appointment).filter(
             Appointment.tenant_id == tenant_id,
             Appointment.status.notin_(["cancelled"]),
@@ -424,7 +424,7 @@ class CalendarService:
         slot_end_utc: datetime,
         db: Session,
         tenant_id: uuid.UUID,
-        exclude_appointment_id: uuid.UUID | None = None,
+        exclude_appointment_id: Optional[uuid.UUID] = None,
     ) -> None:
         """Raises ValueError if the slot is in the past or overlaps another appointment."""
         now_utc = datetime.now(timezone.utc)
@@ -451,14 +451,14 @@ class CalendarService:
         customer_name: str,
         customer_phone: str,
         slot_start: datetime,
-        agent_id: uuid.UUID | None = None,
-        call_session_id: uuid.UUID | None = None,
-        appointment_reason: str | None = None,
-        customer_email: str | None = None,
-        notes: str | None = None,
+        agent_id: Optional[uuid.UUID] = None,
+        call_session_id: Optional[uuid.UUID] = None,
+        appointment_reason: Optional[str] = None,
+        customer_email: Optional[str] = None,
+        notes: Optional[str] = None,
         created_via: str = "voice_agent",
-        duration_minutes: int | None = None,
-        notify_user_id: uuid.UUID | None = None,
+        duration_minutes: Optional[int] = None,
+        notify_user_id: Optional[uuid.UUID] = None,
         skip_local_validation: bool = False,
         **_ignored,
     ) -> Appointment:
@@ -519,7 +519,7 @@ class CalendarService:
         db: Session,
         tenant_id: uuid.UUID,
         call_session_id: uuid.UUID,
-    ) -> Appointment | None:
+    ) -> Optional[Appointment]:
         """Latest confirmed/pending appointment tied to this call (for in-call reschedule)."""
         return (
             db.query(Appointment)
@@ -538,13 +538,13 @@ class CalendarService:
         tenant_id: uuid.UUID,
         appointment_id: uuid.UUID,
         slot_start: datetime,
-        customer_name: str | None = None,
-        customer_phone: str | None = None,
-        appointment_reason: str | None = None,
-        customer_email: str | None = None,
-        notes: str | None = None,
-        duration_minutes: int | None = None,
-        notify_user_id: uuid.UUID | None = None,
+        customer_name: Optional[str] = None,
+        customer_phone: Optional[str] = None,
+        appointment_reason: Optional[str] = None,
+        customer_email: Optional[str] = None,
+        notes: Optional[str] = None,
+        duration_minutes: Optional[int] = None,
+        notify_user_id: Optional[uuid.UUID] = None,
         skip_local_validation: bool = False,
     ) -> Appointment:
         """
@@ -622,10 +622,10 @@ class CalendarService:
         self,
         db: Session,
         tenant_id: uuid.UUID,
-        date_from: date | None = None,
-        date_to: date | None = None,
-        agent_id: uuid.UUID | None = None,
-        status: str | None = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        agent_id: Optional[uuid.UUID] = None,
+        status: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> Tuple[List[Appointment], int]:
@@ -649,7 +649,7 @@ class CalendarService:
 
     def get_appointment_by_id(
         self, db: Session, appointment_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> Appointment | None:
+    ) -> Optional[Appointment]:
         return (
             db.query(Appointment)
             .filter(Appointment.id == appointment_id, Appointment.tenant_id == tenant_id)
@@ -689,10 +689,10 @@ class CalendarService:
         appointment_id: uuid.UUID,
         tenant_id: uuid.UUID,
         status: str,
-        cancellation_reason: str | None = None,
-        notes: str | None = None,
-        notify_user_id: uuid.UUID | None = None,
-    ) -> Appointment | None:
+        cancellation_reason: Optional[str] = None,
+        notes: Optional[str] = None,
+        notify_user_id: Optional[uuid.UUID] = None,
+    ) -> Optional[Appointment]:
         appt = self.get_appointment_by_id(db, appointment_id, tenant_id)
         if not appt:
             return None

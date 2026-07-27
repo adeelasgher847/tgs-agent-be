@@ -5,13 +5,13 @@ from app.models.provider import Provider as ProviderORM
 from app.schemas.agent import gemini_client
 
 class ProviderIntegrationService:
-    def create_remote_agent(self, db: Session, model_id, agent_name: str) -> str | None:
+    def create_remote_agent(self, db: Session, model_id, agent_name: str) -> Optional[str]:
         if not model_id:
             return None
-        model = db.query(ModelORM).filter(ModelORM.id == model_id, ModelORM.is_active).first()
+        model = db.query(ModelORM).filter(ModelORM.id == model_id, ModelORM.is_active == True).first()
         if not model:
             return None
-        provider = db.query(ProviderORM).filter(ProviderORM.id == model.provider_id, ProviderORM.is_active).first()
+        provider = db.query(ProviderORM).filter(ProviderORM.id == model.provider_id, ProviderORM.is_active == True).first()
         if not provider:
             return None
 

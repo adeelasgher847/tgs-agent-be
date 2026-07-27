@@ -92,9 +92,9 @@ class CallFlowService:
         db: Session,
         flow_id: uuid.UUID,
         prompt_text: str,
-        notes: str | None,
+        notes: Optional[str],
         *,
-        current_prompt_id: uuid.UUID | None = None,
+        current_prompt_id: Optional[uuid.UUID] = None,
     ) -> PromptVersion:
         """Create a PromptVersion row, run gemini sanitizer, enforce 50-cap.
 
@@ -146,7 +146,7 @@ class CallFlowService:
         return current.prompt_text != new_prompt
 
     def _update_current_version_notes(
-        self, db: Session, flow: CallFlow, notes: str | None
+        self, db: Session, flow: CallFlow, notes: Optional[str]
     ) -> None:
         """Patch notes on the flow's currently active prompt version, if any."""
         if notes is None or flow.current_prompt_id is None:
@@ -167,7 +167,7 @@ class CallFlowService:
         versions = pv_repo.find_by_flow(flow.id, order_desc=True)
 
         # Full AgentOut on detail endpoints (POST 201, GET, PUT)
-        agent_dict: dict | None = None
+        agent_dict: Optional[dict] = None
         if flow.agent:
             agent_dict = agent_to_out(flow.agent).model_dump(by_alias=True, mode="json")
 
@@ -191,7 +191,7 @@ class CallFlowService:
         return out.model_dump(by_alias=True, mode="json")
 
     def _flow_to_list_item(self, flow: CallFlow) -> dict:
-        agent_ref: AgentRef | None = None
+        agent_ref: Optional[AgentRef] = None
         if flow.agent:
             agent_ref = AgentRef.model_validate(flow.agent)
 
@@ -674,7 +674,7 @@ class CallFlowService:
         db: Session,
         flow_id: uuid.UUID,
         tenant_id: uuid.UUID,
-        body: FlowDataUpdate | None = None,
+        body: Optional[FlowDataUpdate] = None,
     ) -> FlowValidationResponse:
         flow = self._get_flow_or_404(db, flow_id, tenant_id)
         flow_data = body.flow_data.model_dump() if body else (flow.flow_data or {})

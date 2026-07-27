@@ -29,7 +29,7 @@ def _cache_key(user_id: uuid.UUID, workspace_id: uuid.UUID) -> str:
 
 def get_effective_role(
     db: Session, user_id: uuid.UUID, workspace_id: uuid.UUID
-) -> str | None:
+) -> Optional[str]:
     """Cached resolution of the effective role name; None means not a member."""
     redis_client = get_redis_sync()
     key = _cache_key(user_id, workspace_id)

@@ -153,7 +153,7 @@ class JiraService(BaseCRMService):
             "Accept": "application/json",
         }
 
-    def _get_current_user_account_id(self) -> str | None:
+    def _get_current_user_account_id(self) -> Optional[str]:
         """
         Get current user's account ID (for project lead).
         Uses the email from initialization to get account ID.
@@ -337,7 +337,7 @@ class JiraService(BaseCRMService):
         except Exception as e:
             raise ValueError(f"Failed to create Jira project: {str(e)}")
 
-    def _create_custom_field(self, field_name: str, field_type: str) -> str | None:
+    def _create_custom_field(self, field_name: str, field_type: str) -> Optional[str]:
         """
         Create a custom field in Jira.
         
@@ -490,7 +490,7 @@ class JiraService(BaseCRMService):
         
         return required_fields
 
-    def _get_select_field_value(self, field_id: str, project_key: str, preferred_value: str = "No") -> str | None:
+    def _get_select_field_value(self, field_id: str, project_key: str, preferred_value: str = "No") -> Optional[str]:
         """
         Get a valid value for a select field.
         Tries to use preferred_value, otherwise returns first available option.
@@ -582,7 +582,7 @@ class JiraService(BaseCRMService):
         except Exception as e:
             return None
 
-    def create_container(self, container_name: str, project_key: str | None = None) -> Dict[str, str]:
+    def create_container(self, container_name: str, project_key: Optional[str] = None) -> Dict[str, str]:
         """
         Create or verify Jira project exists.
         If project_key is provided, verifies it exists.
@@ -826,9 +826,9 @@ class JiraService(BaseCRMService):
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
-        batch_id: str | None = None,
-        phone_number_id: str | None = None,
-    ) -> dict | None:
+        batch_id: Optional[str] = None,
+        phone_number_id: Optional[str] = None,
+    ) -> Optional[dict]:
         """
         Create a scheduled call issue in Jira project.
         Uses dynamic field_map (from ensure_required_fields) instead of hardcoded IDs.
@@ -859,8 +859,8 @@ class JiraService(BaseCRMService):
             desc_lines.append(f"Phone Number ID: {phone_number_id}")
         if batch_id:
             desc_lines.append(f"Batch ID: {batch_id}")
-        desc_lines.append("Status: Pending")
-        desc_lines.append("Email Sent: No")
+        desc_lines.append(f"Status: Pending")
+        desc_lines.append(f"Email Sent: No")
         
         description_text = "\n".join(desc_lines)
         
@@ -1204,7 +1204,7 @@ class JiraService(BaseCRMService):
         item_id: str,
         status: str,
         field_map: Dict[str, str],
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """
         Update issue status in Jira using transition API.
         Fetches available transitions, finds the one that moves to target status, and executes it.
@@ -1263,7 +1263,7 @@ class JiraService(BaseCRMService):
         item_id: str,
         call_session_id: str,
         field_map: Dict[str, str],
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """Update call_session_id field for a Jira issue"""
         session_field_id = field_map.get("call_session_id")
         if not session_field_id:
@@ -1662,7 +1662,7 @@ class JiraService(BaseCRMService):
         container_id: str,
         item_id: str,
         field_map: Dict[str, str],
-    ) -> dict | None:
+    ) -> Optional[dict]:
         """
         Update Email Sent status to "Yes" for a Jira issue.
         Updates the description field.

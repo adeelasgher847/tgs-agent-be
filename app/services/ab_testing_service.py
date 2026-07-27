@@ -20,7 +20,7 @@ from app.models.prompt_version import PromptVersion
 
 
 class AbTestingService:
-    def pick_variant(self, call_flow: CallFlow) -> str | None:
+    def pick_variant(self, call_flow: CallFlow) -> Optional[str]:
         """Return 'a' or 'b' if the flow is eligible for A/B testing, else None."""
         if not call_flow.ab_test_enabled:
             return None
@@ -31,7 +31,7 @@ class AbTestingService:
 
     def get_variant_prompt_text(
         self, db: Session, call_flow: CallFlow, variant: str
-    ) -> str | None:
+    ) -> Optional[str]:
         prompt_id = (
             call_flow.ab_prompt_a_id if variant == "a" else call_flow.ab_prompt_b_id
         )

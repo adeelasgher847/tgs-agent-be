@@ -10,21 +10,21 @@ from datetime import datetime
 
 class KbCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
-    description: str | None = None
+    description: Optional[str] = None
 
 
 class KbUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=255)
-    description: str | None = None
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
 
 
 class KbOut(BaseModel):
     id: uuid.UUID
     workspace_id: uuid.UUID
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -32,7 +32,7 @@ class KbOut(BaseModel):
 class KbListItem(BaseModel):
     id: uuid.UUID
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     file_count: int
     total_chunk_count: int
     created_at: datetime
@@ -48,10 +48,10 @@ class KbList(BaseModel):
 class KbFileOut(BaseModel):
     id: uuid.UUID
     filename: str
-    size_bytes: int | None = None
-    size_mb: str | None = None
+    size_bytes: Optional[int] = None
+    size_mb: Optional[str] = None
     status: str
-    chunk_count: int | None = None
+    chunk_count: Optional[int] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -61,9 +61,9 @@ class KbDetail(BaseModel):
     id: uuid.UUID
     workspace_id: uuid.UUID
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
     files: List[KbFileOut]
 
 
@@ -96,8 +96,8 @@ class KbTextIngestResponse(BaseModel):
 class KbFileStatusOut(BaseModel):
     file_id: uuid.UUID
     status: str
-    chunk_count: int | None = None
-    error_message: str | None = None
+    chunk_count: Optional[int] = None
+    error_message: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -110,7 +110,7 @@ class KnowledgeBaseIngestTextRequest(BaseModel):
     source_ref: str = Field(..., description="Source reference used for de-duplication")
     full_text: str = Field(..., description="Normalized text content to embed")
     version: str = Field(default="v1")
-    agent_id: uuid.UUID | None = None
+    agent_id: Optional[uuid.UUID] = None
     chunk_max_chars: int = Field(default=1000, ge=200, le=10000)
     chunk_overlap_chars: int = Field(default=100, ge=0, le=2000)
 
@@ -123,9 +123,9 @@ class KnowledgeBaseDocumentOut(BaseModel):
     id: uuid.UUID
     workspace_id: uuid.UUID
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     created_at: datetime
-    updated_at: datetime | None = None
+    updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
@@ -137,15 +137,15 @@ class KnowledgeBaseDocumentList(BaseModel):
 
 class KnowledgeBaseRetrievePreviewRequest(BaseModel):
     user_text: str
-    agent_id: uuid.UUID | None = None
+    agent_id: Optional[uuid.UUID] = None
     top_k: int = Field(default=5, ge=1, le=25)
 
 
 class KnowledgeBaseRetrievedChunkOut(BaseModel):
     chunk_n: int
-    score: float | None = None
-    source_title: str | None = None
-    source_ref: str | None = None
+    score: Optional[float] = None
+    source_title: Optional[str] = None
+    source_ref: Optional[str] = None
 
 
 class KnowledgeBaseRetrievePreviewResponse(BaseModel):

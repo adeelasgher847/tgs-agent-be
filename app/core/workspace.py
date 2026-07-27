@@ -24,11 +24,11 @@ class Workspace:
     schema_name: str
     status: str
     credits: float
-    stripe_customer_id: str | None = None
-    stripe_subscription_id: str | None = None
-    parent_workspace_id: uuid.UUID | None = None
+    stripe_customer_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
+    parent_workspace_id: Optional[uuid.UUID] = None
     workspace_type: str = "standalone"
-    contact_email: str | None = None
+    contact_email: Optional[str] = None
 
     @classmethod
     def from_tenant(cls, tenant: Tenant) -> Workspace:

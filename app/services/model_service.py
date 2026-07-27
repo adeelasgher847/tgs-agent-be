@@ -47,11 +47,11 @@ class ModelService:
             db.rollback()
             raise ValueError(f"Failed to create model: {str(e)}")
     
-    def get_model_by_id(self, db: Session, model_id: uuid.UUID) -> Model | None:
+    def get_model_by_id(self, db: Session, model_id: uuid.UUID) -> Optional[Model]:
         """Get model by ID"""
         return db.query(Model).filter(Model.id == model_id).first()
     
-    def get_model_by_name(self, db: Session, model_name: str) -> Model | None:
+    def get_model_by_name(self, db: Session, model_name: str) -> Optional[Model]:
         """Get model by name"""
         return db.query(Model).filter(Model.model_name == model_name).first()
     
@@ -65,9 +65,9 @@ class ModelService:
     
     def get_active_models(self, db: Session) -> List[Model]:
         """Get all active (non-archived) models"""
-        return db.query(Model).filter(~Model.archive).all()
+        return db.query(Model).filter(Model.archive == False).all()
     
-    def update_model(self, db: Session, model_id: uuid.UUID, model_data: ModelUpdate) -> Model | None:
+    def update_model(self, db: Session, model_id: uuid.UUID, model_data: ModelUpdate) -> Optional[Model]:
         """Update a model"""
         model = self.get_model_by_id(db, model_id)
         if not model:
@@ -104,7 +104,7 @@ class ModelService:
         db.commit()
         return True
     
-    def get_model_with_decrypted_api_key(self, db: Session, model_id: uuid.UUID) -> dict | None:
+    def get_model_with_decrypted_api_key(self, db: Session, model_id: uuid.UUID) -> Optional[dict]:
         """Get model with decrypted API key for use in API calls"""
         model = self.get_model_by_id(db, model_id)
         if not model:
@@ -175,7 +175,7 @@ class ModelService:
         models = self.get_models_by_provider(db, provider_id)
         return [self.model_to_safe_dict(model) for model in models]
     
-    def get_model_by_id_safe(self, db: Session, model_id: uuid.UUID) -> dict | None:
+    def get_model_by_id_safe(self, db: Session, model_id: uuid.UUID) -> Optional[dict]:
         """Get model by ID as safe dictionary (no API key)"""
         model = self.get_model_by_id(db, model_id)
         if not model:

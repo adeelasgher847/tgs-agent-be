@@ -247,7 +247,7 @@ async def refresh_access_token(refresh_token: str) -> dict:
 # ─── WorkspaceIntegration CRUD ────────────────────────────────────────────────
 
 
-def get_integration(db: Session, tenant_id: uuid.UUID) -> WorkspaceIntegration | None:
+def get_integration(db: Session, tenant_id: uuid.UUID) -> Optional[WorkspaceIntegration]:
     return (
         db.query(WorkspaceIntegration)
         .filter(
@@ -264,7 +264,7 @@ def tenant_has_ghl_connected(db: Session, tenant_id: uuid.UUID) -> bool:
 
 def get_connection_status(
     db: Session, tenant_id: uuid.UUID
-) -> Tuple[bool, datetime | None]:
+) -> Tuple[bool, Optional[datetime]]:
     row = get_integration(db, tenant_id)
     if row is None:
         return False, None
@@ -303,7 +303,7 @@ def upsert_tokens(
 
 async def get_valid_access_token(
     db: Session, tenant_id: uuid.UUID
-) -> Tuple[str, str] | None:
+) -> Optional[Tuple[str, str]]:
     """Return (access_token, location_id), refreshing the token first if within 5 min of expiry."""
     row = get_integration(db, tenant_id)
     if row is None or not row.access_token:
@@ -344,7 +344,7 @@ async def get_valid_access_token(
 
 async def _force_refresh_access_token(
     db: Session, tenant_id: uuid.UUID
-) -> Tuple[str, str] | None:
+) -> Optional[Tuple[str, str]]:
     """
     Unconditionally refresh the GHL access token, ignoring token_expires_at.
 
@@ -417,14 +417,14 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _parse_iso(ts: str) -> datetime | None:
+def _parse_iso(ts: str) -> Optional[datetime]:
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except (ValueError, TypeError, AttributeError):
         return None
 
 
-def set_last_ghl_error(db: Session, tenant_id: uuid.UUID, error: str | None) -> None:
+def set_last_ghl_error(db: Session, tenant_id: uuid.UUID, error: Optional[str]) -> None:
     """
     Record (or clear, when error is None) the last post-call write-back failure
     on ``workspace_integration.metadata.last_ghl_error``.
@@ -635,7 +635,7 @@ def normalize_to_e164(phone: str) -> str:
         return f"+{digits}"
 
 
-def local_format_fallback(e164_phone: str) -> str | None:
+def local_format_fallback(e164_phone: str) -> Optional[str]:
     """
     Best-effort "local" format fallback used when the E.164 lookup finds no
     contact: strip the country calling code and prepend a trunk 0, mirroring
@@ -677,7 +677,7 @@ def _contact_dict_from_ghl(raw: dict) -> dict:
 
 async def search_contact_by_phone(
     access_token: str, location_id: str, phone: str, tenant_id: uuid.UUID
-) -> dict | None:
+) -> Optional[dict]:
     """
     Search GHL contacts by phone. Tries E.164 first; if no match, falls back
     to the local/trunk-0 format (see local_format_fallback) before giving up.
@@ -709,7 +709,7 @@ async def search_contact_by_phone(
 
 async def get_contact_for_phone(
     db: Session, tenant_id: uuid.UUID, phone: str, *, commit_lookup_timestamp: bool = True
-) -> dict | None:
+) -> Optional[dict]:
     """Look up a contact by phone, Redis-cached for 5 minutes. Fails open on any error.
 
     commit_lookup_timestamp=False must be passed by live in-call callers sharing a
@@ -877,7 +877,7 @@ def get_cached_transcript_summary(db: Session, call_session: CallSession) -> str
 
 
 def build_note_content(
-    *, duration_seconds: int, outcome: str | None, summary: str
+    *, duration_seconds: int, outcome: Optional[str], summary: str
 ) -> str:
     """Note body: call duration, outcome, and the 2-sentence Gemini summary."""
     summary_text = summary or "No summary available."

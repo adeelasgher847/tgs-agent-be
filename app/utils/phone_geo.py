@@ -44,7 +44,7 @@ _COUNTRY_CALLING_CODES: frozenset[str] = frozenset(
 )
 
 
-def get_country_code(e164_number: str) -> str | None:
+def get_country_code(e164_number: str) -> Optional[str]:
     """Return the calling code (e.g. '1', '61') for an E.164 number, or None."""
     digits = e164_number.lstrip("+")
     for length in (3, 2, 1):
@@ -54,7 +54,7 @@ def get_country_code(e164_number: str) -> str | None:
     return None
 
 
-def get_area_code(e164_number: str) -> str | None:
+def get_area_code(e164_number: str) -> Optional[str]:
     """Best-effort area code: the 3 digits following the country calling code."""
     country_code = get_country_code(e164_number)
     if country_code is None:

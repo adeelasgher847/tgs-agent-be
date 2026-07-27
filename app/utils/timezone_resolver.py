@@ -8,7 +8,7 @@ from typing import Optional
 from app.core.logger import logger
 
 
-def resolve_timezone_from_city(city: str, country: str | None = None) -> str | None:
+def resolve_timezone_from_city(city: str, country: Optional[str] = None) -> Optional[str]:
     """
     Resolve IANA timezone (e.g. 'Asia/Karachi') from city name and optional country.
 

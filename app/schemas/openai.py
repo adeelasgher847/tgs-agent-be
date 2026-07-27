@@ -11,9 +11,9 @@ class OpenAITestRequest(BaseModel):
     """Schema for testing OpenAI text generation"""
     model_id: uuid.UUID = Field(..., description="ID of the model to use for generation")
     prompt: str = Field(..., min_length=1, max_length=10000, description="Input prompt for text generation")
-    system_prompt: str | None = Field(None, max_length=2000, description="System prompt to set context")
-    temperature: float | None = Field(0.7, ge=0.0, le=2.0, description="Temperature setting (0.0 to 2.0)")
-    max_tokens: int | None = Field(1000, gt=0, le=16384, description="Maximum tokens for response")
+    system_prompt: Optional[str] = Field(None, max_length=2000, description="System prompt to set context")
+    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Temperature setting (0.0 to 2.0)")
+    max_tokens: Optional[int] = Field(1000, gt=0, le=16384, description="Maximum tokens for response")
 
 
 class OpenAITestResponse(BaseModel):
@@ -29,9 +29,9 @@ class OpenAIChatRequest(BaseModel):
     """Schema for OpenAI chat completion"""
     model_id: uuid.UUID = Field(..., description="ID of the model to use for generation")
     messages: List[Dict[str, str]] = Field(..., description="List of conversation messages")
-    system_prompt: str | None = Field(None, max_length=2000, description="System prompt to set context")
-    temperature: float | None = Field(0.7, ge=0.0, le=2.0, description="Temperature setting (0.0 to 2.0)")
-    max_tokens: int | None = Field(1000, gt=0, le=16384, description="Maximum tokens for response")
+    system_prompt: Optional[str] = Field(None, max_length=2000, description="System prompt to set context")
+    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Temperature setting (0.0 to 2.0)")
+    max_tokens: Optional[int] = Field(1000, gt=0, le=16384, description="Maximum tokens for response")
 
 
 class OpenAIChatResponse(BaseModel):

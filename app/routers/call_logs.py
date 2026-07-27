@@ -36,13 +36,13 @@ async def get_call_logs(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     
     # Filters
-    call_type: str | None = Query(None, description="Filter by call type (inbound, outbound, web)"),
-    success_evaluation: str | None = Query(None, description="Filter by success (success, fail, null)"),
-    agent_id: uuid.UUID | None = Query(None, description="Filter by agent ID"),
-    date_from: datetime | None = Query(None, description="Filter from date"),
-    date_to: datetime | None = Query(None, description="Filter to date"),
-    transferred: bool | None = Query(None, description="Filter by transferred calls"),
-    ended_reason: str | None = Query(None, description="Filter by ended reason"),
+    call_type: Optional[str] = Query(None, description="Filter by call type (inbound, outbound, web)"),
+    success_evaluation: Optional[str] = Query(None, description="Filter by success (success, fail, null)"),
+    agent_id: Optional[uuid.UUID] = Query(None, description="Filter by agent ID"),
+    date_from: Optional[datetime] = Query(None, description="Filter from date"),
+    date_to: Optional[datetime] = Query(None, description="Filter to date"),
+    transferred: Optional[bool] = Query(None, description="Filter by transferred calls"),
+    ended_reason: Optional[str] = Query(None, description="Filter by ended reason"),
     
     # User and database
     user: User = Depends(require_tenant),
@@ -53,7 +53,7 @@ async def get_call_logs(
     Comprehensive call logging system for monitoring all call activities
     """
     try:
-        logger.info("📊 GETTING CALL LOGS")
+        logger.info(f"📊 GETTING CALL LOGS")
         logger.debug(f"👤 User: {user.email}")
         logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
         logger.debug(f"📄 Page: {page}, Per Page: {per_page}")
@@ -102,7 +102,7 @@ async def get_call_log_detail(
     Get detailed information about a specific call log
     """
     try:
-        logger.info("📋 GETTING CALL LOG DETAIL")
+        logger.info(f"📋 GETTING CALL LOG DETAIL")
         logger.debug(f"🆔 Call Log ID: {call_log_id}")
         logger.debug(f"👤 User: {user.email}")
         logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
@@ -137,8 +137,8 @@ async def get_call_log_detail(
 @router.get("/call-logs/stats", response_model=CallLogStats)
 async def get_call_logs_stats(
     # Date range
-    date_from: datetime | None = Query(None, description="Stats from date"),
-    date_to: datetime | None = Query(None, description="Stats to date"),
+    date_from: Optional[datetime] = Query(None, description="Stats from date"),
+    date_to: Optional[datetime] = Query(None, description="Stats to date"),
     
     # User and database
     user: User = Depends(require_tenant),
@@ -148,7 +148,7 @@ async def get_call_logs_stats(
     Get call logs statistics and analytics
     """
     try:
-        logger.info("📈 GETTING CALL LOGS STATS")
+        logger.info(f"📈 GETTING CALL LOGS STATS")
         logger.debug(f"👤 User: {user.email}")
         logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
         logger.debug(f"📅 Date Range: {date_from} to {date_to}")
@@ -186,8 +186,8 @@ async def get_agent_call_logs(
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
     
     # Date range
-    date_from: datetime | None = Query(None, description="Filter from date"),
-    date_to: datetime | None = Query(None, description="Filter to date"),
+    date_from: Optional[datetime] = Query(None, description="Filter from date"),
+    date_to: Optional[datetime] = Query(None, description="Filter to date"),
     
     # User and database
     user: User = Depends(require_tenant),
@@ -197,7 +197,7 @@ async def get_agent_call_logs(
     Get call logs for a specific agent
     """
     try:
-        logger.info("🤖 GETTING AGENT CALL LOGS")
+        logger.info(f"🤖 GETTING AGENT CALL LOGS")
         logger.debug(f"🆔 Agent ID: {agent_id}")
         logger.debug(f"👤 User: {user.email}")
         logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
@@ -258,7 +258,7 @@ async def get_recent_call_logs(
     Get recent call logs for quick monitoring
     """
     try:
-        logger.info("🕐 GETTING RECENT CALL LOGS")
+        logger.info(f"🕐 GETTING RECENT CALL LOGS")
         logger.debug(f"👤 User: {user.email}")
         logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
         logger.debug(f"📊 Limit: {limit}")
@@ -288,8 +288,8 @@ async def get_recent_call_logs(
 @router.get("/call-logs/export")
 async def export_call_logs(
     # Date range
-    date_from: datetime | None = Query(None, description="Export from date"),
-    date_to: datetime | None = Query(None, description="Export to date"),
+    date_from: Optional[datetime] = Query(None, description="Export from date"),
+    date_to: Optional[datetime] = Query(None, description="Export to date"),
     
     # Format
     format: str = Query("json", description="Export format (json, csv)"),
@@ -302,7 +302,7 @@ async def export_call_logs(
     Export call logs in various formats
     """
     try:
-        logger.info("📤 EXPORTING CALL LOGS")
+        logger.info(f"📤 EXPORTING CALL LOGS")
         logger.debug(f"👤 User: {user.email}")
         logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
         logger.debug(f"📅 Date Range: {date_from} to {date_to}")
@@ -406,7 +406,7 @@ async def send_call_analysis_email(
 
         # 3) Resolve OpenAI model and API key for gpt-4o-mini
         model_name = "gpt-4o-mini"
-        api_key: str | None = None
+        api_key: Optional[str] = None
         try:
             model = model_service.get_model_by_name(db, model_name)
             if model and model.api_key:

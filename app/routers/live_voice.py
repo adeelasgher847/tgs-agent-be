@@ -586,7 +586,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             response_time = openai_response["response_time"]
                     else:
                         # Model not found or invalid - use default OpenAI
-                        logger.warning("⚠️ Model not found or invalid, using default OpenAI")
+                        logger.warning(f"⚠️ Model not found or invalid, using default OpenAI")
                         openai_response = openai_service.process_agent_conversation(
                             user_input=user_input,
                             agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -597,7 +597,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                 
                 except ValueError:
                     # Invalid UUID - use default OpenAI
-                    logger.warning("⚠️ Invalid model_id format, using default OpenAI")
+                    logger.warning(f"⚠️ Invalid model_id format, using default OpenAI")
                     openai_response = openai_service.process_agent_conversation(
                         user_input=user_input,
                         agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -608,7 +608,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
             
             else:
                 # No model_id - use default OpenAI
-                logger.info("ℹ️ No model_id configured, using default OpenAI")
+                logger.info(f"ℹ️ No model_id configured, using default OpenAI")
                 openai_response = openai_service.process_agent_conversation(
                     user_input=user_input,
                     agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
