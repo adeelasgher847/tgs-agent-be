@@ -9,16 +9,14 @@ from __future__ import annotations
 import csv
 import io
 import re
-import string
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.logger import logger
 from app.models.agent import Agent
 from app.models.batch_call_record import BatchCallRecord

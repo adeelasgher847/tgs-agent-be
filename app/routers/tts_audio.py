@@ -6,11 +6,8 @@ Generates and serves Google TTS audio for Twilio calls
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 import hashlib
-import base64
-from urllib.parse import quote
 from app.services.google_tts_service import google_tts_service
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
-from app.core.config import settings
 from app.core.logger import logger
 
 router = APIRouter()

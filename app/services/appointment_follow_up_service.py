@@ -8,7 +8,7 @@ from __future__ import annotations
 import html
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, time, timedelta
-from typing import Optional
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 

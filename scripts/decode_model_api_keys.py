@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import uuid
-from typing import Optional
 
 from app.core.security import decrypt_api_key, is_api_key_encrypted
 from app.db.session import SessionLocal

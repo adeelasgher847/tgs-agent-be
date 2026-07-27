@@ -16,7 +16,7 @@ import os
 import queue
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.core.config import settings
 from app.core.logger import logger

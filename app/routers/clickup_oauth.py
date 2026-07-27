@@ -2,9 +2,8 @@
 ClickUp OAuth 2.0 Integration Router
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import Optional
 import requests
 import uuid
 import json
@@ -15,7 +14,6 @@ from app.services.crm_config_service import CRMConfigService
 from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
 from app.core.config import settings
 from app.utils.response import create_success_response
-from app.schemas.base import SuccessResponse
 from app.core.logger import logger
 
 router = APIRouter()

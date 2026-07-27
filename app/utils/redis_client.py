@@ -6,7 +6,6 @@ callers to skip caching gracefully.
 """
 from __future__ import annotations
 
-from typing import Optional
 
 _redis = None
 _redis_sync = None

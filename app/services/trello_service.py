@@ -2,9 +2,8 @@
 Trello API Service for Scheduled Calls Integration
 """
 
-import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key

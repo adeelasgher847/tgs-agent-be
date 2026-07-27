@@ -8,7 +8,6 @@ as workspace_invites.router.
 from __future__ import annotations
 
 import uuid
-from typing import Union
 
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
@@ -24,7 +23,7 @@ from app.utils.response import create_success_response
 router = APIRouter()
 
 
-def _workspace_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+def _workspace_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
@@ -37,7 +36,7 @@ def _workspace_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
 )
 def create_allowed_domain(
     body: AllowedDomainCreate,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     return allowed_domain_service.create_domain(db, _workspace_id(principal), body)
@@ -50,7 +49,7 @@ def create_allowed_domain(
     summary="List domains whitelisted for the Web SDK",
 )
 def list_allowed_domains(
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     domains = allowed_domain_service.list_domains(db, _workspace_id(principal))
@@ -65,7 +64,7 @@ def list_allowed_domains(
 )
 def delete_allowed_domain(
     domain_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     allowed_domain_service.delete_domain(db, _workspace_id(principal), domain_id)

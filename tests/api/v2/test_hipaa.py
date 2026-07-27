@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import sys
 import uuid
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -728,8 +728,6 @@ class TestHipaaStatus:
         kms_key_name: str | None = None,
         baa_on_file: bool = False,
     ) -> MagicMock:
-        from app.models.tenant import Tenant
-        from app.models.call_flow import CallFlow
 
         tenant = MagicMock()
         tenant.id = WORKSPACE_ID
@@ -813,7 +811,6 @@ class TestKmsKeyUpdate:
 
     def test_bucket_default_kms_failure_does_not_break_response(self):
         """S3 bucket patch failure is logged as warning; endpoint still returns 200."""
-        from app.services import s3_recording_service
 
         db, tenant = self._make_db()
         client = _build_hipaa_app(db)

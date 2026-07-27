@@ -23,14 +23,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import List
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from app.schemas.call_history import (
     BatchCallMetrics,
-    CallHistoryItem,
     CallHistoryList,
     CallHistoryMetrics,
     CallHistoryTimeSeriesPoint,

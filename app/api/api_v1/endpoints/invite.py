@@ -1,13 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_tenant, require_admin
-from app.services.role_service import is_admin_in_tenant
 from app.services.email_service import email_service
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.invite import Invite
 from datetime import datetime, timedelta
-import uuid
 import secrets
 
 router = APIRouter()

@@ -9,10 +9,8 @@ path is mocked to return results from the sync session).
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI

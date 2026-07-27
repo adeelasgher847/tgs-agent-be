@@ -4,14 +4,13 @@ from app.api.deps import get_db
 from app.models.invite import Invite
 from app.models.user import User, user_tenant_association
 from app.models.role import Role
-from app.schemas.user import UserCreate, UserOut
+from app.schemas.user import UserOut
 from app.schemas.base import SuccessResponse
 from app.core.security import get_password_hash, create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.models.refresh_token import RefreshToken
 from app.utils.response import create_success_response
 from app.services.role_service import get_default_product_id
 from datetime import datetime, timezone
-import uuid
 import logging
 
 logger = logging.getLogger(__name__)

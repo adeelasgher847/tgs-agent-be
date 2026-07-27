@@ -5,14 +5,13 @@ Handles call session management and retrieval
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
 import uuid
 
 from app.api.deps import get_db, require_tenant
 from app.models.user import User
 from app.models.call_session import CallSession
 from app.schemas.call_session import (
-    CallSessionResponse, CallSessionStats, CallSessionList, CallSessionCreate
+    CallSessionResponse, CallSessionStats, CallSessionList
 )
 from app.schemas.base import SuccessResponse
 from app.services.call_session_service import call_session_service

@@ -10,7 +10,6 @@ Coverage:
 """
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -18,7 +17,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services import caller_memory_service
-from conftest import TestingSessionLocal
 
 _TENANT_ID = uuid.uuid4()
 _FLOW_ID = uuid.uuid4()

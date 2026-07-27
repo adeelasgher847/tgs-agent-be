@@ -6,12 +6,11 @@ Handles MULAW audio conversion, crossfading, and streaming.
 import base64
 import asyncio
 import time
-import sys
 import math
 import subprocess
 import tempfile
 import os
-from typing import Awaitable, Callable, Iterable, Optional
+from typing import Awaitable, Callable, Iterable
 
 from app.core.logger import logger
 from app.utils.audio_constants import BACKGROUND_AUDIO_BASE64

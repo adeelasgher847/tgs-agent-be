@@ -25,11 +25,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import socket
 import uuid
 from datetime import datetime, timezone
-from typing import Union
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

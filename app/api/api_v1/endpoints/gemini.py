@@ -10,7 +10,6 @@ from app.schemas.base import SuccessResponse
 from app.services.gemini_service import gemini_service
 from app.services.model_service import model_service
 from app.core.security import decrypt_api_key
-import uuid
 from app.core.logger import logger
 
 router = APIRouter()

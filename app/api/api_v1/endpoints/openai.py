@@ -12,7 +12,6 @@ from app.services.model_service import model_service
 from app.core.security import decrypt_api_key
 from app.core.config import settings
 from app.core.openai_client import get_openai_client
-import uuid
 from app.core.logger import logger
 
 router = APIRouter()

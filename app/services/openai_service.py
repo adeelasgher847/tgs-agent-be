@@ -5,9 +5,8 @@ Handles all OpenAI-related operations including text generation and chat complet
 
 from app.core.config import settings
 from app.core.openai_client import get_openai_client
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 import time
-import json
 
 class OpenAIService:
     """Service class for handling OpenAI operations"""

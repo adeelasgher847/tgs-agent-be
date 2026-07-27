@@ -13,17 +13,13 @@ Run: pytest tests/voice/test_call_pipeline.py -v
 from __future__ import annotations
 
 import asyncio
-import types
 import uuid
-from datetime import datetime, timezone, timedelta, time as dt_time
-from types import SimpleNamespace
+from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.routers.bidirectional_stream import BidirectionalStreamHandler as Handler
-from app.voice.booking_mixin import BookingMixin
-from app.voice.call_control_mixin import CallControlMixin
 
 
 # ─────────────────────────────────────────────────────────────────────────────

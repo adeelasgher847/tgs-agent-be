@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Optional, Union
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -33,7 +32,6 @@ from app.schemas.agent import (
 from app.schemas.base import SuccessResponse
 from app.schemas.prompt_engineer import PromptEngineerRequest, PromptEngineerResult
 from app.services.agent_service import agent_service
-from app.services.credit_service import credit_service
 from app.services.model_service import model_service
 from app.services.openai_service import openai_service
 from app.core.security import decrypt_api_key
@@ -47,11 +45,11 @@ def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "")
 
 
-def _workspace_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+def _workspace_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
-def _actor_user_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID | None:
+def _actor_user_id(principal: User | ApiKeyPrincipal) -> uuid.UUID | None:
     return getattr(principal, "id", None)
 
 
@@ -95,7 +93,7 @@ def _serialize_out(agent) -> dict[str, Any]:
 def create_agent(
     agent_in: AgentCreate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Create agent (JWT or API key). Returns ticket-shaped JSON."""
@@ -126,7 +124,7 @@ def create_agent(
 )
 def get_agent(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Get agent by id (404 if missing or other workspace)."""
@@ -142,7 +140,7 @@ def list_agents(
         None, ge=1, le=100, include_in_schema=False, description="Deprecated alias for pageSize"
     ),
     search: str | None = Query(None, description="Search by name"),
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Paginated list: ``{ data, total, page, pageSize }``."""
@@ -161,7 +159,7 @@ def update_agent(
     agent_id: uuid.UUID,
     agent_update: AgentUpdate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Update mutable fields (JWT or API key)."""
@@ -197,7 +195,7 @@ def update_agent(
 def delete_agent(
     agent_id: uuid.UUID,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     """Soft delete; 409 if an active phone number is bound."""
@@ -244,7 +242,7 @@ def get_voice_options(
 @router.get("/{agent_id}/model-config")
 def get_agent_model_config(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db)
 ):
     """
@@ -271,7 +269,7 @@ def get_agent_model_config(
 @router.get("/{agent_id}/inbound-knowledge-snapshot", response_model=SuccessResponse[dict])
 def get_inbound_knowledge_snapshot(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     """
@@ -296,7 +294,7 @@ def get_inbound_knowledge_snapshot(
 @router.get("/{agent_id}/talk")
 async def get_talk_to_assistant_link(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db)
 ):
     """

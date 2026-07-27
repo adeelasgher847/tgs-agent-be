@@ -4,9 +4,8 @@ import csv
 import io
 import json
 import httpx
-import asyncio
 import uuid
-from typing import Optional, Tuple, Dict, Any
+from typing import Tuple, Dict, Any
 
 from fastapi import HTTPException
 from sqlalchemy import and_

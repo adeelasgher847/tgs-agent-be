@@ -15,17 +15,14 @@ Coverage:
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import io
 import uuid
-from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_workspace, require_tenant
 from app.core.exception_handlers import register_exception_handlers
@@ -266,7 +263,7 @@ class TestCreateBatchJob:
         without reading the file body or calling the service.
         """
         import asyncio
-        from unittest.mock import AsyncMock as _AsyncMock, MagicMock, PropertyMock
+        from unittest.mock import AsyncMock as _AsyncMock, MagicMock
         from fastapi import UploadFile
         from app.api.v2.routers.batch_calls import create_batch_job
         from app.core.workspace import Workspace
@@ -477,7 +474,6 @@ class TestGetBatchJob:
     def test_returns_detail(self):
         from datetime import datetime, timezone
 
-        from app.schemas.batch_call import BatchJobOut
 
         batch_id = uuid.uuid4()
         job_model = MagicMock()

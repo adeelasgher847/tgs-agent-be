@@ -13,10 +13,8 @@ Retry policy
 """
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from sqlalchemy import text, update
 from sqlalchemy.orm import Session

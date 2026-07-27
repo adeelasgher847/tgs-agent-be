@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from app.core.config import settings
 from app.core.logger import logger

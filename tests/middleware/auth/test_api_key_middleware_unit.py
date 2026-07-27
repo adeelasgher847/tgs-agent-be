@@ -6,8 +6,6 @@ All DB and Redis I/O is mocked so these tests run without any external services.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import uuid
 from unittest.mock import AsyncMock, patch
 

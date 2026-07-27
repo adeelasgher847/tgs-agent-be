@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session

@@ -8,7 +8,6 @@ falls through to the existing default LLM pipeline unchanged.
 
 from __future__ import annotations
 
-from typing import Optional
 
 from app.core.logger import logger
 from app.voice.flow_executor import (

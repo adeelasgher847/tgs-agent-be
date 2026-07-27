@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -47,7 +46,7 @@ router = APIRouter(prefix="/batch-calls", tags=["batch-calls"])
 
 def _batch_service(
     workspace: Workspace = Depends(get_workspace),
-    _principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    _principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """Yield a BatchCallService for any authenticated tenant principal (read + write)."""
@@ -59,7 +58,7 @@ def _batch_service(
 def _batch_service_write(
     request: Request,
     workspace: Workspace = Depends(get_workspace),
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """

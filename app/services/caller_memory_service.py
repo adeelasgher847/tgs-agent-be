@@ -14,7 +14,7 @@ import asyncio
 import datetime
 import re
 import uuid
-from typing import List, NamedTuple, Optional
+from typing import List, NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session

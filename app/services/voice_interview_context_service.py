@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 

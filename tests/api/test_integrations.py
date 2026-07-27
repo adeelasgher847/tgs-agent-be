@@ -515,7 +515,7 @@ class TestIntegrationList:
 
     def test_last_triggered_at_round_trip(self):
         """record_last_triggered + get_last_triggered_at reads back a datetime."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         from app.services.integration_service import get_last_triggered_at, record_last_triggered
 
         tenant = _make_tenant()

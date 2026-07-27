@@ -2,8 +2,7 @@
 ClickUp API Service for Scheduled Calls Integration
 """
 
-import json
-from typing import Dict, List, Optional
+from typing import Dict, List
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key

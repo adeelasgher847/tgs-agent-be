@@ -11,7 +11,6 @@ Covers:
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 

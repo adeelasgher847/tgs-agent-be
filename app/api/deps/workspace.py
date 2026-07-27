@@ -1,5 +1,4 @@
 import hashlib
-from typing import Optional
 import uuid
 
 from fastapi import Depends, Header, HTTPException, Request, status

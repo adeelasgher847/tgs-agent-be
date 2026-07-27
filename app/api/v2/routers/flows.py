@@ -20,7 +20,6 @@ compliance toggle, and reusing it here would silently shadow that endpoint.
 from __future__ import annotations
 
 import uuid
-from typing import Union
 
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.orm import Session
@@ -46,7 +45,7 @@ from app.services.call_flow_service import call_flow_service
 router = APIRouter(prefix="/flows", tags=["A/B Prompt Testing"])
 
 
-def _tenant_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+def _tenant_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
@@ -59,7 +58,7 @@ def _tenant_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
 def update_ab_test(
     flow_id: uuid.UUID,
     body: AbTestUpdate,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ) -> AbTestResponse:
     return call_flow_service.update_ab_test(db, flow_id, _tenant_id(principal), body)
@@ -73,7 +72,7 @@ def update_ab_test(
 )
 def get_ab_results(
     flow_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ) -> AbResultsResponse:
     return call_flow_service.get_ab_results(db, flow_id, _tenant_id(principal))
@@ -87,7 +86,7 @@ def get_ab_results(
 def promote_ab_winner(
     flow_id: uuid.UUID,
     body: AbTestWinnerUpdate,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ) -> dict:
     return call_flow_service.promote_ab_winner(db, flow_id, _tenant_id(principal), body)
@@ -103,7 +102,7 @@ def update_caller_memory_settings(
     flow_id: uuid.UUID,
     body: CallerMemorySettingsUpdate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_admin_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
     db: Session = Depends(get_db),
 ) -> CallerMemorySettingsResponse:
     tenant_id = _tenant_id(principal)

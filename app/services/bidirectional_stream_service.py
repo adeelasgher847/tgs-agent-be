@@ -3,7 +3,7 @@ Service functions for bidirectional streaming.
 Handles TTS generation and TwiML building.
 """
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session

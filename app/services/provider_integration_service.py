@@ -1,5 +1,4 @@
 from sqlalchemy.orm import Session
-from typing import Optional
 from app.models.model import Model as ModelORM
 from app.models.provider import Provider as ProviderORM
 from app.schemas.agent import gemini_client

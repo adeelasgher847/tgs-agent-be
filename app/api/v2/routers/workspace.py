@@ -26,7 +26,6 @@ from app.schemas.workspace import (
 )
 
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel

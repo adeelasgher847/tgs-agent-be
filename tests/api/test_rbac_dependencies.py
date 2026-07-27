@@ -22,7 +22,6 @@ from app.api.deps import (
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.user import User, user_tenant_association
-from app.services import role_service
 
 DEPENDENCIES = {
     "admin": require_admin,

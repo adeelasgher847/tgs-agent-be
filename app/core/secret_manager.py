@@ -19,7 +19,7 @@ In development the env-var / .env values are returned as-is (no Secret Manager c
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Optional, Tuple
+from typing import Tuple
 
 from app.core.config import settings
 from app.core.logger import logger

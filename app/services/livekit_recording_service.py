@@ -12,10 +12,7 @@ Room naming matches livekit_service.py: room_{call_session_id}
 
 from __future__ import annotations
 
-import json
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
 
 from app.core.config import settings
 from app.core.logger import logger

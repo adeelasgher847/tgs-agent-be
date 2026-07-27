@@ -301,7 +301,6 @@ class TestAgentNotReady:
     @pytest.mark.asyncio
     async def test_from_number_mismatch_returns_400(self):
         """fromNumber that does NOT match the bound number returns 400."""
-        import json
 
         phone = _phone_number()
         phone.phone_number = "+15555550000"

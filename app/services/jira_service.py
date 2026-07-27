@@ -4,8 +4,7 @@ Jira API Service for Scheduled Calls Integration
 
 import json
 import re
-import hashlib
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key

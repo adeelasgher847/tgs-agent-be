@@ -9,7 +9,6 @@ performance optimization here, not a correctness dependency.
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 from sqlalchemy.orm import Session
 

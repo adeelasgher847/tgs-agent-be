@@ -3,8 +3,7 @@ Monday.com API Service for Scheduled Calls Integration
 """
 
 import json
-import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import requests
 

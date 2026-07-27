@@ -12,13 +12,12 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.logger import logger
-from app.core.config import settings
 
 
 EmbeddingFunc = Callable[[str], Sequence[float]]

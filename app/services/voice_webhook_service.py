@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 import uuid
-from typing import Optional
 
 import asyncio
 from fastapi import Request, HTTPException
@@ -8,13 +7,11 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.core.logger import logger
-from app.models.call_session import CallSession
 from app.services.agent_service import agent_service
 from app.services.voice_screening_qualification_service import maybe_qualify_resume_on_call_completed
 from app.services.call_session_service import call_session_service
 from app.services.credit_service import credit_service
 from app.utils.twilio_validation import (
-    validate_twilio_signature,
     validate_webrtc_auth,
 )
 from app.routers.general_websocket import (
@@ -23,17 +20,6 @@ from app.routers.general_websocket import (
     broadcast_call_ended,
 )
 from app.core.config import settings
-from app.services.voice_conversation_service import add_to_transcript
-from app.services.voice_language_service import get_agent_voice
-from app.utils.voice_twilio_utils import get_twilio_credentials_for_call
-from app.services.voice_logging_service import VoiceLoggingService
-from app.utils.response import create_success_response
-from app.utils.twilio_validation import get_request_body
-from app.services.twilio_service import twilio_service
-from fastapi.responses import StreamingResponse
-import requests
-from app.routers.bidirectional_stream import build_streaming_twiml
-from app.services.voice_phrase_service import get_random_didnt_catch_response
 from urllib.parse import quote
 from twilio.twiml.voice_response import VoiceResponse
 

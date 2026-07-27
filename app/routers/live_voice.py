@@ -4,27 +4,20 @@ Real-time voice conversation with agents using browser microphone/speakers
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import uuid
 import json
-import asyncio
-import time
-import base64
-import io
 from datetime import datetime
 from app.core.logger import logger
 
 from app.api.deps import get_db, require_tenant
 from app.models.agent import Agent
 from app.models.user import User
-from app.models.call_session import CallSession
-from app.schemas.base import SuccessResponse
 from app.services.agent_service import agent_service
 from app.services.call_session_service import call_session_service
 from app.services.openai_service import openai_service
-from app.utils.response import create_success_response
 
 router = APIRouter(
     tags=["Live Voice - Talk to Assistant"],

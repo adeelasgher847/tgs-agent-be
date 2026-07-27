@@ -6,7 +6,7 @@ Handles text-to-speech operations using ElevenLabs API
 import requests
 from app.core.config import settings
 from app.core.logger import logger
-from typing import AsyncIterator, Dict, Any, Optional, Iterator
+from typing import AsyncIterator, Dict, Any, Iterator
 
 class ElevenLabsService:
     """Service class for handling ElevenLabs operations"""

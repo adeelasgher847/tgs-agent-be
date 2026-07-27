@@ -2,7 +2,6 @@ import asyncio
 import base64
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from app.core.logger import logger
 from app.utils.audio_utils import (

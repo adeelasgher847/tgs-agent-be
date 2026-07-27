@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -27,7 +26,7 @@ from app.utils.response import create_success_response
 router = APIRouter()
 
 
-def _workspace_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+def _workspace_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
@@ -55,7 +54,7 @@ def _error_response(
 def create_call_flow(
     body: CallFlowCreate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     tid = _workspace_id(principal)
@@ -77,7 +76,7 @@ def create_call_flow(
 def list_call_flows(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     return call_flow_service.list_flows(
@@ -88,7 +87,7 @@ def list_call_flows(
 @router.get("/{flow_id}/prompt-versions")
 def get_prompt_versions(
     flow_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     return call_flow_service.get_prompt_versions(db, flow_id, _workspace_id(principal))
@@ -103,7 +102,7 @@ def delete_prompt_version(
     flow_id: uuid.UUID,
     version_id: uuid.UUID,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     tid = _workspace_id(principal)
@@ -123,7 +122,7 @@ def delete_prompt_version(
 @router.get("/{flow_id}")
 def get_call_flow(
     flow_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
     return call_flow_service.get_flow(db, flow_id, _workspace_id(principal))
@@ -134,7 +133,7 @@ def update_call_flow(
     flow_id: uuid.UUID,
     body: CallFlowUpdate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     tid = _workspace_id(principal)
@@ -184,7 +183,7 @@ def update_call_flow_settings(
 def delete_call_flow(
     flow_id: uuid.UUID,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ):
     tid = _workspace_id(principal)

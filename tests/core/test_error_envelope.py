@@ -5,7 +5,6 @@ Integration tests verifying every error path returns the standard envelope:
 
 from __future__ import annotations
 
-import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel

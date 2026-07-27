@@ -1,15 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 import uuid
-import json
 from app.core.logger import logger
 
 from app.api.deps import get_db, require_tenant
 from app.models.user import User
 from app.models.call_session import CallSession
-from app.models.call_log import CallLog
 from app.models.agent import Agent
 from app.schemas.call_log import (
     CallLogResponse,

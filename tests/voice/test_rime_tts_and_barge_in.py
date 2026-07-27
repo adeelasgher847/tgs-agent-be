@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -251,7 +250,6 @@ class TestRimeTTSAdapter:
     def test_rime_payload_includes_streaming_true(self):
         """Rime API payload must include streaming=True for chunked HTTP response."""
         from app.services.rime_tts_service import RimeTtsService
-        import httpx
 
         captured_payload: dict = {}
         captured_headers: dict = {}

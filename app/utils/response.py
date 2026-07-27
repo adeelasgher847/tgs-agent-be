@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any
 from fastapi import status
 from app.schemas.base import SuccessResponse, ErrorResponse
 

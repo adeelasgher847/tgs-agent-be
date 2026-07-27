@@ -22,8 +22,6 @@ from fastapi.testclient import TestClient
 from app.api.deps import (
     get_active_user_by_id,
     get_current_user_jwt,
-    require_config,
-    require_readonly,
     require_write_access,
     _reject_readonly_on_write,
 )
@@ -35,10 +33,9 @@ from app.core.security import (
     refresh_token_expires_at,
 )
 from app.main import app
-from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.refresh_token import RefreshToken
-from app.models.user import User, user_tenant_association
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 

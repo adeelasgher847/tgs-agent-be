@@ -1,6 +1,4 @@
-from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import Table, Column, UUID, ForeignKey
 from app.models.role import Role
 from app.models.product import Product
 from app.core.product_enums import ProductName

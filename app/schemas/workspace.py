@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -68,7 +68,6 @@ class BrandingConfigUpsert(BaseModel):
     def _validate_logo_url(cls, v: Any) -> Any:
         if v is None:
             return v
-        from pydantic import HttpUrl
         from pydantic_core import Url
         if isinstance(v, str):
             if not v.startswith("https://"):

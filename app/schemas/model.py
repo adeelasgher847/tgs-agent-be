@@ -2,7 +2,6 @@
 Model schemas for API serialization
 """
 
-from typing import Optional
 from pydantic import BaseModel, Field ,model_validator
 from datetime import datetime
 import uuid

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from typing import Optional
 
 from app.core.logger import logger
 

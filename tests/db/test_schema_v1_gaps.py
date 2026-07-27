@@ -5,7 +5,6 @@ requiring a live database connection.
 """
 from __future__ import annotations
 
-import inspect
 
 import sqlalchemy as sa
 import pytest

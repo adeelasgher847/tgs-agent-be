@@ -18,11 +18,11 @@ import asyncio
 import time
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from app.voice.stt_events import SttEventBus, SttFinalEvent, SttInterimEvent, SttErrorEvent
+from app.voice.stt_events import SttEventBus, SttFinalEvent, SttInterimEvent
 
 
 # ─────────────────────────────────────────────────────────────────────────────

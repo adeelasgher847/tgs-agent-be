@@ -1,25 +1,20 @@
-from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Query, Depends, status, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Query, Depends, status
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session, joinedload
-from typing import Optional
 from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
 import uuid
-import sys
 import requests
 import asyncio
-import csv
-import io
 
 from app.core.logger import logger
 from app.api.deps import get_db, require_tenant, get_optional_tenant_user
-from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse, CallInitiateErrorResponse
+from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
 from app.schemas.base import SuccessResponse
 from app.services.twilio_service import twilio_service
 from app.services.agent_service import agent_service
 from app.models.agent import Agent
 from app.models.user import User
-from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.call_session import CallSession
 from app.models.phone_number import PhoneNumber
 from app.services.call_session_service import call_session_service
@@ -34,33 +29,25 @@ from app.utils.twilio_validation import (
 from app.utils.response import create_success_response
 from app.core.config import settings
 from app.routers.general_websocket import (
-    broadcast_transcript_update,
     broadcast_call_status_update,
     broadcast_call_ended,
-    broadcast_call_event,
     broadcast_system_notification
 )
 from app.services.model_service import ModelService
-from app.services.transcript_service import transcript_service
 from app.services.credit_service import credit_service
 from app.services.batch_call_completion_service import notify_batch_call_ended
 from urllib.parse import quote
 from app.routers.bidirectional_stream import build_streaming_twiml
-from app.services.phone_number_service import phone_number_service
 from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
     twilio_caller_id_for_transfer_dial,
 )
 from app.services.voice_phrase_service import (
     get_random_didnt_catch_response,
-    get_random_follow_up_response,
 )
 from app.services.voice_conversation_service import (
     add_to_transcript,
-    get_conversation_state,
-    update_conversation_state,
 )
-from app.services.voice_language_service import get_agent_voice
 from app.services.voice_analysis_service import voice_analysis_service
 from app.middleware.request_id_middleware import get_request_id
 from app.services.voice_call_service import initiate_call as initiate_call_service
@@ -1258,7 +1245,6 @@ async def handle_gather_speech_webhook(
         if recording_url and call_session:
             try:
                 import requests
-                import base64
                 
                 # Get Twilio credentials
                 client = twilio_service.get_client()

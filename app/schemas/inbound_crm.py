@@ -2,7 +2,7 @@
 Schemas for tenant inbound call log → CRM (Trello) configuration.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict

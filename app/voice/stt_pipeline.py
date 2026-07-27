@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Awaitable, Callable, Optional, TYPE_CHECKING
+from typing import Awaitable, Callable, TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.logger import logger

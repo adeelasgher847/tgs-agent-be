@@ -37,7 +37,7 @@ Public API (unchanged — handler calls these without modification):
 
 import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from app.core.logger import logger
 

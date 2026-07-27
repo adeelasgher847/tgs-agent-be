@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, date
-from typing import List, Literal, Optional
+from typing import List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -13,7 +13,6 @@ from app.models.user import User
 from app.schemas.base import SuccessResponse
 from app.schemas.call_history import (
     BatchCallMetrics,
-    CallHistoryItem,
     CallHistoryList,
     CallHistoryMetrics,
     CallHistoryTimeSeriesPoint,

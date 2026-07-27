@@ -35,8 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from app.models.role import Role
 from app.models.sso_config import SsoConfig
 from app.models.tenant import Tenant
-from app.models.user import User, user_tenant_association
-from app.services.api_key_service import create_api_key
+from app.models.user import User
 from app.services.sso_service import find_or_create_user
 from tests.conftest import _INTEGRATION_SKIP
 

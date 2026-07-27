@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timezone
 import uuid
-from app.api.deps import get_db, require_tenant, get_optional_tenant_user, require_owner, require_manager, require_readonly, require_admin
+from app.api.deps import get_db, get_optional_tenant_user, require_manager, require_readonly, require_admin
 from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.user import User
 from app.models.agent import Agent
@@ -17,14 +17,13 @@ from app.schemas.scheduled_call import (
     CSVUploadResponse,
     BoardInfoResponse,
     DeleteBoardItemsResponse,
-    SingleCallRequest,
     SingleCallResponse,
     PendingCountResponse,
     PendingCountByCrm,
     JiraBatchAnalysisRequest,
     ScheduleFromCallSessionRequest,
 )
-from app.schemas.crm_config import CRMConfigResponse, CRMConfigListResponse, CRMConfigListItem
+from app.schemas.crm_config import CRMConfigListResponse, CRMConfigListItem
 from app.services.scheduled_call_service import ScheduledCallService
 from app.services.monday_service import MondayService
 from app.services.clickup_service import ClickUpService
@@ -36,11 +35,10 @@ from app.models.scheduled_call import ScheduledCall
 from app.services.transcript_service import transcript_service
 from app.services.agent_service import agent_service
 from app.services.model_service import ModelService
-from app.services.call_session_service import call_session_service
 from app.services.phone_number_service import phone_number_service
 from app.utils.response import create_success_response
 from app.schemas.base import SuccessResponse
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 import re
 
 router = APIRouter()
@@ -739,7 +737,6 @@ async def get_pending_scheduled_calls_count(
     If user has only one CRM with 5 pending, returns 5. Count is tenant-specific.
     """
     from app.services.billing_service import BillingService
-    from app.services.crm_config_service import CRMConfigService
     from app.services.crm_service_factory import CRMServiceFactory
 
     tenant_id_str = str(user.current_tenant_id)

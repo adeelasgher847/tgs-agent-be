@@ -2,7 +2,6 @@
 CRM Service Factory - Creates appropriate CRM service based on type
 """
 
-from typing import Optional
 from app.services.base_crm_service import BaseCRMService
 from app.services.monday_service import MondayService
 from app.services.clickup_service import ClickUpService

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.repositories.call_flow_repository import CallFlowRepository
 from app.repositories.folder_repository import FolderRepository
-from app.schemas.folder import FolderCreate, FolderOut, FolderListResponse, FolderUpdate
+from app.schemas.folder import FolderCreate, FolderOut, FolderUpdate
 
 
 class FolderService:

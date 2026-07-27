@@ -1,13 +1,11 @@
 import stripe
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.tenant import Tenant
 from app.models.plan import Plan
-from app.models.subscription import Subscription
 from app.models.user import User
-import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from app.core.logger import logger
 
 # Initialize Stripe

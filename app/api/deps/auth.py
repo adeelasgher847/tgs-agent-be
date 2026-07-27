@@ -1,4 +1,3 @@
-from typing import Optional, Union
 import uuid
 
 from fastapi import Depends, HTTPException, Request, status
@@ -117,7 +116,7 @@ def require_tenant(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
     db: Session = Depends(get_db),
-) -> Union[User, ApiKeyPrincipal]:
+) -> User | ApiKeyPrincipal:
     """Ensure the request is scoped to a workspace (JWT user or API key)."""
     method = get_auth_method(request)
     if method == AUTH_METHOD_API_KEY:
@@ -176,7 +175,7 @@ def require_tenant(
 
 
 def require_user_tenant(
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
 ) -> User:
     """Workspace access that must be a logged-in user (not API key)."""
     if isinstance(principal, ApiKeyPrincipal):

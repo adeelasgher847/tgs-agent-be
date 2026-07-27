@@ -5,11 +5,8 @@ Handles background audio, TTS chunk streaming, prefetch, and audio delivery to T
 from __future__ import annotations
 
 import asyncio
-import base64
-import re
-import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict
 
 from app.core.agent_runtime import resolve_tts_runtime
 from app.core.config import settings
@@ -122,7 +119,6 @@ class TtsStreamMixin:
             use_ssml: Whether text contains SSML markup
         """
         try:
-            from datetime import datetime, timezone
             
             if not text or not text.strip():
                 return
@@ -171,7 +167,6 @@ class TtsStreamMixin:
                             from app.utils.audio_utils import (
                                 apply_micro_fade_in,
                                 apply_micro_fade_out,
-                                build_crossfade_bridge,
                                 MULAW_FRAME_BYTES,
                             )
 
@@ -505,7 +500,6 @@ class TtsStreamMixin:
                         from app.utils.audio_utils import (
                             apply_micro_fade_in,
                             apply_micro_fade_out,
-                            build_crossfade_bridge,
                         )
 
                         # Crossfade bridge disabled to prevent robotic stutter/distortion
@@ -725,7 +719,6 @@ class TtsStreamMixin:
         Enhanced with sentence-aware chunking for natural pauses.
         """
         try:
-            from datetime import datetime, timezone
             
             if not text or not text.strip():
                 return

@@ -11,7 +11,7 @@ Streaming (low latency): https://cloud.google.com/text-to-speech/docs/create-aud
 from google.cloud import texttospeech
 from google.cloud import texttospeech_v1
 from app.core.config import settings
-from typing import Optional, AsyncIterator
+from typing import AsyncIterator
 import os
 import json
 import re

@@ -12,7 +12,7 @@ import asyncio
 import struct
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError

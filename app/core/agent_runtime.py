@@ -8,7 +8,7 @@ Call paths use these helpers first, then fall back to legacy ``model_id`` /
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any
 from uuid import UUID
 
 from typing import TYPE_CHECKING
@@ -94,7 +94,7 @@ class ResolvedTtsRuntime:
 def _decrypt_stored_api_key(
     encrypted: str,
     *,
-    agent_id: Union[UUID, str, None],
+    agent_id: UUID | str | None,
     credential_label: str,
 ) -> str:
     """Decrypt a stored API key; fail fast with a clear operator-facing error."""

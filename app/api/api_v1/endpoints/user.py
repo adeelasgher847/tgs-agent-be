@@ -31,7 +31,6 @@ from google.oauth2 import id_token as google_id_token
 from google.auth.transport.requests import Request as GoogleRequest
 from app.core.config import settings
 import uuid
-from typing import Optional
 import re
 from app.core.logger import logger
 from app.services.role_service import get_default_product_id
@@ -176,7 +175,6 @@ def login(
         from app.services.role_service import (
             get_user_role_in_tenant,
             get_user_product_in_tenant,
-            assign_role_to_user_tenant,
         )
         
         # Check if user has a role in this tenant

@@ -6,7 +6,7 @@ Handles all Twilio-related operations including client management and API calls
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioException
 from app.core.config import settings
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 from app.core.logger import logger
 
 def _build_amd_kwargs(

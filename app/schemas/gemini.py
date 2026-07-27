@@ -2,7 +2,7 @@
 Gemini API schemas for text generation
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Dict
 from pydantic import BaseModel, Field
 import uuid
 

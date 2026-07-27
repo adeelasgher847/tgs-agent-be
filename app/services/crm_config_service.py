@@ -4,12 +4,12 @@ CRM Configuration Service
 
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from typing import Optional, List
+from typing import List
 import uuid
 import json
 
 from app.models.tenant_crm_config import CRMConfig
-from app.core.security import encrypt_api_key, decrypt_api_key
+from app.core.security import encrypt_api_key
 from app.schemas.crm_config import CRMConfigCreate, CRMConfigUpdate
 
 

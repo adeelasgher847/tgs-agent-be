@@ -3,13 +3,13 @@ Model Service
 Handles model CRUD operations
 """
 
-from typing import List, Optional
+from typing import List
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.models.model import Model
 from app.models.provider import Provider
 from app.schemas.model import ModelCreate, ModelUpdate
-from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
+from app.core.security import encrypt_api_key, decrypt_api_key
 import uuid
 from app.services.pricing_service import PricingService
 

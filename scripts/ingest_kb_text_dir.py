@@ -16,7 +16,7 @@ import argparse
 import os
 import uuid
 from pathlib import Path
-from typing import Optional, Callable, Sequence
+from typing import Sequence
 
 import html as html_lib
 import re
@@ -25,7 +25,7 @@ from html.parser import HTMLParser
 from app.db.session import SessionLocal
 from app.models.agent import Agent
 from app.core.config import settings
-from app.services.rag_service import rag_service, EmbeddingFunc
+from app.services.rag_service import rag_service
 from app.services.embedding_service import embed_text_for_rag
 
 

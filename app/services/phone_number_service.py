@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -510,7 +510,6 @@ class PhoneNumberService:
         max_duration_seconds: int,
         business_hours: dict | None,
     ) -> NumberConfiguration:
-        from fastapi import HTTPException
 
         pn = self._require_number(db, phone_number_id, tenant_id)
 

@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 from app.core.workspace import Workspace
-from app.models.user import User
 
 AuthMethod = Literal["api_key", "jwt"]
 
