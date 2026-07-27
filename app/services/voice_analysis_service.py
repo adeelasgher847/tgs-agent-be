@@ -8,6 +8,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from fastapi import HTTPException
 
 from app.core.logger import logger
+from app.core.pii_redactor import redact_pii
 from app.models.call_flow import CallFlow
 from app.models.call_log import CallLog
 from app.models.call_session import CallSession
@@ -124,17 +125,14 @@ class VoiceAnalysisService:
                     break
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("⚠️ Model %s not available: %s", model_name, e)
-                # KNOWN GAP: captured but never included in the HTTPException
-                # detail below. Not removing — looks like a missing error detail,
-                # not dead code.
-                last_error = e  # noqa: F841
+                last_error = e
                 continue
 
         if not model:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No available model found. Tried: {', '.join(fallback_models)}",
-            )
+            detail = f"No available model found. Tried: {', '.join(fallback_models)}"
+            if last_error is not None:
+                detail += f". Last error: {redact_pii(str(last_error))}"
+            raise HTTPException(status_code=404, detail=detail)
 
         # Get transcript messages
         transcript_messages = transcript_service.get_messages_by_session(

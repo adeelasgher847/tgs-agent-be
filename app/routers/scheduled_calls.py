@@ -2052,11 +2052,8 @@ async def get_jira_credentials(
             )
         
         # Decrypt API token
-        # KNOWN GAP: the docstring above documents `api_token` as part of this
-        # endpoint's response, but it is never included in `result` below. Not
-        # removing — likely a missing field, not dead code.
         from app.core.security import decrypt_api_key
-        api_token = decrypt_api_key(jira_config.encrypted_api_key)  # noqa: F841
+        api_token = decrypt_api_key(jira_config.encrypted_api_key)
 
         # Parse additional_config for email and server_url
         import json
@@ -2077,24 +2074,29 @@ async def get_jira_credentials(
         if tenant_id and user_id:
             if is_webhook:
                 try:
-                    # KNOWN GAP: validated as a UUID but never used to confirm
-                    # `user` (looked up by user_uuid only) actually belongs to
-                    # this tenant_id. Not removing — possible missing authz
-                    # check, not dead code.
-                    tenant_uuid = uuid.UUID(tenant_id)  # noqa: F841
+                    tenant_uuid = uuid.UUID(tenant_id)
                     user_uuid = uuid.UUID(user_id)
                 except ValueError:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Invalid UUID format for tenant_id or user_id"
                     )
-                
+
                 # Get user from database
                 user = db.query(User).filter(User.id == user_uuid).first()
                 if not user:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail="User not found"
+                    )
+
+                # Verify the resolved user actually belongs to the requested
+                # tenant (same check/error style as tenant.py's switch_tenant).
+                user_tenant_ids = [t.id for t in user.tenants]
+                if tenant_uuid not in user_tenant_ids:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Access denied to this tenant"
                     )
             else:
                 # JWT authentication - user already available from Depends
@@ -2135,6 +2137,7 @@ async def get_jira_credentials(
                 tenant_id_value = str(user.tenants[0].id)
             
             result = {
+                "api_token": api_token,
                 "email": email,
                 "server_url": server_url,
                 "project_key": project_key,
@@ -2178,6 +2181,7 @@ async def get_jira_credentials(
                     })
             
             result = {
+                "api_token": api_token,
                 "email": email,
                 "server_url": server_url,
                 "users": users_list,

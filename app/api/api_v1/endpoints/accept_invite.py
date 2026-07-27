@@ -4,7 +4,7 @@ from app.api.deps import get_db
 from app.models.invite import Invite
 from app.models.user import User, user_tenant_association
 from app.models.role import Role
-from app.schemas.user import UserOut
+from app.schemas.user import AcceptInviteOut
 from app.schemas.base import SuccessResponse
 from app.core.security import get_password_hash, create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.models.refresh_token import RefreshToken
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.post("/accept-invite", response_model=SuccessResponse[UserOut])
+@router.post("/accept-invite", response_model=SuccessResponse[AcceptInviteOut])
 def accept_invite(
     token: str,
     password: str,
@@ -141,16 +141,13 @@ def accept_invite(
     db.commit()
     
     # Create access token
-    # KNOWN GAP: computed but never returned/set as a cookie below, unlike the
-    # analogous flow in tenant.py. Looks like a missing wiring step, not dead code.
-    access_token = create_user_token(  # noqa: F841
+    access_token = create_user_token(
         user_id=user.id,
         email=user.email,
         tenant_id=invite.tenant_id,
         role=role_obj.name
     )
 
-    
     # Create refresh token
     rt_value = create_refresh_token_value()
     rt = RefreshToken(
@@ -162,8 +159,8 @@ def accept_invite(
     db.add(rt)
     db.commit()
     
-    # Return user details
-    user_out = UserOut(
+    # Return user details plus the session tokens
+    user_out = AcceptInviteOut(
         id=user.id,
         first_name=user.first_name,
         last_name=user.last_name,
@@ -171,7 +168,9 @@ def accept_invite(
         phone=user.phone,
         join_date=user.join_date,
         created_at=user.created_at,
-        current_tenant_id=user.current_tenant_id
+        current_tenant_id=user.current_tenant_id,
+        access_token=access_token,
+        refresh_token=rt_value
     )
     
     # Determine response message based on whether user was new or existing
