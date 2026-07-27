@@ -9,6 +9,7 @@ from sqlalchemy import and_
 from datetime import datetime, timezone
 import uuid
 from app.api.deps import get_db, get_optional_tenant_user, require_manager, require_readonly, require_admin
+from app.core.logger import logger
 from app.utils.n8n_webhook_verification import verify_n8n_webhook_secret_async
 from app.models.user import User
 from app.models.agent import Agent
@@ -86,8 +87,8 @@ async def analyze_call_transcript_internal(
                     
                     if agent and agent.model:
                         preferred_model = agent.model.model_name
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to fetch agent %s for scheduled call summary: %s", call_session.agent_id, exc)
         
         # Fallback models
         fallback_models = [
@@ -222,8 +223,8 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                 recommendations_result = generate_analysis_text(
                     model, current_api_key, recommendations_prompt, max_tokens=300
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to generate call recommendations: %s", exc)
         except Exception:
             return None
         

@@ -403,8 +403,8 @@ class PostCallAppointmentService:
                 )
                 try:
                     db.refresh(cs)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to refresh call_session %s after contact recovery: %s", cs.id, exc)
                 intake = get_contact_intake(cs)
                 merged_contact = merge_contact_for_post_call(intake, extracted)
                 self._merge_call_metadata(
@@ -518,8 +518,8 @@ class PostCallAppointmentService:
             return
         try:
             db.refresh(cs)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to refresh call_session %s after appointment booking: %s", cs.id, exc)
         self._merge_call_metadata(
             cs,
             {

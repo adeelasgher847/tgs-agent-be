@@ -185,8 +185,8 @@ class BackgroundAudioManager:
                     pass
                 finally:
                     self.state.task = None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[BG] Error stopping background audio loop: %s", exc)
 
     def mix_with_background(self, audio_bytes: bytes) -> bytes:
         if not self.state.mulaw_bytes or self.state.length == 0:

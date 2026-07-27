@@ -624,7 +624,7 @@ async def gather_speech_callback_webhook(
             tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
             response.play(tts_url)
             response.hangup()
-        except:
+        except Exception:
             text = "Please call back later. Goodbye!"
             tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
             response.play(tts_url)

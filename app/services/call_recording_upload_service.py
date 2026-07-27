@@ -135,7 +135,7 @@ def _check_and_finalize(db, session, egress_id: str, gcs_path: str) -> None:
     finally:
         try:
             loop.close()
-        except Exception:
+        except Exception:  # noqa: S110 - best-effort event loop cleanup
             pass
 
     if egress_info is None:

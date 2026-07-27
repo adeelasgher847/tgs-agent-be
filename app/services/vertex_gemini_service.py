@@ -221,8 +221,8 @@ class VertexGeminiService:
                                 )
                     except VertexLlmError:
                         raise
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("[VertexGemini] finish_reason inspection failed: %s", exc)
                     continue
 
                 if text:

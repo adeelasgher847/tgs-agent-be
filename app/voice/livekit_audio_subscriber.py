@@ -136,8 +136,8 @@ class LiveKitAudioSubscriber:
         finally:
             try:
                 await room.disconnect()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[LiveKitAudioSubscriber] room disconnect failed: %s", exc)
             logger.info(
                 "[LiveKitAudioSubscriber] disconnected from room=%s", self._room_name
             )

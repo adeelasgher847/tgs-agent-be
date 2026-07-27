@@ -79,7 +79,7 @@ def _drop_partial_unique_indexes(db):
     ):
         try:
             db.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort SQLite teardown
             pass
     db.commit()
     yield

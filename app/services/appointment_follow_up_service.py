@@ -85,8 +85,8 @@ def send_follow_up_outcome_staff_email(
                     )
                     local_str = slot_start_local.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
                     body += f"<p><strong>Appointment time:</strong> {html.escape(local_str)}</p>"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to format local appointment time for appt=%s: %s", appointment_id, exc)
         if detail:
             body += f"<p><strong>Detail:</strong> {html.escape(detail[:2000])}</p>"
         email_service.send_generic_email(
@@ -328,7 +328,7 @@ def schedule_follow_up_after_confirm(
         )
         try:
             db.rollback()
-        except Exception:
+        except Exception:  # noqa: S110 - already handling an error above; nothing further to do if rollback fails
             pass
 
 

@@ -313,7 +313,7 @@ async def initiate_call(
                 # Attempt cleanup in case the room was partially created
                 try:
                     await livekit_service.close_room(session_id)
-                except Exception:
+                except Exception:  # noqa: S110 - best-effort cleanup after the room-creation failure already logged above
                     pass
                 # Do NOT create DB record; do NOT call Twilio
                 return _err(
@@ -576,7 +576,7 @@ async def initiate_call(
                     from app.services.livekit_service import livekit_service
 
                     await livekit_service.close_room(call_session.id)
-                except Exception:
+                except Exception:  # noqa: S110 - best-effort cleanup after the Twilio failure already logged above
                     pass
             return _err(
                 status.HTTP_502_BAD_GATEWAY,

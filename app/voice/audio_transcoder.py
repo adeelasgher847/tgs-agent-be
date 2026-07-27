@@ -144,8 +144,8 @@ class LiveKitAudioProcessor:
             if self._ffmpeg_process.stdin and not self._ffmpeg_process.stdin.is_closing():
                 self._ffmpeg_process.stdin.close()
                 await self._ffmpeg_process.stdin.wait_closed()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to close ffmpeg stdin: %s", exc)
         try:
             await asyncio.wait_for(self._ffmpeg_process.wait(), timeout=3.0)
         except asyncio.TimeoutError:

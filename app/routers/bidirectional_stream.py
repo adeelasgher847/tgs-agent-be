@@ -1661,8 +1661,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     rag_trace.get("filtered_count"),
                     rag_trace.get("retrieve_error"),
                 )
-            except Exception:
-                # Logging must never break voice calls.
+            except Exception:  # noqa: S110 - logging must never break voice calls
                 pass
             
             # Build history text from in-memory cache (avoids re-parsing the growing
@@ -1681,8 +1680,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                             mtype = msg.get("message_type", "")
                             if content and role in ("client", "agent") and mtype not in ("greeting", "system", "status"):
                                 self._conversation_history_cache.append((role, content))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to seed conversation history cache from DB transcript: %s", exc)
 
             history_text = ""
             if self._conversation_history_cache:
@@ -2206,8 +2205,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             full_response,
                         )
                         self._pending_resume_screening_qualify = persisted_status is not None
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to persist voice screening status signal: %s", exc)
 
                 if _transfer_re.search(full_response):
                     transfer_after = True
@@ -2480,8 +2479,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 (user_text or "")[:56],
                                 " | ".join(breaches),
                             )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("VoiceSLO breach check failed: %s", exc)
 
         except asyncio.CancelledError:
             raise
@@ -2541,8 +2540,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         configured_edge,
                         expected_edge,
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Region alignment check failed: %s", exc)
 
             # Recording: gate on recording_enabled for this call's number.
             if self.call_sid and self.call_session and not self._recording_started:
@@ -2701,8 +2700,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         # Stop background audio loop safely.
         try:
             await self._background_audio.stop_loop()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Background audio loop stop failed: %s", exc)
 
         # ── VoiceOrchestrator handles LLM cancel + TTS shutdown + STT close ────
         # OLD direct code (now delegated to orchestrator):
@@ -2713,8 +2712,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         # ────────────────────────────────────────────────────────────────────────
         try:
             await self._voice_orchestrator.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("VoiceOrchestrator shutdown failed: %s", exc)
 
         # Finalize voice appointment booking from transcript (exactly once per call handler)
         if not self._post_call_orchestration_scheduled:
@@ -2755,8 +2754,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if pub:
                 try:
                     await pub.disconnect()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("LiveKit recording publisher disconnect failed: %s", exc)
             setattr(self, attr, None)
 
     async def _teardown_livekit_recording(self) -> None:
@@ -2876,7 +2875,7 @@ async def _receive_or_stop(
             t.cancel()
             try:
                 await t
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: S110 - expected from cancelling the losing task
                 pass
 
         if stop_task in done:
@@ -2972,7 +2971,7 @@ async def bidirectional_stream_websocket(
         # instead of waiting for the TCP connection to time out.
         try:
             await websocket.close()
-        except Exception:
+        except Exception:  # noqa: S110 - socket may already be closed/disconnected
             pass
 
         db.close()

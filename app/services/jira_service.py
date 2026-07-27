@@ -110,9 +110,9 @@ class JiraService(BaseCRMService):
                                         # found" but no logger call was ever added. Not
                                         # removing — missing logging, not dead code.
                                         existing_id = createmeta_map[normalized_name]["id"]  # noqa: F841
-        except Exception:
-            pass
-        
+        except Exception as exc:
+            logger.debug("Failed to fetch Jira createmeta field map: %s", exc)
+
         return createmeta_map
 
     def _text_to_adf(self, text: str) -> Dict:
@@ -237,7 +237,7 @@ class JiraService(BaseCRMService):
                     if response.status_code == 404:
                         # Key doesn't exist - we can use it
                         return test_key
-                except:
+                except requests.exceptions.RequestException:
                     # If check fails, assume we can use it
                     return test_key
         
@@ -317,9 +317,9 @@ class JiraService(BaseCRMService):
                     error_messages = error_data.get("errorMessages", [])
                     errors = error_data.get("errors", {})
                     error_msg = ', '.join(error_messages) if error_messages else str(errors)
-                except:
+                except (ValueError, json.JSONDecodeError):
                     error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
-                
+
                 raise ValueError(f"Failed to create Jira project: {error_msg}")
                 
         except requests.exceptions.HTTPError as e:
@@ -332,7 +332,7 @@ class JiraService(BaseCRMService):
                     error_msg += f": {', '.join(error_messages)}"
                 if errors:
                     error_msg += f" Errors: {errors}"
-            except:
+            except (ValueError, json.JSONDecodeError):
                 error_msg += f": {e.response.text[:200]}"
             raise ValueError(f"Failed to create Jira project: {error_msg}")
         except Exception as e:
@@ -412,10 +412,10 @@ class JiraService(BaseCRMService):
                             opt_response = requests.post(options_url, json=option_payload, headers=self._headers(), timeout=20)
                             if opt_response.status_code in [200, 201]:
                                 pass  # Success
-                        except Exception:
-                            pass  # Non-critical, continue
-        except Exception:
-            pass  # Non-critical, continue
+                        except Exception:  # noqa: S110 - non-critical, continue with remaining options
+                            pass
+        except Exception:  # noqa: S110 - non-critical, continue
+            pass
 
     def _get_required_fields_for_creation(self, container_id: str) -> Dict[str, Any]:
         """
@@ -469,8 +469,8 @@ class JiraService(BaseCRMService):
                                                             options = options_resp.json().get("values", [])
                                                             if options:
                                                                 required_fields[field_id] = {"value": options[0].get("value", options[0].get("name", ""))}
-                                            except:
-                                                pass
+                                            except Exception as exc:
+                                                logger.debug("Failed to fetch select options for Jira field %s: %s", field_id, exc)
                                     elif field_type in ["string", "text"]:
                                         # Text field - only set if there's a default value
                                         # Don't set empty string for required text fields - they'll be set in custom fields update step
@@ -484,10 +484,10 @@ class JiraService(BaseCRMService):
                                     elif field_type == "date":
                                         # Can be omitted or set to current date
                                         pass
-                                    
-        except Exception:
-            pass
-        
+
+        except Exception as exc:
+            logger.debug("Failed to fetch required fields for Jira project %s: %s", container_id, exc)
+
         return required_fields
 
     def _get_select_field_value(self, field_id: str, project_key: str, preferred_value: str = "No") -> str | None:
@@ -575,9 +575,9 @@ class JiraService(BaseCRMService):
                                 first_opt = options[0].get("value", "")
                                 if first_opt:
                                     return first_opt
-            except:
-                pass
-            
+            except Exception as exc:
+                logger.debug("Failed to fetch field context options for Jira field %s: %s", field_id, exc)
+
             return None
         except Exception:
             return None
@@ -629,7 +629,7 @@ class JiraService(BaseCRMService):
                         error_messages = error_data.get("errorMessages", [])
                         errors = error_data.get("errors", {})
                         error_msg = f"Error checking Jira project: {', '.join(error_messages) if error_messages else str(errors)}"
-                    except:
+                    except (ValueError, json.JSONDecodeError):
                         error_msg = f"Error checking Jira project: HTTP {response.status_code} - {response.text[:200]}"
                     
                     raise ValueError(
@@ -660,9 +660,9 @@ class JiraService(BaseCRMService):
                                 "id": existing_key,
                                 "url": self.build_container_url(existing_key),
                             }
-            except Exception:
-                pass
-            
+            except Exception as exc:
+                logger.debug("Failed to search Jira projects by name '%s': %s", container_name, exc)
+
             # No existing project found - create new one
             generated_key = self._generate_unique_project_key(container_name)
             try:
@@ -683,9 +683,9 @@ class JiraService(BaseCRMService):
                                         "id": existing_key,
                                         "url": self.build_container_url(existing_key),
                                     }
-                    except Exception:
-                        pass
-                
+                    except Exception as exc:
+                        logger.debug("Failed to re-search Jira projects by name '%s' after creation conflict: %s", container_name, exc)
+
                 # Re-raise the original error if we couldn't find existing project
                 raise create_error
 
@@ -800,7 +800,7 @@ class JiraService(BaseCRMService):
                 error_messages = error_data.get("errorMessages", [])
                 if error_messages:
                     error_msg += f" - {', '.join(error_messages)}"
-            except:
+            except (ValueError, json.JSONDecodeError):
                 error_msg += f" - {e.response.text[:200]}"
             
             raise ValueError(f"{error_msg}. Please check your Jira API credentials and permissions.")
@@ -992,8 +992,8 @@ class JiraService(BaseCRMService):
                                         if allowed_values:
                                             first_option = allowed_values[0].get("value") or allowed_values[0].get("name", "")
                                             basic_fields[req_field_id] = {"value": first_option}
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to fetch fallback metadata for Jira field %s: %s", req_field_id, exc)
             else:
                 # Field not in field_map, try to match by name from metadata (fallback)
                 try:
@@ -1132,9 +1132,9 @@ class JiraService(BaseCRMService):
                                         failed_updates += 1
                                 except Exception:
                                     failed_updates += 1
-                    except Exception:
+                    except Exception as exc:
                         # Don't fail - issue was created successfully
-                        pass
+                        logger.debug("Failed to bulk-update Jira issue %s custom fields: %s", issue_id, exc)
                 
                 # Set status using transition API - try "Pending" first, then fallback to available status
                 try:
@@ -1160,9 +1160,9 @@ class JiraService(BaseCRMService):
                                 transition_execute_url = f"{self.server_url}/rest/api/3/issue/{issue_id}/transitions"
                                 transition_payload = {"transition": {"id": transition_id}}
                                 requests.post(transition_execute_url, json=transition_payload, headers=self._headers(), timeout=20)
-                except Exception:
+                except Exception as exc:
                     # Don't fail the entire operation if status transition fails
-                    pass
+                    logger.debug("Failed to set initial status on Jira issue %s: %s", issue_id, exc)
                 
                 return issue_data
             else:
@@ -1171,7 +1171,7 @@ class JiraService(BaseCRMService):
                     error_data = response.json()
                     error_messages = error_data.get("errorMessages", [])
                     errors_dict = error_data.get("errors", {})
-                except:
+                except (ValueError, json.JSONDecodeError):
                     error_messages = []
                     errors_dict = {}
                 
@@ -1223,7 +1223,7 @@ class JiraService(BaseCRMService):
             try:
                 error_data = e.response.json()
                 error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
-            except:
+            except (ValueError, json.JSONDecodeError):
                 error_msg += f": {e.response.text[:200]}"
             return None
         except Exception:
@@ -1257,7 +1257,7 @@ class JiraService(BaseCRMService):
             try:
                 error_data = e.response.json()
                 error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
-            except:
+            except (ValueError, json.JSONDecodeError):
                 error_msg += f": {e.response.text[:200]}"
             return None
         except Exception:
@@ -1311,9 +1311,9 @@ class JiraService(BaseCRMService):
                 deleted = self._delete_by_jql(container_id, tenant_id, tenant_field_id, batch_size)
                 if deleted > 0:
                     return deleted
-            except Exception:
-                pass
-        
+            except Exception as exc:
+                logger.debug("JQL-based delete failed for Jira project %s tenant %s: %s", container_id, tenant_id, exc)
+
         # Fallback: Fetch all issues and parse descriptions
         deleted = self._delete_by_description_parsing(container_id, tenant_id, batch_size)
         
@@ -1368,9 +1368,9 @@ class JiraService(BaseCRMService):
                     delete_response = requests.delete(delete_url, headers=self._headers(), timeout=20)
                     delete_response.raise_for_status()
                     deleted += 1
-                except Exception:
-                    pass
-            
+                except Exception as exc:
+                    logger.debug("Failed to delete Jira issue %s: %s", issue_id, exc)
+
             # Check if more results
             start_at += len(issues)
             if start_at >= total:
@@ -1448,14 +1448,14 @@ class JiraService(BaseCRMService):
                             pass
                         else:
                             pass
-                    except Exception:
-                        pass
-            
+                    except Exception as exc:
+                        logger.debug("Failed to delete Jira issue %s during description-based cleanup: %s", issue_id, exc)
+
             # Check if more results
             start_at += len(issues)
             if start_at >= total:
                 break
-        
+
         return deleted
 
     def count_pending_items_for_tenant(

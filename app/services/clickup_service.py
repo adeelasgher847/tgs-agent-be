@@ -6,6 +6,7 @@ from typing import Dict, List
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
+from app.core.logger import logger
 
 
 class ClickUpService(BaseCRMService):
@@ -403,7 +404,7 @@ class ClickUpService(BaseCRMService):
                 try:
                     error_data = response.json()
                     error_msg = error_data.get("err", "") or error_data.get("error", "") or str(error_data)
-                except:
+                except requests.exceptions.JSONDecodeError:
                     error_msg = response.text[:200]
             
             response.raise_for_status()
@@ -423,8 +424,8 @@ class ClickUpService(BaseCRMService):
                     # the verification currently has no effect. Not removing —
                     # looks like an incomplete verification, not dead code.
                     tenant_field_verified = next((f for f in verified_fields if f.get("id") == field_map.get("tenant_id")), None)  # noqa: F841
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to verify ClickUp task %s tenant_id field: %s", task_id, exc)
             
             return created_task
         except requests.exceptions.HTTPError as e:
@@ -611,8 +612,8 @@ class ClickUpService(BaseCRMService):
                         delete_response = requests.delete(delete_url, headers=self._headers(), timeout=20)
                         delete_response.raise_for_status()
                         deleted += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to delete ClickUp task %s for tenant %s: %s", task_id, tenant_id, exc)
             
             # Check if more pages
             if len(tasks) < batch_size:
@@ -646,8 +647,7 @@ class ClickUpService(BaseCRMService):
         pending_option_uuid = None
         try:
             pending_option_uuid = self._get_dropdown_option_uuid(container_id, status_field_id, pending_label)
-        except Exception:
-            # Continue anyway - we'll try to match by name if UUID not found
+        except Exception:  # noqa: S110 - continue anyway, we'll try to match by name if UUID not found
             pass
         
         while True:

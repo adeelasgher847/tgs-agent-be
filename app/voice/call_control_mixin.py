@@ -560,8 +560,8 @@ class CallControlMixin:
             )
             try:
                 self.db.refresh(self.call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to refresh call_session %s after transcript update: %s", self.call_session.id, exc)
 
         except Exception as e:
             logger.error(f"Error in _add_to_transcript: {e}", exc_info=True)

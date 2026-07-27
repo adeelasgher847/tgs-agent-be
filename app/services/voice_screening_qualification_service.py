@@ -144,8 +144,8 @@ def maybe_update_resume_status_on_call_completed(db: Session, call_session_id: u
         return False
     try:
         db.refresh(cs)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to refresh call_session %s: %s", cs.id, exc)
     md = cs.call_metadata if isinstance(cs.call_metadata, dict) else {}
     if not md.get(_SIGNAL_META_KEY) and not md.get(_CANDIDATE_STATUS_META_KEY):
         return False
@@ -167,8 +167,8 @@ def apply_resume_candidate_status_after_voice_screening(
         return False
     try:
         db.refresh(call_session)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to refresh call_session %s: %s", call_session.id, exc)
     md = call_session.call_metadata
     if not isinstance(md, dict):
         logger.debug(

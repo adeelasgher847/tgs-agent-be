@@ -95,8 +95,8 @@ class BookingMixin:
 
                     intake = get_contact_intake(self.call_session)
                     attendee_name = (intake.get("name") or "").strip()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to get contact intake name for booking: %s", exc)
                 summary = (self.call_session.transcript_summary or "").strip()
                 result = await calendly_service.book_appointment(
                     self.db,
@@ -587,8 +587,8 @@ class BookingMixin:
                         "- Scheduled appointment time (local): "
                         f"{slot_start_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')}."
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to format local appointment time for appt=%s: %s", appt.id, exc)
         else:
             details.append(f"- Appointment ID: {aid_raw}.")
 
@@ -1029,8 +1029,8 @@ class BookingMixin:
             )
             try:
                 self.db.refresh(self.call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to refresh call_session %s after cancel: %s", self.call_session.id, exc)
         except ValueError as ve:
             logger.warning("Follow-up cancel: %s", ve)
         except Exception as e:
@@ -1081,8 +1081,8 @@ class BookingMixin:
             )
             try:
                 self.db.refresh(self.call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to refresh call_session %s after reschedule: %s", self.call_session.id, exc)
         except ValueError as ve:
             logger.warning("Follow-up reschedule: %s", ve)
         except Exception as e:
@@ -1221,8 +1221,8 @@ class BookingMixin:
             self._last_selected_calendar_slot = slot_start
             try:
                 self.db.refresh(self.call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to refresh call_session %s after booking intent persist: %s", self.call_session.id, exc)
 
             msg = (
                 "I've noted your preferred time. After we finish the call, our system will finalize "

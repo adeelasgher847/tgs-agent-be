@@ -215,8 +215,8 @@ def _save_contact_intake(db: Session, call_session: CallSession, intake: dict[st
     db.commit()
     try:
         db.refresh(call_session)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to refresh call_session %s after contact intake save: %s", call_session.id, exc)
 
 
 def _save_booking_intent(db: Session, call_session: CallSession, intent: dict[str, Any]) -> None:
@@ -227,8 +227,8 @@ def _save_booking_intent(db: Session, call_session: CallSession, intent: dict[st
     db.commit()
     try:
         db.refresh(call_session)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to refresh call_session %s after booking intent save: %s", call_session.id, exc)
 
 
 def merge_booking_intent(

@@ -98,7 +98,7 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         if mp3_path and os.path.exists(mp3_path):
             try:
                 os.unlink(mp3_path)
-            except Exception:
+            except Exception:  # noqa: S110 - best-effort temp file cleanup
                 pass
 
 
@@ -479,7 +479,7 @@ async def stream_mulaw_bytes_over_twilio(
         if mirror_mulaw:
             try:
                 await mirror_mulaw(frame)
-            except Exception:
+            except Exception:  # noqa: S110 - best-effort recording mirror; must not disrupt playback, logging per-frame would be too noisy
                 pass
         payload = base64.b64encode(frame).decode("utf-8")
         try:

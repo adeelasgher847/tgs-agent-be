@@ -235,8 +235,8 @@ class BatchCallWorkerService:
             data = result.data
             if hasattr(data, "callId"):
                 call_id = uuid.UUID(str(data.callId))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to extract call_id from batch call result: %s", exc)
 
         await self._mark_active_with_call(record, call_id)
 

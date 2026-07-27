@@ -296,8 +296,8 @@ class RoomService:
             if owns_room:
                 try:
                     await self.close_room(probe_call_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to close LiveKit probe room %s: %s", probe_call_id, exc)
 
 
 livekit_service = RoomService()

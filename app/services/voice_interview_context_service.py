@@ -108,8 +108,8 @@ def _job_text_for_prompt(job: JobDescription) -> str:
             if len(responsibilities_json) > 2000:
                 responsibilities_json = f"{responsibilities_json[:2000]}..."
             parts.append("Responsibilities (structured):\n" + responsibilities_json)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to serialize key_responsibilities for job %s: %s", job.id, exc)
     return "\n\n".join(parts)
 
 
