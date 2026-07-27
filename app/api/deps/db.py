@@ -21,7 +21,7 @@ def get_db() -> Generator:
             pass
 
 
-def get_active_user_by_id(db: Session, user_id: uuid.UUID) -> Optional[User]:
+def get_active_user_by_id(db: Session, user_id: uuid.UUID) -> User | None:
     """Load a user only when not soft-deleted (``deleted_at IS NULL``)."""
     return (
         db.query(User)

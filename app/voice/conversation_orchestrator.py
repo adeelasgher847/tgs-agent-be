@@ -109,12 +109,12 @@ class ConversationActions:
     The handler uses this to drive quick-acks, LLM responses, and history updates.
     """
 
-    quick_ack_text: Optional[str] = None
+    quick_ack_text: str | None = None
     start_llm_response: bool = False
     end_call_after: bool = False
 
     # Updated conversation history (already windowed)
-    updated_history: Optional[List[Dict[str, Any]]] = None
+    updated_history: List[Dict[str, Any]] | None = None
     should_persist_history: bool = False
 
 
@@ -702,7 +702,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 f"for response to: '{user_text[:20]}...'"
             )
 
-            async def try_stream(service, model: str, api_key_override: Optional[str] = None) -> str:
+            async def try_stream(service, model: str, api_key_override: str | None = None) -> str:
                 nonlocal chunk_counter
 
                 response_accum = ""
@@ -890,8 +890,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         self,
         text: str,
         is_final: bool,
-        audio_stats: Optional[Dict[str, Any]] = None,
-        timestamps: Optional[Dict[str, Any]] = None,
+        audio_stats: Dict[str, Any] | None = None,
+        timestamps: Dict[str, Any] | None = None,
     ) -> ConversationActions:
         """
         High-level decision point for a user speech event.

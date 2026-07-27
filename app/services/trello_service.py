@@ -102,7 +102,7 @@ class TrelloService(BaseCRMService):
         }
 
     @staticmethod
-    def parse_board_id_from_url_or_id(value: Optional[str]) -> Optional[str]:
+    def parse_board_id_from_url_or_id(value: str | None) -> str | None:
         if not value:
             return None
         v = value.strip()
@@ -183,7 +183,7 @@ class TrelloService(BaseCRMService):
                 "url": self.build_container_url(board_id),
             }
         except requests.exceptions.HTTPError as e:
-            error_msg = f"Failed to create Trello board: "
+            error_msg = "Failed to create Trello board: "
             if e.response.status_code == 401:
                 error_msg += "Authentication failed - check your API key and token."
             elif e.response.status_code == 403:
@@ -283,9 +283,9 @@ class TrelloService(BaseCRMService):
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
-        batch_id: Optional[str] = None,
-        phone_number_id: Optional[str] = None,
-    ) -> Optional[dict]:
+        batch_id: str | None = None,
+        phone_number_id: str | None = None,
+    ) -> dict | None:
         """Create a scheduled call card in Trello board"""
         # Get default list (or create one)
         url = f"{self.API_URL}/boards/{container_id}/lists"
@@ -391,8 +391,8 @@ class TrelloService(BaseCRMService):
                     desc_lines.append(f"Phone Number ID: {phone_number_id}")
                 if batch_id:
                     desc_lines.append(f"Batch ID: {batch_id}")
-                desc_lines.append(f"Status: Pending")
-                desc_lines.append(f"Email Sent: No")
+                desc_lines.append("Status: Pending")
+                desc_lines.append("Email Sent: No")
                 
                 # Update card description
                 try:
@@ -415,7 +415,7 @@ class TrelloService(BaseCRMService):
         *,
         item_id: str,
         jd_context: Dict[str, Any],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Persist JD / resume / appointment context to card description (n8n reads for /voice/call/initiate).
         """
@@ -459,7 +459,7 @@ class TrelloService(BaseCRMService):
         item_id: str,
         status: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update card status in Trello"""
         status_field_id = field_map.get("status")
         if not status_field_id:
@@ -484,7 +484,7 @@ class TrelloService(BaseCRMService):
         item_id: str,
         call_session_id: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update call_session_id field for a Trello card"""
         session_field_id = field_map.get("call_session_id")
         if not session_field_id:
@@ -508,7 +508,7 @@ class TrelloService(BaseCRMService):
         item_id: str,
         call_time_utc: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update scheduled call_time_utc custom field on a card."""
         field_id = field_map.get("call_time_utc")
         if not field_id:
@@ -528,8 +528,8 @@ class TrelloService(BaseCRMService):
         *,
         item_id: str,
         container_id: str | None = None,
-        field_map: Optional[Dict[str, str]] = None,
-    ) -> Optional[str]:
+        field_map: Dict[str, str] | None = None,
+    ) -> str | None:
         """
         Resolve call_session_id from a Trello card.
 
@@ -654,7 +654,7 @@ class TrelloService(BaseCRMService):
                 if card_desc:
                     # Use UUID pattern to extract tenant_id from description
                     # Format: "Tenant ID: {uuid}"
-                    tenant_pattern = rf"Tenant ID:\s*([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}})"
+                    tenant_pattern = r"Tenant ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
                     match = re.search(tenant_pattern, card_desc, re.IGNORECASE)
                     if match:
                         item_tenant_id = match.group(1).strip()
@@ -747,7 +747,7 @@ class TrelloService(BaseCRMService):
             if not item_tenant_id and card_desc:
                 # Parse tenant_id from description
                 # Format: "Tenant ID: {uuid}" or "Tenant ID: {value}"
-                tenant_pattern = rf"Tenant ID:\s*([^\n]+)"
+                tenant_pattern = r"Tenant ID:\s*([^\n]+)"
                 tenant_match = re.search(tenant_pattern, card_desc, re.IGNORECASE)
                 if tenant_match:
                     item_tenant_id = tenant_match.group(1).strip()
@@ -755,7 +755,7 @@ class TrelloService(BaseCRMService):
             if not item_status and card_desc:
                 # Parse status from description
                 # Format: "Status: {status}" or "Status: Pending"
-                status_pattern = rf"Status:\s*([^\n]+)"
+                status_pattern = r"Status:\s*([^\n]+)"
                 status_match = re.search(status_pattern, card_desc, re.IGNORECASE)
                 if status_match:
                     item_status = status_match.group(1).strip()
@@ -932,7 +932,7 @@ class TrelloService(BaseCRMService):
         container_id: str,
         item_id: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Update Email Sent status to "Yes" for a Trello card.
         Tries custom field first, falls back to description update.
@@ -1050,7 +1050,7 @@ class TrelloService(BaseCRMService):
             "fullName": data.get("fullName", ""),
         }
 
-    def ensure_inbound_call_logs_list(self, board_id: str, list_name: Optional[str] = None) -> str:
+    def ensure_inbound_call_logs_list(self, board_id: str, list_name: str | None = None) -> str:
         name = list_name or self.INBOUND_LIST_NAME_DEFAULT
         url = f"{self.API_URL}/boards/{board_id}/lists"
         params = self._auth_params()
@@ -1099,7 +1099,7 @@ class TrelloService(BaseCRMService):
         return {"id": cid, "url": card_url}
 
     def update_inbound_call_log_card(
-        self, card_id: str, card_name: Optional[str] = None, description: Optional[str] = None
+        self, card_id: str, card_name: str | None = None, description: str | None = None
     ) -> Dict[str, str]:
         url = f"{self.API_URL}/cards/{card_id}"
         params = self._auth_params()

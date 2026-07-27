@@ -40,7 +40,7 @@ def _error_response(
     code: int,
     message: str,
     *,
-    error_code: Optional[str] = None,
+    error_code: str | None = None,
 ) -> JSONResponse:
     payload = build_api_error_payload(
         code,

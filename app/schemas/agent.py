@@ -99,7 +99,7 @@ class SttSettingsJsonSchema(BaseModel):
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
-    silence_threshold_ms: Optional[int] = Field(
+    silence_threshold_ms: int | None = Field(
         default=1500,
         ge=300,
         le=5000,
@@ -140,7 +140,7 @@ class TtsModelSchema(BaseModel):
     provider: TtsProviderEnum
     voice_id: str = Field(..., min_length=1, max_length=255, alias="voiceId")
     language: LanguageEnum
-    tts_voice_id: Optional[uuid.UUID] = Field(None, alias="ttsVoiceId")
+    tts_voice_id: uuid.UUID | None = Field(None, alias="ttsVoiceId")
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -167,7 +167,7 @@ class AgentCreate(BaseModel):
     name: str = Field(..., min_length=3, max_length=80)
     llm_model: str = Field(..., min_length=1, max_length=100, alias="llmModel")
     tts_model: TtsModelSchema = Field(..., alias="ttsModel")
-    stt_model: Optional[SttModelSchema] = Field(
+    stt_model: SttModelSchema | None = Field(
         default=None,
         alias="sttModel",
         description=(
@@ -175,13 +175,13 @@ class AgentCreate(BaseModel):
             "Use provider='google', modelId='chirp-3', languageCode='en-AU' for Google STT."
         ),
     )
-    stt_settings: Optional[SttSettingsJsonSchema] = Field(
+    stt_settings: SttSettingsJsonSchema | None = Field(
         default=None,
         alias="sttSettings",
         description="Optional STT tuning (e.g. silenceThresholdMs).",
     )
     status: AgentStatusEnum = AgentStatusEnum.pending
-    eleven_labs_api_key: Optional[str] = Field(
+    eleven_labs_api_key: str | None = Field(
         default=None,
         alias="elevenLabsApiKey",
         min_length=1,
@@ -189,12 +189,12 @@ class AgentCreate(BaseModel):
     )
 
     # Optional voice-runtime fields (dashboard / calls)
-    system_prompt: Optional[str] = None
-    voice_type: Optional[VoiceTypeEnum] = None
-    fallback_response: Optional[str] = None
-    agent_temperature: Optional[int] = Field(None, ge=0, le=100)
-    agent_max_tokens: Optional[int] = Field(None, gt=0)
-    tts_settings_json: Optional[TtsSettingsJsonSchema] = Field(
+    system_prompt: str | None = None
+    voice_type: VoiceTypeEnum | None = None
+    fallback_response: str | None = None
+    agent_temperature: int | None = Field(None, ge=0, le=100)
+    agent_max_tokens: int | None = Field(None, gt=0)
+    tts_settings_json: TtsSettingsJsonSchema | None = Field(
         default=None,
         description=(
             "Optional TTS tuning. Example uses normal speed/volume (1.0). "
@@ -202,10 +202,10 @@ class AgentCreate(BaseModel):
         ),
         json_schema_extra={"example": {"speed": 1.0, "volume": 1.0}},
     )
-    greeting_message: Optional[str] = None
+    greeting_message: str | None = None
     is_inbound_agent: bool = False
     is_follow_up_agent: bool = False
-    transfer_route_id: Optional[uuid.UUID] = None
+    transfer_route_id: uuid.UUID | None = None
 
     @field_validator("name")
     @classmethod
@@ -240,25 +240,25 @@ class AgentCreate(BaseModel):
 class AgentUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    name: Optional[str] = Field(None, min_length=3, max_length=80)
-    llm_model: Optional[str] = Field(None, min_length=1, max_length=100, alias="llmModel")
-    tts_model: Optional[TtsModelSchema] = Field(None, alias="ttsModel")
-    stt_model: Optional[SttModelSchema] = Field(None, alias="sttModel")
-    stt_settings: Optional[SttSettingsJsonSchema] = Field(None, alias="sttSettings")
-    status: Optional[AgentStatusEnum] = None
-    eleven_labs_api_key: Optional[str] = Field(
+    name: str | None = Field(None, min_length=3, max_length=80)
+    llm_model: str | None = Field(None, min_length=1, max_length=100, alias="llmModel")
+    tts_model: TtsModelSchema | None = Field(None, alias="ttsModel")
+    stt_model: SttModelSchema | None = Field(None, alias="sttModel")
+    stt_settings: SttSettingsJsonSchema | None = Field(None, alias="sttSettings")
+    status: AgentStatusEnum | None = None
+    eleven_labs_api_key: str | None = Field(
         default=None,
         alias="elevenLabsApiKey",
         min_length=1,
         max_length=500,
     )
 
-    system_prompt: Optional[str] = None
-    voice_type: Optional[VoiceTypeEnum] = None
-    fallback_response: Optional[str] = None
-    agent_temperature: Optional[int] = Field(None, ge=0, le=100)
-    agent_max_tokens: Optional[int] = Field(None, gt=0)
-    tts_settings_json: Optional[TtsSettingsJsonSchema] = Field(
+    system_prompt: str | None = None
+    voice_type: VoiceTypeEnum | None = None
+    fallback_response: str | None = None
+    agent_temperature: int | None = Field(None, ge=0, le=100)
+    agent_max_tokens: int | None = Field(None, gt=0)
+    tts_settings_json: TtsSettingsJsonSchema | None = Field(
         default=None,
         description=(
             "Optional TTS tuning. Example uses normal speed/volume (1.0). "
@@ -266,14 +266,14 @@ class AgentUpdate(BaseModel):
         ),
         json_schema_extra={"example": {"speed": 1.0, "volume": 1.0}},
     )
-    greeting_message: Optional[str] = None
-    is_inbound_agent: Optional[bool] = None
-    is_follow_up_agent: Optional[bool] = None
-    transfer_route_id: Optional[uuid.UUID] = None
+    greeting_message: str | None = None
+    is_inbound_agent: bool | None = None
+    is_follow_up_agent: bool | None = None
+    transfer_route_id: uuid.UUID | None = None
 
     @field_validator("name")
     @classmethod
-    def _normalize_name(cls, value: Optional[str]) -> Optional[str]:
+    def _normalize_name(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = " ".join(value.split())
@@ -283,7 +283,7 @@ class AgentUpdate(BaseModel):
 
     @field_validator("llm_model")
     @classmethod
-    def _strip_llm_model(cls, value: Optional[str]) -> Optional[str]:
+    def _strip_llm_model(cls, value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
@@ -311,24 +311,24 @@ class AgentOut(BaseModel):
 
     id: uuid.UUID
     name: str
-    llm_model: Optional[str] = Field(default=None, serialization_alias="llmModel")
-    tts_model: Optional[TtsModelSchema] = Field(default=None, serialization_alias="ttsModel")
-    stt_model: Optional[SttModelSchema] = Field(default=None, serialization_alias="sttModel")
+    llm_model: str | None = Field(default=None, serialization_alias="llmModel")
+    tts_model: TtsModelSchema | None = Field(default=None, serialization_alias="ttsModel")
+    stt_model: SttModelSchema | None = Field(default=None, serialization_alias="sttModel")
     status: AgentStatusEnum
     created_at: datetime = Field(..., serialization_alias="createdAt")
-    updated_at: Optional[datetime] = Field(default=None, serialization_alias="updatedAt")
+    updated_at: datetime | None = Field(default=None, serialization_alias="updatedAt")
 
-    tenant_id: Optional[uuid.UUID] = None
-    system_prompt: Optional[str] = None
-    language: Optional[str] = None
-    voice_type: Optional[str] = None
-    is_inbound_agent: Optional[bool] = None
-    is_follow_up_agent: Optional[bool] = None
+    tenant_id: uuid.UUID | None = None
+    system_prompt: str | None = None
+    language: str | None = None
+    voice_type: str | None = None
+    is_inbound_agent: bool | None = None
+    is_follow_up_agent: bool | None = None
 
 
 def agent_to_out(agent: Agent) -> AgentOut:
     """Map ORM row to response; omit ``encrypted_elevenlabs_api_key`` and catalog UUIDs."""
-    tts_model: Optional[TtsModelSchema] = None
+    tts_model: TtsModelSchema | None = None
     if agent.tts_provider_slug and agent.tts_voice_external_id and agent.tts_language:
         try:
             tts_model = TtsModelSchema(
@@ -340,7 +340,7 @@ def agent_to_out(agent: Agent) -> AgentOut:
         except ValueError:
             tts_model = None
 
-    stt_model: Optional[SttModelSchema] = None
+    stt_model: SttModelSchema | None = None
     if agent.stt_provider_slug and agent.stt_model_external_id and agent.stt_language_code:
         try:
             stt_model = SttModelSchema(
@@ -382,7 +382,7 @@ class AgentListResponse(BaseModel):
 
 
 class GeminiClient:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: str | None = None):
         self.api_key = api_key or settings.GEMINI_API_KEY
 
     def create_agent(self, name: str) -> str:

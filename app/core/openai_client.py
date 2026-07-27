@@ -20,7 +20,7 @@ from openai import AsyncAzureOpenAI, AsyncOpenAI, AzureOpenAI, OpenAI
 from app.core.config import settings
 
 
-def get_openai_client(api_key: Optional[str] = None) -> Union[OpenAI, AzureOpenAI]:
+def get_openai_client(api_key: str | None = None) -> Union[OpenAI, AzureOpenAI]:
     key = api_key or settings.OPENAI_API_KEY
     if settings.LLM_PROVIDER == "azure_openai":
         return AzureOpenAI(
@@ -31,7 +31,7 @@ def get_openai_client(api_key: Optional[str] = None) -> Union[OpenAI, AzureOpenA
     return OpenAI(api_key=key, base_url=settings.OPENAI_BASE_URL or None)
 
 
-def get_async_openai_client(api_key: Optional[str] = None) -> Union[AsyncOpenAI, AsyncAzureOpenAI]:
+def get_async_openai_client(api_key: str | None = None) -> Union[AsyncOpenAI, AsyncAzureOpenAI]:
     key = api_key or settings.OPENAI_API_KEY
     if settings.LLM_PROVIDER == "azure_openai":
         return AsyncAzureOpenAI(

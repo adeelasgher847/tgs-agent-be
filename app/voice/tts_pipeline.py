@@ -362,7 +362,7 @@ class TtsPipeline:
     def _cache_key(text: str) -> str:
         return text.lower().strip()
 
-    def _get_cached(self, key: str) -> Optional[bytes]:
+    def _get_cached(self, key: str) -> bytes | None:
         audio = self._audio_cache.get(key)
         if audio is not None:
             del self._audio_cache[key]

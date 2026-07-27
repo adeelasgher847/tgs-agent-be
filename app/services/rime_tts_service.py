@@ -41,7 +41,7 @@ class RimeTtsService:
 
     def __init__(self) -> None:
         # Client is created lazily (no event loop at module import time).
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         # Resolve once at construction so a missing key fails before any live call.
         self._api_key = get_rime_api_key()
 

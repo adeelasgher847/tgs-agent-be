@@ -28,9 +28,9 @@ class LiveKitAudioProcessor:
     ) -> None:
         self._output_sample_rate = output_sample_rate
         self._output_channels = output_channels
-        self._ffmpeg_process: Optional[asyncio.subprocess.Process] = None
-        self._ffmpeg_input_rate: Optional[int] = None
-        self._ffmpeg_input_channels: Optional[int] = None
+        self._ffmpeg_process: asyncio.subprocess.Process | None = None
+        self._ffmpeg_input_rate: int | None = None
+        self._ffmpeg_input_channels: int | None = None
         self._first_frame_logged = False
 
     async def process_frame(

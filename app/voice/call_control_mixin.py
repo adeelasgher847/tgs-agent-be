@@ -17,7 +17,10 @@ from app.services.transcript_service import transcript_service
 from app.services.twilio_service import twilio_service
 from app.services.voice_screening_qualification_service import apply_resume_candidate_status_after_voice_screening
 from app.utils.ssml_utils import strip_ssml_tags
-from app.utils.voice_twilio_utils import get_twilio_credentials_for_call
+from app.utils.voice_twilio_utils import (
+    get_twilio_credentials_for_call,
+    twilio_caller_id_for_transfer_dial,
+)
 
 if TYPE_CHECKING:
     pass
@@ -461,8 +464,8 @@ class CallControlMixin:
         role: str,
         message: str,
         message_type: str = "speech",
-        confidence: Optional[float] = None,
-        message_metadata: Optional[dict] = None,
+        confidence: float | None = None,
+        message_metadata: dict | None = None,
         defer_post_write: bool = False,
     ):
         """Add message to transcript (SSML tags are automatically stripped)"""

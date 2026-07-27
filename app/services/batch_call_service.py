@@ -49,7 +49,7 @@ class AllNumbersFlaggedError(Exception):
     same-country replacement exists in the workspace's phone number pool."""
 
 
-def _extract_prompt_vars(prompt: Optional[str]) -> List[str]:
+def _extract_prompt_vars(prompt: str | None) -> List[str]:
     """Return all {variable} names referenced in the agent system prompt."""
     if not prompt:
         return []
@@ -116,9 +116,9 @@ class BatchCallService:
         workspace_id: uuid.UUID,
         agent_id: uuid.UUID,
         csv_bytes: bytes,
-        scheduled_at: Optional[datetime] = None,
+        scheduled_at: datetime | None = None,
         voicemail_action: str = "skip",
-        voicemail_message: Optional[str] = None,
+        voicemail_message: str | None = None,
     ) -> BatchJobOut:
         """
         Validate CSV, upload to GCS, persist BatchJob + BatchCallRecords.
@@ -128,7 +128,7 @@ class BatchCallService:
         if len(csv_bytes) > MAX_CSV_BYTES:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"CSV file exceeds maximum size of 20 MB",
+                detail="CSV file exceeds maximum size of 20 MB",
             )
 
         # ── Validate agent belongs to workspace ──────────────────────────────
@@ -395,7 +395,7 @@ class BatchCallService:
         workspace_id: uuid.UUID,
         agent_id: uuid.UUID,
         batch_job_id: uuid.UUID,
-    ) -> Optional[Tuple[str, str]]:
+    ) -> Tuple[str, str] | None:
         """
         Check the reputation of the agent's bound phone number for this batch and,
         if it's spam-flagged, rotate the batch to a clean number from the
@@ -466,7 +466,7 @@ class BatchCallService:
         )
         same_country = [c for c in candidates if get_country_code(c.phone_number) == country_code]
 
-        replacement: Optional[PhoneNumber] = None
+        replacement: PhoneNumber | None = None
         if area_code:
             same_area = [c for c in same_country if get_area_code(c.phone_number) == area_code]
             if same_area:

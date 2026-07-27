@@ -3,7 +3,7 @@ from typing import Optional
 import uuid
 
 class UserTenantAssociationBase(BaseModel):
-    role_id: Optional[uuid.UUID] = None
+    role_id: uuid.UUID | None = None
 
 class UserTenantAssociationCreate(UserTenantAssociationBase):
     user_id: uuid.UUID

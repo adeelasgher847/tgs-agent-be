@@ -15,7 +15,7 @@ class VoiceAnalyticsService:
         self,
         db: Session,
         tenant_id,
-        agent_id: Optional[str] = None,
+        agent_id: str | None = None,
     ) -> Dict[str, Any]:
         logger.debug(
             "Computing dashboard analytics for tenant %s (agent_id=%s)",

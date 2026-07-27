@@ -64,7 +64,7 @@ class ClickUpService(BaseCRMService):
             # Already decrypted or plain text
             return self.api_key
 
-    def build_container_url(self, container_id: str, space_id: Optional[str] = None) -> str:
+    def build_container_url(self, container_id: str, space_id: str | None = None) -> str:
         """Build URL for ClickUp list"""
         # Use simple format - ClickUp lists can be accessed directly with list_id
         # Format: https://app.clickup.com/{list_id}
@@ -118,7 +118,7 @@ class ClickUpService(BaseCRMService):
             "Content-Type": "application/json",
         }
 
-    def create_container(self, container_name: str, space_id: Optional[str] = None, folder_id: Optional[str] = None) -> Dict[str, str]:
+    def create_container(self, container_name: str, space_id: str | None = None, folder_id: str | None = None) -> Dict[str, str]:
         """
         Create a ClickUp list for scheduled calls.
         Automatically gets default space if space_id not provided (like Monday.com).
@@ -164,7 +164,7 @@ class ClickUpService(BaseCRMService):
                     raise ValueError("Could not get space ID")
                 
             except requests.exceptions.HTTPError as e:
-                error_msg = f"Failed to auto-detect ClickUp space. Please provide space_id in additional_config."
+                error_msg = "Failed to auto-detect ClickUp space. Please provide space_id in additional_config."
                 if e.response.status_code == 401:
                     error_msg += " Authentication failed - check your API key."
                 elif e.response.status_code == 403:
@@ -263,7 +263,7 @@ class ClickUpService(BaseCRMService):
         
         return field_map
 
-    def _get_dropdown_option_uuid(self, container_id: str, field_id: str, option_name: str) -> Optional[str]:
+    def _get_dropdown_option_uuid(self, container_id: str, field_id: str, option_name: str) -> str | None:
         """
         Get the UUID of a dropdown option by its name.
         ClickUp dropdown fields require option UUID, not the option name string.
@@ -319,9 +319,9 @@ class ClickUpService(BaseCRMService):
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
-        batch_id: Optional[str] = None,
-        phone_number_id: Optional[str] = None,
-    ) -> Optional[dict]:
+        batch_id: str | None = None,
+        phone_number_id: str | None = None,
+    ) -> dict | None:
         """Create a scheduled call task in ClickUp list"""
         url = f"{self.API_URL}/list/{container_id}/task"
         
@@ -437,7 +437,7 @@ class ClickUpService(BaseCRMService):
         item_id: str,
         status: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update task status in ClickUp"""
         status_field_id = field_map.get("status")
         if not status_field_id:
@@ -459,7 +459,7 @@ class ClickUpService(BaseCRMService):
         item_id: str,
         call_session_id: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update call_session_id field for a ClickUp task"""
         session_field_id = field_map.get("call_session_id")
         if not session_field_id:
@@ -480,7 +480,7 @@ class ClickUpService(BaseCRMService):
         container_id: str,
         item_id: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update Email Sent field to 'Yes' for a ClickUp task"""
         email_sent_field_id = field_map.get("email_sent")
         if not email_sent_field_id:

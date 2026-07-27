@@ -40,13 +40,13 @@ class TransferRouteCreate(TransferRouteBase):
 class TransferRouteUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    friendly_name: Optional[str] = Field(None, min_length=1, max_length=255)
-    phone_number: Optional[str] = Field(None, min_length=8, max_length=20)
-    transfer_type: Optional[TransferTypeEnum] = None
+    friendly_name: str | None = Field(None, min_length=1, max_length=255)
+    phone_number: str | None = Field(None, min_length=8, max_length=20)
+    transfer_type: TransferTypeEnum | None = None
 
     @field_validator("phone_number")
     @classmethod
-    def normalize_phone(cls, v: Optional[str]) -> Optional[str]:
+    def normalize_phone(cls, v: str | None) -> str | None:
         if v is None:
             return None
         s = v.strip()
@@ -60,7 +60,7 @@ class TransferRouteOut(TransferRouteBase):
     tenant_id: uuid.UUID
     is_deleted: bool = False
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
     class Config:
         from_attributes = True

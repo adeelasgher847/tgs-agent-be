@@ -20,7 +20,7 @@ from app.models.user import User, user_tenant_association
 
 
 def create_export_job(
-    db: Session, workspace_id: uuid.UUID, requested_by_user_id: Optional[uuid.UUID]
+    db: Session, workspace_id: uuid.UUID, requested_by_user_id: uuid.UUID | None
 ) -> DataExportJob:
     job = DataExportJob(
         workspace_id=workspace_id,
@@ -35,7 +35,7 @@ def create_export_job(
 
 def get_export_job(
     db: Session, workspace_id: uuid.UUID, job_id: uuid.UUID
-) -> Optional[DataExportJob]:
+) -> DataExportJob | None:
     return db.execute(
         select(DataExportJob).where(
             DataExportJob.id == job_id,
@@ -44,7 +44,7 @@ def get_export_job(
     ).scalar_one_or_none()
 
 
-def _get_workspace_admin_email(db: Session, workspace_id: uuid.UUID) -> Optional[str]:
+def _get_workspace_admin_email(db: Session, workspace_id: uuid.UUID) -> str | None:
     row = db.execute(
         select(User.email)
         .join(user_tenant_association, User.id == user_tenant_association.c.user_id)
@@ -71,7 +71,7 @@ def run_export_job(db: Session, job: DataExportJob) -> None:
     from app.services.data_export_zip_builder import build_export_zip
     from app.services.email_service import email_service
 
-    zip_path: Optional[str] = None
+    zip_path: str | None = None
     try:
         zip_path = build_export_zip(db, job.workspace_id)
 

@@ -33,8 +33,8 @@ _MAX_SUMMARY_LEN = 400
 
 
 class CallerMemorySession(NamedTuple):
-    start_time: Optional[datetime.datetime]
-    transcript_summary: Optional[str]
+    start_time: datetime.datetime | None
+    transcript_summary: str | None
 
 
 def _sanitize_summary(text: str) -> str:
@@ -95,8 +95,8 @@ def _format_caller_memory_block(sessions: List[CallerMemorySession]) -> str:
 
 async def get_caller_memory_context_block_for_call(
     db: Session,
-    call_session: Optional[CallSession],
-    call_flow: Optional[CallFlow],
+    call_session: CallSession | None,
+    call_flow: CallFlow | None,
 ) -> str:
     """
     Fetch the caller-memory context block for a call's system prompt, once per call.

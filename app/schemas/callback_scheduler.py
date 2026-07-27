@@ -73,7 +73,7 @@ class CallbackConfigResponse(BaseModel):
     smart_callback_enabled: bool
     max_attempts: int
     gap_schedule: List[GapInterval]
-    timezone: Optional[str]
+    timezone: str | None
 
 
 class CallbackStatusResponse(BaseModel):
@@ -85,9 +85,9 @@ class CallbackStatusResponse(BaseModel):
     enabled: bool
     max_attempts: int
     gap_schedule: List[GapInterval]
-    timezone: Optional[str]
+    timezone: str | None
     pending_retries: int = Field(description="Number of pending callbacks for this agent")
-    next_scheduled_at: Optional[datetime] = Field(
+    next_scheduled_at: datetime | None = Field(
         default=None,
         description="UTC timestamp of the earliest pending callback",
     )
@@ -98,5 +98,5 @@ class CallbackHistoryItem(BaseModel):
 
     attempt_number: int
     scheduled_at: datetime
-    executed_at: Optional[datetime]
+    executed_at: datetime | None
     status: str

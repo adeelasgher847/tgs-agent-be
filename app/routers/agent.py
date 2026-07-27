@@ -72,7 +72,7 @@ def get_agent(
 def list_agents(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Records per page"),
-    search: Optional[str] = Query(None, description="Search by name"),
+    search: str | None = Query(None, description="Search by name"),
     user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
@@ -148,7 +148,7 @@ def get_voice_options(
 ):
     return {
         "voice_types": [v.value for v in VoiceTypeEnum],
-        "languages": [l.value for l in LanguageEnum],
+        "languages": [lang.value for lang in LanguageEnum],
     }
 
 
@@ -395,7 +395,7 @@ Remember: OUTPUT MUST BE VALID JSON ONLY.
 
         # Resolve model and API key for gpt-4o-mini from the database
         model_name = "gpt-4o-mini"
-        api_key: Optional[str] = None
+        api_key: str | None = None
         try:
             model = model_service.get_model_by_name(db, model_name)
             if model and model.api_key:

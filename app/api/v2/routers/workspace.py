@@ -300,7 +300,7 @@ class DataExportTriggerOut(BaseModel):
 
 class DataExportStatusOut(BaseModel):
     status: str
-    download_url: Optional[str] = None
+    download_url: str | None = None
 
 
 class AccountDeletionRequest(BaseModel):

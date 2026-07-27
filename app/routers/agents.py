@@ -51,7 +51,7 @@ def _workspace_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
     return principal.current_tenant_id
 
 
-def _actor_user_id(principal: Union[User, ApiKeyPrincipal]) -> Optional[uuid.UUID]:
+def _actor_user_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID | None:
     return getattr(principal, "id", None)
 
 
@@ -69,8 +69,8 @@ def _error_response(
     status_code: int,
     message: str,
     *,
-    error_code: Optional[str] = None,
-    extras: Optional[dict[str, Any]] = None,
+    error_code: str | None = None,
+    extras: dict[str, Any] | None = None,
 ) -> JSONResponse:
     payload = build_api_error_payload(
         status_code,
@@ -138,10 +138,10 @@ def get_agent(
 def list_agents(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
-    limit: Optional[int] = Query(
+    limit: int | None = Query(
         None, ge=1, le=100, include_in_schema=False, description="Deprecated alias for pageSize"
     ),
-    search: Optional[str] = Query(None, description="Search by name"),
+    search: str | None = Query(None, description="Search by name"),
     principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ):
@@ -237,7 +237,7 @@ def get_voice_options(
 ):
     return {
         "voice_types": [v.value for v in VoiceTypeEnum],
-        "languages": [l.value for l in LanguageEnum],
+        "languages": [lang.value for lang in LanguageEnum],
     }
 
 
@@ -480,7 +480,7 @@ Remember: OUTPUT MUST BE VALID JSON ONLY.
 
         # Resolve model and API key for gpt-4o-mini from the database
         model_name = "gpt-4o-mini"
-        api_key: Optional[str] = None
+        api_key: str | None = None
         try:
             model = model_service.get_model_by_name(db, model_name)
             if model and model.api_key:

@@ -11,8 +11,8 @@ import uuid
 
 class BusinessHoursUpsert(BaseModel):
     day_of_week: int = Field(..., ge=0, le=6, description="0=Sunday … 6=Saturday")
-    open_time: Optional[str] = Field(None, description="HH:MM, e.g. '09:00'")
-    close_time: Optional[str] = Field(None, description="HH:MM, e.g. '17:00'")
+    open_time: str | None = Field(None, description="HH:MM, e.g. '09:00'")
+    close_time: str | None = Field(None, description="HH:MM, e.g. '17:00'")
     is_closed: bool = False
     timezone: str = Field(default="UTC", description="IANA timezone, e.g. 'Asia/Karachi'")
     slot_duration_minutes: int = Field(default=30, ge=15, le=120)
@@ -43,8 +43,8 @@ class BusinessHoursOut(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     day_of_week: int = Field(..., description="0=Sunday … 6=Saturday")
-    open_time: Optional[str] = None
-    close_time: Optional[str] = None
+    open_time: str | None = None
+    close_time: str | None = None
     is_closed: bool
     timezone: str
     slot_duration_minutes: int
@@ -62,29 +62,29 @@ class BusinessHoursOut(BaseModel):
 class AppointmentCreate(BaseModel):
     customer_name: str = Field(..., min_length=1, max_length=255)
     customer_phone: str = Field(..., min_length=5, max_length=50)
-    customer_email: Optional[str] = None
-    appointment_reason: Optional[str] = None
+    customer_email: str | None = None
+    appointment_reason: str | None = None
     slot_start: datetime
-    agent_id: Optional[uuid.UUID] = None
-    notes: Optional[str] = None
+    agent_id: uuid.UUID | None = None
+    notes: str | None = None
 
 
 class AppointmentStatusUpdate(BaseModel):
     status: str = Field(..., pattern="^(pending|confirmed|cancelled|completed|no_show)$")
-    cancellation_reason: Optional[str] = None
-    notes: Optional[str] = None
+    cancellation_reason: str | None = None
+    notes: str | None = None
 
 
 class AppointmentReschedule(BaseModel):
     """Move appointment to a new slot. Optional fields update customer details when provided."""
 
     slot_start: datetime
-    duration_minutes: Optional[int] = Field(None, ge=15, le=120)
-    customer_name: Optional[str] = Field(None, min_length=1, max_length=255)
-    customer_phone: Optional[str] = Field(None, min_length=5, max_length=50)
-    customer_email: Optional[str] = None
-    appointment_reason: Optional[str] = None
-    notes: Optional[str] = None
+    duration_minutes: int | None = Field(None, ge=15, le=120)
+    customer_name: str | None = Field(None, min_length=1, max_length=255)
+    customer_phone: str | None = Field(None, min_length=5, max_length=50)
+    customer_email: str | None = None
+    appointment_reason: str | None = None
+    notes: str | None = None
 
 
 class AppointmentOut(BaseModel):
@@ -92,30 +92,30 @@ class AppointmentOut(BaseModel):
 
     id: uuid.UUID
     tenant_id: uuid.UUID
-    agent_id: Optional[uuid.UUID] = None
+    agent_id: uuid.UUID | None = None
     customer_name: str
     customer_phone: str
-    customer_email: Optional[str] = None
-    appointment_reason: Optional[str] = None
+    customer_email: str | None = None
+    appointment_reason: str | None = None
     slot_start: datetime
     slot_end: datetime
     duration_minutes: int
     status: str
     created_via: str
-    notes: Optional[str] = None
-    cancellation_reason: Optional[str] = None
+    notes: str | None = None
+    cancellation_reason: str | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
     # Additive: same instants as slot_start/slot_end, expressed in business-hours timezone
-    business_timezone: Optional[str] = Field(
+    business_timezone: str | None = Field(
         None,
         description="IANA timezone from business hours (for slot_*_local). slot_start/slot_end remain UTC.",
     )
-    slot_start_local: Optional[datetime] = Field(
+    slot_start_local: datetime | None = Field(
         None,
         description="slot_start converted to business_timezone (same instant as slot_start).",
     )
-    slot_end_local: Optional[datetime] = Field(
+    slot_end_local: datetime | None = Field(
         None,
         description="slot_end converted to business_timezone (same instant as slot_end).",
     )
@@ -123,29 +123,29 @@ class AppointmentOut(BaseModel):
 
 class AppointmentListItemOut(BaseModel):
     id: uuid.UUID
-    appointment_reason: Optional[str] = None
-    slot_start_local: Optional[datetime] = None
-    slot_end_local: Optional[datetime] = None
+    appointment_reason: str | None = None
+    slot_start_local: datetime | None = None
+    slot_end_local: datetime | None = None
 
 
 class AppointmentDetailOut(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
-    agent_id: Optional[uuid.UUID] = None
+    agent_id: uuid.UUID | None = None
     customer_name: str
     customer_phone: str
-    customer_email: Optional[str] = None
-    appointment_reason: Optional[str] = None
+    customer_email: str | None = None
+    appointment_reason: str | None = None
     duration_minutes: int
     status: str
     created_via: str
-    notes: Optional[str] = None
-    cancellation_reason: Optional[str] = None
+    notes: str | None = None
+    cancellation_reason: str | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
-    business_timezone: Optional[str] = None
-    slot_start_local: Optional[datetime] = None
-    slot_end_local: Optional[datetime] = None
+    updated_at: datetime | None = None
+    business_timezone: str | None = None
+    slot_start_local: datetime | None = None
+    slot_end_local: datetime | None = None
 
 
 class AppointmentListResponse(BaseModel):
@@ -176,11 +176,11 @@ class AppointmentIntakeSummaryFields(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    reason_for_visit: Optional[str] = None
-    health_symptoms_or_conditions: Optional[str] = None
-    customer_details_mentioned: Optional[str] = None
-    staff_briefing: Optional[str] = None
-    key_points: Optional[str] = None
+    reason_for_visit: str | None = None
+    health_symptoms_or_conditions: str | None = None
+    customer_details_mentioned: str | None = None
+    staff_briefing: str | None = None
+    key_points: str | None = None
 
 
 class AppointmentIntakeSummaryResponse(BaseModel):
@@ -188,11 +188,11 @@ class AppointmentIntakeSummaryResponse(BaseModel):
     call_session_id: uuid.UUID
     customer_name: str
     customer_phone: str
-    customer_email: Optional[str] = None
-    appointment_reason: Optional[str] = None
+    customer_email: str | None = None
+    appointment_reason: str | None = None
     duration_minutes: int
     status: str
-    reviewed_at: Optional[datetime] = None
+    reviewed_at: datetime | None = None
     generated_at: datetime
     model_used: str
     transcript_message_count: int

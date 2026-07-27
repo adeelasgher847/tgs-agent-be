@@ -27,18 +27,18 @@ router = APIRouter()
 # ── shared filter params (re-used across several endpoints) ───────────────────
 
 def _common_filters(
-    agent_id: Optional[uuid.UUID] = Query(None, description="Filter by agent ID"),
-    flow_id: Optional[uuid.UUID] = Query(None, description="Filter by call flow ID"),
-    direction: Optional[Literal["inbound", "outbound"]] = Query(
+    agent_id: uuid.UUID | None = Query(None, description="Filter by agent ID"),
+    flow_id: uuid.UUID | None = Query(None, description="Filter by call flow ID"),
+    direction: Literal["inbound", "outbound"] | None = Query(
         None, description="Filter by call direction"
     ),
-    date_from: Optional[datetime] = Query(
+    date_from: datetime | None = Query(
         None, description="ISO 8601 UTC lower bound for call start time"
     ),
-    date_to: Optional[datetime] = Query(
+    date_to: datetime | None = Query(
         None, description="ISO 8601 UTC upper bound for call start time"
     ),
-    status: Optional[str] = Query(
+    status: str | None = Query(
         None, description="Filter by call status (completed, failed, no_answer, …)"
     ),
 ):
@@ -119,15 +119,15 @@ async def get_call_metrics(
     summary="Daily call counts for charts",
 )
 async def get_call_time_series(
-    date_from: Optional[datetime] = Query(
+    date_from: datetime | None = Query(
         None, description="ISO 8601 UTC lower bound"
     ),
-    date_to: Optional[datetime] = Query(
+    date_to: datetime | None = Query(
         None, description="ISO 8601 UTC upper bound"
     ),
-    agent_id: Optional[uuid.UUID] = Query(None),
-    flow_id: Optional[uuid.UUID] = Query(None),
-    direction: Optional[Literal["inbound", "outbound"]] = Query(None),
+    agent_id: uuid.UUID | None = Query(None),
+    flow_id: uuid.UUID | None = Query(None),
+    direction: Literal["inbound", "outbound"] | None = Query(None),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
@@ -194,8 +194,8 @@ batch_router = APIRouter()
     summary="Batch call campaign metrics",
 )
 async def get_batch_call_metrics(
-    date_from: Optional[datetime] = Query(None, description="ISO 8601 UTC lower bound"),
-    date_to: Optional[datetime] = Query(None, description="ISO 8601 UTC upper bound"),
+    date_from: datetime | None = Query(None, description="ISO 8601 UTC lower bound"),
+    date_to: datetime | None = Query(None, description="ISO 8601 UTC upper bound"),
     user: User = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):

@@ -16,10 +16,10 @@ class HubSpotAuthorizeResponse(BaseModel):
 
 class HubSpotContactOut(BaseModel):
     id: str
-    name: Optional[str] = None
-    email: Optional[str] = None
-    company: Optional[str] = None
-    last_interaction_date: Optional[str] = None
+    name: str | None = None
+    email: str | None = None
+    company: str | None = None
+    last_interaction_date: str | None = None
 
 
 class HubSpotDisconnectResponse(BaseModel):
@@ -67,14 +67,14 @@ class HubSpotSettingsUpdateRequest(BaseModel):
 
 class HubSpotIntegrationStatusOut(BaseModel):
     connected: bool
-    connected_at: Optional[datetime] = None
+    connected_at: datetime | None = None
     contact_lookup_enabled: bool = True
     write_back_enabled: bool = True
     field_mappings: List[HubSpotFieldMapping] = []
 
 
 class HubSpotSyncStatusOut(BaseModel):
-    last_lookup_at: Optional[str] = None
-    last_write_back_at: Optional[str] = None
-    last_write_back_status: Optional[str] = None
+    last_lookup_at: str | None = None
+    last_write_back_at: str | None = None
+    last_write_back_status: str | None = None
     error_count_24h: int = 0

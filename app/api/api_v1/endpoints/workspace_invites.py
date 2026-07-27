@@ -76,7 +76,7 @@ def invite_team_member(
     if is_api_key_principal(admin):
         invited_by_id = db.query(user_tenant_association.c.user_id).filter(
             user_tenant_association.c.tenant_id == tenant_id,
-            user_tenant_association.c.is_creator == True
+            user_tenant_association.c.is_creator
         ).scalar()
         if not invited_by_id:
             first_user = db.query(user_tenant_association.c.user_id).filter(

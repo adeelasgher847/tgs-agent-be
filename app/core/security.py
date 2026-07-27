@@ -9,7 +9,7 @@ import secrets
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
     """Create JWT access token with expiration"""
     to_encode = data.copy()
     if expires_delta:
@@ -22,7 +22,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
-def verify_token(token: str) -> Optional[dict]:
+def verify_token(token: str) -> dict | None:
     """Verify and decode JWT token"""
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
@@ -43,7 +43,7 @@ def is_token_expired(token: str) -> bool:
     exp_time = datetime.fromtimestamp(exp_timestamp, tz=timezone.utc)
     return datetime.now(timezone.utc) > exp_time
 
-def get_token_info(token: str) -> Optional[dict]:
+def get_token_info(token: str) -> dict | None:
     """Get comprehensive token information"""
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
@@ -81,7 +81,7 @@ def get_password_hash(password: str) -> str:
     """Hash password"""
     return pwd_context.hash(password)
 
-def create_user_token(user_id: uuid.UUID, email: str, tenant_id: Optional[uuid.UUID] = None, role: Optional[str] = None):
+def create_user_token(user_id: uuid.UUID, email: str, tenant_id: uuid.UUID | None = None, role: str | None = None):
     """
     Create JWT token for user with 15-minute expiration
     

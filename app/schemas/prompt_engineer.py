@@ -11,15 +11,15 @@ class PromptEngineerRequest(BaseModel):
         max_length=10_000,
         description="User's natural-language requirement for the agent (any language).",
     )
-    language_hint: Optional[str] = Field(
+    language_hint: str | None = Field(
         None,
         description="Optional language hint such as 'auto', 'en', 'ur', etc. If omitted, language is auto-detected.",
     )
-    tone: Optional[str] = Field(
+    tone: str | None = Field(
         None,
         description="Desired tone for the final calling agent, e.g. 'friendly', 'formal', 'salesy'.",
     )
-    complexity_level: Optional[str] = Field(
+    complexity_level: str | None = Field(
         None,
         description="Audience sophistication, e.g. 'beginner', 'intermediate', 'expert'.",
     )
@@ -28,7 +28,7 @@ class PromptEngineerRequest(BaseModel):
 class PromptEngineerMeta(BaseModel):
     """Auxiliary metadata returned by the prompt engineer model."""
 
-    reasoning_notes: Optional[str] = Field(
+    reasoning_notes: str | None = Field(
         None,
         description="Short internal explanation of assumptions and decisions made while designing the prompt.",
     )
@@ -45,7 +45,7 @@ class PromptEngineerResult(BaseModel):
         default_factory=list,
         description="Follow-up questions when requirement is incomplete. Empty when status == 'ready'.",
     )
-    final_prompt: Optional[str] = Field(
+    final_prompt: str | None = Field(
         None,
         description="The production-ready system prompt for the agent. Null when status == 'need_clarification'.",
     )

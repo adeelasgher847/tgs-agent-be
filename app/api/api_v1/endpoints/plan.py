@@ -16,7 +16,7 @@ def get_plans(
     current_user = Depends(get_current_user_jwt)
 ):
     """Get all available plans (authenticated)"""
-    plans = db.query(Plan).filter(Plan.is_active == True).all()
+    plans = db.query(Plan).filter(Plan.is_active).all()
     return create_success_response(plans, "Plans retrieved successfully")
 
 @router.get("/public", response_model=SuccessResponse[List[PlanOut]])
@@ -24,7 +24,7 @@ def get_plans_public(
     db: Session = Depends(get_db)
 ):
     """Get all available plans (public - no authentication required)"""
-    plans = db.query(Plan).filter(Plan.is_active == True).all()
+    plans = db.query(Plan).filter(Plan.is_active).all()
     return create_success_response(plans, "Plans retrieved successfully")
 
 @router.get("/popular", response_model=SuccessResponse[List[PlanOut]])
@@ -34,8 +34,8 @@ def get_popular_plans(
 ):
     """Get popular plans"""
     plans = db.query(Plan).filter(
-        Plan.is_active == True,
-        Plan.is_popular == True
+        Plan.is_active,
+        Plan.is_popular
     ).all()
     return create_success_response(plans, "Popular plans retrieved successfully")
 
@@ -61,7 +61,7 @@ def get_plan_by_name(
     current_user = Depends(get_current_user_jwt)
 ):
     """Get a specific plan by name (e.g., 'free', 'starter', 'pro')"""
-    plan = db.query(Plan).filter(Plan.name == plan_name, Plan.is_active == True).first()
+    plan = db.query(Plan).filter(Plan.name == plan_name, Plan.is_active).first()
     if not plan:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -75,7 +75,7 @@ def get_plan_by_name_public(
     db: Session = Depends(get_db)
 ):
     """Get a specific plan by name (public - no authentication required)"""
-    plan = db.query(Plan).filter(Plan.name == plan_name, Plan.is_active == True).first()
+    plan = db.query(Plan).filter(Plan.name == plan_name, Plan.is_active).first()
     if not plan:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

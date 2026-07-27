@@ -25,8 +25,8 @@ class FlowPipelineMixin:
     # Class-level defaults: some tests build the handler via ``object.__new__``
     # and never run ``__init__``/``_flow_init`` — these ensure every flow hook
     # can safely check ``self._flow_executor`` without an AttributeError.
-    _flow_executor: Optional[FlowExecutor] = None
-    _flow_state: Optional[PipelineState] = None
+    _flow_executor: FlowExecutor | None = None
+    _flow_state: PipelineState | None = None
 
     def _flow_init(self) -> None:
         """Build the FlowExecutor + PipelineState from the loaded call_flow.
@@ -35,8 +35,8 @@ class FlowPipelineMixin:
         as ``None`` when there is no compiled flow — every other flow hook
         checks that attribute first and is a no-op if it is unset.
         """
-        self._flow_executor: Optional[FlowExecutor] = None
-        self._flow_state: Optional[PipelineState] = None
+        self._flow_executor: FlowExecutor | None = None
+        self._flow_state: PipelineState | None = None
 
         compiled = (
             getattr(self.call_flow, "flow_data_compiled", None)
@@ -78,7 +78,7 @@ class FlowPipelineMixin:
         await self._flow_run_chain(transcript=transcript)
         return True
 
-    async def _flow_run_chain(self, transcript: Optional[str]) -> None:
+    async def _flow_run_chain(self, transcript: str | None) -> None:
         """Advance nodes until hitting one that needs caller input or ends the call.
 
         Only the first transition in the chain is evaluated against

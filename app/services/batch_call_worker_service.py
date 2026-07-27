@@ -120,7 +120,7 @@ class BatchCallWorkerService:
         record: BatchCallRecord,
         workspace_id: uuid.UUID,
         agent_id: uuid.UUID,
-        agent_system_prompt: Optional[str],
+        agent_system_prompt: str | None,
     ) -> None:
         """Dispatch a single batch call record via the existing `initiate_call` path."""
         if not settings.N8N_WEBHOOK_SECRET:
@@ -137,7 +137,7 @@ class BatchCallWorkerService:
         # If the outbound number was rotated (spam-flagged bound number), dial
         # out using the rotated number's phone_number_id instead of the agent's
         # default bound number.
-        rotated_phone_number_id: Optional[str] = None
+        rotated_phone_number_id: str | None = None
         if job and job.actual_from_number:
             from app.models.phone_number import PhoneNumber
 
@@ -170,7 +170,7 @@ class BatchCallWorkerService:
 
         # Build prompt with variable substitution (validated at upload time)
         variables: dict = record.variables or {}
-        prompt_override: Optional[str] = None
+        prompt_override: str | None = None
         if agent_system_prompt:
             if variables:
                 try:
@@ -232,7 +232,7 @@ class BatchCallWorkerService:
             return
 
         # Success: SuccessResponse — extract call_id
-        call_id: Optional[uuid.UUID] = None
+        call_id: uuid.UUID | None = None
         try:
             data = result.data
             if hasattr(data, "callId"):
@@ -278,7 +278,7 @@ class BatchCallWorkerService:
     async def _mark_active_with_call(
         self,
         record: BatchCallRecord,
-        call_id: Optional[uuid.UUID],
+        call_id: uuid.UUID | None,
     ) -> None:
         """Record is active; Twilio call was initiated successfully."""
         now = datetime.now(timezone.utc)
