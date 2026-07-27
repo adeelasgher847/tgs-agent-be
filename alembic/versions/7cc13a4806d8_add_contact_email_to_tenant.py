@@ -5,12 +5,10 @@ Revises: fdff731d11a7
 Create Date: 2026-06-24 18:52:52.448789
 
 """
-import pgvector
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '7cc13a4806d8'

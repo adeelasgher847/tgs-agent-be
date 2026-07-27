@@ -25,7 +25,6 @@ from app.schemas.ab_testing import (
 )
 from app.schemas.call_flow import (
     CallFlowCreate,
-    CallFlowListResponse,
     CallFlowListItem,
     CallFlowOut,
     AgentRef,

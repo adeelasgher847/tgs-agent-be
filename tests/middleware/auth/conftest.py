@@ -4,6 +4,7 @@ Shared fixtures for API key middleware tests.
 Uses the same SQLite in-memory DB setup as the root conftest but creates
 isolated tables per test function so tests don't share state.
 """
+# ruff: noqa: E402
 from __future__ import annotations
 
 import hashlib

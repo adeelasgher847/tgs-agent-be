@@ -477,19 +477,6 @@ class AgentService:
         """
         repo = self._repo(db)
 
-        # 🚨 CHECK AGENT LIMIT (MAX 5 AGENTS PER TENANT)
-        if repo.count_active_by_workspace(tenant_id) >= 5:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Agent limit reached. You can only create up to 5 agents per tenant."
-            )
-
-        if repo.find_by_name_in_workspace(tenant_id, agent_in.name):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Agent name must be unique within the tenant."
-            )
-
         ticket_data = self._ticket_payload_from_create(db, agent_in)
 
         # Sanitize string fields (exclude ticket-only nested objects)
@@ -639,21 +626,8 @@ class AgentService:
                 db, tenant_id, update_dict.get("transfer_route_id")
             )
 
-        # If name is being updated, check for duplicates
         if "name" in update_dict and update_dict["name"]:
-            new_name = update_dict["name"].strip()
-            existing = db.query(Agent).filter(
-                Agent.tenant_id == tenant_id,
-                func.lower(Agent.name) == new_name.lower(),
-                Agent.id != agent_id,
-                ~Agent.is_deleted
-            ).first()
-            if existing:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Agent name must be unique within the tenant."
-                )
-            update_dict["name"] = new_name
+            update_dict["name"] = update_dict["name"].strip()
 
         # Sanitize string fields
         for field in ['system_prompt', 'fallback_response', 'greeting_message']:

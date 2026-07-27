@@ -78,7 +78,6 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "20260602_schema_v2"
 down_revision: Union[str, Sequence[str], None] = "20260602_phonenumber_provider"

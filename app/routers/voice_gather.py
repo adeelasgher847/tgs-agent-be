@@ -28,12 +28,11 @@ from urllib.parse import quote
 import hashlib
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+# Import TTS audio cache from tts_audio router for pre-generation optimization
+from app.routers.tts_audio import audio_cache
 
 router = APIRouter()
 model_service = ModelService()
-
-# Import TTS audio cache from tts_audio router for pre-generation optimization
-from app.routers.tts_audio import audio_cache
 
 
 def generate_cache_key(text: str, language: str, voice_type: str, use_chirp3_hd: bool = False, format: str = "mp3") -> str:

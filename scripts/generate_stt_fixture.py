@@ -5,6 +5,7 @@ Generate tests/integration/fixtures/hello_world_16k_3s.raw (LINEAR16 16kHz, 3s).
 Uses Google Cloud Text-to-Speech with the same credentials as STT (ADC / .env JSON).
 Requires: google-cloud-texttospeech, GOOGLE_APPLICATION_CREDENTIALS in .env
 """
+# ruff: noqa: E402
 from __future__ import annotations
 
 import os

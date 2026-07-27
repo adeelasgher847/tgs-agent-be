@@ -26,7 +26,6 @@ from app.services.email_service import email_service
 from app.utils.response import create_success_response
 from datetime import datetime, timezone
 from app.services.role_service import get_user_role_in_tenant
-import secrets
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport.requests import Request as GoogleRequest
 from app.core.config import settings
