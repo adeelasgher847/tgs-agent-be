@@ -139,10 +139,12 @@ class TestAuthSensitive:
         mock_r.pipeline.return_value = pipe_cls()
         mock_r.zremrangebyscore = AsyncMock()
 
-        with patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r):
-            with patch.object(settings, "LOGIN_RATE_LIMIT", 10):
-                client = TestClient(app, raise_server_exceptions=False)
-                resp = client.post("/api/v1/users/register")
+        with (
+            patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r),
+            patch.object(settings, "LOGIN_RATE_LIMIT", 10),
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post("/api/v1/users/register")
 
         assert resp.status_code == 429
         assert resp.json()["error"]["code"] == "rate_limit_exceeded"
@@ -267,10 +269,12 @@ class TestRateLimitDisabled:
     def test_disabled_bypasses_redis(self):
         app = _make_app()
         mock_r = MagicMock()
-        with patch.object(settings, "RATE_LIMIT_ENABLED", False):
-            with patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r):
-                client = TestClient(app, raise_server_exceptions=False)
-                resp = client.get("/api/v1/protected")
+        with (
+            patch.object(settings, "RATE_LIMIT_ENABLED", False),
+            patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r),
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.get("/api/v1/protected")
         assert resp.status_code == 200
         mock_r.pipeline.assert_not_called()
 

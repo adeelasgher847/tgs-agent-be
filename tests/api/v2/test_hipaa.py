@@ -468,19 +468,21 @@ class TestVoiceAnalysisHipaaRedaction:
             redact_calls_hipaa.append(hipaa_enabled)
             return text  # pass through so analysis_data can be assembled
 
-        with patch.object(vas_module.transcript_service, "get_messages_by_session", return_value=[msg]):
-            with patch("app.services.voice_analysis_service.redact_phi_if_hipaa", side_effect=tracking_redact):
-                with patch.object(vas_module.ModelService, "get_model_by_name", return_value=mock_model):
-                    # Patch the OpenAIService that generate_analysis_text creates internally
-                    with patch("app.services.openai_service.OpenAIService.generate_text", return_value=analysis_text):
-                        try:
-                            VoiceAnalysisService().analyze_call_transcript(
-                                db=db, call_session=session, user_id=USER_ID
-                            )
-                        except Exception as e:
-                            # Only redaction calls are asserted below; downstream
-                            # assembly against the stub db is allowed to fail.
-                            logger.debug("analyze_call_transcript failed in test stub: %s", e)
+        with (
+            patch.object(vas_module.transcript_service, "get_messages_by_session", return_value=[msg]),
+            patch("app.services.voice_analysis_service.redact_phi_if_hipaa", side_effect=tracking_redact),
+            patch.object(vas_module.ModelService, "get_model_by_name", return_value=mock_model),
+            # Patch the OpenAIService that generate_analysis_text creates internally
+            patch("app.services.openai_service.OpenAIService.generate_text", return_value=analysis_text),
+        ):
+            try:
+                VoiceAnalysisService().analyze_call_transcript(
+                    db=db, call_session=session, user_id=USER_ID
+                )
+            except Exception as e:
+                # Only redaction calls are asserted below; downstream
+                # assembly against the stub db is allowed to fail.
+                logger.debug("analyze_call_transcript failed in test stub: %s", e)
 
         # At least the summary, sentiment, and caller_name fields must have been
         # passed to redact_phi_if_hipaa with hipaa_enabled=True
@@ -799,9 +801,13 @@ class TestKmsKeyUpdate:
         db, tenant = self._make_db()
         client = _build_hipaa_app(db)
 
-        with patch("app.api.v2.routers.hipaa._validate_kms_key"):
-            with patch("app.api.v2.routers.hipaa.s3_recording_service.set_bucket_default_kms_key") as mock_set_bucket:
-                resp = client.put("/workspace/kms-key", json={"kms_key_name": self._VALID_KEY})
+        with (
+            patch("app.api.v2.routers.hipaa._validate_kms_key"),
+            patch(
+                "app.api.v2.routers.hipaa.s3_recording_service.set_bucket_default_kms_key"
+            ) as mock_set_bucket,
+        ):
+            resp = client.put("/workspace/kms-key", json={"kms_key_name": self._VALID_KEY})
 
         assert resp.status_code == 200
         assert resp.json()["data"]["kms_key_name"] == self._VALID_KEY
@@ -815,12 +821,14 @@ class TestKmsKeyUpdate:
         db, tenant = self._make_db()
         client = _build_hipaa_app(db)
 
-        with patch("app.api.v2.routers.hipaa._validate_kms_key"):
-            with patch(
+        with (
+            patch("app.api.v2.routers.hipaa._validate_kms_key"),
+            patch(
                 "app.api.v2.routers.hipaa.s3_recording_service.set_bucket_default_kms_key",
                 side_effect=RuntimeError("S3 unavailable"),
-            ):
-                resp = client.put("/workspace/kms-key", json={"kms_key_name": self._VALID_KEY})
+            ),
+        ):
+            resp = client.put("/workspace/kms-key", json={"kms_key_name": self._VALID_KEY})
 
         # Key is still persisted even if S3 bucket patch fails
         assert resp.status_code == 200
@@ -918,10 +926,17 @@ class TestRecordingHipaaRbac:
     def test_blocked_role_on_hipaa_flow_returns_403(self, role_name: str):
         client = self._setup_recording_app(hipaa_compliance=True, role_name=role_name)
 
-        with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
-            with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
-                with patch("app.services.s3_recording_service.generate_signed_url"):
-                    resp = client.get(f"/{CALL_ID}")
+        with (
+            patch(
+                "app.routers.recordings.role_service.get_membership_role_name",
+                return_value=role_name,
+            ),
+            patch(
+                "app.routers.recordings.get_recording_enabled_for_call", return_value=True
+            ),
+            patch("app.services.s3_recording_service.generate_signed_url"),
+        ):
+            resp = client.get(f"/{CALL_ID}")
 
         assert resp.status_code == 403
         # App uses {"error": {"message": ...}} format via build_api_error_payload
@@ -932,11 +947,21 @@ class TestRecordingHipaaRbac:
     def test_allowed_role_on_hipaa_flow_returns_200(self, role_name: str):
         client = self._setup_recording_app(hipaa_compliance=True, role_name=role_name)
 
-        with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
-            with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
-                with patch("app.services.s3_recording_service.generate_signed_url", return_value="https://signed.url"):
-                    with patch("app.services.s3_recording_service.get_object_size", return_value=1024):
-                        resp = client.get(f"/{CALL_ID}")
+        with (
+            patch(
+                "app.routers.recordings.role_service.get_membership_role_name",
+                return_value=role_name,
+            ),
+            patch(
+                "app.routers.recordings.get_recording_enabled_for_call", return_value=True
+            ),
+            patch(
+                "app.services.s3_recording_service.generate_signed_url",
+                return_value="https://signed.url",
+            ),
+            patch("app.services.s3_recording_service.get_object_size", return_value=1024),
+        ):
+            resp = client.get(f"/{CALL_ID}")
 
         assert resp.status_code == 200
 
@@ -945,10 +970,20 @@ class TestRecordingHipaaRbac:
         """HIPAA RBAC gate only applies when hipaa_compliance=True."""
         client = self._setup_recording_app(hipaa_compliance=False, role_name=role_name)
 
-        with patch("app.routers.recordings.role_service.get_membership_role_name", return_value=role_name):
-            with patch("app.routers.recordings.get_recording_enabled_for_call", return_value=True):
-                with patch("app.services.s3_recording_service.generate_signed_url", return_value="https://signed.url"):
-                    with patch("app.services.s3_recording_service.get_object_size", return_value=512):
-                        resp = client.get(f"/{CALL_ID}")
+        with (
+            patch(
+                "app.routers.recordings.role_service.get_membership_role_name",
+                return_value=role_name,
+            ),
+            patch(
+                "app.routers.recordings.get_recording_enabled_for_call", return_value=True
+            ),
+            patch(
+                "app.services.s3_recording_service.generate_signed_url",
+                return_value="https://signed.url",
+            ),
+            patch("app.services.s3_recording_service.get_object_size", return_value=512),
+        ):
+            resp = client.get(f"/{CALL_ID}")
 
         assert resp.status_code == 200

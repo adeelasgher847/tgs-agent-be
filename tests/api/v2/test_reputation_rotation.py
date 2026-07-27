@@ -191,7 +191,7 @@ class TestRotateNumberIfFlagged:
         bound = _make_phone_number(db, tenant_id, agent_id, "+61412345678")  # AU, area 412
         _make_reputation(db, bound.id, spam_flagged=True, score=10)
 
-        same_area = _make_extra_number(db, tenant_id, "+61412999888")  # same area 412
+        _make_extra_number(db, tenant_id, "+61412999888")  # same area 412
         _make_extra_number(db, tenant_id, "+61355566677")  # same country, area 355
 
         job = _make_batch_job(db, tenant_id, agent_id)
@@ -275,7 +275,7 @@ class TestRotateNumberIfFlagged:
 
         tenant_id = _make_tenant(db)
         agent_id = _make_agent(db, tenant_id)
-        bound = _make_phone_number(db, tenant_id, agent_id, "+61412345678")
+        _make_phone_number(db, tenant_id, agent_id, "+61412345678")
         job = _make_batch_job(db, tenant_id, agent_id)
 
         async def _fake_check(db_, phone_number_obj):
@@ -292,7 +292,7 @@ class TestRotateNumberIfFlagged:
             db_.commit()
             return {"spam_flagged": True, "reputation_score": 20, "flagged_reason": "low score"}
 
-        clean = _make_extra_number(db, tenant_id, "+61412999888")
+        _make_extra_number(db, tenant_id, "+61412999888")
 
         svc = BatchCallService(db)
         with patch(

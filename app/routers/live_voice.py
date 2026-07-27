@@ -396,8 +396,7 @@ async def handle_speech_text(session_id: str, message_data: dict, db: Session):
             raise ValueError("Session not found")
         
         session_data = manager.session_data[session_id]
-        agent_data = session_data["agent_data"]
-        
+
         user_text = message_data.get("text", "")
         
         if not user_text:

@@ -157,13 +157,15 @@ class TestGetCallerMemoryContextBlockForCall:
             time.sleep(0.05)
             return []
 
-        with patch.object(caller_memory_service, "_fetch_recent_summaries", side_effect=_slow_fetch):
-            with patch.object(
-                caller_memory_service, "_DEFAULT_FETCH_TIMEOUT_SEC", 0.01
-            ):
-                block = await caller_memory_service.get_caller_memory_context_block_for_call(
-                    db, call_session, _call_flow()
-                )
+        with (
+            patch.object(
+                caller_memory_service, "_fetch_recent_summaries", side_effect=_slow_fetch
+            ),
+            patch.object(caller_memory_service, "_DEFAULT_FETCH_TIMEOUT_SEC", 0.01),
+        ):
+            block = await caller_memory_service.get_caller_memory_context_block_for_call(
+                db, call_session, _call_flow()
+            )
 
         assert block == ""
         # Still caches the fail-open empty block so subsequent turns don't retry.

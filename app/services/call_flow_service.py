@@ -285,12 +285,6 @@ class CallFlowService:
     ) -> dict:
         repo = CallFlowRepository(db)
         rows, total = repo.find_by_workspace(tenant_id, page=page, limit=limit)
-        response = CallFlowListResponse(
-            data=[],
-            total=total,
-            page=page,
-            page_size=limit,
-        )
         return {
             "data": [self._flow_to_list_item(f) for f in rows],
             "total": total,

@@ -557,8 +557,12 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
         """
         try:
             speech_lower = speech_text.lower()
-            agent_name = agent.name if agent and agent.name else "AI Assistant"
-            
+            # KNOWN GAP: computed for response personalization that was never
+            # implemented — none of the fallback strings below use it, and the
+            # except-block's two branches are identical. Not removing — looks
+            # like an incomplete feature, not dead code.
+            agent_name = agent.name if agent and agent.name else "AI Assistant"  # noqa: F841
+
             if "hello" in speech_lower or "hi" in speech_lower:
                 response = "How can I help you today?"
             elif "help" in speech_lower:

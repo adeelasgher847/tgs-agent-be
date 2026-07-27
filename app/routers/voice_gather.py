@@ -241,7 +241,7 @@ async def gather_greeting_webhook(
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
         
         # Gather speech input with optimized settings for low latency
-        gather = response.gather(
+        response.gather(
             input='speech',
             action=callback_url,
             method='POST',

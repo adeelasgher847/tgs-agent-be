@@ -134,11 +134,13 @@ class TestCreateRoom:
             return_value=SimpleNamespace(sid="sid1", name=VALID_ROOM_NAME)
         )
 
-        with patch(_CREDS_PATCH, return_value=_CREDS):
-            with patch("app.core.config.settings") as mock_settings:
-                mock_settings.LIVEKIT_MAX_PARTICIPANTS = 2
-                mock_settings.LIVEKIT_ROOM_EMPTY_TIMEOUT = 30
-                await svc.create_room(VALID_CALL_ID, VALID_AGENT_ID)
+        with (
+            patch(_CREDS_PATCH, return_value=_CREDS),
+            patch("app.core.config.settings") as mock_settings,
+        ):
+            mock_settings.LIVEKIT_MAX_PARTICIPANTS = 2
+            mock_settings.LIVEKIT_ROOM_EMPTY_TIMEOUT = 30
+            await svc.create_room(VALID_CALL_ID, VALID_AGENT_ID)
 
         call_kwargs = _api_mod.CreateRoomRequest.call_args.kwargs
         assert call_kwargs["max_participants"] == 2, (
@@ -200,11 +202,13 @@ class TestCreateRoom:
             return_value=SimpleNamespace(sid="sid4", name=VALID_ROOM_NAME)
         )
 
-        with patch(_CREDS_PATCH, return_value=_CREDS):
-            with patch("app.core.config.settings") as mock_settings:
-                mock_settings.LIVEKIT_MAX_PARTICIPANTS = 2
-                mock_settings.LIVEKIT_ROOM_EMPTY_TIMEOUT = 30
-                await svc.create_room(VALID_CALL_ID, VALID_AGENT_ID)
+        with (
+            patch(_CREDS_PATCH, return_value=_CREDS),
+            patch("app.core.config.settings") as mock_settings,
+        ):
+            mock_settings.LIVEKIT_MAX_PARTICIPANTS = 2
+            mock_settings.LIVEKIT_ROOM_EMPTY_TIMEOUT = 30
+            await svc.create_room(VALID_CALL_ID, VALID_AGENT_ID)
 
         call_kwargs = _api_mod.CreateRoomRequest.call_args.kwargs
         assert call_kwargs["empty_timeout"] == 30
@@ -298,10 +302,12 @@ class TestTokenGeneration:
         svc = _fresh_service()
         mock_tok = self._setup_access_token()
 
-        with patch(_CREDS_PATCH, return_value=_CREDS):
-            with patch("app.core.config.settings") as mock_settings:
-                mock_settings.LIVEKIT_TOKEN_TTL = 3600
-                svc.generate_agent_token(VALID_ROOM_NAME)
+        with (
+            patch(_CREDS_PATCH, return_value=_CREDS),
+            patch("app.core.config.settings") as mock_settings,
+        ):
+            mock_settings.LIVEKIT_TOKEN_TTL = 3600
+            svc.generate_agent_token(VALID_ROOM_NAME)
 
         from datetime import timedelta
         mock_tok.with_ttl.assert_called_with(timedelta(seconds=3600))
@@ -311,10 +317,12 @@ class TestTokenGeneration:
         svc = _fresh_service()
         mock_tok = self._setup_access_token()
 
-        with patch(_CREDS_PATCH, return_value=_CREDS):
-            with patch("app.core.config.settings") as mock_settings:
-                mock_settings.LIVEKIT_TOKEN_TTL = 3600
-                svc.generate_agent_token(VALID_ROOM_NAME)
+        with (
+            patch(_CREDS_PATCH, return_value=_CREDS),
+            patch("app.core.config.settings") as mock_settings,
+        ):
+            mock_settings.LIVEKIT_TOKEN_TTL = 3600
+            svc.generate_agent_token(VALID_ROOM_NAME)
 
         from datetime import timedelta
         call_arg = mock_tok.with_ttl.call_args[0][0]
@@ -324,15 +332,19 @@ class TestTokenGeneration:
 
     def test_generate_token_rejects_invalid_room_name(self):
         svc = _fresh_service()
-        with patch(_CREDS_PATCH, return_value=_CREDS):
-            with pytest.raises(ValueError, match="Invalid room name"):
-                svc.generate_agent_token("bad-room-name")
+        with (
+            patch(_CREDS_PATCH, return_value=_CREDS),
+            pytest.raises(ValueError, match="Invalid room name"),
+        ):
+            svc.generate_agent_token("bad-room-name")
 
     def test_generate_caller_token_rejects_invalid_room_name(self):
         svc = _fresh_service()
-        with patch(_CREDS_PATCH, return_value=_CREDS):
-            with pytest.raises(ValueError, match="Invalid room name"):
-                svc.generate_caller_token("not_a_room_uuid")
+        with (
+            patch(_CREDS_PATCH, return_value=_CREDS),
+            pytest.raises(ValueError, match="Invalid room name"),
+        ):
+            svc.generate_caller_token("not_a_room_uuid")
 
 
 # ---------------------------------------------------------------------------
@@ -358,9 +370,11 @@ class TestListParticipants:
     @pytest.mark.asyncio
     async def test_rejects_invalid_room_name(self):
         svc = _fresh_service()
-        with patch(_CREDS_PATCH, return_value=_CREDS):
-            with pytest.raises(ValueError, match="Invalid room name"):
-                await svc.list_participants("bad-name")
+        with (
+            patch(_CREDS_PATCH, return_value=_CREDS),
+            pytest.raises(ValueError, match="Invalid room name"),
+        ):
+            await svc.list_participants("bad-name")
 
     @pytest.mark.asyncio
     async def test_empty_room_returns_empty_list(self):

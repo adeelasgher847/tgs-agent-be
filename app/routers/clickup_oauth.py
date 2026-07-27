@@ -66,8 +66,11 @@ async def clickup_authorize(
     redirect_uri = additional_config.get("redirect_uri") or f"{settings.WEBHOOK_BASE_URL}/api/v1/auth/clickup/callback"
     
     # Generate state (optional, for security)
-    state = str(uuid.uuid4())
-    
+    # KNOWN GAP: never embedded in auth_url below or persisted for later
+    # verification, so the CSRF `state` check is effectively a no-op. Not
+    # removing — this is a missing OAuth security wiring step, not dead code.
+    state = str(uuid.uuid4())  # noqa: F841
+
     # Store state in additional_config temporarily (or use session/cache)
     # For now, we'll just use it in the URL
     
@@ -126,8 +129,11 @@ async def clickup_oauth_callback(
     
     client_id = additional_config.get("client_id")
     client_secret_encrypted = additional_config.get("client_secret")
-    redirect_uri = additional_config.get("redirect_uri") or f"{settings.WEBHOOK_BASE_URL}/api/v1/auth/clickup/callback"
-    
+    # KNOWN GAP: never included in the token_data payload sent to ClickUp below,
+    # even though OAuth token exchange typically requires it to match the
+    # authorization request. Not removing — possible missing param, not dead code.
+    redirect_uri = additional_config.get("redirect_uri") or f"{settings.WEBHOOK_BASE_URL}/api/v1/auth/clickup/callback"  # noqa: F841
+
     if not client_id or not client_secret_encrypted:
         raise HTTPException(
             status_code=400,

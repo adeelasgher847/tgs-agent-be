@@ -171,7 +171,10 @@ class TtsStreamMixin:
                             )
 
                             # We crossfade at chunk boundaries with a single 20ms overlap for speed.
-                            overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)
+                            # KNOWN GAP: never passed to send_frame/crossfade below, unlike
+                            # the working crossfade_mulaw_segments() usage elsewhere in this
+                            # file. Not removing — looks like unfinished crossfade wiring.
+                            overlap_bytes = MULAW_FRAME_BYTES  # 160 bytes (20ms)  # noqa: F841
 
                             async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
                                 if not frame:
@@ -503,7 +506,6 @@ class TtsStreamMixin:
                         )
 
                         # Crossfade bridge disabled to prevent robotic stutter/distortion
-                        overlap_bytes = 0
 
                         # Hold back a tail for the NEXT chunk (only when not final)
                         next_tail = b""

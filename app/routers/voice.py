@@ -1328,7 +1328,7 @@ async def handle_gather_speech_webhook(
                         return HTMLResponse(str(response), media_type="application/xml")
                     
                     # Continue conversation - gather next input
-                    gather = response.gather(
+                    response.gather(
                         input='speech',
                         timeout=10,
                         speech_timeout='auto',
@@ -1364,7 +1364,7 @@ async def handle_gather_speech_webhook(
         tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang={lang}&voice={voice}"
         response.play(tts_url)
         
-        gather = response.gather(
+        response.gather(
             input='speech',
             timeout=10,
             speech_timeout='auto',

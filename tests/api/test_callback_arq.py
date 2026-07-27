@@ -172,7 +172,6 @@ async def test_execute_callback_happy_path():
     agent = _make_agent(max_callback_attempts=3)
     original = _make_original_call()
     db = _make_db(schedule=schedule, agent=agent, original_call=original)
-    pool = _make_arq_pool()
 
     svc = _svc()
 

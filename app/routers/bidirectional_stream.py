@@ -2017,7 +2017,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = False
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
-                first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
                 self._pending_resume_screening_qualify = False
@@ -2189,7 +2188,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 if _vm:
                                     _vm.mark_first_tts_queued()
                                 _schedule_deferred_memory_once()
-                            first_tts_chunk = False
                             last_flush_ts = time.perf_counter()
 
                 # Flush any remaining text as the FINAL chunk
@@ -2926,9 +2924,7 @@ async def bidirectional_stream_websocket(
         agent_id=agentId,
         db=db
     )
-    
-    media_count = 0
-    
+
     try:
         while True:
             # Race: receive next Twilio message OR stop_event (internal call end)

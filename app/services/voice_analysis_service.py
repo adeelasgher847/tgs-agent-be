@@ -124,7 +124,10 @@ class VoiceAnalysisService:
                     break
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("⚠️ Model %s not available: %s", model_name, e)
-                last_error = e
+                # KNOWN GAP: captured but never included in the HTTPException
+                # detail below. Not removing — looks like a missing error detail,
+                # not dead code.
+                last_error = e  # noqa: F841
                 continue
 
         if not model:

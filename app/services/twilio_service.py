@@ -595,7 +595,7 @@ class TwilioService:
         client = self.get_client()
         
         try:
-            call = client.calls(call_sid).update(status='completed')
+            client.calls(call_sid).update(status='completed')
             logger.info(f"✅ Call {call_sid} ended successfully")
             return True
             
@@ -655,7 +655,7 @@ class TwilioService:
         client = self.get_client()
         
         try:
-            call = client.calls(call_sid).update(
+            client.calls(call_sid).update(
                 url=redirect_url,
                 method=method
             )

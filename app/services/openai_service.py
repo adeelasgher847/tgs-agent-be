@@ -162,71 +162,6 @@ class OpenAIService:
         except Exception as e:
             raise Exception(f"Error in OpenAI chat completion: {str(e)}")
     
-    def process_agent_conversation(self, user_input: str, 
-                                 agent_system_prompt: str = "You are a helpful assistant.",
-                                 conversation_history: List[Dict[str, str]] = None,
-                                 model_name: str = "gpt-3.5-turbo",
-                                 temperature: float = 0.7,
-                                 max_tokens: int = 1000,
-                                 api_key: str = None) -> Dict[str, Any]:
-        """
-        Process agent conversation using OpenAI API
-        
-        Args:
-            user_input: Current user input
-            agent_system_prompt: System prompt for the agent
-            conversation_history: Previous conversation messages
-            model_name: OpenAI model to use
-            temperature: Temperature setting (0.0 to 1.0)
-            max_tokens: Maximum tokens for response
-            api_key: Model-specific API key (optional)
-            
-        Returns:
-            Dictionary with response content and metadata
-        """
-        try:
-            start_time = time.time()
-            
-            # Get client instance with specific API key
-            client = self.get_client(api_key)
-            
-            # Prepare messages
-            messages = []
-            if agent_system_prompt:
-                messages.append({"role": "system", "content": agent_system_prompt})
-            
-            # Add conversation history
-            if conversation_history:
-                messages.extend(conversation_history)
-            
-            # Add current user input
-            messages.append({"role": "user", "content": user_input})
-            
-            # Generate response
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            end_time = time.time()
-            response_time = end_time - start_time
-            
-            return {
-                "response": response.choices[0].message.content,
-                "model": response.model,
-                "response_time": response_time,
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens
-                }
-            }
-            
-        except Exception as e:
-            raise Exception(f"Error in OpenAI agent conversation: {str(e)}")
-    
     async def stream_text(self, prompt: str, system_prompt: str = None,
                           model_name: str = "gpt-3.5-turbo",
                           temperature: float = 0.7,
@@ -305,35 +240,46 @@ class OpenAIService:
         except Exception as e:
             raise Exception(f"Error in OpenAI text-to-speech: {str(e)}")
     
-    def process_agent_conversation(self, user_input: str, agent_system_prompt: str, 
-                                 conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+    def process_agent_conversation(self, user_input: str, agent_system_prompt: str,
+                                 conversation_history: List[Dict[str, str]] = None,
+                                 model_name: str = "gpt-3.5-turbo",
+                                 temperature: float = 0.7,
+                                 max_tokens: int = 100,
+                                 api_key: str = None) -> Dict[str, Any]:
         """
         Process a conversation turn with an agent
-        
+
         Args:
             user_input: User's speech input (transcribed text)
             agent_system_prompt: Agent's system prompt
             conversation_history: Previous conversation messages
-            
+            model_name: OpenAI model to use
+            temperature: Temperature setting (0.0 to 1.0)
+            max_tokens: Maximum tokens for response
+            api_key: Model-specific API key (optional)
+
         Returns:
             Dictionary with agent response and metadata
         """
         start_time = time.time()
-        
+
         # Prepare messages
         messages = []
         if conversation_history:
             messages.extend(conversation_history)
-        
+
         messages.append({"role": "user", "content": user_input})
-        
+
         # Get response from OpenAI
         response = self.chat_completion(
             messages=messages,
             system_prompt=agent_system_prompt,
-            max_tokens=100
+            model_name=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key=api_key,
         )
-        
+
         response_time = time.time() - start_time
         
         return {

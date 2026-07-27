@@ -665,7 +665,10 @@ class TestFirstAudioLatency:
         async def _run():
             import time as _time
 
-            pace_state = {
+            # KNOWN GAP: built per the comment above but never passed into the
+            # send_frame(...) call below (state= is left at its default). Not
+            # removing — looks like an incomplete test setup, not dead code.
+            pace_state = {  # noqa: F841
                 "send_interval": 0.0,  # no sleep in test
                 "first": True,
                 "next_send": _time.perf_counter(),
@@ -739,9 +742,14 @@ class TestRimeTtsService:
         from app.services.rime_tts_service import RimeTtsService
 
         get_rime_api_key.cache_clear()
-        with patch("app.services.rime_tts_service.get_rime_api_key", side_effect=ValueError("no key")):
-            with pytest.raises(ValueError, match="no key"):
-                RimeTtsService()
+        with (
+            patch(
+                "app.services.rime_tts_service.get_rime_api_key",
+                side_effect=ValueError("no key"),
+            ),
+            pytest.raises(ValueError, match="no key"),
+        ):
+            RimeTtsService()
 
     def test_stream_yields_bytes_on_success(self):
         from app.services.rime_tts_service import RimeTtsService

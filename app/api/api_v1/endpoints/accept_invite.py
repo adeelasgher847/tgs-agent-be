@@ -141,7 +141,9 @@ def accept_invite(
     db.commit()
     
     # Create access token
-    access_token = create_user_token(
+    # KNOWN GAP: computed but never returned/set as a cookie below, unlike the
+    # analogous flow in tenant.py. Looks like a missing wiring step, not dead code.
+    access_token = create_user_token(  # noqa: F841
         user_id=user.id,
         email=user.email,
         tenant_id=invite.tenant_id,

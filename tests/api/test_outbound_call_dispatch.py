@@ -452,7 +452,10 @@ class TestLivekitRoomCreationFailure:
                 MagicMock(return_value=("AC_test", "tok")),
             ),
         ):
-            result = await _run_direct(req)
+            # KNOWN GAP: unlike sibling tests in this file, the response is never
+            # asserted on (e.g. status_code). Not removing — looks like a missing
+            # assertion / test-coverage gap, not dead code.
+            result = await _run_direct(req)  # noqa: F841
 
         # create_call_session must NOT have been called
         mock_css.create_call_session.assert_not_called()
