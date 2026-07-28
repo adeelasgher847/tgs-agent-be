@@ -2,14 +2,12 @@
 CRM Service Factory - Creates appropriate CRM service based on type
 """
 
-from typing import Optional
 from app.services.base_crm_service import BaseCRMService
 from app.services.monday_service import MondayService
 from app.services.clickup_service import ClickUpService
 from app.services.jira_service import JiraService
 from app.services.trello_service import TrelloService
 from app.models.tenant_crm_config import CRMConfig
-from app.core.security import decrypt_api_key
 import json
 
 
@@ -28,8 +26,7 @@ class CRMServiceFactory:
             BaseCRMService instance
         """
         crm_type = crm_config.crm_type.lower()
-        api_key = decrypt_api_key(crm_config.encrypted_api_key)
-        
+
         if crm_type == "monday":
             # MondayService accepts optional API key
             service = MondayService(api_key=crm_config.encrypted_api_key)  # Pass encrypted, service will decrypt

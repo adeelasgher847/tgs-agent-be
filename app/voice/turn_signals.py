@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class UserMood(str, Enum):
@@ -32,7 +31,7 @@ class TurnContext:
     conversation_phase: str
     stt_confidence: float
     # Optional 0.0–1.0 for future TTS prosody mapping; no extra API in this path.
-    tts_stability_hint: Optional[float] = None
+    tts_stability_hint: float | None = None
     is_final: bool = True
 
     def mood_label(self) -> str:
@@ -96,7 +95,7 @@ def _respond_briefly(user_text: str, mood: UserMood, stt_confidence: float) -> b
     return False
 
 
-def _tts_stability_for_mood(mood: UserMood) -> Optional[float]:
+def _tts_stability_for_mood(mood: UserMood) -> float | None:
     """Slightly lower = more variable prosody; higher = calmer. For future ElevenLabs mapping."""
     if mood in (UserMood.ANGRY, UserMood.FRUSTRATED, UserMood.URGENT):
         return 0.42

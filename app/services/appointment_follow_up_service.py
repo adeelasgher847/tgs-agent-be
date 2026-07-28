@@ -8,7 +8,7 @@ from __future__ import annotations
 import html
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,7 +36,7 @@ LAST_MINUTE_BUFFER = timedelta(minutes=2)
 def send_follow_up_outcome_staff_email(
     db: Session,
     *,
-    staff_user_id: Optional[uuid.UUID],
+    staff_user_id: uuid.UUID | None,
     tenant_id: uuid.UUID,
     appointment_id: uuid.UUID,
     outcome: str,
@@ -85,8 +85,8 @@ def send_follow_up_outcome_staff_email(
                     )
                     local_str = slot_start_local.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
                     body += f"<p><strong>Appointment time:</strong> {html.escape(local_str)}</p>"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to format local appointment time for appt=%s: %s", appointment_id, exc)
         if detail:
             body += f"<p><strong>Detail:</strong> {html.escape(detail[:2000])}</p>"
         email_service.send_generic_email(
@@ -98,7 +98,7 @@ def send_follow_up_outcome_staff_email(
         logger.exception("Follow-up staff email failed appt=%s", appointment_id)
 
 
-def resolve_trello_crm_config_id_for_user(db: Session, user_id: uuid.UUID) -> Optional[uuid.UUID]:
+def resolve_trello_crm_config_id_for_user(db: Session, user_id: uuid.UUID) -> uuid.UUID | None:
     """Trello-first CRM config for scheduled-call board (mirrors resume flow; resume routes unchanged)."""
     trello_link = (
         db.query(ScheduledCall)
@@ -134,8 +134,8 @@ def resolve_trello_crm_config_id_for_user(db: Session, user_id: uuid.UUID) -> Op
 def resolve_acting_user_id_for_follow_up(
     db: Session,
     tenant_id: uuid.UUID,
-    preferred: Optional[uuid.UUID],
-) -> Optional[uuid.UUID]:
+    preferred: uuid.UUID | None,
+) -> uuid.UUID | None:
     if preferred:
         u = db.query(User).filter(User.id == preferred).first()
         if u:
@@ -171,7 +171,7 @@ def _reminder_time_utc(slot_start_utc: datetime) -> datetime:
     return reminder
 
 
-def _follow_up_phone_number_id(db: Session, tenant_id: uuid.UUID, follow_agent: Agent) -> Optional[str]:
+def _follow_up_phone_number_id(db: Session, tenant_id: uuid.UUID, follow_agent: Agent) -> str | None:
     pn = (
         db.query(PhoneNumber)
         .filter(
@@ -189,7 +189,7 @@ def _resolve_phone_number_id_from_appointment_origin(
     *,
     appt: Appointment,
     follow_agent: Agent,
-) -> Optional[str]:
+) -> str | None:
     """
     Prefer the tenant phone number used in the original appointment call/session.
     Fallback to follow-up agent assigned active number.
@@ -235,7 +235,7 @@ def _resolve_phone_number_id_from_appointment_origin(
 def schedule_follow_up_after_confirm(
     db: Session,
     appt: Appointment,
-    acting_user_id: Optional[uuid.UUID],
+    acting_user_id: uuid.UUID | None,
 ) -> None:
     """
     After appointment is confirmed: create Trello scheduled call row for follow-up agent.
@@ -328,7 +328,7 @@ def schedule_follow_up_after_confirm(
         )
         try:
             db.rollback()
-        except Exception:
+        except Exception:  # noqa: S110 - already handling an error above; nothing further to do if rollback fails
             pass
 
 
@@ -348,7 +348,7 @@ def _trello_board_and_map(
 def refresh_follow_up_crm_after_reschedule(
     db: Session,
     appt: Appointment,
-    acting_user_id: Optional[uuid.UUID],
+    acting_user_id: uuid.UUID | None,
 ) -> None:
     """Move follow-up reminder on Trello when appointment slot changes."""
     if not appt.follow_up_crm_item_id:
@@ -381,7 +381,7 @@ def refresh_follow_up_crm_after_reschedule(
 def cancel_follow_up_crm_card(
     db: Session,
     appt: Appointment,
-    acting_user_id: Optional[uuid.UUID],
+    acting_user_id: uuid.UUID | None,
 ) -> None:
     """Mark Trello follow-up card cancelled / stop n8n pickup."""
     if not appt.follow_up_crm_item_id:

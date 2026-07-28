@@ -1,6 +1,6 @@
 import re
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -8,6 +8,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from fastapi import HTTPException
 
 from app.core.logger import logger
+from app.core.pii_redactor import redact_pii
 from app.models.call_flow import CallFlow
 from app.models.call_log import CallLog
 from app.models.call_session import CallSession
@@ -15,7 +16,6 @@ from app.services.agent_service import agent_service
 from app.services.dlp_service import redact_phi_if_hipaa
 from app.services.model_service import ModelService
 from app.services.transcript_service import transcript_service
-from app.utils.response import create_success_response
 
 
 class VoiceAnalysisService:
@@ -30,14 +30,12 @@ class VoiceAnalysisService:
         call_session: CallSession,
         user_id,
         raise_on_no_transcript: bool = True,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any] | None:
         """Behavior-preserving refactor of `analyze_call_transcript` logic from `voice.py`."""
-        from uuid import UUID
 
         # Check if user has access to this call session
         # (same logic as original route)
         # NOTE: caller is responsible for validating call_session_id format and existence.
-        from app.models.user import User  # type: ignore
 
         # We don't have full User here, just ensure tenant/user match is enforced
         # by caller before invoking this method when necessary.
@@ -66,9 +64,9 @@ class VoiceAnalysisService:
                 "is_cached": True
             }
 
-        preferred_model: Optional[str] = None
+        preferred_model: str | None = None
         agent = None
-        agent_prompt: Optional[str] = None
+        agent_prompt: str | None = None
 
         if call_session.agent_id:
             try:
@@ -111,7 +109,7 @@ class VoiceAnalysisService:
         ]
 
         model = None
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
 
         # Try each model until one works (for presence)
         for model_name in fallback_models:
@@ -131,10 +129,10 @@ class VoiceAnalysisService:
                 continue
 
         if not model:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No available model found. Tried: {', '.join(fallback_models)}",
-            )
+            detail = f"No available model found. Tried: {', '.join(fallback_models)}"
+            if last_error is not None:
+                detail += f". Last error: {redact_pii(str(last_error))}"
+            raise HTTPException(status_code=404, detail=detail)
 
         # Get transcript messages
         transcript_messages = transcript_service.get_messages_by_session(
@@ -291,7 +289,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
         outcome_result = None
         recommendations_result = None
         used_model = None
-        last_error_local: Optional[Exception] = None
+        last_error_local: Exception | None = None
 
         for model_name in fallback_models:
             try:
@@ -386,7 +384,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
             summary_lines.append(line)
         display_summary = "\n".join(summary_lines).strip()
 
-        success_eval_llm: Optional[str] = None
+        success_eval_llm: str | None = None
         if outcome_result:
             raw_o = (outcome_result.get("content") or "").strip()
             om = re.search(r"^\s*OUTCOME:\s*(\S+)", raw_o, re.MULTILINE | re.IGNORECASE)

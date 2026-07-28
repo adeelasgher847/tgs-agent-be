@@ -9,7 +9,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -49,7 +49,7 @@ _EMAIL_RE = re.compile(
 )
 
 
-def _scrub_email_literals(value: Optional[str]) -> Optional[str]:
+def _scrub_email_literals(value: str | None) -> str | None:
     """
     Remove literal email addresses from summary text fields.
     Keeps PII handling deterministic even if the LLM ignores prompt instructions.
@@ -137,7 +137,7 @@ def _generate_with_provider(
     *,
     provider_name: str,
     model_name: str,
-    api_key: Optional[str],
+    api_key: str | None,
     user_prompt: str,
     max_tokens: int,
 ) -> Dict[str, Any]:
@@ -242,7 +242,7 @@ class AppointmentIntakeSummaryService:
             transcript_text=transcript_text, appointment=appointment
         )
 
-        preferred_model: Optional[str] = None
+        preferred_model: str | None = None
         if appointment.agent_id:
             try:
                 agent = agent_service.get_agent_by_id(
@@ -264,9 +264,9 @@ class AppointmentIntakeSummaryService:
             if m
         ]
 
-        last_error: Optional[Exception] = None
-        used_model: Optional[str] = None
-        raw_content: Optional[str] = None
+        last_error: Exception | None = None
+        used_model: str | None = None
+        raw_content: str | None = None
 
         for model_name in fallback_models:
             try:

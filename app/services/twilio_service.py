@@ -6,14 +6,14 @@ Handles all Twilio-related operations including client management and API calls
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioException
 from app.core.config import settings
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 from app.core.logger import logger
 
 def _build_amd_kwargs(
-    machine_detection: Optional[str] = None,
-    machine_detection_timeout: Optional[int] = None,
-    async_amd: Optional[str] = None,
-    async_amd_status_callback: Optional[str] = None,
+    machine_detection: str | None = None,
+    machine_detection_timeout: int | None = None,
+    async_amd: str | None = None,
+    async_amd_status_callback: str | None = None,
 ) -> Dict[str, Any]:
     """Build the subset of AMD kwargs to pass to client.calls.create — only includes
     params that were explicitly set, so omitting them all preserves the "no AMD" default."""
@@ -52,7 +52,7 @@ class TwilioService:
         return Client(account_sid, auth_token)
 
     @staticmethod
-    def _normalize_url(url: Optional[str]) -> Optional[str]:
+    def _normalize_url(url: str | None) -> str | None:
         if not url:
             return url
         return str(url).strip().rstrip("/")
@@ -60,8 +60,8 @@ class TwilioService:
     def _verify_number_webhook_configuration(
         self,
         number_obj,
-        expected_voice_url: Optional[str],
-        expected_status_callback_url: Optional[str],
+        expected_voice_url: str | None,
+        expected_status_callback_url: str | None,
     ) -> None:
         """
         Fail-fast verification for Twilio webhook configuration.
@@ -102,10 +102,10 @@ class TwilioService:
         webhook_url,
         status_callback_url,
         record=True,
-        machine_detection: Optional[str] = None,
-        machine_detection_timeout: Optional[int] = None,
-        async_amd: Optional[str] = None,
-        async_amd_status_callback: Optional[str] = None,
+        machine_detection: str | None = None,
+        machine_detection_timeout: int | None = None,
+        async_amd: str | None = None,
+        async_amd_status_callback: str | None = None,
     ):
         """Make an outbound call with improved reliability and optional recording.
 
@@ -147,10 +147,10 @@ class TwilioService:
         account_sid: str,
         auth_token: str,
         record: bool = True,
-        machine_detection: Optional[str] = None,
-        machine_detection_timeout: Optional[int] = None,
-        async_amd: Optional[str] = None,
-        async_amd_status_callback: Optional[str] = None,
+        machine_detection: str | None = None,
+        machine_detection_timeout: int | None = None,
+        async_amd: str | None = None,
+        async_amd_status_callback: str | None = None,
     ):
         """Make call with custom Twilio credentials"""
         client = self.get_client_with_credentials(account_sid, auth_token)
@@ -249,8 +249,8 @@ class TwilioService:
         self,
         country_code: str = "US",
         number_type: str = "local",
-        area_code: Optional[str] = None,
-        contains: Optional[str] = None,
+        area_code: str | None = None,
+        contains: str | None = None,
         voice_enabled: bool = True,
         sms_enabled: bool = True,
         limit: int = 20,
@@ -315,8 +315,8 @@ class TwilioService:
         except TwilioException as e:
             raise Exception(f"Error searching for available numbers: {str(e)}")
     
-    def purchase_phone_number(self, phone_number: str, webhook_url: Optional[str] = None,
-                             status_callback_url: Optional[str] = None,
+    def purchase_phone_number(self, phone_number: str, webhook_url: str | None = None,
+                             status_callback_url: str | None = None,
                              status_callback_method: str = "POST") -> Dict[str, Any]:
         """
         Purchase a phone number
@@ -436,9 +436,9 @@ class TwilioService:
             raise Exception(f"Error fetching number details: {str(e)}")
     
     def update_number_configuration(self, phone_number_sid: str, 
-                                  friendly_name: Optional[str] = None,
-                                  webhook_url: Optional[str] = None,
-                                  status_callback_url: Optional[str] = None) -> Dict[str, Any]:
+                                  friendly_name: str | None = None,
+                                  webhook_url: str | None = None,
+                                  status_callback_url: str | None = None) -> Dict[str, Any]:
         """
         Update configuration for a phone number
         
@@ -494,9 +494,9 @@ class TwilioService:
         phone_number_sid: str,
         account_sid: str,
         auth_token: str,
-        friendly_name: Optional[str] = None,
-        webhook_url: Optional[str] = None,
-        status_callback_url: Optional[str] = None,
+        friendly_name: str | None = None,
+        webhook_url: str | None = None,
+        status_callback_url: str | None = None,
     ) -> Dict[str, Any]:
         """
         Update configuration for a phone number using custom Twilio credentials.
@@ -595,7 +595,7 @@ class TwilioService:
         client = self.get_client()
         
         try:
-            call = client.calls(call_sid).update(status='completed')
+            client.calls(call_sid).update(status='completed')
             logger.info(f"✅ Call {call_sid} ended successfully")
             return True
             
@@ -655,7 +655,7 @@ class TwilioService:
         client = self.get_client()
         
         try:
-            call = client.calls(call_sid).update(
+            client.calls(call_sid).update(
                 url=redirect_url,
                 method=method
             )
@@ -670,8 +670,8 @@ class TwilioService:
         self,
         call_sid: str,
         twiml: str,
-        account_sid: Optional[str] = None,
-        auth_token: Optional[str] = None,
+        account_sid: str | None = None,
+        auth_token: str | None = None,
     ) -> bool:
         """
         Inject TwiML directly into an in-progress call (no URL fetch round-trip).

@@ -10,7 +10,6 @@ from app.schemas.resume import (
     ParsedResume,
     ParseSource,
     ProfileBlock,
-    ProjectItem,
     SkillItem,
 )
 

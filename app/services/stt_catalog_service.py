@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
 import uuid
 
 from sqlalchemy.orm import Session
@@ -21,7 +20,7 @@ class STTCatalogService:
         self,
         db: Session,
         provider_id: uuid.UUID,
-        language_code: Optional[str] = None,
+        language_code: str | None = None,
         active_only: bool = True,
     ) -> list[STTModel]:
         query = db.query(STTModel).filter(STTModel.provider_id == provider_id)
@@ -31,7 +30,7 @@ class STTCatalogService:
             query = query.filter(STTModel.language_code == language_code)
         return query.order_by(STTModel.display_name.asc()).all()
 
-    def get_provider_by_slug(self, db: Session, slug: str) -> Optional[STTProvider]:
+    def get_provider_by_slug(self, db: Session, slug: str) -> STTProvider | None:
         return (
             db.query(STTProvider)
             .filter(STTProvider.slug == slug)
@@ -43,7 +42,7 @@ class STTCatalogService:
         db: Session,
         provider_id: uuid.UUID,
         external_model_id: str,
-    ) -> Optional[STTModel]:
+    ) -> STTModel | None:
         return (
             db.query(STTModel)
             .filter(

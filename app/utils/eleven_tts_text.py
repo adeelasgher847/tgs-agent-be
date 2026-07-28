@@ -13,7 +13,6 @@ This module:
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 from app.core.config import settings
 
@@ -105,7 +104,7 @@ def strip_eleven_v3_style_tags_for_non_eleven_tts(text: str) -> str:
     return out.strip()
 
 
-def prepare_tts_text_for_provider(text: str, provider_slug: Optional[str]) -> str:
+def prepare_tts_text_for_provider(text: str, provider_slug: str | None) -> str:
     """
     ElevenLabs: pass through known v3 audio tags; strip unknown/unsupported ones.
     All other TTS providers: strip all known Eleven-style bracket tags.
@@ -132,7 +131,7 @@ def prepare_tts_text_for_provider(text: str, provider_slug: Optional[str]) -> st
     return strip_eleven_v3_style_tags_for_non_eleven_tts(text)
 
 
-def supports_elevenlabs_audio_tags(provider_slug: Optional[str]) -> bool:
+def supports_elevenlabs_audio_tags(provider_slug: str | None) -> bool:
     """
     Return True when the agent's TTS is ElevenLabs and tag guidance is enabled in settings.
     All tag-related LLM text and fallbacks should be gated on this.
@@ -196,7 +195,7 @@ def apply_elevenlabs_breathing_fallback(text: str) -> str:
     return f"[breathes] {stripped}"
 
 
-def build_elevenlabs_audio_tag_prompt_block(provider_slug: Optional[str]) -> str:
+def build_elevenlabs_audio_tag_prompt_block(provider_slug: str | None) -> str:
     """
     Guidance injected into voice prompts.
     Only when ElevenLabs TTS is in use and ENABLE_ELEVENLABS_AUDIO_TAGS is True; other

@@ -1,14 +1,14 @@
 from pydantic import BaseModel, field_validator
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 
 
 # Phone number management schemas
 class AvailableNumberInfo(BaseModel):
     phone_number: str
-    friendly_name: Optional[str] = None
-    locality: Optional[str] = None
-    region: Optional[str] = None
-    country: Optional[str] = None
+    friendly_name: str | None = None
+    locality: str | None = None
+    region: str | None = None
+    country: str | None = None
     capabilities: Dict[str, bool]
     beta: bool
 
@@ -21,11 +21,11 @@ class AvailableNumbersResponse(BaseModel):
 class PhoneNumberInfo(BaseModel):
     sid: str
     phone_number: str
-    friendly_name: Optional[str] = None
-    voice_url: Optional[str] = None
-    voice_method: Optional[str] = None
-    status_callback: Optional[str] = None
-    status_callback_method: Optional[str] = None
+    friendly_name: str | None = None
+    voice_url: str | None = None
+    voice_method: str | None = None
+    status_callback: str | None = None
+    status_callback_method: str | None = None
     capabilities: Dict[str, bool]
     date_created: str
     date_updated: str
@@ -38,15 +38,15 @@ class PhoneNumbersResponse(BaseModel):
 
 class PurchaseNumberRequest(BaseModel):
     phone_number: str
-    webhook_url: Optional[str] = None
-    status_callback_url: Optional[str] = None
+    webhook_url: str | None = None
+    status_callback_url: str | None = None
     status_callback_method: str = "POST"
 
 
 class UpdateNumberRequest(BaseModel):
-    friendly_name: Optional[str] = None
-    webhook_url: Optional[str] = None
-    status_callback_url: Optional[str] = None
+    friendly_name: str | None = None
+    webhook_url: str | None = None
+    status_callback_url: str | None = None
 
 
 class AccountInfo(BaseModel):
@@ -63,37 +63,37 @@ class CallInitiateRequest(BaseModel):
     agentId: str
     toNumber: str
     # Explicit caller ID — if provided, must match the agent's bound active phone number.
-    fromNumber: Optional[str] = None
-    phone_number_id: Optional[str] = None  # Optional, user ka selected phone number ID (VAPI style)
-    jd_context: Optional[Dict[str, Any]] = None  # Optional JD payload from scheduler/n8n
+    fromNumber: str | None = None
+    phone_number_id: str | None = None  # Optional, user ka selected phone number ID (VAPI style)
+    jd_context: Dict[str, Any] | None = None  # Optional JD payload from scheduler/n8n
     # Optional: resolve resume + job from DB and enrich the agent prompt (same as jd_context.jd_id / resume_id)
-    jd_id: Optional[str] = None
-    resume_id: Optional[str] = None
-    appointment_id: Optional[str] = None  # Follow-up reminder: n8n / Trello → initiate
-    tenant_id: Optional[str] = None  # Required when using webhook secret (n8n)
-    user_id: Optional[str] = None  # Optional, for n8n webhook calls
+    jd_id: str | None = None
+    resume_id: str | None = None
+    appointment_id: str | None = None  # Follow-up reminder: n8n / Trello → initiate
+    tenant_id: str | None = None  # Required when using webhook secret (n8n)
+    user_id: str | None = None  # Optional, for n8n webhook calls
 
     # Legacy Monday.com fields (for backward compatibility)
-    board_id: Optional[str] = None  # Optional, Monday.com board ID from n8n workflow (legacy)
-    monday_item_id: Optional[str] = None  # Optional, Monday.com item ID from n8n workflow (legacy)
-    status_column_id: Optional[str] = None  # Optional, Monday.com status column ID from n8n workflow (legacy)
-    call_session_id_column_id: Optional[str] = None  # Optional, Monday.com call_session_id column ID from n8n workflow (legacy)
+    board_id: str | None = None  # Optional, Monday.com board ID from n8n workflow (legacy)
+    monday_item_id: str | None = None  # Optional, Monday.com item ID from n8n workflow (legacy)
+    status_column_id: str | None = None  # Optional, Monday.com status column ID from n8n workflow (legacy)
+    call_session_id_column_id: str | None = None  # Optional, Monday.com call_session_id column ID from n8n workflow (legacy)
 
     # Generic CRM fields (for multi-CRM support)
-    crm_container_id: Optional[str] = None  # Generic: board_id/list_id/project_id from n8n workflow
-    crm_item_id: Optional[str] = None  # Generic: item_id/task_id/issue_id/card_id from n8n workflow
-    status_field_id: Optional[str] = None  # Generic: status column/field ID from n8n workflow
-    call_session_id_field_id: Optional[str] = None  # Generic: call_session_id field ID from n8n workflow
-    crm_type: Optional[str] = None  # "monday" | "clickup" | "jira" | "trello" from n8n workflow
-    callFlowId: Optional[str] = None  # Optional UUID — binds this call session to a CallFlow
+    crm_container_id: str | None = None  # Generic: board_id/list_id/project_id from n8n workflow
+    crm_item_id: str | None = None  # Generic: item_id/task_id/issue_id/card_id from n8n workflow
+    status_field_id: str | None = None  # Generic: status column/field ID from n8n workflow
+    call_session_id_field_id: str | None = None  # Generic: call_session_id field ID from n8n workflow
+    crm_type: str | None = None  # "monday" | "clickup" | "jira" | "trello" from n8n workflow
+    callFlowId: str | None = None  # Optional UUID — binds this call session to a CallFlow
     # Batch outbound calls — worker passes substituted prompt + record link
-    batch_call_record_id: Optional[str] = None
-    batch_prompt_override: Optional[str] = None
+    batch_call_record_id: str | None = None
+    batch_prompt_override: str | None = None
     # Answering Machine Detection — worker enables this when the batch job's
     # voicemail_action is 'skip' or 'leave_message'
     enable_amd: bool = False
-    voicemail_action: Optional[str] = None
-    voicemail_message: Optional[str] = None
+    voicemail_action: str | None = None
+    voicemail_message: str | None = None
 
     @field_validator("toNumber")
     @classmethod
@@ -109,7 +109,7 @@ class CallInitiateRequest(BaseModel):
 
     @field_validator("fromNumber")
     @classmethod
-    def validate_from_number(cls, v: Optional[str]) -> Optional[str]:
+    def validate_from_number(cls, v: str | None) -> str | None:
         if v is None:
             return v
         from app.schemas.phone_number import _validate_e164
@@ -129,17 +129,17 @@ class CallInitiateResponse(BaseModel):
     status: str
     
     # Legacy Monday.com fields (for backward compatibility)
-    board_id: Optional[str] = None  # Echo back Monday.com board ID if provided
-    monday_item_id: Optional[str] = None  # Echo back Monday.com item ID if provided
-    status_column_id: Optional[str] = None  # Echo back Monday.com status column ID if provided
-    call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
+    board_id: str | None = None  # Echo back Monday.com board ID if provided
+    monday_item_id: str | None = None  # Echo back Monday.com item ID if provided
+    status_column_id: str | None = None  # Echo back Monday.com status column ID if provided
+    call_session_id_column_id: str | None = None  # Echo back Monday.com call_session_id column ID if provided
     
     # Generic CRM fields (for multi-CRM support)
-    crm_container_id: Optional[str] = None  # Echo back generic container ID if provided
-    crm_item_id: Optional[str] = None  # Echo back generic item ID if provided
-    status_field_id: Optional[str] = None  # Echo back generic status field ID if provided
-    call_session_id_field_id: Optional[str] = None  # Echo back generic call_session_id field ID if provided
-    crm_type: Optional[str] = None  # Echo back CRM type if provided
+    crm_container_id: str | None = None  # Echo back generic container ID if provided
+    crm_item_id: str | None = None  # Echo back generic item ID if provided
+    status_field_id: str | None = None  # Echo back generic status field ID if provided
+    call_session_id_field_id: str | None = None  # Echo back generic call_session_id field ID if provided
+    crm_type: str | None = None  # Echo back CRM type if provided
 
 
 class CallInitiateErrorResponse(BaseModel):
@@ -147,18 +147,18 @@ class CallInitiateErrorResponse(BaseModel):
     detail: str
     
     # Legacy Monday.com fields (for backward compatibility)
-    board_id: Optional[str] = None  # Echo back Monday.com board ID if provided
-    monday_item_id: Optional[str] = None  # Echo back Monday.com item ID if provided
-    status_column_id: Optional[str] = None  # Echo back Monday.com status column ID if provided
-    call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
+    board_id: str | None = None  # Echo back Monday.com board ID if provided
+    monday_item_id: str | None = None  # Echo back Monday.com item ID if provided
+    status_column_id: str | None = None  # Echo back Monday.com status column ID if provided
+    call_session_id_column_id: str | None = None  # Echo back Monday.com call_session_id column ID if provided
     
     # Generic CRM fields (for multi-CRM support)
-    crm_container_id: Optional[str] = None  # Echo back generic container ID if provided
-    crm_item_id: Optional[str] = None  # Echo back generic item ID if provided
-    status_field_id: Optional[str] = None  # Echo back generic status field ID if provided
-    call_session_id_field_id: Optional[str] = None  # Echo back generic call_session_id field ID if provided
-    crm_type: Optional[str] = None  # Echo back CRM type if provided
-    call_session_id_column_id: Optional[str] = None  # Echo back Monday.com call_session_id column ID if provided
+    crm_container_id: str | None = None  # Echo back generic container ID if provided
+    crm_item_id: str | None = None  # Echo back generic item ID if provided
+    status_field_id: str | None = None  # Echo back generic status field ID if provided
+    call_session_id_field_id: str | None = None  # Echo back generic call_session_id field ID if provided
+    crm_type: str | None = None  # Echo back CRM type if provided
+    call_session_id_column_id: str | None = None  # Echo back Monday.com call_session_id column ID if provided
 
 
 # Web-based voice chat schemas (Talk to Assistant feature)
@@ -169,7 +169,7 @@ class VoiceChatStartRequest(BaseModel):
 class VoiceChatStartResponse(BaseModel):
     session_id: str
     agent_name: str
-    agent_voice_type: Optional[str] = None
+    agent_voice_type: str | None = None
     status: str
 
 
@@ -183,7 +183,7 @@ class VoiceChatMessageResponse(BaseModel):
     session_id: str
     agent_response: str
     response_time: float
-    audio_url: Optional[str] = None  # URL to generated speech audio
+    audio_url: str | None = None  # URL to generated speech audio
     timestamp: str
 
 
@@ -204,7 +204,7 @@ class VoiceChatEndRequest(BaseModel):
 class VoiceChatEndResponse(BaseModel):
     session_id: str
     status: str
-    duration: Optional[float] = None
+    duration: float | None = None
     message_count: int
 
 
@@ -216,7 +216,7 @@ class LiveVoiceStartRequest(BaseModel):
 class LiveVoiceStartResponse(BaseModel):
     session_id: str
     agent_name: str
-    agent_voice_type: Optional[str] = None
+    agent_voice_type: str | None = None
     status: str
 
 

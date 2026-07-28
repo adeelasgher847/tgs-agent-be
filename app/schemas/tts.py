@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 import uuid
 
 from pydantic import BaseModel, Field
@@ -13,7 +13,7 @@ class TTSProviderOut(BaseModel):
     supports_streaming: bool
     supports_ssml: bool
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -24,16 +24,16 @@ class TTSVoiceOut(BaseModel):
     provider_id: uuid.UUID
     external_voice_id: str
     display_name: str
-    language_code: Optional[str] = None
-    gender: Optional[str] = None
-    accent: Optional[str] = None
-    description: Optional[str] = None
-    preview_audio_url: Optional[str] = None
-    sample_rate_hz: Optional[int] = None
+    language_code: str | None = None
+    gender: str | None = None
+    accent: str | None = None
+    description: str | None = None
+    preview_audio_url: str | None = None
+    sample_rate_hz: int | None = None
     is_active: bool
-    metadata_json: Optional[dict[str, Any]] = None
+    metadata_json: dict[str, Any] | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -60,11 +60,11 @@ class TTSVoiceCreate(BaseModel):
     provider_id: uuid.UUID
     external_voice_id: str = Field(..., min_length=1, max_length=255)
     display_name: str = Field(..., min_length=1, max_length=255)
-    language_code: Optional[str] = Field(None, max_length=20)
-    gender: Optional[str] = Field(None, max_length=32)
-    accent: Optional[str] = Field(None, max_length=64)
-    description: Optional[str] = None
-    preview_audio_url: Optional[str] = Field(None, max_length=1000)
-    sample_rate_hz: Optional[int] = None
+    language_code: str | None = Field(None, max_length=20)
+    gender: str | None = Field(None, max_length=32)
+    accent: str | None = Field(None, max_length=64)
+    description: str | None = None
+    preview_audio_url: str | None = Field(None, max_length=1000)
+    sample_rate_hz: int | None = None
     is_active: bool = True
-    metadata_json: Optional[dict[str, Any]] = None
+    metadata_json: dict[str, Any] | None = None

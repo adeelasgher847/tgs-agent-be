@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -64,7 +64,7 @@ def get_api_key_for_tenant(
     *,
     key_id: uuid.UUID,
     tenant_id: uuid.UUID,
-) -> Optional[Apikey]:
+) -> Apikey | None:
     return (
         db.query(Apikey)
         .filter(Apikey.id == key_id, Apikey.tenant_id == tenant_id)

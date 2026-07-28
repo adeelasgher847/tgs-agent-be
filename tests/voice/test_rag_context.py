@@ -1,7 +1,5 @@
 import uuid
-from unittest.mock import MagicMock
 
-import pytest
 
 from app.voice import rag_context as rag_context_module
 from app.voice.rag_context import build_rag_context_block

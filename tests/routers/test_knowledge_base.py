@@ -25,7 +25,6 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.knowledge_base_document import KnowledgeBase
@@ -80,7 +79,7 @@ def _drop_partial_unique_indexes(db):
     ):
         try:
             db.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
-        except Exception:
+        except Exception:  # noqa: S110 — best-effort SQLite teardown
             pass
     db.commit()
     yield
@@ -129,14 +128,16 @@ def test_list_knowledge_bases(client, db, kb, workspace_id):
 def test_file_upload_returns_202(client, db, kb, workspace_id):
     fake_pdf = b"%PDF-1.4 fake pdf content for testing"
 
-    with _auth_ctx(workspace_id):
-        with patch("app.routers.knowledge_base.settings") as mock_settings:
-            mock_settings.S3_KB_BUCKET = ""  # Skip S3
-            mock_settings.OPENAI_API_KEY = "test-key"
-            resp = client.post(
-                f"/api/v1/kb/{kb.id}/file",
-                files={"file": ("test.pdf", io.BytesIO(fake_pdf), "application/pdf")},
-            )
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+    ):
+        mock_settings.S3_KB_BUCKET = ""  # Skip S3
+        mock_settings.OPENAI_API_KEY = "test-key"
+        resp = client.post(
+            f"/api/v1/kb/{kb.id}/file",
+            files={"file": ("test.pdf", io.BytesIO(fake_pdf), "application/pdf")},
+        )
 
     assert resp.status_code == 202, resp.text
     data = resp.json()["data"]
@@ -163,13 +164,15 @@ def test_file_upload_unsupported_type_returns_422(client, db, kb, workspace_id):
 def test_file_upload_oversized_returns_422(client, db, kb, workspace_id):
     oversized = b"x" * (50 * 1024 * 1024 + 1)
 
-    with _auth_ctx(workspace_id):
-        with patch("app.routers.knowledge_base.settings") as mock_settings:
-            mock_settings.S3_KB_BUCKET = ""
-            resp = client.post(
-                f"/api/v1/kb/{kb.id}/file",
-                files={"file": ("big.pdf", io.BytesIO(oversized), "application/pdf")},
-            )
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+    ):
+        mock_settings.S3_KB_BUCKET = ""
+        resp = client.post(
+            f"/api/v1/kb/{kb.id}/file",
+            files={"file": ("big.pdf", io.BytesIO(oversized), "application/pdf")},
+        )
     assert resp.status_code == 422, resp.text
     body = resp.json()
     # App wraps HTTPException into {"error": {"message": "..."}}
@@ -183,25 +186,28 @@ def test_text_ingest_synchronous_inserts_chunks(client, db, kb, workspace_id):
     """Text is chunked, embedded (mocked), and committed before 201 returns."""
     fake_embedding = [0.0] * 1536
 
-    with _auth_ctx(workspace_id):
-        with (
-            patch("app.routers.knowledge_base.settings") as mock_settings,
-            patch("app.services.kb_ingestion_service.embed_chunks", new=AsyncMock(return_value=[fake_embedding])),
-        ):
-            mock_settings.OPENAI_API_KEY = "test-key"
-            mock_settings.RAG_SCORE_THRESHOLD = 0.4
-            mock_settings.RAG_MAX_CONTEXT_CHARS = 6000
-            # Use ≥50 tokens of content so min_tokens filter passes
-            content = (
-                "This document outlines company policies and procedures for all employees. "
-                "All staff must adhere to the code of conduct and maintain professionalism. "
-                "Violations may result in disciplinary action up to and including termination. "
-                "Please review this policy carefully and confirm your understanding by signing below."
-            )
-            resp = client.post(
-                f"/api/v1/kb/{kb.id}/text",
-                json={"content": content},
-            )
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch(
+            "app.services.kb_ingestion_service.embed_chunks",
+            new=AsyncMock(return_value=[fake_embedding]),
+        ),
+    ):
+        mock_settings.OPENAI_API_KEY = "test-key"
+        mock_settings.RAG_SCORE_THRESHOLD = 0.4
+        mock_settings.RAG_MAX_CONTEXT_CHARS = 6000
+        # Use ≥50 tokens of content so min_tokens filter passes
+        content = (
+            "This document outlines company policies and procedures for all employees. "
+            "All staff must adhere to the code of conduct and maintain professionalism. "
+            "Violations may result in disciplinary action up to and including termination. "
+            "Please review this policy carefully and confirm your understanding by signing below."
+        )
+        resp = client.post(
+            f"/api/v1/kb/{kb.id}/text",
+            json={"content": content},
+        )
 
     assert resp.status_code == 201, resp.text
     data = resp.json()["data"]
@@ -218,13 +224,15 @@ def test_text_ingest_synchronous_inserts_chunks(client, db, kb, workspace_id):
 
 
 def test_text_ingest_no_openai_key_returns_400(client, db, kb, workspace_id):
-    with _auth_ctx(workspace_id):
-        with patch("app.routers.knowledge_base.settings") as mock_settings:
-            mock_settings.OPENAI_API_KEY = ""
-            resp = client.post(
-                f"/api/v1/kb/{kb.id}/text",
-                json={"content": "Test content"},
-            )
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+    ):
+        mock_settings.OPENAI_API_KEY = ""
+        resp = client.post(
+            f"/api/v1/kb/{kb.id}/text",
+            json={"content": "Test content"},
+        )
     assert resp.status_code == 400, resp.text
 
 
@@ -597,18 +605,20 @@ def test_search_returns_results_sorted_by_score(client, db, workspace_id):
     # Two chunks — mocked embedding ensures they appear in the response
     fake_embedding = [0.1] * 1536
 
-    with _auth_ctx(workspace_id):
-        with (
-            patch("app.routers.knowledge_base.settings") as mock_settings,
-            patch("app.routers.knowledge_base.embed_text_for_rag", return_value=fake_embedding),
-        ):
-            mock_settings.OPENAI_API_KEY = "test-key"
-            mock_settings.RAG_SCORE_THRESHOLD = 0.0
-            mock_settings.RAG_MAX_CONTEXT_CHARS = 6000
-            # SQLite doesn't support pgvector — expect a 500 from the raw SQL;
-            # what we validate here is that the route is wired, auth works, and
-            # scores are returned in descending order when the DB supports it.
-            resp = client.get(f"/api/v1/kb/{kb_s.id}/search?q=hello&limit=5")
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch(
+            "app.routers.knowledge_base.embed_text_for_rag", return_value=fake_embedding
+        ),
+    ):
+        mock_settings.OPENAI_API_KEY = "test-key"
+        mock_settings.RAG_SCORE_THRESHOLD = 0.0
+        mock_settings.RAG_MAX_CONTEXT_CHARS = 6000
+        # SQLite doesn't support pgvector — expect a 500 from the raw SQL;
+        # what we validate here is that the route is wired, auth works, and
+        # scores are returned in descending order when the DB supports it.
+        resp = client.get(f"/api/v1/kb/{kb_s.id}/search?q=hello&limit=5")
 
     # SQLite will fail on the vector cast — that's fine; 400 means missing key, 500 is expected
     assert resp.status_code in (200, 500)

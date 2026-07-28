@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import contextvars
 import os
 import sys
@@ -63,7 +64,6 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.db.base import Base
-from app.db.session import SessionLocal
 from app.models.user import User
 from app.models.role import Role
 from app.models.tenant import Tenant

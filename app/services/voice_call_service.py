@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
 import uuid
-from typing import Optional
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
@@ -39,9 +38,9 @@ async def initiate_call(
     call_request: CallInitiateRequest,
     db: Session,
     is_system_call: bool,
-    tenant_id: Optional[uuid.UUID],
-    user_id: Optional[uuid.UUID],
-    request_id: Optional[str] = None,
+    tenant_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+    request_id: str | None = None,
 ) -> SuccessResponse[CallInitiateResponse] | JSONResponse:
     """
     Outbound call dispatch: LiveKit room → DB record → Twilio call.
@@ -238,7 +237,7 @@ async def initiate_call(
             )
 
         # ── Resolve optional callFlowId so we can pass to LiveKit ────────
-        flow_uuid: Optional[uuid.UUID] = None
+        flow_uuid: uuid.UUID | None = None
         if call_request.callFlowId:
             try:
                 flow_uuid = uuid.UUID(call_request.callFlowId)
@@ -250,8 +249,8 @@ async def initiate_call(
 
         # ── Resolve Twilio credentials upfront ───────────────────────────
         use_custom_credentials = False
-        account_sid: Optional[str] = None
-        auth_token: Optional[str] = None
+        account_sid: str | None = None
+        auth_token: str | None = None
 
         if phone_number_obj.twilio_account_sid and phone_number_obj.twilio_auth_token:
             from app.core.security import decrypt_api_key
@@ -279,7 +278,7 @@ async def initiate_call(
         session_id = uuid.uuid4()
 
         # ── 8a. Create LiveKit room FIRST — fail fast before any side effects ─
-        lk_meta: Optional[dict] = None
+        lk_meta: dict | None = None
         if settings.LIVEKIT_ENABLED:
             from app.services.livekit_service import livekit_service
 
@@ -314,7 +313,7 @@ async def initiate_call(
                 # Attempt cleanup in case the room was partially created
                 try:
                     await livekit_service.close_room(session_id)
-                except Exception:
+                except Exception:  # noqa: S110 - best-effort cleanup after the room-creation failure already logged above
                     pass
                 # Do NOT create DB record; do NOT call Twilio
                 return _err(
@@ -496,7 +495,7 @@ async def initiate_call(
 
         # Answering Machine Detection (batch calls only) — hold the call on a
         # pause/redirect loop until the async AMD callback resolves human vs machine.
-        amd_status_callback_url: Optional[str] = None
+        amd_status_callback_url: str | None = None
         if call_request.enable_amd:
             batch_record_id_q = call_request.batch_call_record_id or ""
             amd_status_callback_url = (
@@ -577,7 +576,7 @@ async def initiate_call(
                     from app.services.livekit_service import livekit_service
 
                     await livekit_service.close_room(call_session.id)
-                except Exception:
+                except Exception:  # noqa: S110 - best-effort cleanup after the Twilio failure already logged above
                     pass
             return _err(
                 status.HTTP_502_BAD_GATEWAY,

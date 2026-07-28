@@ -1,4 +1,3 @@
-import pytest
 
 from app.db.async_url import database_url_to_async
 

@@ -135,6 +135,6 @@ async def livekit_twilio_bridge_websocket(
         await lk_publisher.disconnect()
         try:
             await websocket.close()
-        except Exception:
+        except Exception:  # noqa: S110 - socket may already be closed/disconnected
             pass
         db.close()

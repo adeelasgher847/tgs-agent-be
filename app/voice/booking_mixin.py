@@ -10,12 +10,11 @@ import re
 import time
 import uuid
 from datetime import datetime, date, timedelta, timezone
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List
 
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.appointment import Appointment
-from app.services.calendar_service import calendar_service
 from app.utils.eleven_tts_text import strip_eleven_v3_style_tags_for_non_eleven_tts
 
 if TYPE_CHECKING:
@@ -96,8 +95,8 @@ class BookingMixin:
 
                     intake = get_contact_intake(self.call_session)
                     attendee_name = (intake.get("name") or "").strip()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to get contact intake name for booking: %s", exc)
                 summary = (self.call_session.transcript_summary or "").strip()
                 result = await calendly_service.book_appointment(
                     self.db,
@@ -243,7 +242,7 @@ class BookingMixin:
                 return True
         return False
 
-    def _is_duplicate_agent_line(self, user_text: Optional[str], agent_text: str) -> bool:
+    def _is_duplicate_agent_line(self, user_text: str | None, agent_text: str) -> bool:
         """
         Transcript-level guard: within `_AGENT_LINE_DEDUP_WINDOW_SEC`, the same agent
         line (normalized) is treated as a duplicate even if the user turn differs. This
@@ -400,7 +399,7 @@ class BookingMixin:
         m = _re.search(r"Service Areas \(verbatim\):\s*(.+)", block)
         return m.group(1).strip() if m else ""
 
-    def _remember_agent_turn(self, user_text: Optional[str], agent_text: str) -> None:
+    def _remember_agent_turn(self, user_text: str | None, agent_text: str) -> None:
         """Append (user_norm, agent_norm, ts) and bound the buffer to the last few entries."""
         if not agent_text:
             return
@@ -588,8 +587,8 @@ class BookingMixin:
                         "- Scheduled appointment time (local): "
                         f"{slot_start_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')}."
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to format local appointment time for appt=%s: %s", appt.id, exc)
         else:
             details.append(f"- Appointment ID: {aid_raw}.")
 
@@ -758,12 +757,12 @@ class BookingMixin:
         *,
         llm_service,
         model_name: str,
-        api_key: Optional[str],
+        api_key: str | None,
         user_text: str,
         assistant_text: str,
         history_text: str,
         temperature: float,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Second-pass action extraction. Returns one action token or None."""
         if not self.call_session:
             return None
@@ -817,7 +816,7 @@ class BookingMixin:
             logger.warning("Calendar action extraction pass failed: %s", e)
             return None
 
-    def _resolve_cached_calendar_slot(self, slot_raw: str) -> Optional[datetime]:
+    def _resolve_cached_calendar_slot(self, slot_raw: str) -> datetime | None:
         normalized = self._normalize_calendar_slot_key(slot_raw)
         if not normalized or not self._last_offered_calendar_slots:
             return None
@@ -975,7 +974,7 @@ class BookingMixin:
                     break
         return out
 
-    def _follow_up_appointment_uuid(self) -> Optional[uuid.UUID]:
+    def _follow_up_appointment_uuid(self) -> uuid.UUID | None:
         if not self.call_session or not self.call_session.call_metadata:
             return None
         raw = (self.call_session.call_metadata.get("appointment_id") or "").strip()
@@ -1030,8 +1029,8 @@ class BookingMixin:
             )
             try:
                 self.db.refresh(self.call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to refresh call_session %s after cancel: %s", self.call_session.id, exc)
         except ValueError as ve:
             logger.warning("Follow-up cancel: %s", ve)
         except Exception as e:
@@ -1082,8 +1081,8 @@ class BookingMixin:
             )
             try:
                 self.db.refresh(self.call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to refresh call_session %s after reschedule: %s", self.call_session.id, exc)
         except ValueError as ve:
             logger.warning("Follow-up reschedule: %s", ve)
         except Exception as e:
@@ -1222,8 +1221,8 @@ class BookingMixin:
             self._last_selected_calendar_slot = slot_start
             try:
                 self.db.refresh(self.call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to refresh call_session %s after booking intent persist: %s", self.call_session.id, exc)
 
             msg = (
                 "I've noted your preferred time. After we finish the call, our system will finalize "

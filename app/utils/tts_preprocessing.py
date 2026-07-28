@@ -253,8 +253,6 @@ def wrap_in_ssml(
     # Optional break at start to prevent audio pop (can be reduced/disabled when audio fade-in is applied)
     if start_break_ms and start_break_ms > 0:
         ssml += f'<break time="{int(start_break_ms)}ms"/>'
-    
-    use_par_tags = False
 
     # Apply SAME prosody to all sentences (prevents clicks/tak sounds)
     # Emotion still applied (based on overall response), but consistently!

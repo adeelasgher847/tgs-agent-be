@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from sqlalchemy.orm import Session
 
@@ -13,12 +13,12 @@ async def add_to_transcript(
     message: str,
     db: Session,
     message_type: str = "speech",
-    agent_id: Optional[str] = None,
-    user_id: Optional[str] = None,
-    confidence: Optional[float] = None,
-    duration: Optional[float] = None,
-    response_time: Optional[float] = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    agent_id: str | None = None,
+    user_id: str | None = None,
+    confidence: float | None = None,
+    duration: float | None = None,
+    response_time: float | None = None,
+    metadata: Dict[str, Any] | None = None,
 ):
     """Add a message to the transcript using the new transcript service.
 

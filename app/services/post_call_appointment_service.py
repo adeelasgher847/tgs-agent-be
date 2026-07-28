@@ -6,7 +6,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
@@ -101,7 +101,7 @@ def _transcript_to_text(db: Session, call_session_id: uuid.UUID) -> str:
     return "\n".join(parts)
 
 
-def _parse_iso_to_utc(s: Optional[str]) -> Optional[datetime]:
+def _parse_iso_to_utc(s: str | None) -> datetime | None:
     if not s or not str(s).strip():
         return None
     try:
@@ -143,7 +143,7 @@ class PostCallAppointmentService:
     def _extract_non_pii_from_llm(
         self,
         transcript: str,
-        reserved_slot: Optional[datetime] = None,
+        reserved_slot: datetime | None = None,
     ) -> Dict[str, Any]:
         """
         Optional LLM pass for non-PII fields only (reason, slot hint).
@@ -403,8 +403,8 @@ class PostCallAppointmentService:
                 )
                 try:
                     db.refresh(cs)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to refresh call_session %s after contact recovery: %s", cs.id, exc)
                 intake = get_contact_intake(cs)
                 merged_contact = merge_contact_for_post_call(intake, extracted)
                 self._merge_call_metadata(
@@ -470,7 +470,7 @@ class PostCallAppointmentService:
         if not reason:
             reason = None
 
-        slot_utc: Optional[datetime] = _parse_iso_to_utc(intent.get("slot_start_iso"))
+        slot_utc: datetime | None = _parse_iso_to_utc(intent.get("slot_start_iso"))
         if slot_utc is None:
             slot_utc = _parse_iso_to_utc(llm.get("slot_start_iso") if llm else None)
 
@@ -518,8 +518,8 @@ class PostCallAppointmentService:
             return
         try:
             db.refresh(cs)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to refresh call_session %s after appointment booking: %s", cs.id, exc)
         self._merge_call_metadata(
             cs,
             {

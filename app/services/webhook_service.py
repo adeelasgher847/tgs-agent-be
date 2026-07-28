@@ -31,7 +31,6 @@ import hmac
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import httpx
 from fastapi import HTTPException, status
@@ -43,7 +42,6 @@ from app.models.webhook import WebhookDelivery, WebhookEndpoint
 from app.schemas.webhook import (
     PaginatedWebhookDeliveries,
     WebhookDeliveryOut,
-    WebhookEndpointOut,
 )
 from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
@@ -174,13 +172,13 @@ class WebhookService:
         raw_secret: str,
         event_type: str,
         payload: dict,
-        existing_delivery: Optional[WebhookDelivery],
+        existing_delivery: WebhookDelivery | None,
     ) -> WebhookDelivery:
         payload_json = json.dumps(payload, default=str)
         signature = self.sign_payload(raw_secret, payload_json)
 
-        http_status: Optional[int] = None
-        response_body: Optional[str] = None
+        http_status: int | None = None
+        response_body: str | None = None
         delivered = False
 
         # SSRF guard — re-validate on every delivery attempt.

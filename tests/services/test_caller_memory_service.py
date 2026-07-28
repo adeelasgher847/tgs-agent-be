@@ -10,7 +10,6 @@ Coverage:
 """
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -18,7 +17,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services import caller_memory_service
-from conftest import TestingSessionLocal
 
 _TENANT_ID = uuid.uuid4()
 _FLOW_ID = uuid.uuid4()
@@ -159,13 +157,15 @@ class TestGetCallerMemoryContextBlockForCall:
             time.sleep(0.05)
             return []
 
-        with patch.object(caller_memory_service, "_fetch_recent_summaries", side_effect=_slow_fetch):
-            with patch.object(
-                caller_memory_service, "_DEFAULT_FETCH_TIMEOUT_SEC", 0.01
-            ):
-                block = await caller_memory_service.get_caller_memory_context_block_for_call(
-                    db, call_session, _call_flow()
-                )
+        with (
+            patch.object(
+                caller_memory_service, "_fetch_recent_summaries", side_effect=_slow_fetch
+            ),
+            patch.object(caller_memory_service, "_DEFAULT_FETCH_TIMEOUT_SEC", 0.01),
+        ):
+            block = await caller_memory_service.get_caller_memory_context_block_for_call(
+                db, call_session, _call_flow()
+            )
 
         assert block == ""
         # Still caches the fail-open empty block so subsequent turns don't retry.

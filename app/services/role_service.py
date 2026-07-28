@@ -1,6 +1,4 @@
-from typing import Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import Table, Column, UUID, ForeignKey
 from app.models.role import Role
 from app.models.product import Product
 from app.core.product_enums import ProductName
@@ -36,7 +34,7 @@ ROLE_RANK = {
 BILLING_ALLOWED_ROLES = frozenset({ADMIN, MANAGER, BILLING_ONLY, OWNER})
 
 
-def has_rank(role_name: Optional[str], required: str) -> bool:
+def has_rank(role_name: str | None, required: str) -> bool:
     """True if ``role_name`` is at or above ``required`` in the linear chain.
 
     Unranked names (None, or a role outside the chain like billing_only)
@@ -45,13 +43,13 @@ def has_rank(role_name: Optional[str], required: str) -> bool:
     return ROLE_RANK.get(role_name, 0) >= ROLE_RANK[required]
 
 
-def can_access_billing(role_name: Optional[str]) -> bool:
+def can_access_billing(role_name: str | None) -> bool:
     return role_name in BILLING_ALLOWED_ROLES
 
 
 def get_display_role_details(
     db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID
-) -> Optional[dict]:
+) -> dict | None:
     """Resolve display role details (name and description) for a (user, tenant).
     If the user is the workspace creator (is_creator=True), returns name='owner'.
     """
@@ -97,7 +95,7 @@ def get_display_role_details(
 
 def get_membership_role_name(
     db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID
-) -> Optional[str]:
+) -> str | None:
     """Resolve the effective role name for a (user, tenant) pair.
 
     Returns ``None`` only when the user has no membership row at all for this

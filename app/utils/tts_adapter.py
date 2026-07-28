@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator
 
 from app.core.secret_manager import get_rime_api_key
 from app.models.tts_provider import TTSProvider
@@ -23,7 +23,7 @@ class BaseTTSProviderAdapter(ABC):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ) -> bytes:
         """Synthesize speech and return telephony-ready bytes."""
 
@@ -50,7 +50,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
             "metadata_json": payload,
         }
 
-    def _pop_elevenlabs_api_key(self, cfg: dict[str, Any]) -> Optional[str]:
+    def _pop_elevenlabs_api_key(self, cfg: dict[str, Any]) -> str | None:
         key = cfg.pop("elevenlabs_api_key", None) or cfg.pop("xi_api_key", None)
         return str(key).strip() if key else None
 
@@ -68,7 +68,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ) -> bytes:
         cfg = dict(settings_json or {})
         api_key_override = self._pop_elevenlabs_api_key(cfg)
@@ -106,7 +106,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ):
         cfg = dict(settings_json or {})
         api_key_override = self._pop_elevenlabs_api_key(cfg)
@@ -144,7 +144,7 @@ class ElevenLabsAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ):
         """
         True async streaming via httpx — no event-loop blocking.
@@ -216,7 +216,7 @@ class GoogleTTSAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ) -> bytes:
         cfg = dict(settings_json or {})
         language = cfg.pop("language", "en")
@@ -240,7 +240,7 @@ class GoogleTTSAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ):
         cfg = dict(settings_json or {})
         language = cfg.pop("language", "en")
@@ -329,7 +329,7 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ) -> bytes:
         import asyncio
         cfg = dict(settings_json or {})
@@ -352,7 +352,7 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ) -> AsyncIterator[bytes]:
         """True async streaming — yields raw mulaw bytes as they arrive."""
         cfg = dict(settings_json or {})
@@ -374,7 +374,7 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
         self,
         text: str,
         voice_external_id: str,
-        settings_json: Optional[dict[str, Any]] = None,
+        settings_json: dict[str, Any] | None = None,
     ):
         # Sync streaming is not used for Rime; callers should use async_stream_synthesize.
         raise NotImplementedError(

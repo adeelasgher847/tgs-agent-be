@@ -1,6 +1,5 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from twilio.twiml.voice_response import VoiceResponse
-import uuid
 from app.core.logger import logger
 
 
@@ -20,7 +19,7 @@ class VoiceAgentManager:
         }
         return True
     
-    def get_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
+    def get_agent(self, agent_id: str) -> Dict[str, Any] | None:
         """Get agent information"""
         return self.active_agents.get(agent_id)
     

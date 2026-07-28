@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
@@ -40,8 +39,8 @@ class WebhookDeliveryOut(BaseModel):
     event_type: str
     payload: dict
     status: str
-    http_status: Optional[int]
-    response_body: Optional[str]
+    http_status: int | None
+    response_body: str | None
     attempt_count: int
     last_attempted_at: datetime
     created_at: datetime

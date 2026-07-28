@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Generic, TypeVar, Optional
+from typing import Generic, TypeVar
 from fastapi import status
 
 T = TypeVar('T')
@@ -15,4 +15,4 @@ class SuccessResponse(BaseResponse[T]):
 class ErrorResponse(BaseModel):
     message: str
     status_code: int = status.HTTP_400_BAD_REQUEST
-    error: Optional[str] = None
+    error: str | None = None

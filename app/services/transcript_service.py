@@ -1,12 +1,9 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
-from typing import List, Optional
-from datetime import datetime, timezone
+from typing import List
 import uuid
 import asyncio
 
 from app.models.transcript_message import TranscriptMessage
-from app.models.call_session import CallSession
 from app.routers.general_websocket import broadcast_transcript_update
 from app.core.logger import logger
 from app.services.dlp_service import redact_phi_if_hipaa
@@ -21,12 +18,12 @@ class TranscriptService:
         role: str,
         message: str,
         message_type: str = "speech",
-        agent_id: Optional[uuid.UUID] = None,
-        user_id: Optional[uuid.UUID] = None,
-        confidence: Optional[float] = None,
-        duration: Optional[float] = None,
-        response_time: Optional[float] = None,
-        metadata: Optional[dict] = None,
+        agent_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
+        confidence: float | None = None,
+        duration: float | None = None,
+        response_time: float | None = None,
+        metadata: dict | None = None,
         hipaa_enabled: bool = False,
     ) -> TranscriptMessage:
         """Add a new message to the transcript"""
@@ -65,7 +62,7 @@ class TranscriptService:
     def get_messages_by_session(
         db: Session,
         call_session_id: uuid.UUID,
-        limit: Optional[int] = None
+        limit: int | None = None
     ) -> List[TranscriptMessage]:
         """Get all messages for a call session, ordered by sequence number"""
         
@@ -112,14 +109,14 @@ class TranscriptService:
         role: str,
         message: str,
         message_type: str = "speech",
-        agent_id: Optional[uuid.UUID] = None,
-        user_id: Optional[uuid.UUID] = None,
-        confidence: Optional[float] = None,
-        duration: Optional[float] = None,
-        response_time: Optional[float] = None,
-        metadata: Optional[dict] = None,
+        agent_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
+        confidence: float | None = None,
+        duration: float | None = None,
+        response_time: float | None = None,
+        metadata: dict | None = None,
         hipaa_enabled: bool = False,
-    ) -> Optional[TranscriptMessage]:
+    ) -> TranscriptMessage | None:
         """Add a message and broadcast the updated conversation to WebSocket"""
         
         # Filter: Ignore Twilio system messages (Vapi-style - clean transcripts!)

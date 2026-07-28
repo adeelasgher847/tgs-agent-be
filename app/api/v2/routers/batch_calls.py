@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -47,7 +46,7 @@ router = APIRouter(prefix="/batch-calls", tags=["batch-calls"])
 
 def _batch_service(
     workspace: Workspace = Depends(get_workspace),
-    _principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    _principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """Yield a BatchCallService for any authenticated tenant principal (read + write)."""
@@ -59,7 +58,7 @@ def _batch_service(
 def _batch_service_write(
     request: Request,
     workspace: Workspace = Depends(get_workspace),
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """
@@ -88,9 +87,9 @@ async def create_batch_job(
     request: Request,
     file: UploadFile = File(..., description="UTF-8 CSV file, max 20 MB"),
     agent_id: uuid.UUID = Form(...),
-    scheduled_at: Optional[datetime] = Form(default=None),
+    scheduled_at: datetime | None = Form(default=None),
     voicemail_action: str = Form(default="skip", description="skip | leave_message | continue"),
-    voicemail_message: Optional[str] = Form(default=None, description="Max 500 chars"),
+    voicemail_message: str | None = Form(default=None, description="Max 500 chars"),
     workspace: Workspace = Depends(get_workspace),
     db: Session = Depends(get_db),
     svc=Depends(_batch_service_write),
@@ -273,7 +272,7 @@ def cancel_batch_job(
 
 async def _enqueue_batch_job(
     batch_job_id: str,
-    scheduled_at: Optional[datetime],
+    scheduled_at: datetime | None,
 ) -> None:
     """
     Push a process_batch_job task into ARQ.

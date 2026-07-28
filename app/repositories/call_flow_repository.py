@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.call_flow import CallFlow
-from app.models.agent import Agent
 
 
 class CallFlowRepository:
@@ -26,10 +25,10 @@ class CallFlowRepository:
         self,
         flow_id: uuid.UUID,
         *,
-        tenant_id: Optional[uuid.UUID] = None,
+        tenant_id: uuid.UUID | None = None,
         include_deleted: bool = False,
         load_relations: bool = False,
-    ) -> Optional[CallFlow]:
+    ) -> CallFlow | None:
         stmt = select(CallFlow).where(CallFlow.id == flow_id)
         if tenant_id is not None:
             stmt = stmt.where(CallFlow.tenant_id == tenant_id)

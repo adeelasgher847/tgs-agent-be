@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Optional
 
 import json as _json
 
@@ -101,7 +100,7 @@ def _chunk_count(db: Session, kb_id: uuid.UUID) -> int:
     )
 
 
-def _mem_cache_get(key: str) -> Optional[int]:
+def _mem_cache_get(key: str) -> int | None:
     entry = _MEM_CACHE.get(key)
     if entry is not None and time.monotonic() < entry[1]:
         return entry[0]
@@ -122,8 +121,8 @@ async def _cached_file_count(db: Session, kb_id: uuid.UUID) -> int:
             cached = await redis.get(key)
             if cached is not None:
                 return int(cached)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis file-count cache read failed for %s: %s", key, exc)
     else:
         mem = _mem_cache_get(key)
         if mem is not None:
@@ -134,8 +133,8 @@ async def _cached_file_count(db: Session, kb_id: uuid.UUID) -> int:
     if redis is not None:
         try:
             await redis.setex(key, _FILE_COUNT_TTL, count)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis file-count cache write failed for %s: %s", key, exc)
     else:
         _mem_cache_set(key, count, _FILE_COUNT_TTL)
 
@@ -151,8 +150,8 @@ async def _cached_chunk_count(db: Session, kb_id: uuid.UUID) -> int:
             cached = await redis.get(key)
             if cached is not None:
                 return int(cached)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis chunk-count cache read failed for %s: %s", key, exc)
     else:
         mem = _mem_cache_get(key)
         if mem is not None:
@@ -163,15 +162,15 @@ async def _cached_chunk_count(db: Session, kb_id: uuid.UUID) -> int:
     if redis is not None:
         try:
             await redis.setex(key, _CHUNK_COUNT_TTL, count)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis chunk-count cache write failed for %s: %s", key, exc)
     else:
         _mem_cache_set(key, count, _CHUNK_COUNT_TTL)
 
     return count
 
 
-def _bytes_to_mb(size_bytes: Optional[int]) -> Optional[str]:
+def _bytes_to_mb(size_bytes: int | None) -> str | None:
     if size_bytes is None:
         return None
     return f"{round(size_bytes / 1_048_576, 2):.2f} MB"

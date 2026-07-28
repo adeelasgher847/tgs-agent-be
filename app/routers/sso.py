@@ -1,11 +1,10 @@
 """API endpoints for managing workspace SSO configurations."""
 
-import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import httpx
 
-from app.api.deps import get_db, require_admin, require_tenant
+from app.api.deps import get_db, require_admin
 from app.models.sso_config import SsoConfig
 from app.models.user import User
 from app.schemas.sso import SsoConfigUpsert, SsoConfigOut, SsoTestResult

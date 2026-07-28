@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -36,14 +36,14 @@ class CheckReputationRequest(BaseModel):
 class ReputationResult(BaseModel):
     spam_flagged: bool
     reputation_score: int
-    flagged_reason: Optional[str] = None
+    flagged_reason: str | None = None
 
 
 class ReputationSummaryItem(BaseModel):
     phone_number: str
     reputation_score: int
     spam_flagged: bool
-    last_checked_at: Optional[datetime] = None
+    last_checked_at: datetime | None = None
 
 
 # ── POST /telephony/check-reputation ────────────────────────────────────────

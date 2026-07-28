@@ -3166,7 +3166,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessResponse_UserOut_'
+                $ref: '#/components/schemas/SuccessResponse_AcceptInviteOut_'
         '422':
           description: Validation Error
           content:
@@ -9604,6 +9604,60 @@ components:
       required:
       - variant
       title: AbTestWinnerUpdate
+    AcceptInviteOut:
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+          title: First Name
+          description: First name is required
+        last_name:
+          type: string
+          minLength: 1
+          title: Last Name
+          description: Last name is required
+        email:
+          type: string
+          format: email
+          title: Email
+          description: Valid email address is required
+        phone:
+          type: string
+          nullable: true
+        id:
+          type: string
+          format: uuid
+          title: Id
+        role_id:
+          type: string
+          format: uuid
+          nullable: true
+        join_date:
+          type: string
+          format: date-time
+          title: Join Date
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        access_token:
+          type: string
+          title: Access Token
+        refresh_token:
+          type: string
+          title: Refresh Token
+      type: object
+      required:
+      - first_name
+      - last_name
+      - email
+      - id
+      - join_date
+      - created_at
+      - access_token
+      - refresh_token
+      title: AcceptInviteOut
+      description: UserOut plus the session tokens issued on invite acceptance.
     AccountDeletionRequest:
       properties:
         confirmation:
@@ -16422,6 +16476,22 @@ components:
           nullable: true
       type: object
       title: SubAccountUpdate
+    SuccessResponse_AcceptInviteOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/AcceptInviteOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[AcceptInviteOut]
     SuccessResponse_ApiKeyCreated_:
       properties:
         data:

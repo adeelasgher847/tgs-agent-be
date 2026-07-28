@@ -12,13 +12,12 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.logger import logger
-from app.core.config import settings
 
 
 EmbeddingFunc = Callable[[str], Sequence[float]]
@@ -27,11 +26,11 @@ EmbeddingFunc = Callable[[str], Sequence[float]]
 @dataclass
 class RagChunkDTO:
     text: str
-    source_title: Optional[str]
-    source_ref: Optional[str]
-    score: Optional[float] = None
-    vector_id: Optional[str] = None
-    chunk_index: Optional[int] = None
+    source_title: str | None
+    source_ref: str | None
+    score: float | None = None
+    vector_id: str | None = None
+    chunk_index: int | None = None
 
 
 class RagService:
@@ -46,7 +45,7 @@ class RagService:
 
     # ── Session helper ────────────────────────────────────────────────────────
 
-    def _session(self, provided: Optional[Session]) -> tuple[Session, bool]:
+    def _session(self, provided: Session | None) -> tuple[Session, bool]:
         """Return (session, should_close). If we create it, caller must close it."""
         if provided is not None:
             return provided, False
@@ -86,12 +85,12 @@ class RagService:
     def retrieve(
         self,
         user_text: str,
-        tenant_id: Optional[uuid.UUID],
-        agent_id: Optional[uuid.UUID],
+        tenant_id: uuid.UUID | None,
+        agent_id: uuid.UUID | None,
         embedding_func: EmbeddingFunc,
         top_k: int = 5,
-        trace: Optional[dict] = None,
-        db_session: Optional[Session] = None,
+        trace: dict | None = None,
+        db_session: Session | None = None,
     ) -> List[RagChunkDTO]:
         query_text = (user_text or "").strip()
         if not query_text or not tenant_id:
@@ -176,14 +175,14 @@ class RagService:
     def ingest_document(
         self,
         tenant_id: uuid.UUID,
-        agent_id: Optional[uuid.UUID],
+        agent_id: uuid.UUID | None,
         title: str,
         source_type: str,
-        source_ref: Optional[str],
+        source_ref: str | None,
         full_text: str,
         embedding_func: EmbeddingFunc,
         version: str = "v1",
-        db_session: Optional[Session] = None,
+        db_session: Session | None = None,
         replace_existing: bool = True,
         max_chars: int = 1000,
         overlap_chars: int = 100,
@@ -303,7 +302,7 @@ class RagService:
     def delete_vectors(
         self,
         vector_ids: List[str],
-        db_session: Optional[Session] = None,
+        db_session: Session | None = None,
     ) -> None:
         if not vector_ids:
             return
@@ -316,8 +315,8 @@ class RagService:
                     row = db.get(KbChunk, uuid.UUID(vid))
                     if row:
                         db.delete(row)
-                except (ValueError, Exception):
-                    pass
+                except (ValueError, Exception) as exc:
+                    logger.debug("Failed to delete KbChunk for vector_id %s: %s", vid, exc)
             db.commit()
         finally:
             if should_close:
@@ -326,7 +325,7 @@ class RagService:
     # ── Context formatting ────────────────────────────────────────────────────
 
     def format_rag_context(
-        self, chunks: List[RagChunkDTO], max_chars: Optional[int] = None
+        self, chunks: List[RagChunkDTO], max_chars: int | None = None
     ) -> str:
         if not chunks:
             return ""

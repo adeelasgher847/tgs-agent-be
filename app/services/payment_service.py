@@ -11,7 +11,7 @@ Responsibilities:
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Tuple
+from typing import Tuple
 
 from sqlalchemy.orm import Session
 
@@ -36,7 +36,7 @@ class PaymentService:
     def create_payment_session(
         db: Session,
         workspace_id: uuid.UUID,
-        call_id: Optional[uuid.UUID],
+        call_id: uuid.UUID | None,
         amount_cents: int,
         currency: str,
         description: str,
@@ -253,7 +253,7 @@ class PaymentService:
         db: Session,
         workspace_id: uuid.UUID,
         payment_intent_id: str,
-    ) -> Optional[PaymentRecord]:
+    ) -> PaymentRecord | None:
         """Return a single PaymentRecord for the given workspace + PI id."""
         return (
             db.query(PaymentRecord)

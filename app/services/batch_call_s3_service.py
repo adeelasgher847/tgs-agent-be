@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 import uuid
-from typing import Iterator, Union
+from typing import Iterator
 
 from botocore.exceptions import ClientError
 
@@ -24,7 +24,7 @@ def build_batch_csv_gcs_key(workspace_id: uuid.UUID, batch_id: uuid.UUID) -> str
 
 def upload_batch_csv(
     key: str,
-    data: Union[bytes, Iterator[bytes]],
+    data: bytes | Iterator[bytes],
     workspace_id: uuid.UUID,
     batch_id: uuid.UUID,
 ) -> str:

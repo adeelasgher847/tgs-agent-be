@@ -3,7 +3,7 @@ Service functions for bidirectional streaming.
 Handles TTS generation and TwiML building.
 """
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -19,9 +19,9 @@ from app.utils.audio_utils import add_ambient_noise_to_mulaw
 
 
 def _resolve_tts_provider_slug(
-    agent: Optional[Any],
+    agent: Any | None,
     db: "Session | None" = None,
-) -> Optional[str]:
+) -> str | None:
     if not agent:
         return None
     return resolve_tts_runtime(agent, db=db).adapter_slug
@@ -35,7 +35,7 @@ async def generate_mulaw_tts(
     speaking_rate: float = 0.95,
     use_ssml: bool = False,
     add_office_bg: bool = False,
-    agent: Optional[Any] = None,
+    agent: Any | None = None,
     db: "Session | None" = None,
 ) -> bytes:
     """

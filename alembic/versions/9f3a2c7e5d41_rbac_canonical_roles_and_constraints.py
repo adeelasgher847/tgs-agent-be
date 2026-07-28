@@ -135,7 +135,7 @@ def downgrade() -> None:
 
     try:
         op.drop_constraint(_UNIQUE_NAME, "user_tenant_association", type_="unique")
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort; constraint may not exist if downgrade runs against a partially-migrated schema
         pass
 
     op.execute(

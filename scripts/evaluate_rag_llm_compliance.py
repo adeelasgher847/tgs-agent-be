@@ -29,9 +29,8 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Optional, Sequence, Any
+from typing import Sequence, Any
 
-from app.core.config import settings
 from app.services.openai_service import openai_service
 from app.voice.rag_context import build_rag_context_block_with_trace
 
@@ -61,7 +60,7 @@ Do not guess.
 """.strip()
 
 
-def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
+def _parse_uuid(value: str | None) -> uuid.UUID | None:
     if not value:
         return None
     return uuid.UUID(value)

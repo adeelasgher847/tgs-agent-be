@@ -9,10 +9,10 @@ performance optimization here, not a correctness dependency.
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.logger import logger
 from app.services.role_service import get_membership_role_name
 from app.utils.redis_client import get_redis_sync
 
@@ -29,7 +29,7 @@ def _cache_key(user_id: uuid.UUID, workspace_id: uuid.UUID) -> str:
 
 def get_effective_role(
     db: Session, user_id: uuid.UUID, workspace_id: uuid.UUID
-) -> Optional[str]:
+) -> str | None:
     """Cached resolution of the effective role name; None means not a member."""
     redis_client = get_redis_sync()
     key = _cache_key(user_id, workspace_id)
@@ -47,8 +47,8 @@ def get_effective_role(
     if redis_client is not None:
         try:
             redis_client.set(key, role_name or _NOT_A_MEMBER, ex=TTL_SECONDS)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("RBAC cache write failed for %s: %s", key, exc)
 
     return role_name
 
@@ -60,5 +60,6 @@ def invalidate(user_id: uuid.UUID, workspace_id: uuid.UUID) -> None:
         return
     try:
         redis_client.delete(_cache_key(user_id, workspace_id))
-    except Exception:
-        pass
+    except Exception as exc:
+        # Stale role may remain cached until TTL expiry; worth surfacing since it's RBAC-relevant
+        logger.warning("RBAC cache invalidation failed for user=%s workspace=%s: %s", user_id, workspace_id, exc)

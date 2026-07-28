@@ -1,11 +1,10 @@
 from pydantic import BaseModel, ConfigDict
-from typing import Optional
 from datetime import datetime
 import uuid
 
 class RoleBase(BaseModel):
     name: str
-    description: Optional[str] = None
+    description: str | None = None
 
 class RoleCreate(RoleBase):
     pass

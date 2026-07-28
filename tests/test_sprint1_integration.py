@@ -158,9 +158,11 @@ def _mock_redis_with_counts(counts: list[int]) -> MagicMock:
 @pytest.fixture()
 def rate_limited_client(full_client):
     """Patch Redis so the sliding-window count reaches the limit on the last request."""
-    with patch("app.middleware.rate_limit_middleware._get_redis") as get_rl_redis:
-        with patch("app.middleware.api_key_middleware._get_redis", return_value=None):
-            yield full_client, get_rl_redis
+    with (
+        patch("app.middleware.rate_limit_middleware._get_redis") as get_rl_redis,
+        patch("app.middleware.api_key_middleware._get_redis", return_value=None),
+    ):
+        yield full_client, get_rl_redis
 
 
 class TestRateLimitFullApp:

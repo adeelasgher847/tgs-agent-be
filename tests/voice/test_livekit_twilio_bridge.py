@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 
 
 def test_build_livekit_stream_ws_url():

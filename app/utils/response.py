@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any
 from fastapi import status
 from app.schemas.base import SuccessResponse, ErrorResponse
 
@@ -17,7 +17,7 @@ def create_success_response(
 def create_error_response(
     message: str, 
     status_code: int = status.HTTP_400_BAD_REQUEST,
-    error: Optional[str] = None
+    error: str | None = None
 ) -> ErrorResponse:
     """Create a standardized error response"""
     return ErrorResponse(

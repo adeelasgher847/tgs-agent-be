@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from typing import Optional
 
 from app.core.logger import logger
 
@@ -28,9 +27,9 @@ class LiveKitAudioProcessor:
     ) -> None:
         self._output_sample_rate = output_sample_rate
         self._output_channels = output_channels
-        self._ffmpeg_process: Optional[asyncio.subprocess.Process] = None
-        self._ffmpeg_input_rate: Optional[int] = None
-        self._ffmpeg_input_channels: Optional[int] = None
+        self._ffmpeg_process: asyncio.subprocess.Process | None = None
+        self._ffmpeg_input_rate: int | None = None
+        self._ffmpeg_input_channels: int | None = None
         self._first_frame_logged = False
 
     async def process_frame(
@@ -145,8 +144,8 @@ class LiveKitAudioProcessor:
             if self._ffmpeg_process.stdin and not self._ffmpeg_process.stdin.is_closing():
                 self._ffmpeg_process.stdin.close()
                 await self._ffmpeg_process.stdin.wait_closed()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to close ffmpeg stdin: %s", exc)
         try:
             await asyncio.wait_for(self._ffmpeg_process.wait(), timeout=3.0)
         except asyncio.TimeoutError:

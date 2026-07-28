@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 import uuid
 import re
 import zipfile
@@ -410,7 +410,10 @@ class JobDescriptionService:
                 llm_data.get("scoring_dimensions")
             )
             must_have_criteria = llm_data.get("must_have_criteria") or self._build_must_have_criteria(jd, skills)
-            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)
+            # KNOWN GAP: computed but there is no JobDescription model column or
+            # response schema field to store/return it in yet. Not removing —
+            # this is a missing feature (persist overall confidence), not dead code.
+            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)  # noqa: F841
             matching_criteria = {
                 "required_skills": skills,
                 "minimum_years_experience": jd.years_experience_min,
@@ -534,7 +537,10 @@ class JobDescriptionService:
                 llm_data.get("scoring_dimensions")
             )
             must_have_criteria = llm_data.get("must_have_criteria") or self._build_must_have_criteria(jd, skills)
-            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)
+            # KNOWN GAP: computed but there is no JobDescription model column or
+            # response schema field to store/return it in yet. Not removing —
+            # this is a missing feature (persist overall confidence), not dead code.
+            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)  # noqa: F841
             matching_criteria = {
                 "required_skills": skills,
                 "minimum_years_experience": jd.years_experience_min,
@@ -812,7 +818,7 @@ JOB DESCRIPTION:
     def _build_skill_weight_matrix(
         self,
         skills: list[str],
-        llm_skill_objects: Optional[list[dict[str, Any]]] = None,
+        llm_skill_objects: list[dict[str, Any]] | None = None,
         source_text: str = "",
     ) -> dict[str, float]:
         if not skills:
@@ -904,7 +910,7 @@ JOB DESCRIPTION:
         return normalized
 
     @staticmethod
-    def _safe_decimal(value: Any) -> Optional[Decimal]:
+    def _safe_decimal(value: Any) -> Decimal | None:
         if value is None:
             return None
         try:
@@ -913,7 +919,7 @@ JOB DESCRIPTION:
             return None
 
     @staticmethod
-    def _normalize_currency(value: Any) -> Optional[str]:
+    def _normalize_currency(value: Any) -> str | None:
         if value is None:
             return None
         text = str(value).strip().upper()
@@ -931,7 +937,7 @@ JOB DESCRIPTION:
             return "GBP"
         return text[:12]
 
-    def _extract_salary_from_text(self, source_text: str) -> tuple[Optional[Decimal], Optional[Decimal], Optional[str]]:
+    def _extract_salary_from_text(self, source_text: str) -> tuple[Decimal | None, Decimal | None, str | None]:
         text = source_text or ""
         if not text:
             return None, None, None
@@ -972,7 +978,7 @@ JOB DESCRIPTION:
         return None, None, currency
 
     @staticmethod
-    def _extract_experience_from_text(source_text: str) -> tuple[Optional[int], Optional[int]]:
+    def _extract_experience_from_text(source_text: str) -> tuple[int | None, int | None]:
         text = source_text or ""
         if not text.strip():
             return None, None
@@ -1069,7 +1075,7 @@ JOB DESCRIPTION:
         return bullets
 
     @staticmethod
-    def _scaled_number(number_text: str, suffix: str) -> Optional[Decimal]:
+    def _scaled_number(number_text: str, suffix: str) -> Decimal | None:
         try:
             base = Decimal(number_text.replace(",", ""))
         except Exception:
@@ -1082,7 +1088,7 @@ JOB DESCRIPTION:
         return base
 
     @staticmethod
-    def _normalize_employment_type(value: Any) -> Optional[str]:
+    def _normalize_employment_type(value: Any) -> str | None:
         if value is None:
             return None
         text = str(value).strip().lower().replace("_", "-")

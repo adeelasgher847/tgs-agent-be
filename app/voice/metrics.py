@@ -8,20 +8,20 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
 class VoiceTurnMetrics:
     """Per-call metrics with one active user turn at a time."""
 
-    call_pickup_mono: Optional[float] = None
-    turn_stt_final_mono: Optional[float] = None
+    call_pickup_mono: float | None = None
+    turn_stt_final_mono: float | None = None
     # Anchor for each LLM+TTS generation (interim or final). Prevents stale STT timestamps
     # from inflating latency logs when speculation runs before/without a new final.
-    generation_anchor_mono: Optional[float] = None
-    turn_llm_first_token_mono: Optional[float] = None
-    turn_first_tts_queued_mono: Optional[float] = None
+    generation_anchor_mono: float | None = None
+    turn_llm_first_token_mono: float | None = None
+    turn_first_tts_queued_mono: float | None = None
 
     def mark_call_pickup(self) -> None:
         if self.call_pickup_mono is None:

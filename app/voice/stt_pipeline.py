@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Awaitable, Callable, Optional, TYPE_CHECKING
+from typing import Awaitable, Callable, TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -45,25 +45,25 @@ class SttPipeline:
 
     def __init__(
         self,
-        language_code: Optional[str],
+        language_code: str | None,
         on_interim: InterimCallback,
         on_final: FinalCallback,
-        call_session_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        endpointing_ms: Optional[int] = None,
+        call_session_id: str | None = None,
+        agent_id: str | None = None,
+        endpointing_ms: int | None = None,
         provider_slug: str = "deepgram",
         sample_rate_hz: int = 8000,
         encoding: str = "MULAW",
         silence_threshold_ms: int = 1500,
-        api_config: Optional[dict] = None,
-        event_bus: Optional[SttEventBus] = None,
+        api_config: dict | None = None,
+        event_bus: SttEventBus | None = None,
     ) -> None:
         self._language_code = language_code
         self._on_interim = on_interim
         self._on_final = on_final
         self._call_session_id = call_session_id
         self._agent_id = agent_id
-        self._endpointing_ms: Optional[int] = endpointing_ms
+        self._endpointing_ms: int | None = endpointing_ms
         self._provider_slug = provider_slug.lower()
         self._sample_rate_hz = sample_rate_hz
         self._encoding = encoding.upper()
@@ -72,7 +72,7 @@ class SttPipeline:
         self._event_bus = event_bus or SttEventBus()
 
         self._stt_session = None
-        self._reader_task: Optional[asyncio.Task] = None
+        self._reader_task: asyncio.Task | None = None
 
         # Normalized-final dedup — catches re-endpoints within window
         self._last_final_norm_key: str = ""
@@ -90,10 +90,10 @@ class SttPipeline:
         resolved: "ResolvedSttRuntime",
         on_interim: InterimCallback,
         on_final: FinalCallback,
-        call_session_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        endpointing_ms: Optional[int] = None,
-        event_bus: Optional[SttEventBus] = None,
+        call_session_id: str | None = None,
+        agent_id: str | None = None,
+        endpointing_ms: int | None = None,
+        event_bus: SttEventBus | None = None,
     ) -> "SttPipeline":
         """Factory: build SttPipeline from a ResolvedSttRuntime."""
         return cls(
@@ -282,8 +282,8 @@ class SttPipeline:
         try:
             if self._stt_session:
                 self._stt_session.finish()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[STT] finish_session failed: %s", exc)
 
     async def aclose(self) -> None:
         """Graceful shutdown: signal finish then wait up to 5s for reader."""
@@ -296,7 +296,7 @@ class SttPipeline:
                 self._reader_task.cancel()
                 try:
                     await self._reader_task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: S110 - expected from cancelling the reader task above
                     pass
             except asyncio.CancelledError:
                 pass

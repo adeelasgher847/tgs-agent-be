@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -27,7 +26,7 @@ class FolderOut(BaseModel):
     name: str
     is_deleted: bool = Field(..., serialization_alias="isDeleted")
     created_at: datetime = Field(..., serialization_alias="createdAt")
-    updated_at: Optional[datetime] = Field(None, serialization_alias="updatedAt")
+    updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
 
 
 class AddFlowToFolderRequest(BaseModel):

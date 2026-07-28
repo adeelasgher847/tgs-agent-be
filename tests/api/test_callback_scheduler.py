@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, time, timedelta
-from typing import Optional
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -54,9 +53,9 @@ def _make_agent(
     *,
     smart_callback_enabled: bool = True,
     max_callback_attempts: int = 3,
-    gap_schedule: Optional[list] = None,
+    gap_schedule: list | None = None,
     callback_timezone: str = "UTC",
-    tenant_id: Optional[uuid.UUID] = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> Agent:
     agent = MagicMock(spec=Agent)
     agent.id = uuid.uuid4()
@@ -72,11 +71,11 @@ def _make_agent(
 def _make_call_session(
     *,
     status: str = "no_answer",
-    agent_id: Optional[uuid.UUID] = None,
-    tenant_id: Optional[uuid.UUID] = None,
+    agent_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
     to_number: str = "+15550001234",
-    customer_phone_number: Optional[str] = None,
-    call_flow_id: Optional[uuid.UUID] = None,
+    customer_phone_number: str | None = None,
+    call_flow_id: uuid.UUID | None = None,
 ) -> CallSession:
     cs = MagicMock(spec=CallSession)
     cs.id = uuid.uuid4()
@@ -92,8 +91,8 @@ def _make_call_session(
 
 def _make_flow(
     *,
-    agent_id: Optional[uuid.UUID] = None,
-    business_hours: Optional[dict] = None,
+    agent_id: uuid.UUID | None = None,
+    business_hours: dict | None = None,
 ) -> CallFlow:
     flow = MagicMock(spec=CallFlow)
     flow.id = uuid.uuid4()
@@ -105,7 +104,7 @@ def _make_flow(
     return flow
 
 
-def _make_tenant(*, is_us: bool = False, contact_email: Optional[str] = None) -> Tenant:
+def _make_tenant(*, is_us: bool = False, contact_email: str | None = None) -> Tenant:
     tenant = MagicMock(spec=Tenant)
     tenant.id = uuid.uuid4()
     tenant.workspace_settings = {"country": "US"} if is_us else {}
@@ -117,8 +116,8 @@ def _make_dispatch_db(
     *,
     agent: Agent,
     original_call: CallSession,
-    tenant: Optional[Tenant] = None,
-    flow: Optional[CallFlow] = None,
+    tenant: Tenant | None = None,
+    flow: CallFlow | None = None,
 ) -> MagicMock:
     """
     Mock Session for exercising _dispatch_and_advance / dispatch_and_advance_async:
@@ -150,9 +149,9 @@ def _make_dispatch_db(
 
 def _make_db(
     *,
-    agent: Optional[Agent] = None,
-    call_session: Optional[CallSession] = None,
-    existing_schedules: Optional[list] = None,
+    agent: Agent | None = None,
+    call_session: CallSession | None = None,
+    existing_schedules: list | None = None,
 ) -> MagicMock:
     """Return a mock Session with sensible defaults."""
     db = MagicMock()
@@ -205,7 +204,7 @@ def test_no_answer_triggers_callback_creation():
         # Make the _next_valid_window return immediately (no BH rows)
         db.execute.return_value.scalar_one_or_none.return_value = None
 
-        result = svc.maybe_schedule_callback(db, call)
+        svc.maybe_schedule_callback(db, call)
 
     db.add.assert_called_once()
     db.commit.assert_called_once()
@@ -231,7 +230,7 @@ def test_busy_triggers_callback_creation():
     db.execute.return_value.scalar_one_or_none.return_value = None
 
     svc = CallbackSchedulerService()
-    result = svc.maybe_schedule_callback(db, call)
+    svc.maybe_schedule_callback(db, call)
 
     db.add.assert_called_once()
     added = db.add.call_args[0][0]

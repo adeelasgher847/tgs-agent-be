@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Literal, Union
+from typing import Awaitable, Callable, Literal
 
 
 # ── Event types ───────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ class SttErrorEvent:
     recoverable: bool = True
 
 
-SttEvent = Union[SttInterimEvent, SttFinalEvent, SttErrorEvent]
+SttEvent = SttInterimEvent | SttFinalEvent | SttErrorEvent
 
 SttEventCallback = Callable[[SttEvent], Awaitable[None]]
 

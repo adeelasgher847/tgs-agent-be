@@ -4,7 +4,7 @@ All CRM services (Monday.com, ClickUp, Jira, Trello) must implement this interfa
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 class BaseCRMService(ABC):
@@ -52,9 +52,9 @@ class BaseCRMService(ABC):
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
-        batch_id: Optional[str] = None,
-        phone_number_id: Optional[str] = None,
-    ) -> Optional[dict]:
+        batch_id: str | None = None,
+        phone_number_id: str | None = None,
+    ) -> dict | None:
         """
         Create a scheduled call item/task/issue/card in the CRM.
         
@@ -70,7 +70,7 @@ class BaseCRMService(ABC):
         item_id: str,
         status: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Update the status of an item.
         
@@ -92,7 +92,7 @@ class BaseCRMService(ABC):
         item_id: str,
         call_session_id: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update call_session_id field for an item"""
         pass
     

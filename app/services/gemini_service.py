@@ -5,7 +5,7 @@ Handles all Gemini-related operations including text generation
 
 from google import genai
 from app.core.config import settings
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 import time
 import json
 
@@ -137,7 +137,7 @@ class GeminiService:
         self,
         text: str,
         model_name: str = "gemini-embedding-001",
-        output_dimensionality: Optional[int] = None,
+        output_dimensionality: int | None = None,
         api_key: str = None,
     ) -> List[float]:
         """
@@ -322,7 +322,7 @@ class GeminiService:
             if call_session and call_session.call_transcript:
                 try:
                     conversation_history = json.loads(call_session.call_transcript)
-                except:
+                except json.JSONDecodeError:
                     conversation_history = []
 
             # 🗣️ Prepare message context

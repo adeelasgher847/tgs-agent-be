@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Optional
 
 from app.core.logger import logger
 
@@ -58,7 +57,7 @@ def _upload_recording_sync(call_session_id: uuid.UUID) -> None:
 
     db = SessionLocal()
     try:
-        session: Optional[CallSession] = db.get(CallSession, call_session_id)
+        session: CallSession | None = db.get(CallSession, call_session_id)
         if session is None:
             logger.warning("Recording upload: call_session %s not found", call_session_id)
             return
@@ -105,7 +104,7 @@ def _upload_recording_sync(call_session_id: uuid.UUID) -> None:
         db.close()
 
 
-def _get_recording_meta(session) -> Optional[dict]:
+def _get_recording_meta(session) -> dict | None:
     """Extract the recording sub-dict from call_session.call_metadata."""
     meta = session.call_metadata
     if not isinstance(meta, dict):
@@ -136,7 +135,7 @@ def _check_and_finalize(db, session, egress_id: str, gcs_path: str) -> None:
     finally:
         try:
             loop.close()
-        except Exception:
+        except Exception:  # noqa: S110 - best-effort event loop cleanup
             pass
 
     if egress_info is None:

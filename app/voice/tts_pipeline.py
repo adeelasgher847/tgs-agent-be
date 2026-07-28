@@ -37,7 +37,7 @@ Public API (unchanged — handler calls these without modification):
 
 import asyncio
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from app.core.logger import logger
 
@@ -275,7 +275,7 @@ class TtsPipeline:
         try:
             if not self.cancel_event.is_set():
                 self.cancel_event.set()
-        except Exception:
+        except Exception:  # noqa: S110 - defensive; Event.set() during shutdown must not block teardown
             pass
 
         tasks = list(self._synthesis_tasks.values())
@@ -362,7 +362,7 @@ class TtsPipeline:
     def _cache_key(text: str) -> str:
         return text.lower().strip()
 
-    def _get_cached(self, key: str) -> Optional[bytes]:
+    def _get_cached(self, key: str) -> bytes | None:
         audio = self._audio_cache.get(key)
         if audio is not None:
             del self._audio_cache[key]

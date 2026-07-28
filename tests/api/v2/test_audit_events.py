@@ -17,12 +17,10 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -226,7 +224,7 @@ class TestListAuditEvents:
         assert len(body["items"]) == 2
 
     def test_requires_admin(self):
-        from app.api.deps import get_db, require_admin
+        from app.api.deps import get_db
         from app.api.v2.routers.audit_events import router
 
         mini = FastAPI()

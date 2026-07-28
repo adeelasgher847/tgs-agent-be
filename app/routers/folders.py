@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Union
 
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
@@ -15,14 +14,14 @@ from app.services.folder_service import folder_service
 router = APIRouter()
 
 
-def _workspace_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+def _workspace_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_folder(
     body: FolderCreate,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     return folder_service.create_folder(db, _workspace_id(principal), body)
@@ -30,7 +29,7 @@ def create_folder(
 
 @router.get("/")
 def list_folders(
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     return folder_service.list_folders(db, _workspace_id(principal))
@@ -40,7 +39,7 @@ def list_folders(
 def update_folder(
     folder_id: uuid.UUID,
     body: FolderUpdate,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     return folder_service.update_folder(db, folder_id, _workspace_id(principal), body)
@@ -49,7 +48,7 @@ def update_folder(
 @router.delete("/{folder_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def delete_folder(
     folder_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     folder_service.delete_folder(db, folder_id, _workspace_id(principal))
@@ -60,7 +59,7 @@ def delete_folder(
 def add_flow_to_folder(
     folder_id: uuid.UUID,
     body: AddFlowToFolderRequest,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     return folder_service.add_flow_to_folder(

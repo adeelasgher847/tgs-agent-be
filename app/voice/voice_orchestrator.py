@@ -23,14 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Optional, Set
+from typing import TYPE_CHECKING, Set
 
 from app.core.config import settings
 from app.core.logger import logger
 from app.utils.audio_utils import ulaw_to_linear_sample
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
-from app.voice.stt_events import SttEventBus, SttFinalEvent, SttInterimEvent, SttErrorEvent
+from app.voice.stt_events import SttEventBus
 
 if TYPE_CHECKING:
     from app.core.agent_runtime import ResolvedSttRuntime
@@ -85,15 +85,15 @@ class VoiceOrchestrator:
         self._h = handler  # BidirectionalStreamHandler
 
         # ── STT state ────────────────────────────────────────────────────────
-        self._stt_pipeline: Optional[SttPipeline] = None
+        self._stt_pipeline: SttPipeline | None = None
         self._stt_active: bool = True
-        self._stt_deferred_endpointing_ms: Optional[int] = None
+        self._stt_deferred_endpointing_ms: int | None = None
         self._email_stt_endpointing_upgraded: bool = False
         # Resolved STT config (set by caller before first audio arrives)
-        self._resolved_stt: Optional["ResolvedSttRuntime"] = None
+        self._resolved_stt: "ResolvedSttRuntime" | None = None
         self._stt_event_bus: SttEventBus = SttEventBus()
         # LiveKit audio subscriber task (Google STT path only)
-        self._livekit_audio_task: Optional[asyncio.Task] = None
+        self._livekit_audio_task: asyncio.Task | None = None
 
         # ── User-pickup detection ─────────────────────────────────────────────
         # We use a short RMS window to detect real pickup before forwarding audio.
@@ -104,7 +104,7 @@ class VoiceOrchestrator:
         self._audio_level_samples: list[int] = []
         # Absolute time.time() until which we discard audio after pickup
         # (Twilio can still send system messages in the first moments).
-        self._skip_audio_until: Optional[float] = None
+        self._skip_audio_until: float | None = None
 
         # Pull thresholds from the handler so they stay in one config place.
         self._min_audio_level_threshold: int = handler._min_audio_level_threshold
@@ -355,7 +355,6 @@ class VoiceOrchestrator:
     async def _maybe_upgrade_stt_for_email(self, agent_text: str) -> None:
         """Recreate the Deepgram session with longer endpointing after the agent
         asks for an email address so spelling pauses don't split finals."""
-        import re as _re
         from app.routers.bidirectional_stream import _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE
 
         if not getattr(settings, "VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT", True):
@@ -425,28 +424,28 @@ class VoiceOrchestrator:
             cancel_event = self._tts_pipeline.cancel_event
             if not cancel_event.is_set():
                 cancel_event.set()
-        except Exception:
+        except Exception:  # noqa: S110 - defensive; Event.set() during shutdown must not block teardown
             pass
 
         # Shutdown TTS worker (drains queue, cancels worker task)
         try:
             await self._tts_pipeline.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] TTS pipeline shutdown failed: %s", exc)
 
         # Stop LiveKit audio subscriber (Google STT path)
         lk_subscriber = getattr(self, "_livekit_subscriber", None)
         if lk_subscriber:
             try:
                 await lk_subscriber.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[VoiceOrchestrator] LiveKit subscriber stop failed: %s", exc)
         lk_task = self._livekit_audio_task
         if lk_task and not lk_task.done():
             lk_task.cancel()
             try:
                 await lk_task
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: S110 - expected from cancelling the task above
                 pass
         self._livekit_audio_task = None
 
@@ -454,8 +453,8 @@ class VoiceOrchestrator:
         try:
             if self._stt_pipeline:
                 await self._stt_pipeline.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] STT pipeline close failed: %s", exc)
 
         logger.info("[VoiceOrchestrator] Shutdown complete")
 
@@ -489,8 +488,8 @@ class VoiceOrchestrator:
                 confidence,
                 self._h.call_session_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] Failed to log redacted final transcript: %s", exc)
 
         try:
             h = self._h

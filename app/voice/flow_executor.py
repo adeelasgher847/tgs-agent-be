@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from app.core.logger import logger
 
@@ -43,7 +43,7 @@ class NodeExecutionResult:
     node_type: str
     action: str
     config: Dict[str, Any]
-    speech_text: Optional[str] = None
+    speech_text: str | None = None
 
 
 class FlowExecutorError(Exception):
@@ -121,9 +121,9 @@ class FlowExecutor:
     def next_node_id(
         self,
         current_node_id: str,
-        transcript: Optional[str],
-        variables: Optional[Dict[str, Any]] = None,
-    ) -> Optional[str]:
+        transcript: str | None,
+        variables: Dict[str, Any] | None = None,
+    ) -> str | None:
         """Evaluate outgoing edges from ``current_node_id`` in priority order.
 
         Returns the target node id of the first matching edge, falling back
@@ -135,7 +135,7 @@ class FlowExecutor:
             raise FlowExecutorError(f"Unknown node id: {current_node_id}")
 
         variables = variables or {}
-        fallback_target: Optional[str] = None
+        fallback_target: str | None = None
 
         for edge in entry["outgoing_edges"]:
             condition = edge.get("condition") or {}
@@ -159,7 +159,7 @@ class FlowExecutor:
         self,
         condition_type: str,
         condition: Dict[str, Any],
-        transcript: Optional[str],
+        transcript: str | None,
         variables: Dict[str, Any],
     ) -> bool:
         if condition_type == "always":

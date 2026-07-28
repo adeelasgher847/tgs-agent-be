@@ -17,14 +17,14 @@ import argparse
 import json
 import uuid
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 
 from app.core.config import settings
 from app.services.openai_service import openai_service
 from app.services.rag_service import rag_service
 
 
-def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
+def _parse_uuid(value: str | None) -> uuid.UUID | None:
     if not value:
         return None
     return uuid.UUID(value)

@@ -2,7 +2,6 @@ import asyncio
 import base64
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from app.core.logger import logger
 from app.utils.audio_utils import (
@@ -30,10 +29,10 @@ class BackgroundAudioState:
     enabled: bool = False
     user_level: float = 0.5
     ramp_gain: float = 0.0
-    mulaw_bytes: Optional[bytes] = None
+    mulaw_bytes: bytes | None = None
     length: int = 0
     offset: int = 0
-    task: Optional[asyncio.Task] = None
+    task: asyncio.Task | None = None
 
 
 class BackgroundAudioManager:
@@ -186,8 +185,8 @@ class BackgroundAudioManager:
                     pass
                 finally:
                     self.state.task = None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[BG] Error stopping background audio loop: %s", exc)
 
     def mix_with_background(self, audio_bytes: bytes) -> bytes:
         if not self.state.mulaw_bytes or self.state.length == 0:

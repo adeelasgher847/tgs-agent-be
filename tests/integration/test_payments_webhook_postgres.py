@@ -138,16 +138,18 @@ class TestStripeWebhookPostgres:
         pi_id = pending_payment.payment_intent_id
         event = _make_succeeded_event(pi_id)
 
-        with patch.object(settings, "STRIPE_INCALL_WEBHOOK_SECRET", _FAKE_WEBHOOK_SECRET):
-            with patch(
+        with (
+            patch.object(settings, "STRIPE_INCALL_WEBHOOK_SECRET", _FAKE_WEBHOOK_SECRET),
+            patch(
                 "app.services.stripe_service.StripeService.construct_payment_webhook_event",
                 return_value=event,
-            ):
-                resp = pg_client.post(
-                    "/api/v1/payments/stripe-webhook",
-                    content=b'{"mocked": true}',
-                    headers={"stripe-signature": "t=1,v1=mocksig"},
-                )
+            ),
+        ):
+            resp = pg_client.post(
+                "/api/v1/payments/stripe-webhook",
+                content=b'{"mocked": true}',
+                headers={"stripe-signature": "t=1,v1=mocksig"},
+            )
 
         assert resp.status_code == 204, resp.text
 
@@ -177,16 +179,18 @@ class TestStripeWebhookPostgres:
 
         event = _make_failed_event(pi_id)
 
-        with patch.object(settings, "STRIPE_INCALL_WEBHOOK_SECRET", _FAKE_WEBHOOK_SECRET):
-            with patch(
+        with (
+            patch.object(settings, "STRIPE_INCALL_WEBHOOK_SECRET", _FAKE_WEBHOOK_SECRET),
+            patch(
                 "app.services.stripe_service.StripeService.construct_payment_webhook_event",
                 return_value=event,
-            ):
-                resp = pg_client.post(
-                    "/api/v1/payments/stripe-webhook",
-                    content=b'{"mocked": true}',
-                    headers={"stripe-signature": "t=1,v1=mocksig"},
-                )
+            ),
+        ):
+            resp = pg_client.post(
+                "/api/v1/payments/stripe-webhook",
+                content=b'{"mocked": true}',
+                headers={"stripe-signature": "t=1,v1=mocksig"},
+            )
 
         assert resp.status_code == 204, resp.text
 
@@ -258,16 +262,18 @@ class TestStripeWebhookPostgres:
         pi_id = f"pi_ghost_{uuid.uuid4().hex[:16]}"
         event = _make_succeeded_event(pi_id)
 
-        with patch.object(settings, "STRIPE_INCALL_WEBHOOK_SECRET", _FAKE_WEBHOOK_SECRET):
-            with patch(
+        with (
+            patch.object(settings, "STRIPE_INCALL_WEBHOOK_SECRET", _FAKE_WEBHOOK_SECRET),
+            patch(
                 "app.services.stripe_service.StripeService.construct_payment_webhook_event",
                 return_value=event,
-            ):
-                resp = pg_client.post(
-                    "/api/v1/payments/stripe-webhook",
-                    content=b'{"mocked": true}',
-                    headers={"stripe-signature": "t=1,v1=mocksig"},
-                )
+            ),
+        ):
+            resp = pg_client.post(
+                "/api/v1/payments/stripe-webhook",
+                content=b'{"mocked": true}',
+                headers={"stripe-signature": "t=1,v1=mocksig"},
+            )
 
         # Service returns False when no row found; router swallows and returns 204.
         assert resp.status_code == 204

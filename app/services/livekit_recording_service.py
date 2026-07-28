@@ -12,10 +12,7 @@ Room naming matches livekit_service.py: room_{call_session_id}
 
 from __future__ import annotations
 
-import json
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -33,7 +30,7 @@ class LiveKitRecordingService:
         call_id: uuid.UUID,
         workspace_id: uuid.UUID,
         gcs_path: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Start a room-composite audio-only egress that uploads to S3.
 
@@ -108,7 +105,7 @@ class LiveKitRecordingService:
             logger.warning("LiveKit egress stop failed for %s: %s", egress_id, exc)
             return False
 
-    async def get_egress_info(self, egress_id: str) -> Optional[object]:
+    async def get_egress_info(self, egress_id: str) -> object | None:
         """
         Return the EgressInfo proto for the given egress_id, or None on error.
         Used by upload_service to check completion status.

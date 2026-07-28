@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from app.schemas.base import SuccessResponse
-from app.models.user import User
 from app.api.deps import get_db
 from app.services.stripe_service import StripeService
 from app.core.logger import logger

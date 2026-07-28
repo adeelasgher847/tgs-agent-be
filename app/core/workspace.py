@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
 from app.models.tenant import Tenant
 
@@ -24,11 +24,11 @@ class Workspace:
     schema_name: str
     status: str
     credits: float
-    stripe_customer_id: Optional[str] = None
-    stripe_subscription_id: Optional[str] = None
-    parent_workspace_id: Optional[uuid.UUID] = None
+    stripe_customer_id: str | None = None
+    stripe_subscription_id: str | None = None
+    parent_workspace_id: uuid.UUID | None = None
     workspace_type: str = "standalone"
-    contact_email: Optional[str] = None
+    contact_email: str | None = None
 
     @classmethod
     def from_tenant(cls, tenant: Tenant) -> Workspace:

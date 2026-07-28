@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -170,7 +169,7 @@ async def get_current_user(access_token: str) -> dict:
 # ─── CalendlyIntegration CRUD ──────────────────────────────────────────────────
 
 
-def get_integration(db: Session, workspace_id: uuid.UUID) -> Optional[CalendlyIntegration]:
+def get_integration(db: Session, workspace_id: uuid.UUID) -> CalendlyIntegration | None:
     return (
         db.query(CalendlyIntegration)
         .filter(CalendlyIntegration.workspace_id == workspace_id)
@@ -187,9 +186,9 @@ def upsert_tokens(
     workspace_id: uuid.UUID,
     token_response: dict,
     *,
-    calendly_user_uri: Optional[str] = None,
-    connected_by_user_id: Optional[uuid.UUID] = None,
-    calendly_event_type_uri: Optional[str] = None,
+    calendly_user_uri: str | None = None,
+    connected_by_user_id: uuid.UUID | None = None,
+    calendly_event_type_uri: str | None = None,
 ) -> CalendlyIntegration:
     access_token = token_response["access_token"]
     refresh_token = token_response.get("refresh_token")
@@ -217,7 +216,7 @@ def upsert_tokens(
     return row
 
 
-async def get_valid_access_token(db: Session, workspace_id: uuid.UUID) -> Optional[str]:
+async def get_valid_access_token(db: Session, workspace_id: uuid.UUID) -> str | None:
     """
     Return a usable access token, refreshing it first if it expires within
     _TOKEN_REFRESH_MARGIN_SECONDS (5 minutes) — checked before every Calendly API call.
@@ -357,7 +356,7 @@ async def book_appointment(
     start_time: datetime,
     attendee_email: str,
     attendee_name: str,
-    description: Optional[str] = None,
+    description: str | None = None,
 ) -> dict:
     """
     Schedule an appointment on Calendly via POST /invitees. Injects the voice

@@ -14,7 +14,6 @@ import uuid
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession

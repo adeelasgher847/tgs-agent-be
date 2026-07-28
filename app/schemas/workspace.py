@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -68,7 +68,6 @@ class BrandingConfigUpsert(BaseModel):
     def _validate_logo_url(cls, v: Any) -> Any:
         if v is None:
             return v
-        from pydantic import HttpUrl
         from pydantic_core import Url
         if isinstance(v, str):
             if not v.startswith("https://"):
@@ -107,7 +106,7 @@ class PricingConfigOut(BaseModel):
 class WorkspaceUsageOut(BaseModel):
     """Response shape for cycle usage"""
     minutes_used_this_cycle: Decimal
-    minutes_included: Optional[Decimal] = None
+    minutes_included: Decimal | None = None
     overage_minutes: Decimal
     overage_cost: Decimal
 
@@ -116,15 +115,15 @@ class SubAccountCreate(BaseModel):
     contact_email: EmailStr
 
 class SubAccountUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=3, max_length=50)
-    contact_email: Optional[EmailStr] = None
+    name: str | None = Field(None, min_length=3, max_length=50)
+    contact_email: EmailStr | None = None
 
 class SubAccountOut(BaseModel):
     id: uuid.UUID
     name: str
-    contact_email: Optional[str] = None
+    contact_email: str | None = None
     status: str
-    api_key_prefix: Optional[str] = None
+    api_key_prefix: str | None = None
     usage_this_cycle_minutes: float
 
     model_config = {

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -88,7 +87,7 @@ def create_business_knowledge(
     response_model=SuccessResponse[BusinessKnowledgeList],
 )
 def list_business_knowledge(
-    agent_id: Optional[uuid.UUID] = None,
+    agent_id: uuid.UUID | None = None,
     include_inactive: bool = False,
     user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),

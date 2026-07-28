@@ -481,21 +481,23 @@ class TestSignatureValidation:
 
         request = _FakeRequest({"AnsweredBy": "human", "CallSid": "CAtest123"})
 
-        with patch.object(settings, "ALLOW_UNAUTHENTICATED_WEBHOOKS", False), patch(
-            "app.routers.amd_webhook.validate_twilio_signature", return_value=False
-        ), patch(
-            "app.routers.amd_webhook.validate_twilio_signature_with_token",
-            return_value=False,
+        with (
+            patch.object(settings, "ALLOW_UNAUTHENTICATED_WEBHOOKS", False),
+            patch("app.routers.amd_webhook.validate_twilio_signature", return_value=False),
+            patch(
+                "app.routers.amd_webhook.validate_twilio_signature_with_token",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(
-                    amd_callback(
-                        request=request,
-                        callSessionId=str(cs.id),
-                        batchCallRecordId=None,
-                        db=db,
-                    )
+            asyncio.run(
+                amd_callback(
+                    request=request,
+                    callSessionId=str(cs.id),
+                    batchCallRecordId=None,
+                    db=db,
                 )
+            )
 
         assert exc_info.value.status_code == 403
 
@@ -509,22 +511,24 @@ class TestSignatureValidation:
         user_id = _make_user(db)
         cs = _make_call_session(db, workspace_id, agent_id, user_id)
 
-        with patch.object(settings, "ALLOW_UNAUTHENTICATED_WEBHOOKS", False), patch(
-            "app.routers.amd_webhook.validate_twilio_signature", return_value=False
-        ), patch(
-            "app.routers.amd_webhook.validate_twilio_signature_with_token",
-            return_value=False,
+        with (
+            patch.object(settings, "ALLOW_UNAUTHENTICATED_WEBHOOKS", False),
+            patch("app.routers.amd_webhook.validate_twilio_signature", return_value=False),
+            patch(
+                "app.routers.amd_webhook.validate_twilio_signature_with_token",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(
-                    amd_hold(
-                        request=_FakeRequest({}),
-                        agentId=str(agent_id),
-                        userId=str(user_id),
-                        callSessionId=str(cs.id),
-                        db=db,
-                    )
+            asyncio.run(
+                amd_hold(
+                    request=_FakeRequest({}),
+                    agentId=str(agent_id),
+                    userId=str(user_id),
+                    callSessionId=str(cs.id),
+                    db=db,
                 )
+            )
 
         assert exc_info.value.status_code == 403
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Callable
 
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
