@@ -68,11 +68,29 @@ def _session(*, call_flow_id: uuid.UUID | None = None):
     return cs
 
 
-def _db():
+def _fake_call_flow(*, status: str = "active"):
+    """Minimal CallFlow-shaped stub covering both the active-status gate and
+    the (unmocked) A/B-testing lookup that also runs against db.execute()."""
+    return SimpleNamespace(
+        id=_FLOW_ID,
+        tenant_id=_TENANT_ID,
+        status=status,
+        ab_test_enabled=False,
+        ab_prompt_a_id=None,
+        ab_prompt_b_id=None,
+        ab_split_ratio=0.5,
+    )
+
+
+def _db(*, flow_status: str = "active"):
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = _phone_number()
     # concurrent outbound count query returns 0 (below any limit)
     db.query.return_value.filter.return_value.scalar.return_value = 0
+    # select(CallFlow)... lookups: the active-status gate and the A/B-testing block
+    db.execute.return_value.scalar_one_or_none.return_value = _fake_call_flow(
+        status=flow_status
+    )
     return db
 
 
@@ -94,6 +112,7 @@ async def _run(
     *,
     session_obj=None,
     livekit_enabled: bool = True,
+    flow_status: str = "active",
 ) -> AsyncMock:
     """
     Call initiate_call with all external dependencies mocked.
@@ -157,7 +176,7 @@ async def _run(
     ):
         await initiate_call(
             call_request=request,
-            db=_db(),
+            db=_db(flow_status=flow_status),
             is_system_call=False,
             tenant_id=mock_user.current_tenant_id,
             user_id=mock_user.id,
@@ -245,8 +264,34 @@ class TestFlowIdPassThrough:
         assert isinstance(result, JSONResponse)
         assert result.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_inactive_call_flow_rejects_call_before_create_room(self):
+        """An inactive call flow must block dispatch with a 422, and
+        create_room must never be reached."""
+        import json
 
-async def _run_raw(request) -> object:
+        from fastapi.responses import JSONResponse
+
+        req = _call_request(callFlowId=str(_FLOW_ID))
+
+        result = await _run_raw(req, flow_status="inactive")
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 422
+        body = json.loads(result.body)
+        assert body["error"]["code"] == "call_flow_inactive"
+
+    @pytest.mark.asyncio
+    async def test_active_call_flow_allows_create_room(self):
+        """An active call flow must not block dispatch — create_room is reached."""
+        req = _call_request(callFlowId=str(_FLOW_ID))
+
+        mock = await _run(req, flow_status="active")
+
+        mock.assert_awaited_once()
+
+
+async def _run_raw(request, *, flow_status: str = "active") -> object:
     """Like _run but returns the raw return value of initiate_call."""
     from app.services.voice_call_service import initiate_call
 
@@ -302,7 +347,7 @@ async def _run_raw(request) -> object:
     ):
         return await initiate_call(
             call_request=request,
-            db=_db(),
+            db=_db(flow_status=flow_status),
             is_system_call=False,
             tenant_id=mock_user.current_tenant_id,
             user_id=mock_user.id,

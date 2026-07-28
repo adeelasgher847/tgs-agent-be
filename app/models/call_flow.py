@@ -48,6 +48,9 @@ class CallFlow(Base):
 
     hipaa_compliance = Column(Boolean, default=False, nullable=False, server_default="false")
     public_access = Column(Boolean, default=False, nullable=False, server_default="false")
+    # "active" flows can be used to initiate outbound calls; "inactive" ones are rejected
+    # at dispatch time (see voice_call_service.initiate_call) without being deleted.
+    status = Column(String(20), default="active", nullable=False, server_default="active")
     is_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
@@ -99,5 +102,9 @@ class CallFlow(Base):
         CheckConstraint(
             "caller_memory_window >= 1 AND caller_memory_window <= 10",
             name="ck_callflow_caller_memory_window",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'inactive')",
+            name="ck_callflow_status",
         ),
     )
