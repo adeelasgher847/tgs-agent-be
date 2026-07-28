@@ -707,7 +707,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = False
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
-                first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
 
                 def _strip_control_tokens(text: str) -> str:
@@ -824,7 +823,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             if _vm:
                                 _vm.mark_first_tts_queued()
                             last_flush_ts = now_ts
-                            first_tts_chunk = False
 
                 # Flush any remaining buffer as final
                 full_accum = response_accum.strip()

@@ -85,12 +85,14 @@ class TestCallback:
     async def test_invalid_state_returns_400(self):
         from app.routers.hubspot_integration import hubspot_callback
 
-        with patch(
-            "app.routers.hubspot_integration.hubspot_service.verify_oauth_state",
-            side_effect=ValueError("Invalid or expired OAuth state"),
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.verify_oauth_state",
+                side_effect=ValueError("Invalid or expired OAuth state"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_callback(code="mock-auth-code", state="bad-state", db=MagicMock())
+            await hubspot_callback(code="mock-auth-code", state="bad-state", db=MagicMock())
 
         assert exc_info.value.status_code == 400
 
@@ -107,9 +109,11 @@ class TestCallback:
                 "app.routers.hubspot_integration.hubspot_service.exchange_code_for_tokens",
                 new=AsyncMock(side_effect=Exception("HubSpot 400")),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_callback(code="mock-auth-code", state="signed-state", db=MagicMock())
+            await hubspot_callback(
+                code="mock-auth-code", state="signed-state", db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 502
 
@@ -151,14 +155,16 @@ class TestContactEndpoint:
     async def test_not_connected_returns_400(self):
         from app.routers.hubspot_integration import hubspot_get_contact
 
-        with patch(
-            "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
-            return_value=False,
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_get_contact(
-                    phone="+15550001111", principal=_principal(), db=MagicMock()
-                )
+            await hubspot_get_contact(
+                phone="+15550001111", principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 
@@ -175,11 +181,11 @@ class TestContactEndpoint:
                 "app.routers.hubspot_integration.hubspot_service.get_contact_for_phone",
                 new=AsyncMock(return_value=None),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_get_contact(
-                    phone="+15550001111", principal=_principal(), db=MagicMock()
-                )
+            await hubspot_get_contact(
+                phone="+15550001111", principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 404
 
@@ -261,14 +267,16 @@ class TestFieldMappingEndpoint:
             mappings=[HubSpotFieldMapping(hubspot_field="jobtitle", prompt_variable="job_title")]
         )
 
-        with patch(
-            "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
-            return_value=False,
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_save_field_mapping(
-                    payload=payload, principal=_principal(), db=MagicMock()
-                )
+            await hubspot_save_field_mapping(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 
@@ -334,11 +342,11 @@ class TestFieldMappingEndpoint:
                 "app.routers.hubspot_integration.hubspot_service.get_hubspot_contact_properties",
                 new=AsyncMock(side_effect=Exception("HubSpot down")),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_save_field_mapping(
-                    payload=payload, principal=_principal(), db=MagicMock()
-                )
+            await hubspot_save_field_mapping(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 502
 
@@ -470,14 +478,16 @@ class TestSettingsEndpoint:
             contact_lookup_enabled=False, write_back_enabled=True
         )
 
-        with patch(
-            "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
-            return_value=False,
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.tenant_has_hubspot_connected",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await hubspot_update_settings(
-                    payload=payload, principal=_principal(), db=MagicMock()
-                )
+            await hubspot_update_settings(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 

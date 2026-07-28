@@ -270,14 +270,16 @@ class TestMakeTrigger:
         body = MakeTriggerRequest(agent_id=str(uuid.uuid4()), to_number="+15550001111")
         request = MagicMock()
 
-        with _patch_resolve_tenant_not_found():
-            with pytest.raises(HTTPException) as exc_info:
-                await make_trigger(
-                    body=body,
-                    request=request,
-                    db=_db(),
-                    x_make_secret=_MAKE_SECRET,
-                )
+        with (
+            _patch_resolve_tenant_not_found(),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await make_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_make_secret=_MAKE_SECRET,
+            )
 
         assert exc_info.value.status_code == 404
 
@@ -386,14 +388,16 @@ class TestN8nTrigger:
         body = CallInitiateRequest(agentId=str(uuid.uuid4()), toNumber="+15550002222")
         request = MagicMock()
 
-        with _patch_resolve_tenant_not_found():
-            with pytest.raises(HTTPException) as exc_info:
-                await n8n_trigger(
-                    body=body,
-                    request=request,
-                    db=_db(),
-                    x_n8n_webhook_secret=_N8N_SECRET,
-                )
+        with (
+            _patch_resolve_tenant_not_found(),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await n8n_trigger(
+                body=body,
+                request=request,
+                db=_db(),
+                x_n8n_webhook_secret=_N8N_SECRET,
+            )
 
         assert exc_info.value.status_code == 404
 
@@ -408,14 +412,16 @@ class TestN8nTrigger:
         body = CallInitiateRequest(agentId=str(_AGENT_ID), toNumber="+15550002222")
         request = MagicMock()
 
-        with _patch_resolve_tenant(tenant=tenant_no_secret):
-            with pytest.raises(HTTPException) as exc_info:
-                await n8n_trigger(
-                    body=body,
-                    request=request,
-                    db=_db(tenant=tenant_no_secret),
-                    x_n8n_webhook_secret=_N8N_SECRET,
-                )
+        with (
+            _patch_resolve_tenant(tenant=tenant_no_secret),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await n8n_trigger(
+                body=body,
+                request=request,
+                db=_db(tenant=tenant_no_secret),
+                x_n8n_webhook_secret=_N8N_SECRET,
+            )
 
         assert exc_info.value.status_code == 403
 

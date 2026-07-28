@@ -106,8 +106,10 @@ class JiraService(BaseCRMService):
                                             "def": field_def
                                         }
                                     else:
-                                        # Log warning if duplicate found
-                                        existing_id = createmeta_map[normalized_name]["id"]
+                                        # KNOWN GAP: comment says "log warning if duplicate
+                                        # found" but no logger call was ever added. Not
+                                        # removing — missing logging, not dead code.
+                                        existing_id = createmeta_map[normalized_name]["id"]  # noqa: F841
         except Exception:
             pass
         
@@ -442,7 +444,6 @@ class JiraService(BaseCRMService):
                                 
                                 # Check if field is required
                                 if field_def.get("required", False):
-                                    field_name = field_def.get("name", "")
                                     field_schema = field_def.get("schema", {})
                                     field_type = field_schema.get("type", "")
                                     
@@ -578,7 +579,7 @@ class JiraService(BaseCRMService):
                 pass
             
             return None
-        except Exception as e:
+        except Exception:
             return None
 
     def create_container(self, container_name: str, project_key: str | None = None) -> Dict[str, str]:
@@ -734,21 +735,25 @@ class JiraService(BaseCRMService):
                     continue
                 
                 matched_field_id = None
-                matched_source = None
-                
+                # KNOWN GAP: matched_source/original_name are computed on every
+                # branch below but never logged or otherwise consumed — looks like
+                # abandoned diagnostics for this fragile field-matching routine.
+                # Not removing — potential missing logging, not dead code.
+                matched_source = None  # noqa: F841
+
                 # Priority 1: Check createmeta first (source of truth)
                 if normalized_field_name in createmeta_map:
                     matched_field_id = createmeta_map[normalized_field_name]["id"]
-                    matched_source = "createmeta"
-                    original_name = createmeta_map[normalized_field_name]["name"]
-                
+                    matched_source = "createmeta"  # noqa: F841
+                    original_name = createmeta_map[normalized_field_name]["name"]  # noqa: F841
+
                 # Priority 2: Fallback to global fields
                 elif normalized_field_name in global_field_by_normalized_name:
                     matched_field = global_field_by_normalized_name[normalized_field_name]
                     matched_field_id = matched_field.get("id", "")
-                    matched_source = "global"
-                    original_name = matched_field.get("name", "")
-                
+                    matched_source = "global"  # noqa: F841
+                    original_name = matched_field.get("name", "")  # noqa: F841
+
                 # Priority 3: Check if multiple fields match (safety check)
                 if not matched_field_id:
                     # Check for partial matches in createmeta
@@ -757,8 +762,8 @@ class JiraService(BaseCRMService):
                         # Use the first match from createmeta
                         matched_normalized = createmeta_matches[0]
                         matched_field_id = createmeta_map[matched_normalized]["id"]
-                        matched_source = "createmeta (partial)"
-                        original_name = createmeta_map[matched_normalized]["name"]
+                        matched_source = "createmeta (partial)"  # noqa: F841
+                        original_name = createmeta_map[matched_normalized]["name"]  # noqa: F841
                 
                 if matched_field_id:
                     field_map[field_key] = matched_field_id
@@ -1102,7 +1107,6 @@ class JiraService(BaseCRMService):
             
             if response.status_code in [200, 201]:
                 issue_data = response.json()
-                issue_key = issue_data.get("key", "")
                 issue_id = issue_data.get("id", "")
                 
                 # Step 2: Update issue with custom fields (fields not on create screen)
@@ -1234,7 +1238,10 @@ class JiraService(BaseCRMService):
                 break
         
         if not transition_id:
-            available_statuses = [t.get("to", {}).get("name", "") for t in transitions]
+            # KNOWN GAP: computed right before this silent `return None` but never
+            # logged, so callers get no indication of what statuses *were*
+            # available. Not removing — likely missing diagnostic logging.
+            available_statuses = [t.get("to", {}).get("name", "") for t in transitions]  # noqa: F841
             return None
         
         # Execute transition
@@ -1347,7 +1354,7 @@ class JiraService(BaseCRMService):
                 data = response.json()
                 issues = data.get("issues", [])
                 total = data.get("total", 0)
-            except Exception as exc:
+            except Exception:
                 raise
             
             if not issues:
@@ -1355,8 +1362,7 @@ class JiraService(BaseCRMService):
             
             for issue in issues:
                 issue_id = issue.get("id", "")
-                issue_key = issue.get("key", "")
-                
+
                 try:
                     delete_url = f"{self.server_url}/rest/api/3/issue/{issue_id}?deleteSubtasks=true"
                     delete_response = requests.delete(delete_url, headers=self._headers(), timeout=20)
@@ -1409,7 +1415,7 @@ class JiraService(BaseCRMService):
                 data = response.json()
                 issues = data.get("issues", [])
                 total = data.get("total", 0)
-            except Exception as exc:
+            except Exception:
                 break
             
             if not issues:
@@ -1418,7 +1424,6 @@ class JiraService(BaseCRMService):
             # Check each issue's description for matching tenant_id
             for issue in issues:
                 issue_id = issue.get("id", "")
-                issue_key = issue.get("key", "")
                 fields = issue.get("fields", {})
                 description = fields.get("description")
                 
@@ -1513,7 +1518,6 @@ class JiraService(BaseCRMService):
                 
                 # Check each issue
                 for issue in issues:
-                    issue_key = issue.get("key", "")
                     fields = issue.get("fields", {})
                     
                     # Get tenant_id from custom field
@@ -1627,7 +1631,7 @@ class JiraService(BaseCRMService):
             
             return False
             
-        except Exception as exc:
+        except Exception:
             return False
     
     def _adf_to_text(self, adf: Dict) -> str:
@@ -1733,7 +1737,7 @@ class JiraService(BaseCRMService):
                 # Empty response is normal for PUT requests - return empty dict to indicate success
                 return {}
             
-        except Exception as exc:
+        except Exception:
             return None
 
     def update_items_email_sent(

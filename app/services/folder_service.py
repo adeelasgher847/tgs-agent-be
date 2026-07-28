@@ -75,7 +75,7 @@ class FolderService:
         tenant_id: uuid.UUID,
         flow_id: uuid.UUID,
     ) -> dict:
-        folder = self._get_folder_or_404(db, folder_id, tenant_id)
+        self._get_folder_or_404(db, folder_id, tenant_id)
 
         cf_repo = CallFlowRepository(db)
         flow = cf_repo.find_by_id(flow_id, tenant_id=tenant_id)

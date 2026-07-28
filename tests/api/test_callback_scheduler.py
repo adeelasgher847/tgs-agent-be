@@ -204,7 +204,7 @@ def test_no_answer_triggers_callback_creation():
         # Make the _next_valid_window return immediately (no BH rows)
         db.execute.return_value.scalar_one_or_none.return_value = None
 
-        result = svc.maybe_schedule_callback(db, call)
+        svc.maybe_schedule_callback(db, call)
 
     db.add.assert_called_once()
     db.commit.assert_called_once()
@@ -230,7 +230,7 @@ def test_busy_triggers_callback_creation():
     db.execute.return_value.scalar_one_or_none.return_value = None
 
     svc = CallbackSchedulerService()
-    result = svc.maybe_schedule_callback(db, call)
+    svc.maybe_schedule_callback(db, call)
 
     db.add.assert_called_once()
     added = db.add.call_args[0][0]

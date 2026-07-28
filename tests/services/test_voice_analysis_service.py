@@ -73,15 +73,21 @@ class TestTranscriptSummaryPersistence:
             "content": "Caller booked an appointment for next Tuesday.\nCALLER_NAME: Jane Doe"
         }
 
-        with patch.object(vas_module.transcript_service, "get_messages_by_session", return_value=[msg]):
-            with patch.object(vas_module.ModelService, "get_model_by_name", return_value=mock_model):
-                with patch(
-                    "app.services.openai_service.OpenAIService.generate_text",
-                    return_value=analysis_text,
-                ):
-                    result = VoiceAnalysisService().analyze_call_transcript(
-                        db=db, call_session=session, user_id=USER_ID
-                    )
+        with (
+            patch.object(
+                vas_module.transcript_service, "get_messages_by_session", return_value=[msg]
+            ),
+            patch.object(
+                vas_module.ModelService, "get_model_by_name", return_value=mock_model
+            ),
+            patch(
+                "app.services.openai_service.OpenAIService.generate_text",
+                return_value=analysis_text,
+            ),
+        ):
+            result = VoiceAnalysisService().analyze_call_transcript(
+                db=db, call_session=session, user_id=USER_ID
+            )
 
         assert session.transcript_summary == result["analysis"]["summary"]
         assert "Caller booked an appointment for next Tuesday." in session.transcript_summary

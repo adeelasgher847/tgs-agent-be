@@ -454,6 +454,9 @@ class TestLivekitRoomCreationFailure:
         ):
             result = await _run_direct(req)
 
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_503_SERVICE_UNAVAILABLE
+
         # create_call_session must NOT have been called
         mock_css.create_call_session.assert_not_called()
 

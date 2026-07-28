@@ -283,7 +283,7 @@ def seed(db: Session) -> None:
         
         db.commit()
 
-    except Exception as e:
+    except Exception:
         db.rollback()  # Rollback only the agent session segment
         print("\n⚠️  [seed] Skipping Agent/Flow objects because local DB is missing newer feature branch columns.")
         print("   Workspaces and Admin users are still fully configured and ready!\n")

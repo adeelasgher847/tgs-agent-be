@@ -27,11 +27,9 @@ from app.schemas.workspace import (
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import Request, Response, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin
 from app.core.logger import logger
 from app.models.role import Role
 from app.models.user import User, user_tenant_association

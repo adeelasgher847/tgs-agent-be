@@ -27,8 +27,7 @@ class CRMServiceFactory:
             BaseCRMService instance
         """
         crm_type = crm_config.crm_type.lower()
-        api_key = decrypt_api_key(crm_config.encrypted_api_key)
-        
+
         if crm_type == "monday":
             # MondayService accepts optional API key
             service = MondayService(api_key=crm_config.encrypted_api_key)  # Pass encrypted, service will decrypt

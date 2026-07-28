@@ -152,13 +152,15 @@ class TestGetCurrentUserJwtSoftDelete:
         credentials = MagicMock()
         credentials.credentials = token
 
-        with patch("app.api.deps.auth.get_auth_method", return_value=None):
-            with pytest.raises(HTTPException) as exc_info:
-                get_current_user_jwt(
-                    request=request,
-                    credentials=credentials,
-                    db=db,
-                )
+        with (
+            patch("app.api.deps.auth.get_auth_method", return_value=None),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            get_current_user_jwt(
+                request=request,
+                credentials=credentials,
+                db=db,
+            )
         assert exc_info.value.status_code == 401
         assert "deactivated" in exc_info.value.detail.lower()
 

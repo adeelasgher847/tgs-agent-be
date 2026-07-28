@@ -113,9 +113,9 @@ class TestCallback:
                 "app.routers.ghl_integration.ghl_service.exchange_code_for_tokens",
                 new=AsyncMock(side_effect=Exception("GHL 400")),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_callback(code="mock-auth-code", state="signed-state", db=MagicMock())
+            await ghl_callback(code="mock-auth-code", state="signed-state", db=MagicMock())
 
         assert exc_info.value.status_code == 502
 
@@ -233,9 +233,9 @@ class TestNoteEndpoint:
             patch(
                 "app.routers.ghl_integration.ghl_service.get_valid_access_token",
             ) as mock_get_token,
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_create_note(payload=payload, principal=_principal(), db=MagicMock())
+            await ghl_create_note(payload=payload, principal=_principal(), db=MagicMock())
 
         assert exc_info.value.status_code == 400
         mock_get_token.assert_not_called()
@@ -261,9 +261,9 @@ class TestNoteEndpoint:
                 "app.routers.ghl_integration.ghl_service.get_valid_access_token",
                 new=AsyncMock(return_value=None),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_create_note(payload=payload, principal=_principal(), db=MagicMock())
+            await ghl_create_note(payload=payload, principal=_principal(), db=MagicMock())
 
         assert exc_info.value.status_code == 502
 
@@ -287,9 +287,9 @@ class TestNoteEndpoint:
                 "app.routers.ghl_integration.ghl_service.create_note",
                 new=AsyncMock(side_effect=Exception("GHL 500")),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await ghl_create_note(payload=payload, principal=_principal(), db=MagicMock())
+            await ghl_create_note(payload=payload, principal=_principal(), db=MagicMock())
 
         assert exc_info.value.status_code == 502
 
