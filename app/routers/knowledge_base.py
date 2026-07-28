@@ -195,12 +195,49 @@ def _is_kb_linked_to_active_flow(db: Session, kb_id: uuid.UUID) -> bool:
 
 # ── Knowledge base CRUD ───────────────────────────────────────────────────────
 
-@router.post("/", response_model=SuccessResponse[KbOut], status_code=201)
+@router.post(
+    "/",
+    response_model=SuccessResponse[KbOut],
+    status_code=201,
+    summary="Create a knowledge base",
+)
 def create_knowledge_base(
     payload: KbCreate,
     user=Depends(require_admin_or_owner),
     db: Session = Depends(get_db),
 ):
+    """
+    Create an empty knowledge base (KB) container, scoped to the caller's
+    current workspace. This only creates the KB record — it has no content
+    yet, so it won't affect any calls until you populate and attach it.
+
+    **Auth:** requires `admin` or `owner` role (JWT). Workspace is taken from
+    the authenticated user's `current_tenant_id` — there is no `workspaceId`
+    in the request body.
+
+    **Typical frontend flow:**
+    1. `POST /api/v1/kb/` (this endpoint) → get back `data.id` (the `kb_id`).
+    2. Add content to the KB, either or both:
+       - `POST /api/v1/kb/{kb_id}/file` — upload a PDF/DOCX/TXT file (≤ 50 MB).
+         Returns `202` immediately with a `job_id`; ingestion (chunking +
+         embedding) runs asynchronously. Poll
+         `GET /api/v1/kb/{kb_id}/files/{file_id}/status` to know when it's
+         ready.
+       - `POST /api/v1/kb/{kb_id}/text` — ingest raw text directly.
+         Synchronous — chunks + embeddings are ready when this call returns
+         `201`.
+    3. Attach the KB to a call flow so the voice agent can retrieve from it:
+       `PUT /api/v1/call-flows/{flow_id}/knowledge-bases` with
+       `{"kb_ids": ["<kb_id>", ...]}`. A call flow can have multiple KBs;
+       passing an empty list detaches all of them.
+
+    **Request body:**
+    - `name` (required) — display name, 1–255 characters.
+    - `description` (optional) — free-text summary of the KB's contents.
+
+    **Response (`201`):** `data` is the created KB —
+    `{id, workspace_id, name, description, created_at, updated_at}`.
+    """
     workspace_id = user.current_tenant_id
     kb = KnowledgeBase(
         id=uuid.uuid4(),
