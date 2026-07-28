@@ -191,7 +191,7 @@ class TrelloService(BaseCRMService):
                 try:
                     error_data = e.response.json()
                     error_msg += f"HTTP {e.response.status_code}: {error_data}"
-                except:
+                except Exception:
                     error_msg += f"HTTP {e.response.status_code}: {e.response.text[:200]}"
             raise ValueError(error_msg)
         except Exception as e:

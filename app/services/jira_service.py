@@ -237,7 +237,7 @@ class JiraService(BaseCRMService):
                     if response.status_code == 404:
                         # Key doesn't exist - we can use it
                         return test_key
-                except:
+                except Exception:
                     # If check fails, assume we can use it
                     return test_key
         
@@ -317,7 +317,7 @@ class JiraService(BaseCRMService):
                     error_messages = error_data.get("errorMessages", [])
                     errors = error_data.get("errors", {})
                     error_msg = ', '.join(error_messages) if error_messages else str(errors)
-                except:
+                except Exception:
                     error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
                 
                 raise ValueError(f"Failed to create Jira project: {error_msg}")
@@ -332,7 +332,7 @@ class JiraService(BaseCRMService):
                     error_msg += f": {', '.join(error_messages)}"
                 if errors:
                     error_msg += f" Errors: {errors}"
-            except:
+            except Exception:
                 error_msg += f": {e.response.text[:200]}"
             raise ValueError(f"Failed to create Jira project: {error_msg}")
         except Exception as e:
@@ -469,7 +469,7 @@ class JiraService(BaseCRMService):
                                                             options = options_resp.json().get("values", [])
                                                             if options:
                                                                 required_fields[field_id] = {"value": options[0].get("value", options[0].get("name", ""))}
-                                            except:
+                                            except Exception:
                                                 pass
                                     elif field_type in ["string", "text"]:
                                         # Text field - only set if there's a default value
@@ -575,7 +575,7 @@ class JiraService(BaseCRMService):
                                 first_opt = options[0].get("value", "")
                                 if first_opt:
                                     return first_opt
-            except:
+            except Exception:
                 pass
             
             return None
@@ -629,7 +629,7 @@ class JiraService(BaseCRMService):
                         error_messages = error_data.get("errorMessages", [])
                         errors = error_data.get("errors", {})
                         error_msg = f"Error checking Jira project: {', '.join(error_messages) if error_messages else str(errors)}"
-                    except:
+                    except Exception:
                         error_msg = f"Error checking Jira project: HTTP {response.status_code} - {response.text[:200]}"
                     
                     raise ValueError(
@@ -800,7 +800,7 @@ class JiraService(BaseCRMService):
                 error_messages = error_data.get("errorMessages", [])
                 if error_messages:
                     error_msg += f" - {', '.join(error_messages)}"
-            except:
+            except Exception:
                 error_msg += f" - {e.response.text[:200]}"
             
             raise ValueError(f"{error_msg}. Please check your Jira API credentials and permissions.")
@@ -1171,7 +1171,7 @@ class JiraService(BaseCRMService):
                     error_data = response.json()
                     error_messages = error_data.get("errorMessages", [])
                     errors_dict = error_data.get("errors", {})
-                except:
+                except Exception:
                     error_messages = []
                     errors_dict = {}
                 
@@ -1223,7 +1223,7 @@ class JiraService(BaseCRMService):
             try:
                 error_data = e.response.json()
                 error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
-            except:
+            except Exception:
                 error_msg += f": {e.response.text[:200]}"
             return None
         except Exception:
@@ -1257,7 +1257,7 @@ class JiraService(BaseCRMService):
             try:
                 error_data = e.response.json()
                 error_msg += f": {', '.join(error_data.get('errorMessages', []))}"
-            except:
+            except Exception:
                 error_msg += f": {e.response.text[:200]}"
             return None
         except Exception:

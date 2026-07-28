@@ -28,12 +28,11 @@ from urllib.parse import quote
 import hashlib
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+# TTS audio cache from tts_audio router, reused here for pre-generation optimization
+from app.routers.tts_audio import audio_cache
 
 router = APIRouter()
 model_service = ModelService()
-
-# Import TTS audio cache from tts_audio router for pre-generation optimization
-from app.routers.tts_audio import audio_cache
 
 
 def generate_cache_key(text: str, language: str, voice_type: str, use_chirp3_hd: bool = False, format: str = "mp3") -> str:
@@ -624,7 +623,7 @@ async def gather_speech_callback_webhook(
             tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
             response.play(tts_url)
             response.hangup()
-        except:
+        except Exception:
             text = "Please call back later. Goodbye!"
             tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(text)}&lang=en&voice=female"
             response.play(tts_url)

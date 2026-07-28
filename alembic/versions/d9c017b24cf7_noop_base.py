@@ -7,7 +7,6 @@ This stub keeps Alembic migration graph consistent so we can apply the new
 KB table migration.
 """
 
-from alembic import op
 
 revision = "d9c017b24cf7"
 down_revision = "b6d5f9e0d2aa"

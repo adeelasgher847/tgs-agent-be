@@ -35,7 +35,7 @@ def verify_n8n_webhook_secret(request: Request) -> bool:
         
         if isinstance(body, dict) and body.get('webhook_secret') == settings.N8N_WEBHOOK_SECRET:
             return True
-    except:
+    except Exception:
         pass
     
     return False
@@ -61,7 +61,7 @@ async def verify_n8n_webhook_secret_async(request: Request) -> bool:
             body = json.loads(body_bytes.decode('utf-8'))
             if isinstance(body, dict) and body.get('webhook_secret') == settings.N8N_WEBHOOK_SECRET:
                 return True
-    except:
+    except Exception:
         pass
     
     return False

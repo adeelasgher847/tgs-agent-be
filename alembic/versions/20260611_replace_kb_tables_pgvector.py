@@ -5,12 +5,12 @@ Revises: 20260611_cleanup_orphan_tables
 Create Date: 2026-06-11 00:00:00.000000
 """
 
+from alembic import op
+
 revision = "20260611_kb_pgvector"
 down_revision = "20260610_webhooks"
 branch_labels = None
 depends_on = None
-
-from alembic import op
 
 
 def upgrade() -> None:
