@@ -34,7 +34,7 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
-          pip install ruff black pytest-asyncio
+          pip install ruff==0.15.20 black pytest-asyncio
 
       - name: Run Ruff Lint Check
         run: ruff check . --exclude alembic/versions --ignore F401,F841,F541,F811,F821,E402,E711,E712,E702,E722,E741
