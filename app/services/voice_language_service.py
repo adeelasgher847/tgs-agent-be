@@ -1,4 +1,3 @@
-from typing import Optional
 
 from app.core.logger import logger
 
@@ -9,8 +8,8 @@ def get_agent_voice(agent) -> str:
         return "Polly.Joanna"  # Default female voice
 
     # Get voice type and language from agent
-    voice_type: Optional[str] = getattr(agent, "voice_type", None)
-    language: Optional[str] = getattr(agent, "language", None)
+    voice_type: str | None = getattr(agent, "voice_type", None)
+    language: str | None = getattr(agent, "language", None)
 
     # Voice mapping based on language and gender using correct Twilio voice names
     voice_map = {

@@ -13,7 +13,7 @@ Twilio MULAW path is unaffected.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -36,7 +36,7 @@ class LiveKitAudioSubscriber:
         self._stt_pipeline = stt_pipeline
         self._output_sample_rate = output_sample_rate
         self._stop_event = asyncio.Event()
-        self._processor: Optional[LiveKitAudioProcessor] = None
+        self._processor: LiveKitAudioProcessor | None = None
 
     async def run(self) -> None:
         """Connect to LiveKit room, subscribe to caller audio, feed STT."""
@@ -72,7 +72,7 @@ class LiveKitAudioSubscriber:
             return
 
         room = rtc.Room()
-        audio_stream: Optional[Any] = None
+        audio_stream: Any | None = None
         caller_track_found = asyncio.Event()
 
         def on_track_subscribed(track, publication, participant):

@@ -31,7 +31,6 @@ from google.oauth2 import id_token as google_id_token
 from google.auth.transport.requests import Request as GoogleRequest
 from app.core.config import settings
 import uuid
-from typing import Optional
 import re
 from app.core.logger import logger
 from app.services.role_service import get_default_product_id
@@ -176,7 +175,6 @@ def login(
         from app.services.role_service import (
             get_user_role_in_tenant,
             get_user_product_in_tenant,
-            assign_role_to_user_tenant,
         )
         
         # Check if user has a role in this tenant
@@ -244,7 +242,6 @@ def google_login(
         # Fields we care about from Google
         sub = idinfo.get("sub")  # stable Google user id
         email = idinfo.get("email")
-        email_verified = idinfo.get("email_verified")
         picture = idinfo.get("picture")
         given_name = idinfo.get("given_name")
         family_name = idinfo.get("family_name")
@@ -281,7 +278,6 @@ def google_login(
         # Always prefer provider-provided names. Fallback: split full name or use default.
         first_name = given_name or (name.split()[0] if name else "User")
         last_name = family_name or (" ".join(name.split()[1:]) if name and len(name.split()) > 1 else ".")
-        hashed_password = get_password_hash(secrets.token_urlsafe(32))  # placeholder for social
 
         db_user = User(
             email=email,
@@ -342,23 +338,29 @@ def google_login(
         # Update social fields if they were missing/outdated
         updated = False
         if user.provider != "google":
-            user.provider = "google"; updated = True
+            user.provider = "google"
+            updated = True
         if not user.provider_user_id and sub:
-            user.provider_user_id = sub; updated = True
+            user.provider_user_id = sub
+            updated = True
         # Keep names synced from provider when available (no email-based fallback)
         if given_name and user.first_name != given_name:
-            user.first_name = given_name; updated = True
+            user.first_name = given_name
+            updated = True
         if family_name and user.last_name != family_name:
-            user.last_name = family_name; updated = True
+            user.last_name = family_name
+            updated = True
         elif (not family_name) and name:
             parts = name.split()
             if len(parts) > 1 and user.last_name != " ".join(parts[1:]):
-                user.last_name = " ".join(parts[1:]); updated = True
+                user.last_name = " ".join(parts[1:])
+                updated = True
         # light profile snapshot
         profile = user.provider_profile or {}
         new_profile = { "name": name, "given_name": given_name, "family_name": family_name, "email": email, "picture": picture }
         if any(profile.get(k) != v for k, v in new_profile.items()):
-            user.provider_profile = { **profile, **new_profile }; updated = True
+            user.provider_profile = { **profile, **new_profile }
+            updated = True
         if updated:
             db.add(user)
             db.commit()
@@ -375,7 +377,6 @@ def google_login(
         db.commit()
 
     role_info = None
-    current_role = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         from app.services.role_service import get_display_role_details
@@ -386,8 +387,6 @@ def google_login(
                 name=disp["name"],
                 description=disp["description"]
             )
-        if role:
-            current_role = role.name
 
     # Issue tokens (provider-based; no password needed)
     token_response = issue_tokens_for_user(db, user, current_tenant_id, role_info)
@@ -452,7 +451,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
         try:
             db.query(RefreshToken).filter(
                 RefreshToken.user_id == rt.user_id,
-                RefreshToken.revoked == False,
+                ~RefreshToken.revoked,
             ).update({"revoked": True}, synchronize_session=False)
             db.commit()
         except Exception:
@@ -481,7 +480,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     current_tenant_id = user.current_tenant_id if user.current_tenant_id in tenant_ids else (tenant_ids[0] if tenant_ids else None)
 
     role_info = None
-    current_role: Optional[str] = None
+    current_role: str | None = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         from app.services.role_service import get_display_role_details
@@ -550,7 +549,7 @@ def logout(current_user: User = Depends(get_current_user_jwt), db: Session = Dep
     # Find and revoke all active refresh tokens for the user
     active_tokens = db.query(RefreshToken).filter(
         RefreshToken.user_id == current_user.id,
-        RefreshToken.revoked == False,
+        ~RefreshToken.revoked,
         RefreshToken.expires_at > datetime.now(timezone.utc)
     ).all()
     
@@ -674,7 +673,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     # Invalidate any existing reset tokens for this user
     existing_tokens = db.query(PasswordResetToken).filter(
         PasswordResetToken.user_id == user.id,
-        PasswordResetToken.used == False
+        ~PasswordResetToken.used
     ).all()
     
     for token in existing_tokens:
@@ -729,7 +728,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     # Find valid reset token
     reset_token = db.query(PasswordResetToken).filter(
         PasswordResetToken.token == request.token,
-        PasswordResetToken.used == False,
+        ~PasswordResetToken.used,
         PasswordResetToken.expires_at > datetime.now(timezone.utc)
     ).first()
     
@@ -761,7 +760,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     # Revoke all user's refresh tokens on password change
     active_rts = db.query(RefreshToken).filter(
         RefreshToken.user_id == user.id,
-        RefreshToken.revoked == False,
+        ~RefreshToken.revoked,
         RefreshToken.expires_at > datetime.now(timezone.utc)
     ).all()
     
@@ -863,7 +862,7 @@ def update_user_profile(
     try:
         db.commit()
         db.refresh(current_user)
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

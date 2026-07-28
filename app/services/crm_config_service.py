@@ -4,12 +4,12 @@ CRM Configuration Service
 
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from typing import Optional, List
+from typing import List
 import uuid
 import json
 
 from app.models.tenant_crm_config import CRMConfig
-from app.core.security import encrypt_api_key, decrypt_api_key
+from app.core.security import encrypt_api_key
 from app.schemas.crm_config import CRMConfigCreate, CRMConfigUpdate
 
 
@@ -82,12 +82,12 @@ class CRMConfigService:
         return crm_config
 
     @staticmethod
-    def get_crm_config_by_id(db: Session, crm_config_id: uuid.UUID) -> Optional[CRMConfig]:
+    def get_crm_config_by_id(db: Session, crm_config_id: uuid.UUID) -> CRMConfig | None:
         """Get CRM config by ID"""
         return db.query(CRMConfig).filter(CRMConfig.id == crm_config_id).first()
 
     @staticmethod
-    def get_crm_config_by_type(db: Session, crm_type: str) -> Optional[CRMConfig]:
+    def get_crm_config_by_type(db: Session, crm_type: str) -> CRMConfig | None:
         """Get CRM config by CRM type"""
         return db.query(CRMConfig).filter(
             CRMConfig.crm_type == crm_type.lower()

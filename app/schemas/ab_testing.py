@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -27,8 +27,8 @@ class AbTestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     ab_test_enabled: bool
-    ab_prompt_a_id: Optional[uuid.UUID]
-    ab_prompt_b_id: Optional[uuid.UUID]
+    ab_prompt_a_id: uuid.UUID | None
+    ab_prompt_b_id: uuid.UUID | None
     ab_split_ratio: float
 
 
@@ -36,7 +36,7 @@ class VariantMetrics(BaseModel):
     calls: int
     completed: int
     failed: int
-    avg_duration: Optional[float]
+    avg_duration: float | None
     transfer_rate: float
     success_rate: float
 

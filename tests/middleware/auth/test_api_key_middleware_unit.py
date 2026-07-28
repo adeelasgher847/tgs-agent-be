@@ -6,8 +6,6 @@ All DB and Redis I/O is mocked so these tests run without any external services.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -469,16 +467,20 @@ class TestJwtAuth:
         async def _load(wid):
             return workspace
 
-        with patch("app.middleware.api_key_middleware._resolve_api_key", side_effect=_resolve):
-            with patch("app.middleware.api_key_middleware._load_workspace", side_effect=_load):
-                resp = client.get(
-                    "/api/v1/protected",
-                    headers={
-                        "x-api-key": "bad",
-                        "x-workspace-id": str(tenant_id),
-                        "Authorization": f"Bearer {token}",
-                    },
-                )
+        with (
+            patch(
+                "app.middleware.api_key_middleware._resolve_api_key", side_effect=_resolve
+            ),
+            patch("app.middleware.api_key_middleware._load_workspace", side_effect=_load),
+        ):
+            resp = client.get(
+                "/api/v1/protected",
+                headers={
+                    "x-api-key": "bad",
+                    "x-workspace-id": str(tenant_id),
+                    "Authorization": f"Bearer {token}",
+                },
+            )
         assert resp.status_code == 200
         assert resp.json()["auth_method"] == "jwt"
 

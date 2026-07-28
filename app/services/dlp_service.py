@@ -14,9 +14,7 @@ Supported DLP infoTypes (per ticket spec):
 
 from __future__ import annotations
 
-import asyncio
 import re
-from functools import lru_cache
 
 from app.core.config import settings
 from app.core.logger import logger

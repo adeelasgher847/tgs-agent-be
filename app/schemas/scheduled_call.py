@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List
 
 class CSVUploadResponse(BaseModel):
     total_rows: int
@@ -25,7 +25,7 @@ class DeleteBoardItemsResponse(BaseModel):
 class PendingCountByCrm(BaseModel):
     """Pending count for one CRM (used when user has multiple CRMs)."""
     crm_type: str
-    crm_config_id: Optional[str] = None
+    crm_config_id: str | None = None
     pending_count: int
 
 
@@ -64,7 +64,7 @@ class SelectCrmConfigRequest(BaseModel):
 class ScheduleFromCallSessionRequest(BaseModel):
     """Request to create a scheduled call in CRM from a completed call session."""
     call_session_id: str = Field(..., description="Call session ID (UUID) whose transcript/metadata will be used")
-    agent_id: Optional[str] = Field(None, description="Optional agent ID to use for the scheduled call; if omitted, session's agent is used")
+    agent_id: str | None = Field(None, description="Optional agent ID to use for the scheduled call; if omitted, session's agent is used")
 
 
 class JiraBatchAnalysisRequest(BaseModel):
@@ -73,4 +73,4 @@ class JiraBatchAnalysisRequest(BaseModel):
     phone_numbers: List[str] = Field(default_factory=list, description="List of phone numbers (optional, fallback)")
     total_scheduled: int = Field(..., description="Total scheduled calls")
     item_ids: List[str] = Field(default_factory=list, description="Item IDs for CRM update (e.g., issue_keys for Jira)")
-    container_id: Optional[str] = Field(None, description="Container ID (project_key for Jira, optional)")
+    container_id: str | None = Field(None, description="Container ID (project_key for Jira, optional)")

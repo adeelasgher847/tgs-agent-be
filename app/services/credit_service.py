@@ -8,12 +8,11 @@ from app.models.tenant import Tenant
 from app.models.agent import Agent
 from app.models.call_session import CallSession
 from app.models.call_log import CallLog
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import uuid
 import asyncio
 from datetime import datetime, timezone
 import logging
-import math
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +153,7 @@ class CreditService:
         db: Session, 
         tenant_id: uuid.UUID, 
         amount: float,
-        call_session_id: Optional[uuid.UUID] = None,
+        call_session_id: uuid.UUID | None = None,
         description: str = None
     ) -> tuple[bool, float]:
         """
@@ -393,7 +392,7 @@ class CreditService:
                             # Try to end the Twilio call immediately
                             try:
                                 await self._end_twilio_call(call_session.twilio_call_sid)
-                                logger.info(f"✅ Twilio call ended immediately due to insufficient credits")
+                                logger.info("✅ Twilio call ended immediately due to insufficient credits")
                             except Exception as e:
                                 logger.error(f"Error ending Twilio call: {e}")
                             

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from typing import Optional
 
 from botocore.exceptions import ClientError
 
@@ -21,7 +20,7 @@ from app.core.logger import logger
 from app.services.s3_service import get_s3_client
 
 
-def build_s3_key(workspace_id: uuid.UUID, call_id: uuid.UUID, end_time: Optional[datetime.datetime] = None) -> str:
+def build_s3_key(workspace_id: uuid.UUID, call_id: uuid.UUID, end_time: datetime.datetime | None = None) -> str:
     """Return the canonical S3 object key for a call recording."""
     date_str = (end_time or datetime.datetime.now(datetime.timezone.utc)).strftime("%Y%m%d")
     return f"{settings.GCS_RECORDINGS_PREFIX}/{workspace_id}/{call_id}/{date_str}.opus"
@@ -33,7 +32,7 @@ def upload_recording(
     metadata: dict,
     content_type: str = "audio/ogg; codecs=opus",
     *,
-    kms_key_name: Optional[str] = None,
+    kms_key_name: str | None = None,
 ) -> str:
     """
     Upload an Opus recording to S3 and set custom metadata.
@@ -93,7 +92,7 @@ def update_object_metadata(key: str, metadata: dict) -> None:
     logger.debug("S3 metadata updated: %s", key)
 
 
-def get_object_size(key: str) -> Optional[int]:
+def get_object_size(key: str) -> int | None:
     """Return the size in bytes of an S3 object, or None if not found."""
     client = get_s3_client()
     try:

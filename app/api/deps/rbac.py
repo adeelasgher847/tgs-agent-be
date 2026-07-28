@@ -1,4 +1,3 @@
-from typing import Optional, Union
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -27,7 +26,7 @@ def _reject_readonly_on_write(request: Request, role_name: str) -> None:
         )
 
 
-def _forbidden(role_required: str, user_role: Optional[str]) -> HTTPException:
+def _forbidden(role_required: str, user_role: str | None) -> HTTPException:
     """Structured 403 per the RBAC matrix: detail.code/role_required/user_role/message."""
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -47,7 +46,7 @@ def _not_a_member() -> HTTPException:
     )
 
 
-def _resolve_effective_role(user: User, db: Session) -> Optional[str]:
+def _resolve_effective_role(user: User, db: Session) -> str | None:
     """Cached effective role for the user's current tenant (None = not a member)."""
     if not user.current_tenant_id:
         raise HTTPException(
@@ -113,9 +112,9 @@ def _require_rank_or_api_key(required: str):
     """Like _require_rank, but lets API-key (M2M) principals through untiered."""
 
     def _dependency(
-        principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+        principal: User | ApiKeyPrincipal = Depends(require_tenant),
         db: Session = Depends(get_db),
-    ) -> Union[User, ApiKeyPrincipal]:
+    ) -> User | ApiKeyPrincipal:
         if isinstance(principal, ApiKeyPrincipal):
             return principal
         role_name = _resolve_effective_role(principal, db)

@@ -9,8 +9,7 @@ from __future__ import annotations
 import hashlib
 import sys
 import os
-import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 # ── Google stubs (mirrors root conftest) ──────────────────────────────────────
 sys.modules.setdefault("google", MagicMock())
@@ -29,7 +28,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -42,7 +40,6 @@ from app.middleware.api_key_middleware import ApiKeyMiddleware
 # ── SQLite in-memory setup ────────────────────────────────────────────────────
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.types import JSON
 
 
 @compiles(JSONB, "sqlite")

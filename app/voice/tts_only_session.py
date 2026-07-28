@@ -1,6 +1,5 @@
 import json
 import uuid
-from typing import Optional
 
 from fastapi import WebSocket
 
@@ -37,7 +36,7 @@ class TtsOnlySession:
 
         self.call_session = None
         self.agent = None
-        self.stream_sid: Optional[str] = None
+        self.stream_sid: str | None = None
 
     def _load_session_data(self) -> None:
         try:
@@ -54,7 +53,7 @@ class TtsOnlySession:
         except Exception as e:
             logger.error(f"Error loading session data for tts-only: {e}")
 
-    async def _play_tts_text(self, text: str, lang: Optional[str], voice: Optional[str]) -> None:
+    async def _play_tts_text(self, text: str, lang: str | None, voice: str | None) -> None:
         if not text or not self.stream_sid:
             return
 

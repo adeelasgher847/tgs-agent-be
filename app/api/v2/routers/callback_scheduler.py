@@ -11,7 +11,7 @@ GET  /api/v2/calls/{call_id}/memory-context
 from __future__ import annotations
 
 import uuid
-from typing import List, Union
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -35,7 +35,7 @@ class CallMemoryContextResponse(BaseModel):
     memory_context: str
 
 
-def _tenant_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+def _tenant_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
@@ -53,7 +53,7 @@ agents_router = APIRouter(prefix="/agents", tags=["Smart Callback Scheduler"])
 def update_callback_config(
     agent_id: uuid.UUID,
     payload: CallbackConfigUpdate,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ) -> CallbackConfigResponse:
     """
@@ -77,7 +77,7 @@ def update_callback_config(
 )
 def get_callback_status(
     agent_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ) -> CallbackStatusResponse:
     """
@@ -103,7 +103,7 @@ calls_router = APIRouter(prefix="/calls", tags=["Smart Callback Scheduler"])
 )
 def get_callback_history(
     call_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ) -> List[CallbackHistoryItem]:
     """
@@ -123,7 +123,7 @@ def get_callback_history(
 )
 def get_call_memory_context(
     call_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ) -> CallMemoryContextResponse:
     """

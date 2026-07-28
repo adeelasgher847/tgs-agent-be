@@ -2,9 +2,8 @@
 Trello API Service for Scheduled Calls Integration
 """
 
-import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
@@ -90,7 +89,7 @@ class TrelloService(BaseCRMService):
             # Final fallback: Use stored URL or build from board_id
             return board_data.get("url", self.build_container_url(board_id))
             
-        except Exception as e:
+        except Exception:
             # If API call fails, fallback to basic URL
             return self.build_container_url(board_id)
 
@@ -102,7 +101,7 @@ class TrelloService(BaseCRMService):
         }
 
     @staticmethod
-    def parse_board_id_from_url_or_id(value: Optional[str]) -> Optional[str]:
+    def parse_board_id_from_url_or_id(value: str | None) -> str | None:
         if not value:
             return None
         v = value.strip()
@@ -183,7 +182,7 @@ class TrelloService(BaseCRMService):
                 "url": self.build_container_url(board_id),
             }
         except requests.exceptions.HTTPError as e:
-            error_msg = f"Failed to create Trello board: "
+            error_msg = "Failed to create Trello board: "
             if e.response.status_code == 401:
                 error_msg += "Authentication failed - check your API key and token."
             elif e.response.status_code == 403:
@@ -220,7 +219,7 @@ class TrelloService(BaseCRMService):
             response = requests.put(url, params=params, timeout=20)
             response.raise_for_status()
             return True
-        except Exception as e:
+        except Exception:
             return False
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
@@ -236,7 +235,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             existing_fields = response.json()
-        except Exception as e:
+        except Exception:
             existing_fields = []
         
         # Map fields by name
@@ -283,9 +282,9 @@ class TrelloService(BaseCRMService):
         call_time_utc: str,
         tenant_id: str,
         user_id: str,
-        batch_id: Optional[str] = None,
-        phone_number_id: Optional[str] = None,
-    ) -> Optional[dict]:
+        batch_id: str | None = None,
+        phone_number_id: str | None = None,
+    ) -> dict | None:
         """Create a scheduled call card in Trello board"""
         # Get default list (or create one)
         url = f"{self.API_URL}/boards/{container_id}/lists"
@@ -391,8 +390,8 @@ class TrelloService(BaseCRMService):
                     desc_lines.append(f"Phone Number ID: {phone_number_id}")
                 if batch_id:
                     desc_lines.append(f"Batch ID: {batch_id}")
-                desc_lines.append(f"Status: Pending")
-                desc_lines.append(f"Email Sent: No")
+                desc_lines.append("Status: Pending")
+                desc_lines.append("Email Sent: No")
                 
                 # Update card description
                 try:
@@ -407,7 +406,7 @@ class TrelloService(BaseCRMService):
                     pass
             
             return card_data
-        except Exception as exc:
+        except Exception:
             return None
 
     def update_item_jd_context(
@@ -415,7 +414,7 @@ class TrelloService(BaseCRMService):
         *,
         item_id: str,
         jd_context: Dict[str, Any],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Persist JD / resume / appointment context to card description (n8n reads for /voice/call/initiate).
         """
@@ -459,7 +458,7 @@ class TrelloService(BaseCRMService):
         item_id: str,
         status: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update card status in Trello"""
         status_field_id = field_map.get("status")
         if not status_field_id:
@@ -475,7 +474,7 @@ class TrelloService(BaseCRMService):
             response = requests.put(url, params=params, timeout=20)
             response.raise_for_status()
             return response.json()
-        except Exception as exc:
+        except Exception:
             return None
 
     def update_item_call_session_id(
@@ -484,7 +483,7 @@ class TrelloService(BaseCRMService):
         item_id: str,
         call_session_id: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update call_session_id field for a Trello card"""
         session_field_id = field_map.get("call_session_id")
         if not session_field_id:
@@ -500,7 +499,7 @@ class TrelloService(BaseCRMService):
             response = requests.put(url, params=params, timeout=20)
             response.raise_for_status()
             return response.json()
-        except Exception as exc:
+        except Exception:
             return None
 
     def update_item_call_time_utc(
@@ -508,7 +507,7 @@ class TrelloService(BaseCRMService):
         item_id: str,
         call_time_utc: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Update scheduled call_time_utc custom field on a card."""
         field_id = field_map.get("call_time_utc")
         if not field_id:
@@ -528,8 +527,8 @@ class TrelloService(BaseCRMService):
         *,
         item_id: str,
         container_id: str | None = None,
-        field_map: Optional[Dict[str, str]] = None,
-    ) -> Optional[str]:
+        field_map: Dict[str, str] | None = None,
+    ) -> str | None:
         """
         Resolve call_session_id from a Trello card.
 
@@ -618,7 +617,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             cards = response.json()
-        except Exception as exc:
+        except Exception:
             return 0
         
         for card in cards:
@@ -654,7 +653,7 @@ class TrelloService(BaseCRMService):
                 if card_desc:
                     # Use UUID pattern to extract tenant_id from description
                     # Format: "Tenant ID: {uuid}"
-                    tenant_pattern = rf"Tenant ID:\s*([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}})"
+                    tenant_pattern = r"Tenant ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
                     match = re.search(tenant_pattern, card_desc, re.IGNORECASE)
                     if match:
                         item_tenant_id = match.group(1).strip()
@@ -704,7 +703,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             cards = response.json()
-        except Exception as exc:
+        except Exception:
             return 0
         
         for card in cards:
@@ -747,7 +746,7 @@ class TrelloService(BaseCRMService):
             if not item_tenant_id and card_desc:
                 # Parse tenant_id from description
                 # Format: "Tenant ID: {uuid}" or "Tenant ID: {value}"
-                tenant_pattern = rf"Tenant ID:\s*([^\n]+)"
+                tenant_pattern = r"Tenant ID:\s*([^\n]+)"
                 tenant_match = re.search(tenant_pattern, card_desc, re.IGNORECASE)
                 if tenant_match:
                     item_tenant_id = tenant_match.group(1).strip()
@@ -755,7 +754,7 @@ class TrelloService(BaseCRMService):
             if not item_status and card_desc:
                 # Parse status from description
                 # Format: "Status: {status}" or "Status: Pending"
-                status_pattern = rf"Status:\s*([^\n]+)"
+                status_pattern = r"Status:\s*([^\n]+)"
                 status_match = re.search(status_pattern, card_desc, re.IGNORECASE)
                 if status_match:
                     item_status = status_match.group(1).strip()
@@ -815,7 +814,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             cards = response.json()
-        except Exception as exc:
+        except Exception:
             return []
         
         for card in cards:
@@ -832,7 +831,7 @@ class TrelloService(BaseCRMService):
                 custom_fields_response = requests.get(custom_fields_url, params=custom_fields_params, timeout=20)
                 custom_fields_response.raise_for_status()
                 custom_fields = custom_fields_response.json()
-            except Exception as exc:
+            except Exception:
                 custom_fields = []
             
             # Extract batch_id, tenant_id, and call_session_id
@@ -932,7 +931,7 @@ class TrelloService(BaseCRMService):
         container_id: str,
         item_id: str,
         field_map: Dict[str, str],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """
         Update Email Sent status to "Yes" for a Trello card.
         Tries custom field first, falls back to description update.
@@ -996,7 +995,7 @@ class TrelloService(BaseCRMService):
             update_response.raise_for_status()
             updated = True
             return update_response.json()
-        except Exception as exc:
+        except Exception:
             if updated:
                 # Custom field was updated, so return success
                 return {"id": item_id}
@@ -1050,7 +1049,7 @@ class TrelloService(BaseCRMService):
             "fullName": data.get("fullName", ""),
         }
 
-    def ensure_inbound_call_logs_list(self, board_id: str, list_name: Optional[str] = None) -> str:
+    def ensure_inbound_call_logs_list(self, board_id: str, list_name: str | None = None) -> str:
         name = list_name or self.INBOUND_LIST_NAME_DEFAULT
         url = f"{self.API_URL}/boards/{board_id}/lists"
         params = self._auth_params()
@@ -1099,7 +1098,7 @@ class TrelloService(BaseCRMService):
         return {"id": cid, "url": card_url}
 
     def update_inbound_call_log_card(
-        self, card_id: str, card_name: Optional[str] = None, description: Optional[str] = None
+        self, card_id: str, card_name: str | None = None, description: str | None = None
     ) -> Dict[str, str]:
         url = f"{self.API_URL}/cards/{card_id}"
         params = self._auth_params()

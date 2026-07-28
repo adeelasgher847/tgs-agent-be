@@ -4,16 +4,13 @@ Handles voice listening, speech recognition, and call logging
 """
 
 import asyncio
-import json
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 from sqlalchemy.orm import Session
 
 from app.models.call_session import CallSession
-from app.models.call_log import CallLog
 from app.models.agent import Agent
-from app.schemas.call_log import CallLogCreate, CallLogUpdate
 
 from app.core.logger import logger
 
@@ -25,11 +22,11 @@ class VoiceLoggingService:
         db: Session,
         call_session_id: uuid.UUID,
         interaction_type: str,
-        audio_data: Optional[bytes] = None,
-        speech_text: Optional[str] = None,
-        confidence: Optional[float] = None,
-        duration: Optional[float] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        audio_data: bytes | None = None,
+        speech_text: str | None = None,
+        confidence: float | None = None,
+        duration: float | None = None,
+        metadata: Dict[str, Any] | None = None
     ) -> Dict[str, Any]:
         """
         Log voice interaction during a call
@@ -72,7 +69,7 @@ class VoiceLoggingService:
             
             db.commit()
             
-            logger.info(f"✅ Voice interaction logged successfully")
+            logger.info("✅ Voice interaction logged successfully")
             return voice_log
             
         except Exception as e:
@@ -87,7 +84,7 @@ class VoiceLoggingService:
         speech_text: str,
         confidence: float,
         duration: float,
-        agent_id: Optional[uuid.UUID] = None
+        agent_id: uuid.UUID | None = None
     ) -> Dict[str, Any]:
         """
         Process speech input and generate response
@@ -153,9 +150,9 @@ class VoiceLoggingService:
     async def generate_agent_response(
         speech_text: str,
         confidence: float,
-        agent: Optional[Agent] = None,
-        db: Optional[Session] = None,
-        call_session_id: Optional[uuid.UUID] = None
+        agent: Agent | None = None,
+        db: Session | None = None,
+        call_session_id: uuid.UUID | None = None
     ) -> str:
         """
         Generate agent response based on speech input using AI (Gemini or OpenAI) with conversation context
@@ -173,8 +170,6 @@ class VoiceLoggingService:
 
             # Import here to avoid circular imports
             from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
-            from app.services.openai_service import openai_service
-            from app.services.groq_service import groq_service
             from app.core.security import decrypt_api_key
 
             llm_runtime = resolve_llm_runtime(agent)
@@ -367,7 +362,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             )
             
             if conversation_complete:
-                logger.info(f"🎯 All system prompt objectives completed - generating goodbye response")
+                logger.info("🎯 All system prompt objectives completed - generating goodbye response")
                 return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
             
             # Generate response using selected AI service
@@ -393,7 +388,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                     timeout=5.0  # 5 second timeout for faster response
                 )
             except asyncio.TimeoutError:
-                logger.warning(f"⚠️ LLM timeout after 5s - using fallback response")
+                logger.warning("⚠️ LLM timeout after 5s - using fallback response")
                 return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
             
             response_text = ai_response["content"]
@@ -403,7 +398,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             if VoiceLoggingService._check_conversation_completion(
                 system_prompt, conversation_context, response_text
             ):
-                logger.info(f"🎯 Conversation completion detected in response - generating goodbye")
+                logger.info("🎯 Conversation completion detected in response - generating goodbye")
                 return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
             
             logger.info(f"✅ {ai_service_name} generated response in {response_time:.2f}s: '{response_text}'")
@@ -544,26 +539,30 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
         
         # Check what was accomplished
         if any(word in context_lower for word in ["help", "assist", "support"]):
-            return f"Perfect! I'm so glad I could help you with everything you needed today. Thank you for calling, and have a wonderful day!"
+            return "Perfect! I'm so glad I could help you with everything you needed today. Thank you for calling, and have a wonderful day!"
         elif any(word in context_lower for word in ["information", "details", "questions"]):
-            return f"Excellent! I've provided you with all the information you were looking for. Thanks for calling, and take care!"
+            return "Excellent! I've provided you with all the information you were looking for. Thanks for calling, and take care!"
         elif any(word in context_lower for word in ["problem", "issue", "resolve", "fix"]):
-            return f"Great! I'm happy we were able to resolve everything for you. Thank you for calling, and have a great day!"
+            return "Great! I'm happy we were able to resolve everything for you. Thank you for calling, and have a great day!"
         elif any(word in context_lower for word in ["appointment", "schedule", "booking"]):
-            return f"Perfect! Everything is all set for you. Thank you for calling, and we look forward to seeing you soon!"
+            return "Perfect! Everything is all set for you. Thank you for calling, and we look forward to seeing you soon!"
         else:
             # Default completion goodbye
-            return f"Wonderful! I believe we've covered everything you needed today. Thank you for calling, and have a fantastic day!"
+            return "Wonderful! I believe we've covered everything you needed today. Thank you for calling, and have a fantastic day!"
     
     @staticmethod
-    async def _generate_fallback_response(speech_text: str, agent: Optional[Agent] = None) -> str:
+    async def _generate_fallback_response(speech_text: str, agent: Agent | None = None) -> str:
         """
         Generate fallback response when Gemini is not available
         """
         try:
             speech_lower = speech_text.lower()
-            agent_name = agent.name if agent and agent.name else "AI Assistant"
-            
+            # KNOWN GAP: computed for response personalization that was never
+            # implemented — none of the fallback strings below use it, and the
+            # except-block's two branches are identical. Not removing — looks
+            # like an incomplete feature, not dead code.
+            agent_name = agent.name if agent and agent.name else "AI Assistant"  # noqa: F841
+
             if "hello" in speech_lower or "hi" in speech_lower:
                 response = "How can I help you today?"
             elif "help" in speech_lower:

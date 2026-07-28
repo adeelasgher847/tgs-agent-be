@@ -4,13 +4,11 @@ import random
 import time
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
-from app.services.openai_service import openai_service
-from app.services.groq_service import groq_service
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
@@ -109,12 +107,12 @@ class ConversationActions:
     The handler uses this to drive quick-acks, LLM responses, and history updates.
     """
 
-    quick_ack_text: Optional[str] = None
+    quick_ack_text: str | None = None
     start_llm_response: bool = False
     end_call_after: bool = False
 
     # Updated conversation history (already windowed)
-    updated_history: Optional[List[Dict[str, Any]]] = None
+    updated_history: List[Dict[str, Any]] | None = None
     should_persist_history: bool = False
 
 
@@ -190,7 +188,6 @@ class ConversationOrchestrator:
         Generate AI response and stream TTS in real-time WITH conversation history.
         Uses PARALLEL TTS PIPELINE (Vapi-style) for ultra-low latency.
         """
-        from datetime import datetime, timezone
 
         try:
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
@@ -702,7 +699,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 f"for response to: '{user_text[:20]}...'"
             )
 
-            async def try_stream(service, model: str, api_key_override: Optional[str] = None) -> str:
+            async def try_stream(service, model: str, api_key_override: str | None = None) -> str:
                 nonlocal chunk_counter
 
                 response_accum = ""
@@ -710,7 +707,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = False
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
-                first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
 
                 def _strip_control_tokens(text: str) -> str:
@@ -827,7 +823,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             if _vm:
                                 _vm.mark_first_tts_queued()
                             last_flush_ts = now_ts
-                            first_tts_chunk = False
 
                 # Flush any remaining buffer as final
                 full_accum = response_accum.strip()
@@ -890,8 +885,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         self,
         text: str,
         is_final: bool,
-        audio_stats: Optional[Dict[str, Any]] = None,
-        timestamps: Optional[Dict[str, Any]] = None,
+        audio_stats: Dict[str, Any] | None = None,
+        timestamps: Dict[str, Any] | None = None,
     ) -> ConversationActions:
         """
         High-level decision point for a user speech event.

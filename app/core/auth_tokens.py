@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 from app.core.security import verify_token
 
 
-def extract_bearer_token(authorization_header: Optional[str]) -> Optional[str]:
+def extract_bearer_token(authorization_header: str | None) -> str | None:
     if not authorization_header:
         return None
     parts = authorization_header.strip().split(None, 1)
@@ -17,7 +16,7 @@ def extract_bearer_token(authorization_header: Optional[str]) -> Optional[str]:
     return token or None
 
 
-def resolve_jwt_auth(token: str) -> Optional[dict]:
+def resolve_jwt_auth(token: str) -> dict | None:
     """
     Validate JWT and return auth context dict.
 

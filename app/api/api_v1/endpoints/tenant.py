@@ -1,12 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.schemas.tenant import TenantCreate, TenantCreateResponse, TenantOut
+from app.schemas.tenant import TenantCreate
 from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
 from app.schemas.base import SuccessResponse
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
-from app.api.deps import get_db, get_current_user_jwt, require_admin, require_member_or_admin, require_admin_or_owner
+from app.api.deps import get_db, get_current_user_jwt, require_admin
 from app.core.security import create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.utils.response import create_success_response
 import re

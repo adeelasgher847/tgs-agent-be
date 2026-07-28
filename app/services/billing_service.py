@@ -1,16 +1,13 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, func
 from sqlalchemy.exc import IntegrityError
 from app.models.tenant import Tenant
 from app.models.stripe_checkout_fulfillment import StripeCheckoutFulfillment
 from app.models.subscription import Subscription
 from app.models.plan import Plan
 from app.models.usage_record import UsageRecord
-from app.models.agent import Agent
-from app.core.config import settings
 from app.services.stripe_service import StripeService
-from typing import Optional, Dict, Any, List
-from datetime import datetime, date, timedelta, timezone
+from typing import Dict, Any
+from datetime import datetime, timedelta, timezone
 import uuid
 
 class BillingService:
@@ -19,7 +16,7 @@ class BillingService:
     DEFAULT_PERIOD_DAYS = 30
 
     @staticmethod
-    def get_or_create_subscription(db: Session, user_id: uuid.UUID, crm_type: Optional[str] = None) -> Subscription:
+    def get_or_create_subscription(db: Session, user_id: uuid.UUID, crm_type: str | None = None) -> Subscription:
         """Get existing subscription for user (and optional crm_type) or create a free one for default usage."""
         subscription = db.query(Subscription).filter(
             Subscription.user_id == user_id,
@@ -59,7 +56,7 @@ class BillingService:
 
     @staticmethod
     def _claim_checkout_session(
-        db: Session, session_id: str, stripe_event_id: Optional[str] = None
+        db: Session, session_id: str, stripe_event_id: str | None = None
     ) -> bool:
         """Reserve fulfillment for this session. False if already processed."""
         db.add(
@@ -79,8 +76,8 @@ class BillingService:
     def sync_payment_status(
         db: Session,
         session_id: str,
-        stripe_event_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        stripe_event_id: str | None = None,
+    ) -> Dict[str, Any] | None:
         """
         Verify Stripe session and update subscription. No credits added for plan_purchase.
         Returns result dict or None if session not paid/valid.
@@ -199,12 +196,12 @@ class BillingService:
         user_id: uuid.UUID,
         plan_id: uuid.UUID,
         status: str = "active",
-        stripe_subscription_id: Optional[str] = None,
-        stripe_customer_id: Optional[str] = None,
-        stripe_session_id: Optional[str] = None,
-        crm_type: Optional[str] = None,
-        current_period_start: Optional[datetime] = None,
-        current_period_end: Optional[datetime] = None
+        stripe_subscription_id: str | None = None,
+        stripe_customer_id: str | None = None,
+        stripe_session_id: str | None = None,
+        crm_type: str | None = None,
+        current_period_start: datetime | None = None,
+        current_period_end: datetime | None = None
     ) -> Subscription:
         """Update or create user subscription for this CRM. Sets current_period_start/end from args or default 30 days."""
         subscription = db.query(Subscription).filter(
@@ -242,7 +239,7 @@ class BillingService:
     def record_call_usage(
         db: Session,
         tenant_id: uuid.UUID,
-        user_id: Optional[uuid.UUID] = None,
+        user_id: uuid.UUID | None = None,
     ) -> None:
         """Record a billing event for a connected outbound call."""
         record = UsageRecord(

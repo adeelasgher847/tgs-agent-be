@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 from sqlalchemy.exc import IntegrityError
@@ -111,7 +110,7 @@ async def check_number_reputation(db: Session, phone_number_obj: PhoneNumber) ->
     score, checked_by = await _fetch_score(phone_number_obj.phone_number)
     score = max(0, min(100, score))
     spam_flagged = score < SPAM_THRESHOLD
-    flagged_reason: Optional[str] = (
+    flagged_reason: str | None = (
         f"Reputation score {score} below threshold {SPAM_THRESHOLD} ({checked_by})"
         if spam_flagged
         else None

@@ -1,5 +1,4 @@
 """Unit tests for the deterministic Gemini prompt sanitizer."""
-import pytest
 
 from app.utils.gemini_prompt_sanitizer import sanitize_prompt_for_gemini
 

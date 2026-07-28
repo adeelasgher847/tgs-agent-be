@@ -1,17 +1,16 @@
 from sqlalchemy.orm import Session
-from typing import Optional
 from app.models.model import Model as ModelORM
 from app.models.provider import Provider as ProviderORM
 from app.schemas.agent import gemini_client
 
 class ProviderIntegrationService:
-    def create_remote_agent(self, db: Session, model_id, agent_name: str) -> Optional[str]:
+    def create_remote_agent(self, db: Session, model_id, agent_name: str) -> str | None:
         if not model_id:
             return None
-        model = db.query(ModelORM).filter(ModelORM.id == model_id, ModelORM.is_active == True).first()
+        model = db.query(ModelORM).filter(ModelORM.id == model_id, ModelORM.is_active).first()
         if not model:
             return None
-        provider = db.query(ProviderORM).filter(ProviderORM.id == model.provider_id, ProviderORM.is_active == True).first()
+        provider = db.query(ProviderORM).filter(ProviderORM.id == model.provider_id, ProviderORM.is_active).first()
         if not provider:
             return None
 

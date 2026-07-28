@@ -8,7 +8,6 @@ call fails mid-way, and never changes for the lifetime of the call.
 from __future__ import annotations
 
 import random
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,7 +19,7 @@ from app.models.prompt_version import PromptVersion
 
 
 class AbTestingService:
-    def pick_variant(self, call_flow: CallFlow) -> Optional[str]:
+    def pick_variant(self, call_flow: CallFlow) -> str | None:
         """Return 'a' or 'b' if the flow is eligible for A/B testing, else None."""
         if not call_flow.ab_test_enabled:
             return None
@@ -31,7 +30,7 @@ class AbTestingService:
 
     def get_variant_prompt_text(
         self, db: Session, call_flow: CallFlow, variant: str
-    ) -> Optional[str]:
+    ) -> str | None:
         prompt_id = (
             call_flow.ab_prompt_a_id if variant == "a" else call_flow.ab_prompt_b_id
         )

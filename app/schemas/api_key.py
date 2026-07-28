@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,7 +17,7 @@ class ApiKeyOut(BaseModel):
     masked_key: str
     is_active: bool
     created_at: datetime
-    last_used_at: Optional[datetime] = None
+    last_used_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

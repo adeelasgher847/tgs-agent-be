@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional
+from typing import List
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -23,7 +23,7 @@ class TransferRouteService:
             .all()
         )
 
-    def get(self, db: Session, route_id: uuid.UUID, tenant_id: uuid.UUID) -> Optional[TransferRoute]:
+    def get(self, db: Session, route_id: uuid.UUID, tenant_id: uuid.UUID) -> TransferRoute | None:
         return (
             db.query(TransferRoute)
             .filter(

@@ -11,9 +11,7 @@ Rate limit: 10 integration-triggered calls per minute per workspace.
 from __future__ import annotations
 
 import hmac
-import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -88,7 +86,7 @@ async def make_trigger(
     body: MakeTriggerRequest,
     request: Request,
     db: Session = Depends(get_db),
-    x_make_secret: Optional[str] = Header(default=None, alias="X-Make-Secret"),
+    x_make_secret: str | None = Header(default=None, alias="X-Make-Secret"),
 ) -> MakeTriggerResponse:
     # 1. Resolve agent and tenant from agent_id in body
     agent, tenant = resolve_tenant_by_agent(db, body.agent_id)
@@ -173,7 +171,7 @@ async def n8n_trigger(
     body: CallInitiateRequest,
     request: Request,
     db: Session = Depends(get_db),
-    x_n8n_webhook_secret: Optional[str] = Header(default=None, alias="X-N8N-Webhook-Secret"),
+    x_n8n_webhook_secret: str | None = Header(default=None, alias="X-N8N-Webhook-Secret"),
 ) -> N8nTriggerResponse:
     # 1. Resolve agent and owning tenant from agentId — same pattern as Make.com.
     #    This ensures tenant resolution is authoritative (not caller-supplied tenant_id).

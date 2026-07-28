@@ -3,13 +3,9 @@ Billing middleware to automatically track usage and enforce limits.
 This middleware should be applied to routes that consume resources.
 """
 
-from fastapi import Request, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import Request
 from sqlalchemy.orm import Session
-from app.db.session import SessionLocal
 from app.services.billing_service import BillingService
-from app.models.user import User
-from app.api.deps import get_current_user_jwt
 from typing import Callable
 import uuid
 from app.core.logger import logger

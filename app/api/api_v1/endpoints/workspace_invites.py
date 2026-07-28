@@ -13,7 +13,6 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from typing import Union
 from app.core.request_auth import ApiKeyPrincipal, is_api_key_principal
 from app.api.deps import get_db, require_admin_or_api_key
 from app.models.invite import Invite
@@ -31,7 +30,7 @@ router = APIRouter()
 @router.post("/invite", response_model=SuccessResponse[InviteOut], status_code=201)
 def invite_team_member(
     body: InviteCreate,
-    admin: Union[User, ApiKeyPrincipal] = Depends(require_admin_or_api_key),
+    admin: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[InviteOut]:
     tenant_id: uuid.UUID = admin.current_tenant_id
@@ -76,7 +75,7 @@ def invite_team_member(
     if is_api_key_principal(admin):
         invited_by_id = db.query(user_tenant_association.c.user_id).filter(
             user_tenant_association.c.tenant_id == tenant_id,
-            user_tenant_association.c.is_creator == True
+            user_tenant_association.c.is_creator
         ).scalar()
         if not invited_by_id:
             first_user = db.query(user_tenant_association.c.user_id).filter(
@@ -131,7 +130,7 @@ def invite_team_member(
 
 @router.get("/invitations", response_model=SuccessResponse[list[InviteOut]])
 def list_invitations(
-    admin: Union[User, ApiKeyPrincipal] = Depends(require_admin_or_api_key),
+    admin: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[list[InviteOut]]:
     invites = (

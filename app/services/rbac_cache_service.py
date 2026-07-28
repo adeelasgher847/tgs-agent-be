@@ -9,7 +9,6 @@ performance optimization here, not a correctness dependency.
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -29,7 +28,7 @@ def _cache_key(user_id: uuid.UUID, workspace_id: uuid.UUID) -> str:
 
 def get_effective_role(
     db: Session, user_id: uuid.UUID, workspace_id: uuid.UUID
-) -> Optional[str]:
+) -> str | None:
     """Cached resolution of the effective role name; None means not a member."""
     redis_client = get_redis_sync()
     key = _cache_key(user_id, workspace_id)

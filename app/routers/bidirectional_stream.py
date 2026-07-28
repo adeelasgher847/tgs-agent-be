@@ -100,9 +100,9 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Any, Optional, Dict, Iterable, List
+from typing import List
 import time
-from datetime import datetime, timezone, date
+from datetime import datetime, date
 import uuid
 import re
 from app.core.logger import logger
@@ -111,70 +111,46 @@ from app.core.logger import logger
 
 from app.services.call_session_service import call_session_service
 from app.services.voice_screening_qualification_service import (
-    apply_resume_candidate_status_after_voice_screening,
     is_jd_recruitment_voice_context,
     persist_voice_screening_status_signal,
 )
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
-from app.models.appointment import Appointment
-from app.services.transcript_service import transcript_service
 from app.services.openai_service import openai_service
-from app.services.groq_service import groq_service
 from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
 from app.core.agent_runtime import resolve_llm_runtime, resolve_stt_runtime, llm_service_for_provider
-from app.services.rag_service import rag_service
-from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
-    twilio_caller_id_for_transfer_dial,
 )
-from app.services.google_tts_service import google_tts_service
-from app.utils.tts_adapter import get_tts_adapter
 from app.voice.tone_adapter import tone_adapter
 from app.voice.turn_signals import TurnContext, build_turn_context, build_user_signals_block
-from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
-from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
 from app.voice.background_audio import BackgroundAudioManager
 from app.voice.conversation_orchestrator import (
     VOICE_TUNABLES,
-    ConversationOrchestrator,
     should_send_quick_ack,
 )
 from app.voice.voice_orchestrator import VoiceOrchestrator
-from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
+from app.voice.rag_context import build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
 from app.voice.metrics import VoiceTurnMetrics
 
 # Import utilities and services
-from app.utils.audio_utils import (
-    ulaw_to_linear_sample,
-    stream_mulaw_bytes_over_twilio,
-    crossfade_mulaw_segments,
-    build_crossfade_bridge,
-    MULAW_FRAME_BYTES,
-)
 from app.utils.ssml_utils import (
-    strip_ssml_tags,
-    add_natural_ssml,
-    clean_text_for_tts,
-    smart_chunk_text
+    strip_ssml_tags
 )
 from app.services.bidirectional_stream_service import (
     generate_mulaw_tts,
-    build_streaming_twiml,
-    build_tts_only_twiml,
+    build_streaming_twiml,  # noqa: F401 - re-exported for app.routers.voice / voice_gather
+    build_tts_only_twiml,  # noqa: F401 - re-exported for app.routers.voice
 )
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
-    prepare_tts_text_for_provider,
-    strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
 
@@ -272,7 +248,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self.stream_sid = None
         self.call_sid = None
         self.current_speech = ""
-        self._stt_pipeline: Optional[SttPipeline] = None
+        self._stt_pipeline: SttPipeline | None = None
         # Interim → early LLM (optional; default off in settings for Deepgram stability)
         self._last_interim_text = ""
         self._last_interim_sent_ts = 0.0
@@ -308,7 +284,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
         self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
-        self._tts_pipeline: Optional[TtsPipeline] = None
+        self._tts_pipeline: TtsPipeline | None = None
         self._elevenlabs_prev_tts_text = ""
         self._use_ssml = True                # Enable SSML by default
         # Quick-ack dedup guard: prevent repeated acknowledgements for the same
@@ -330,8 +306,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._flow_executor = None
         self._flow_state = None
         self._last_offered_calendar_slots: List[datetime] = []
-        self._last_requested_calendar_date: Optional[date] = None
-        self._last_selected_calendar_slot: Optional[datetime] = None
+        self._last_requested_calendar_date: date | None = None
+        self._last_selected_calendar_slot: datetime | None = None
         self._load_session_data()
         
         # User pickup detection (VAPI-style: actual user audio = user picked up)
@@ -414,13 +390,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._post_call_orchestration_scheduled = False
         # Longer Deepgram endpointing after agent asks for email (one-time upgrade per call).
         self._email_stt_endpointing_upgraded = False
-        self._stt_deferred_endpointing_ms: Optional[int] = None
+        self._stt_deferred_endpointing_ms: int | None = None
 
         # One response per turn: first interim that passes gates starts the LLM (dev-style: commit agent at stream end)
         self._turn_response_started = False  # True after first interim triggers LLM for this turn
         self._turn_response_seed_text = ""
         # In-flight LLM+TTS; wrapped in a task so barge-in can cancel while we await (like dev, but cancelable)
-        self._llm_response_task: Optional[asyncio.Task] = None
+        self._llm_response_task: asyncio.Task | None = None
         self._auto_greeting_sent = False
         self._recording_started = False
         self._lk_caller_publisher = None
@@ -447,7 +423,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
         # RAG prefetch: fired on the first qualifying interim so vector-DB retrieval
         # overlaps Deepgram endpointing time instead of blocking LLM start.
-        self._rag_prefetch_task: Optional[asyncio.Task] = None
+        self._rag_prefetch_task: asyncio.Task | None = None
         self._rag_prefetch_user_text: str = ""
 
         # Speculative TTS prefetch: fired on STT final (and on qualifying interim)
@@ -455,7 +431,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # prediction is correct the first TtsPipeline chunk is a cache hit → zero
         # synthesis latency for chunk 0.  Wrong predictions cost one wasted TTS API
         # call and are silently discarded.
-        self._speculative_prefetch_task: Optional[asyncio.Task] = None
+        self._speculative_prefetch_task: asyncio.Task | None = None
 
         # Duplicate-transcript guard for _complete_llm_turn_after_stt_final.
         # Set INSIDE _llm_turn_serial_lock so tasks 2/3 that queued up behind
@@ -521,7 +497,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._voice_orchestrator = VoiceOrchestrator(self)
         self._wire_stt_runtime()
 
-    def _flow_stt_language_code(self) -> Optional[str]:
+    def _flow_stt_language_code(self) -> str | None:
         """Read optional STT language override from call flow settings JSON."""
         if not self.call_session or not self.call_session.call_flow_id:
             return None
@@ -739,7 +715,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
     # ── Speculative TTS prefetch ──────────────────────────────────────────────
 
     @staticmethod
-    def _predict_opener_phrase(user_text: str) -> Optional[str]:
+    def _predict_opener_phrase(user_text: str) -> str | None:
         """
         Fast rule-based prediction of the most likely first TTS chunk text.
 
@@ -2041,7 +2017,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = False
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
-                first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
                 self._pending_resume_screening_qualify = False
@@ -2213,7 +2188,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 if _vm:
                                     _vm.mark_first_tts_queued()
                                 _schedule_deferred_memory_once()
-                            first_tts_chunk = False
                             last_flush_ts = time.perf_counter()
 
                 # Flush any remaining text as the FINAL chunk
@@ -2880,7 +2854,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
 async def _receive_or_stop(
     ws: WebSocket, stop_event: asyncio.Event
-) -> Optional[str]:
+) -> str | None:
     """
     Race websocket.receive_text() against an internal stop_event.
 
@@ -2950,9 +2924,7 @@ async def bidirectional_stream_websocket(
         agent_id=agentId,
         db=db
     )
-    
-    media_count = 0
-    
+
     try:
         while True:
             # Race: receive next Twilio message OR stop_event (internal call end)

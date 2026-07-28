@@ -2,11 +2,12 @@
 ClickUp OAuth 2.0 Integration Router
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-from typing import Optional
 import requests
-import uuid
 import json
 
 from app.api.deps import get_db, require_owner
@@ -15,13 +16,39 @@ from app.services.crm_config_service import CRMConfigService
 from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
 from app.core.config import settings
 from app.utils.response import create_success_response
-from app.schemas.base import SuccessResponse
 from app.core.logger import logger
 
 router = APIRouter()
 
 CLICKUP_AUTH_URL = "https://app.clickup.com/api"
 CLICKUP_TOKEN_URL = "https://api.clickup.com/api/v2/oauth/token"
+
+# Signed, stateless CSRF state token — same JWT-signed-state pattern used by
+# the HubSpot/Salesforce OAuth flows (see hubspot_service.build_oauth_state /
+# verify_oauth_state). No server-side storage needed: the signature + expiry
+# + purpose claim are enough to prove this callback matches an authorize call
+# we issued.
+_STATE_PURPOSE = "clickup_oauth_state"
+_STATE_TTL_MINUTES = 10
+
+
+def _build_oauth_state() -> str:
+    payload = {
+        "purpose": _STATE_PURPOSE,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=_STATE_TTL_MINUTES),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def _verify_oauth_state(state: str) -> None:
+    """Raises ValueError if state is missing, expired, tampered, or malformed."""
+    try:
+        payload = jwt.decode(state, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError as exc:
+        raise ValueError("Invalid or expired OAuth state") from exc
+
+    if payload.get("purpose") != _STATE_PURPOSE:
+        raise ValueError("Invalid OAuth state purpose")
 
 
 @router.get("/authorize")
@@ -67,12 +94,9 @@ async def clickup_authorize(
     # Get redirect_uri from additional_config or use default
     redirect_uri = additional_config.get("redirect_uri") or f"{settings.WEBHOOK_BASE_URL}/api/v1/auth/clickup/callback"
     
-    # Generate state (optional, for security)
-    state = str(uuid.uuid4())
-    
-    # Store state in additional_config temporarily (or use session/cache)
-    # For now, we'll just use it in the URL
-    
+    # Generate a signed, stateless CSRF state token (see _build_oauth_state).
+    state = _build_oauth_state()
+
     # Build authorization URL with required scopes
     # Scopes needed: read (to read teams/spaces), write (to create lists)
     scopes = "read write"
@@ -80,7 +104,8 @@ async def clickup_authorize(
         f"{CLICKUP_AUTH_URL}?"
         f"client_id={client_id}&"
         f"redirect_uri={redirect_uri}&"
-        f"scope={scopes}"
+        f"scope={scopes}&"
+        f"state={state}"
     )
     
     return create_success_response(
@@ -96,13 +121,19 @@ async def clickup_authorize(
 @router.get("/callback")
 async def clickup_oauth_callback(
     code: str = Query(..., description="Authorization code from ClickUp"),
-    state: Optional[str] = Query(None, description="State parameter (optional)"),
+    state: str = Query(..., description="Signed CSRF state token from /authorize"),
     db: Session = Depends(get_db)
 ):
     """
     ClickUp OAuth callback endpoint.
     Receives authorization code and exchanges it for access token.
     """
+    # Validate the CSRF state before doing anything else.
+    try:
+        _verify_oauth_state(state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     # Get ClickUp config
     crm_config_service = CRMConfigService()
     clickup_config = crm_config_service.get_crm_config_by_type(db, "clickup")
@@ -128,8 +159,9 @@ async def clickup_oauth_callback(
     
     client_id = additional_config.get("client_id")
     client_secret_encrypted = additional_config.get("client_secret")
+    # Must match the redirect_uri sent in the /authorize request above.
     redirect_uri = additional_config.get("redirect_uri") or f"{settings.WEBHOOK_BASE_URL}/api/v1/auth/clickup/callback"
-    
+
     if not client_id or not client_secret_encrypted:
         raise HTTPException(
             status_code=400,
@@ -154,7 +186,8 @@ async def clickup_oauth_callback(
         token_data = {
             "client_id": client_id,
             "client_secret": client_secret,
-            "code": code
+            "code": code,
+            "redirect_uri": redirect_uri
         }
         
         response = requests.post(
@@ -192,7 +225,7 @@ async def clickup_oauth_callback(
         
         # After storing access token, automatically fetch and store space_id
         try:
-            logger.info(f"🔍 Auto-detecting ClickUp space after OAuth...")
+            logger.info("🔍 Auto-detecting ClickUp space after OAuth...")
             
             # Create headers with access token
             auth_headers = {
@@ -232,7 +265,7 @@ async def clickup_oauth_callback(
                     else:
                         logger.warning(f"⚠️ Failed to fetch spaces: HTTP {spaces_response.status_code}")
                 else:
-                    logger.warning(f"⚠️ No teams found for this access token")
+                    logger.warning("⚠️ No teams found for this access token")
             else:
                 logger.warning(f"⚠️ Failed to fetch teams: HTTP {team_response.status_code}")
         except Exception as e:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel
 class MakeTriggerRequest(BaseModel):
     agent_id: str
     to_number: str
-    variables: Optional[Dict[str, Any]] = None
+    variables: Dict[str, Any] | None = None
 
 
 class MakeTriggerResponse(BaseModel):
@@ -25,10 +25,10 @@ class N8nTriggerResponse(BaseModel):
 class IntegrationItem(BaseModel):
     name: str
     connected: bool
-    webhook_url: Optional[str] = None
-    last_triggered_at: Optional[datetime] = None
-    connected_at: Optional[datetime] = None
-    last_sync_at: Optional[str] = None
+    webhook_url: str | None = None
+    last_triggered_at: datetime | None = None
+    connected_at: datetime | None = None
+    last_sync_at: str | None = None
 
 
 class IntegrationListResponse(BaseModel):

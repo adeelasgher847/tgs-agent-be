@@ -301,7 +301,6 @@ class TestAgentNotReady:
     @pytest.mark.asyncio
     async def test_from_number_mismatch_returns_400(self):
         """fromNumber that does NOT match the bound number returns 400."""
-        import json
 
         phone = _phone_number()
         phone.phone_number = "+15555550000"
@@ -454,6 +453,9 @@ class TestLivekitRoomCreationFailure:
             ),
         ):
             result = await _run_direct(req)
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_503_SERVICE_UNAVAILABLE
 
         # create_call_session must NOT have been called
         mock_css.create_call_session.assert_not_called()

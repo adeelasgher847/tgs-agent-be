@@ -1,10 +1,5 @@
 
-import pytest
 from unittest.mock import MagicMock, patch
-from fastapi.testclient import TestClient
-from app.main import app
-from app.models.user import User
-from app.models.call_session import CallSession
 
 # We need to mock the entire dependencies chain
 # This is a bit complex due to the heavy dependency injection in the router

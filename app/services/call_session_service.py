@@ -7,10 +7,9 @@ from sqlalchemy.orm import Session
 from app.models.call_session import CallSession
 from app.models.call_log import CallLog
 from app.schemas.call_log import CallLogCreate
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
-import json
 import asyncio
 from app.core.logger import logger
 from app.services.inbound_call_crm_sync_service import (
@@ -83,7 +82,7 @@ class CallSessionService:
                            from_number: str = None, to_number: str = None,
                            call_type: str = "inbound", assistant_phone_number: str = None,
                            customer_phone_number: str = None,
-                           session_id: Optional[uuid.UUID] = None,
+                           session_id: uuid.UUID | None = None,
                            status: str = "active") -> CallSession:
         """
         Create a new call session and associated call log
@@ -167,7 +166,7 @@ class CallSessionService:
     
     def _update_call_log_for_session(self, db: Session, call_session: CallSession, 
                                    ended_reason: str = None, success_evaluation: str = None,
-                                   cost: float = None, transferred: bool = None) -> Optional[CallLog]:
+                                   cost: float = None, transferred: bool = None) -> CallLog | None:
         """Update call log entry for a call session"""
         try:
             call_log = db.query(CallLog).filter(CallLog.call_session_id == call_session.id).first()
@@ -197,7 +196,7 @@ class CallSessionService:
             logger.error("DB error in _update_call_log_for_session (session=%s): %s", call_session.id, e, exc_info=True)
             return None
     
-    def get_call_session_by_id(self, db: Session, session_id: uuid.UUID) -> Optional[CallSession]:
+    def get_call_session_by_id(self, db: Session, session_id: uuid.UUID) -> CallSession | None:
         """
         Get call session by ID
         
@@ -210,7 +209,7 @@ class CallSessionService:
         """
         return db.query(CallSession).filter(CallSession.id == session_id).first()
     
-    def get_call_session_by_twilio_sid(self, db: Session, twilio_call_sid: str) -> Optional[CallSession]:
+    def get_call_session_by_twilio_sid(self, db: Session, twilio_call_sid: str) -> CallSession | None:
         """
         Get call session by Twilio call SID
         
@@ -225,7 +224,7 @@ class CallSessionService:
     
     def update_call_session_status(self, db: Session, session_id: uuid.UUID, status: str, 
                                  ended_reason: str = None, success_evaluation: str = None,
-                                 cost: float = None, transferred: bool = None) -> Optional[CallSession]:
+                                 cost: float = None, transferred: bool = None) -> CallSession | None:
         """
         Update call session status and associated call log
         
@@ -359,7 +358,7 @@ class CallSessionService:
             return None
     
     def add_transcript_entry(self, db: Session, session_id: uuid.UUID, role: str, content: str, 
-                           response_time: float = None) -> Optional[CallSession]:
+                           response_time: float = None) -> CallSession | None:
         """
         Add a transcript entry to the call session
         

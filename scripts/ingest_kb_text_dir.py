@@ -16,7 +16,7 @@ import argparse
 import os
 import uuid
 from pathlib import Path
-from typing import Optional, Callable, Sequence
+from typing import Sequence
 
 import html as html_lib
 import re
@@ -25,7 +25,7 @@ from html.parser import HTMLParser
 from app.db.session import SessionLocal
 from app.models.agent import Agent
 from app.core.config import settings
-from app.services.rag_service import rag_service, EmbeddingFunc
+from app.services.rag_service import rag_service
 from app.services.embedding_service import embed_text_for_rag
 
 
@@ -86,7 +86,7 @@ def load_pdf_text(path: Path) -> str:
     return text
 
 
-def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
+def _parse_uuid(value: str | None) -> uuid.UUID | None:
     if not value:
         return None
     return uuid.UUID(value)
@@ -94,9 +94,9 @@ def _parse_uuid(value: Optional[str]) -> Optional[uuid.UUID]:
 
 def _resolve_agent_and_tenant(
     db,
-    tenant_id: Optional[uuid.UUID],
-    agent_id: Optional[uuid.UUID],
-) -> tuple[uuid.UUID, Optional[uuid.UUID], str]:
+    tenant_id: uuid.UUID | None,
+    agent_id: uuid.UUID | None,
+) -> tuple[uuid.UUID, uuid.UUID | None, str]:
     """
     Returns: (tenant_id, agent_id, resolved_by)
     """

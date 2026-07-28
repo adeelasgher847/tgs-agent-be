@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import uuid
-from typing import Optional
 
 from app.core.security import decrypt_api_key, is_api_key_encrypted
 from app.db.session import SessionLocal
@@ -19,7 +18,7 @@ from app.models.model import Model
 from app.models.provider import Provider
 
 
-def _parse_uuid(value: Optional[str], field_name: str) -> Optional[uuid.UUID]:
+def _parse_uuid(value: str | None, field_name: str) -> uuid.UUID | None:
     if not value:
         return None
     try:

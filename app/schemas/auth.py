@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import List
 from enum import Enum
 import uuid
 
@@ -10,18 +10,18 @@ class LoginRequest(BaseModel):
 class RoleInfo(BaseModel):
     id: uuid.UUID=Field(exclude=True) # exclude from response
     name: str
-    description: Optional[str] = None
+    description: str | None = None
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user_id: uuid.UUID
     email: str
-    tenant_id: Optional[uuid.UUID] = None
-    product_id: Optional[uuid.UUID] = None
-    tenant_ids: Optional[List[uuid.UUID]] =  Field(default=None, exclude=True)
-    role: Optional[RoleInfo] = None
-    refresh_token: Optional[str] = None
+    tenant_id: uuid.UUID | None = None
+    product_id: uuid.UUID | None = None
+    tenant_ids: List[uuid.UUID] | None =  Field(default=None, exclude=True)
+    role: RoleInfo | None = None
+    refresh_token: str | None = None
 
 class Provider(str, Enum):
     google = "google"  
@@ -44,18 +44,18 @@ class SwitchTenantRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
-    access_token: Optional[str] = None
+    access_token: str | None = None
 
 class GoogleLoginRequest(BaseModel):
     google_token: str
     provider: Provider = Provider.google
 
 class RegisterRequest(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
+    first_name: str | None = None
+    last_name: str | None = None
     email: EmailStr
-    password: Optional[str] = None
-    phone: Optional[str] = None
-    provider: Optional[str] = None
-    google_token: Optional[str] = None
-    provider: Optional[dict] = None    
+    password: str | None = None
+    phone: str | None = None
+    provider: str | None = None
+    google_token: str | None = None
+    provider: dict | None = None    

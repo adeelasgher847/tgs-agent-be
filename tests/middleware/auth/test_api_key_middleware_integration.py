@@ -9,10 +9,8 @@ path is mocked to return results from the sync session).
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -271,7 +269,6 @@ class TestCaching:
                 "/api/v1/data",
                 headers={"x-api-key": raw_api_key, "x-workspace-id": str(tenant_id)},
             )
-            first = db_called["n"]
 
             # Second call — resolver is still called because _resolve_api_key IS the
             # unit under test; the caching lives inside it and is separately tested.

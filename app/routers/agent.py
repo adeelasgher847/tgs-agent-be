@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session
-from typing import Optional
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse, LanguageEnum, VoiceTypeEnum
 from app.api.deps import (
     get_db,
@@ -8,13 +7,11 @@ from app.api.deps import (
     require_config,
     require_readonly,
 )
-from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.schemas.base import SuccessResponse
 from app.schemas.prompt_engineer import PromptEngineerRequest, PromptEngineerResult
 from app.services.agent_service import agent_service
 from app.services.audit_service import log_audit_event
 from app.services.openai_service import openai_service
-from app.services.credit_service import credit_service
 from app.services.model_service import model_service
 from app.core.security import decrypt_api_key
 from app.models.user import User
@@ -72,7 +69,7 @@ def get_agent(
 def list_agents(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(10, ge=1, le=100, description="Records per page"),
-    search: Optional[str] = Query(None, description="Search by name"),
+    search: str | None = Query(None, description="Search by name"),
     user: User = Depends(require_readonly),
     db: Session = Depends(get_db)
 ):
@@ -148,7 +145,7 @@ def get_voice_options(
 ):
     return {
         "voice_types": [v.value for v in VoiceTypeEnum],
-        "languages": [l.value for l in LanguageEnum],
+        "languages": [lang.value for lang in LanguageEnum],
     }
 
 
@@ -395,7 +392,7 @@ Remember: OUTPUT MUST BE VALID JSON ONLY.
 
         # Resolve model and API key for gpt-4o-mini from the database
         model_name = "gpt-4o-mini"
-        api_key: Optional[str] = None
+        api_key: str | None = None
         try:
             model = model_service.get_model_by_name(db, model_name)
             if model and model.api_key:

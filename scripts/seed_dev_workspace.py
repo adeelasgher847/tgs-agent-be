@@ -31,8 +31,6 @@ from app.models.call_flow import CallFlow
 from app.models.prompt_version import PromptVersion
 from app.models.role import Role
 from app.models.tenant import Tenant
-from app.models.branding_configs import BrandingConfig
-from app.models.pricing_configs import PricingConfig
 from app.models.user import User, user_tenant_association
 from app.core.security import get_password_hash
 
@@ -285,13 +283,13 @@ def seed(db: Session) -> None:
         
         db.commit()
 
-    except Exception as e:
+    except Exception:
         db.rollback()  # Rollback only the agent session segment
         print("\n⚠️  [seed] Skipping Agent/Flow objects because local DB is missing newer feature branch columns.")
         print("   Workspaces and Admin users are still fully configured and ready!\n")
 
     print("[seed] Done.")
-    print(f"\n[seed] Hierarchical environment active:")
+    print("\n[seed] Hierarchical environment active:")
     print(f"   Parent Agency ID:      {agency_id_str}")
     print(f"   Linked Sub-Account ID: {sub_account_id_str}")
     print(f"   Admin Credentials:     {SEED_ADMIN_EMAIL} / {SEED_ADMIN_PASSWORD}")

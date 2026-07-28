@@ -7,7 +7,6 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,14 +28,14 @@ class WorkspaceRepository:
 
     # ------------------------------------------------------------------ reads
 
-    def find_by_id(self, workspace_id: uuid.UUID) -> Optional[Tenant]:
+    def find_by_id(self, workspace_id: uuid.UUID) -> Tenant | None:
         stmt = select(Tenant).where(
             Tenant.id == workspace_id,
             Tenant.deleted_at.is_(None),
         )
         return self.db.execute(stmt).scalar_one_or_none()
 
-    def find_by_name(self, name: str) -> Optional[Tenant]:
+    def find_by_name(self, name: str) -> Tenant | None:
         stmt = select(Tenant).where(
             Tenant.name == name,
             Tenant.deleted_at.is_(None),

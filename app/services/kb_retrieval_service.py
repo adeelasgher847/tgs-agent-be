@@ -12,7 +12,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 from sqlalchemy import text
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Optional
 
 import json as _json
 
@@ -101,7 +100,7 @@ def _chunk_count(db: Session, kb_id: uuid.UUID) -> int:
     )
 
 
-def _mem_cache_get(key: str) -> Optional[int]:
+def _mem_cache_get(key: str) -> int | None:
     entry = _MEM_CACHE.get(key)
     if entry is not None and time.monotonic() < entry[1]:
         return entry[0]
@@ -171,7 +170,7 @@ async def _cached_chunk_count(db: Session, kb_id: uuid.UUID) -> int:
     return count
 
 
-def _bytes_to_mb(size_bytes: Optional[int]) -> Optional[str]:
+def _bytes_to_mb(size_bytes: int | None) -> str | None:
     if size_bytes is None:
         return None
     return f"{round(size_bytes / 1_048_576, 2):.2f} MB"

@@ -18,7 +18,6 @@ import json
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 import redis.asyncio as aioredis
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -100,10 +99,10 @@ def _sha256(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-_redis: Optional[aioredis.Redis] = None
+_redis: aioredis.Redis | None = None
 
 
-def _get_redis() -> Optional[aioredis.Redis]:
+def _get_redis() -> aioredis.Redis | None:
     global _redis
     if _redis is None:
         try:

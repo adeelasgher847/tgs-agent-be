@@ -18,11 +18,11 @@ import asyncio
 import time
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from app.voice.stt_events import SttEventBus, SttFinalEvent, SttInterimEvent, SttErrorEvent
+from app.voice.stt_events import SttEventBus, SttFinalEvent, SttInterimEvent
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -169,9 +169,11 @@ def test_google_stt_error_emits_error_result():
             return True  # restart after recoverable error
         return False
 
-    with patch.object(sess, "_run_single_stream", fake_run_single_stream):
-        with patch("app.services.google_stt_service.time.sleep"):
-            sess._run_blocking_stream()
+    with (
+        patch.object(sess, "_run_single_stream", fake_run_single_stream),
+        patch("app.services.google_stt_service.time.sleep"),
+    ):
+        sess._run_blocking_stream()
 
     assert call_count[0] == 2, "Expected restart after recoverable error"
     results = []

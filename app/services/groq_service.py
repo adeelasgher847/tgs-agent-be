@@ -6,9 +6,8 @@ Groq uses OpenAI-compatible API with ultra-fast inference
 
 from openai import OpenAI
 from app.core.config import settings
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 import time
-import json
 
 class GroqService:
     """Service class for handling Groq operations"""

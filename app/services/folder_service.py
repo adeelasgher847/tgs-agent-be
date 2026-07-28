@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.repositories.call_flow_repository import CallFlowRepository
 from app.repositories.folder_repository import FolderRepository
-from app.schemas.folder import FolderCreate, FolderOut, FolderListResponse, FolderUpdate
+from app.schemas.folder import FolderCreate, FolderOut, FolderUpdate
 
 
 class FolderService:
@@ -75,7 +75,7 @@ class FolderService:
         tenant_id: uuid.UUID,
         flow_id: uuid.UUID,
     ) -> dict:
-        folder = self._get_folder_or_404(db, folder_id, tenant_id)
+        self._get_folder_or_404(db, folder_id, tenant_id)
 
         cf_repo = CallFlowRepository(db)
         flow = cf_repo.find_by_id(flow_id, tenant_id=tenant_id)

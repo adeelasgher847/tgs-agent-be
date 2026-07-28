@@ -2,7 +2,7 @@ import uuid
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db, require_admin, get_current_workspace

@@ -92,10 +92,12 @@ class TestLoginRateLimit:
         mock_r = MagicMock()
         from app.core.config import settings
 
-        with patch.object(settings, "RATE_LIMIT_ENABLED", False):
-            with patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r):
-                client = TestClient(app, raise_server_exceptions=False)
-                resp = client.post("/api/v1/users/login")
+        with (
+            patch.object(settings, "RATE_LIMIT_ENABLED", False),
+            patch("app.middleware.rate_limit_middleware._get_redis", return_value=mock_r),
+        ):
+            client = TestClient(app, raise_server_exceptions=False)
+            resp = client.post("/api/v1/users/login")
 
         assert resp.status_code == 200
         mock_r.pipeline.assert_not_called()

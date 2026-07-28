@@ -4,27 +4,20 @@ Real-time voice conversation with agents using browser microphone/speakers
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import uuid
 import json
-import asyncio
-import time
-import base64
-import io
 from datetime import datetime
 from app.core.logger import logger
 
 from app.api.deps import get_db, require_tenant
 from app.models.agent import Agent
 from app.models.user import User
-from app.models.call_session import CallSession
-from app.schemas.base import SuccessResponse
 from app.services.agent_service import agent_service
 from app.services.call_session_service import call_session_service
 from app.services.openai_service import openai_service
-from app.utils.response import create_success_response
 
 router = APIRouter(
     tags=["Live Voice - Talk to Assistant"],
@@ -403,8 +396,7 @@ async def handle_speech_text(session_id: str, message_data: dict, db: Session):
             raise ValueError("Session not found")
         
         session_data = manager.session_data[session_id]
-        agent_data = session_data["agent_data"]
-        
+
         user_text = message_data.get("text", "")
         
         if not user_text:
@@ -586,7 +578,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             response_time = openai_response["response_time"]
                     else:
                         # Model not found or invalid - use default OpenAI
-                        logger.warning(f"⚠️ Model not found or invalid, using default OpenAI")
+                        logger.warning("⚠️ Model not found or invalid, using default OpenAI")
                         openai_response = openai_service.process_agent_conversation(
                             user_input=user_input,
                             agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -597,7 +589,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                 
                 except ValueError:
                     # Invalid UUID - use default OpenAI
-                    logger.warning(f"⚠️ Invalid model_id format, using default OpenAI")
+                    logger.warning("⚠️ Invalid model_id format, using default OpenAI")
                     openai_response = openai_service.process_agent_conversation(
                         user_input=user_input,
                         agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -608,7 +600,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
             
             else:
                 # No model_id - use default OpenAI
-                logger.info(f"ℹ️ No model_id configured, using default OpenAI")
+                logger.info("ℹ️ No model_id configured, using default OpenAI")
                 openai_response = openai_service.process_agent_conversation(
                     user_input=user_input,
                     agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",

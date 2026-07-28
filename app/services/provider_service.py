@@ -3,12 +3,12 @@ Provider Service
 Handles provider CRUD operations
 """
 
-from typing import List, Optional
+from typing import List
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.models.provider import Provider
 from app.schemas.provider import ProviderCreate, ProviderUpdate
-from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
+from app.core.security import encrypt_api_key, decrypt_api_key
 import uuid
 
 
@@ -34,11 +34,11 @@ class ProviderService:
             db.rollback()
             raise ValueError(f"Provider with name '{provider_data.name}' already exists")
     
-    def get_provider_by_id(self, db: Session, provider_id: uuid.UUID) -> Optional[Provider]:
+    def get_provider_by_id(self, db: Session, provider_id: uuid.UUID) -> Provider | None:
         """Get provider by ID"""
         return db.query(Provider).filter(Provider.id == provider_id).first()
     
-    def get_provider_by_name(self, db: Session, name: str) -> Optional[Provider]:
+    def get_provider_by_name(self, db: Session, name: str) -> Provider | None:
         """Get provider by name"""
         return db.query(Provider).filter(Provider.name == name).first()
     
@@ -48,9 +48,9 @@ class ProviderService:
     
     def get_active_providers(self, db: Session) -> List[Provider]:
         """Get all active providers"""
-        return db.query(Provider).filter(Provider.is_active == True).all()
+        return db.query(Provider).filter(Provider.is_active).all()
     
-    def update_provider(self, db: Session, provider_id: uuid.UUID, provider_data: ProviderUpdate) -> Optional[Provider]:
+    def update_provider(self, db: Session, provider_id: uuid.UUID, provider_data: ProviderUpdate) -> Provider | None:
         """Update a provider"""
         provider = self.get_provider_by_id(db, provider_id)
         if not provider:
@@ -87,7 +87,7 @@ class ProviderService:
         db.commit()
         return True
     
-    def get_provider_with_decrypted_api_key(self, db: Session, provider_id: uuid.UUID) -> Optional[dict]:
+    def get_provider_with_decrypted_api_key(self, db: Session, provider_id: uuid.UUID) -> dict | None:
         """Get provider with decrypted API key for use in API calls"""
         provider = self.get_provider_by_id(db, provider_id)
         if not provider:

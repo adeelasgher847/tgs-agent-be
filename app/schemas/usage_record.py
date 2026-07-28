@@ -1,5 +1,4 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
 from datetime import datetime
 import uuid
 
@@ -13,13 +12,13 @@ class UsageRecordCreate(UsageRecordBase):
     subscription_id: uuid.UUID
 
 class UsageRecordUpdate(BaseModel):
-    calls_used: Optional[int] = None
-    agents_created: Optional[int] = None
+    calls_used: int | None = None
+    agents_created: int | None = None
 
 class UsageRecordOut(UsageRecordBase):
     id: uuid.UUID
     subscription_id: uuid.UUID
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
     
     model_config = ConfigDict(from_attributes=True)

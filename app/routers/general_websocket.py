@@ -3,20 +3,15 @@ General WebSocket Router
 Real-time events for general application monitoring - allows frontend to receive live updates
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from typing import Dict, List, Optional, Any
-import uuid
+from typing import Dict, List, Any
 import json
-import asyncio
 from datetime import datetime, timezone
 from app.core.logger import logger
 
-from app.api.deps import get_db, require_tenant, get_current_user_jwt
-from app.models.user import User
-from app.models.call_session import CallSession
-from app.services.call_session_service import call_session_service
+from app.api.deps import get_db
 
 router = APIRouter(
     tags=["General WebSocket"],
@@ -113,7 +108,7 @@ class GeneralWebSocketManager:
         # logger.debug(f"📡 WebSocket manager ID: {id(self)}")
         
         if len(self.active_connections) == 0:
-            logger.warning(f"⚠️ No active WebSocket connections to broadcast to!")
+            logger.warning("⚠️ No active WebSocket connections to broadcast to!")
             return
         
         disconnected_websockets = []
@@ -326,7 +321,7 @@ async def broadcast_call_status_update(call_session_id: str, status: str, metada
     
     try:
         await websocket_manager.broadcast_to_all(message, "call_status_update")
-        logger.debug(f"✅ broadcast_call_status_update completed successfully")
+        logger.debug("✅ broadcast_call_status_update completed successfully")
     except Exception as e:
         logger.error(f"❌ broadcast_call_status_update failed: {e}", exc_info=True)
         # import traceback
@@ -347,7 +342,7 @@ async def broadcast_transcript_update(call_session_id: str, transcript: list, ne
     
     try:
         await websocket_manager.broadcast_to_all(message, "transcript_update")
-        logger.debug(f"✅ broadcast_transcript_update completed successfully")
+        logger.debug("✅ broadcast_transcript_update completed successfully")
     except Exception as e:
         logger.error(f"❌ broadcast_transcript_update failed: {e}", exc_info=True)
         # import traceback

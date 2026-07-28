@@ -257,28 +257,32 @@ class TestGetAvailableSlots:
     @pytest.mark.anyio
     async def test_raises_when_not_connected(self):
         db = MagicMock()
-        with patch("app.services.calendly_service.get_integration", return_value=None):
-            with pytest.raises(ValueError, match="not connected"):
-                await calendly_service.get_available_slots(
-                    db,
-                    _WORKSPACE_ID,
-                    datetime(2026, 7, 16, tzinfo=timezone.utc),
-                    datetime(2026, 7, 17, tzinfo=timezone.utc),
-                )
+        with (
+            patch("app.services.calendly_service.get_integration", return_value=None),
+            pytest.raises(ValueError, match="not connected"),
+        ):
+            await calendly_service.get_available_slots(
+                db,
+                _WORKSPACE_ID,
+                datetime(2026, 7, 16, tzinfo=timezone.utc),
+                datetime(2026, 7, 17, tzinfo=timezone.utc),
+            )
 
     @pytest.mark.anyio
     async def test_raises_when_no_event_type_configured(self):
         row = MagicMock()
         row.calendly_event_type_uri = None
         db = MagicMock()
-        with patch("app.services.calendly_service.get_integration", return_value=row):
-            with pytest.raises(ValueError, match="event type"):
-                await calendly_service.get_available_slots(
-                    db,
-                    _WORKSPACE_ID,
-                    datetime(2026, 7, 16, tzinfo=timezone.utc),
-                    datetime(2026, 7, 17, tzinfo=timezone.utc),
-                )
+        with (
+            patch("app.services.calendly_service.get_integration", return_value=row),
+            pytest.raises(ValueError, match="event type"),
+        ):
+            await calendly_service.get_available_slots(
+                db,
+                _WORKSPACE_ID,
+                datetime(2026, 7, 16, tzinfo=timezone.utc),
+                datetime(2026, 7, 17, tzinfo=timezone.utc),
+            )
 
 
 # ── Booking ────────────────────────────────────────────────────────────────────
@@ -333,15 +337,17 @@ class TestBookAppointment:
     @pytest.mark.anyio
     async def test_raises_when_not_connected(self):
         db = MagicMock()
-        with patch("app.services.calendly_service.get_integration", return_value=None):
-            with pytest.raises(ValueError, match="not connected"):
-                await calendly_service.book_appointment(
-                    db,
-                    _WORKSPACE_ID,
-                    start_time=datetime(2026, 7, 16, 15, 0, tzinfo=timezone.utc),
-                    attendee_email="caller@example.com",
-                    attendee_name="Ada Lovelace",
-                )
+        with (
+            patch("app.services.calendly_service.get_integration", return_value=None),
+            pytest.raises(ValueError, match="not connected"),
+        ):
+            await calendly_service.book_appointment(
+                db,
+                _WORKSPACE_ID,
+                start_time=datetime(2026, 7, 16, 15, 0, tzinfo=timezone.utc),
+                attendee_email="caller@example.com",
+                attendee_name="Ada Lovelace",
+            )
 
 
 # ── AES-256-GCM token encryption round trip ─────────────────────────────────────
@@ -362,9 +368,11 @@ class TestTokenEncryption:
         from app.core.config import settings
         from app.core.db_encryption import decrypt_calendly_token
 
-        with patch.object(settings, "CALENDLY_TOKEN_ENCRYPTION_KEY", "a" * 64):
-            with pytest.raises(ValueError):
-                decrypt_calendly_token("not-a-valid-ciphertext", MagicMock())
+        with (
+            patch.object(settings, "CALENDLY_TOKEN_ENCRYPTION_KEY", "a" * 64),
+            pytest.raises(ValueError),
+        ):
+            decrypt_calendly_token("not-a-valid-ciphertext", MagicMock())
 
 
 # ── Gemini function-calling: function-response Content wrapping ────────────────

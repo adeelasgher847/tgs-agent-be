@@ -16,13 +16,11 @@ Rime mistv2 supports:
 """
 from __future__ import annotations
 
-import asyncio
 import time
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 
 import httpx
 
-from app.core.config import settings
 from app.core.logger import logger
 from app.core.secret_manager import get_rime_api_key
 
@@ -41,7 +39,7 @@ class RimeTtsService:
 
     def __init__(self) -> None:
         # Client is created lazily (no event loop at module import time).
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         # Resolve once at construction so a missing key fails before any live call.
         self._api_key = get_rime_api_key()
 

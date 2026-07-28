@@ -9,14 +9,14 @@ Follows the same singleton pattern as app/middleware/rate_limit_middleware.py.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from app.core.logger import logger
 
 if TYPE_CHECKING:
     import arq  # noqa: F401 — type-only import; arq may not be installed in all envs
 
-_pool: Optional[object] = None  # arq.ArqRedis at runtime
+_pool: object | None = None  # arq.ArqRedis at runtime
 
 
 async def init_arq_pool() -> None:
@@ -60,6 +60,6 @@ async def close_arq_pool() -> None:
             _pool = None
 
 
-def get_arq_pool() -> Optional[object]:
+def get_arq_pool() -> object | None:
     """Return the shared pool, or None if it was not (yet) initialized."""
     return _pool
