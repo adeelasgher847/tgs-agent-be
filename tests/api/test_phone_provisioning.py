@@ -17,14 +17,13 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, Dict
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.middleware.api_key_middleware import _attach_workspace_context
 from app.models.agent import Agent
 from app.models.phone_number import NumberConfiguration, PhoneNumber
 from app.models.tenant import Tenant

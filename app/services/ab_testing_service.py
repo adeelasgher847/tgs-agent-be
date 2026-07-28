@@ -8,7 +8,6 @@ call fails mid-way, and never changes for the lifetime of the call.
 from __future__ import annotations
 
 import random
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session

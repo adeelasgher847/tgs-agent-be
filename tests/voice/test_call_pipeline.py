@@ -13,17 +13,13 @@ Run: pytest tests/voice/test_call_pipeline.py -v
 from __future__ import annotations
 
 import asyncio
-import types
 import uuid
-from datetime import datetime, timezone, timedelta, time as dt_time
-from types import SimpleNamespace
+from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.routers.bidirectional_stream import BidirectionalStreamHandler as Handler
-from app.voice.booking_mixin import BookingMixin
-from app.voice.call_control_mixin import CallControlMixin
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -554,11 +550,20 @@ class TestGoodbyeDetection:
         h._end_call_after_agent_request = AsyncMock()
         h._full_shutdown = AsyncMock()
         h._add_to_transcript = AsyncMock()
-        with patch("app.services.call_session_service.call_session_service.update_call_session_status"):
-            with patch("app.services.twilio_service.twilio_service.end_call_with_credentials", new=AsyncMock()):
-                with patch("app.utils.voice_twilio_utils.get_twilio_credentials_for_call",
-                           return_value=("ACtest", "authtest")):
-                    pass
+        with (
+            patch(
+                "app.services.call_session_service.call_session_service.update_call_session_status"
+            ),
+            patch(
+                "app.services.twilio_service.twilio_service.end_call_with_credentials",
+                new=AsyncMock(),
+            ),
+            patch(
+                "app.utils.voice_twilio_utils.get_twilio_credentials_for_call",
+                return_value=("ACtest", "authtest"),
+            ),
+        ):
+            pass
         return h
 
     @pytest.mark.parametrize("phrase", [
@@ -964,7 +969,6 @@ class TestTranscriptAccuracy:
         assert h._is_agent_self_echo("I want to book an appointment") is False
 
     def test_normalize_turn_text_lowercases_and_strips(self):
-        h = _base_handler()
         result = Handler._normalize_turn_text("  Hello, How Are You?  ")
         assert result == result.lower()
         assert result == result.strip()

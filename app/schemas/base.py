@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Generic, TypeVar, Optional
+from typing import Generic, TypeVar
 from fastapi import status
 
 T = TypeVar('T')

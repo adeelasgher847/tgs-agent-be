@@ -7,7 +7,6 @@ nested dicts/lists, sensitive headers, and the recursion-depth guard.
 
 import logging
 
-import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel

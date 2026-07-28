@@ -17,7 +17,6 @@ Docs: https://www.twilio.com/docs/voice/answering-machine-detection#async-amd
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status

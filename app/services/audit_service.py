@@ -8,7 +8,7 @@ abort a business operation.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Request
 from sqlalchemy.orm import Session

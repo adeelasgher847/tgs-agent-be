@@ -1,4 +1,3 @@
-from typing import Optional, Union
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -113,9 +112,9 @@ def _require_rank_or_api_key(required: str):
     """Like _require_rank, but lets API-key (M2M) principals through untiered."""
 
     def _dependency(
-        principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+        principal: User | ApiKeyPrincipal = Depends(require_tenant),
         db: Session = Depends(get_db),
-    ) -> Union[User, ApiKeyPrincipal]:
+    ) -> User | ApiKeyPrincipal:
         if isinstance(principal, ApiKeyPrincipal):
             return principal
         role_name = _resolve_effective_role(principal, db)

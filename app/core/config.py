@@ -17,7 +17,6 @@ assembled by a model_validator and exposed as grouped views:
 
 from __future__ import annotations
 
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict

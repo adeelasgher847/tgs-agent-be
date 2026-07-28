@@ -115,11 +115,11 @@ class TestCallback:
                 "app.routers.salesforce_integration.salesforce_service.exchange_code_for_tokens",
                 new=AsyncMock(side_effect=Exception("Salesforce 400")),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await salesforce_callback(
-                    code="mock-auth-code", state="signed-state", db=MagicMock()
-                )
+            await salesforce_callback(
+                code="mock-auth-code", state="signed-state", db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 502
 
@@ -159,14 +159,16 @@ class TestContactEndpoint:
     async def test_not_connected_returns_400(self):
         from app.routers.salesforce_integration import salesforce_get_contact
 
-        with patch(
-            "app.routers.salesforce_integration.salesforce_service.tenant_has_salesforce_connected",
-            return_value=False,
+        with (
+            patch(
+                "app.routers.salesforce_integration.salesforce_service.tenant_has_salesforce_connected",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await salesforce_get_contact(
-                    phone="+15550001111", principal=_principal(), db=MagicMock()
-                )
+            await salesforce_get_contact(
+                phone="+15550001111", principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 
@@ -183,11 +185,11 @@ class TestContactEndpoint:
                 "app.routers.salesforce_integration.salesforce_service.get_contact_for_phone",
                 new=AsyncMock(return_value=None),
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await salesforce_get_contact(
-                    phone="+15550001111", principal=_principal(), db=MagicMock()
-                )
+            await salesforce_get_contact(
+                phone="+15550001111", principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 404
 
@@ -261,14 +263,16 @@ class TestSettingsEndpoint:
 
         payload = SalesforceSettingsUpdateRequest(write_back_enabled=False)
 
-        with patch(
-            "app.routers.salesforce_integration.salesforce_service.tenant_has_salesforce_connected",
-            return_value=False,
+        with (
+            patch(
+                "app.routers.salesforce_integration.salesforce_service.tenant_has_salesforce_connected",
+                return_value=False,
+            ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await salesforce_update_settings(
-                    payload=payload, principal=_principal(), db=MagicMock()
-                )
+            await salesforce_update_settings(
+                payload=payload, principal=_principal(), db=MagicMock()
+            )
 
         assert exc_info.value.status_code == 400
 

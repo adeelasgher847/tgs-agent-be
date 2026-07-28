@@ -12,7 +12,6 @@ import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from app.routers.bidirectional_stream import BidirectionalStreamHandler as Handler
 

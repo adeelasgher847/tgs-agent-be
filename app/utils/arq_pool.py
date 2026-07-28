@@ -9,7 +9,7 @@ Follows the same singleton pattern as app/middleware/rate_limit_middleware.py.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from app.core.logger import logger
 

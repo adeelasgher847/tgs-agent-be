@@ -12,7 +12,6 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 

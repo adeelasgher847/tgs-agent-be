@@ -3,17 +3,17 @@ Call Log Service Module
 Handles call log management including creation, updates, retrieval, and statistics
 """
 
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, and_, or_, desc, asc
+from sqlalchemy.orm import Session
+from sqlalchemy import func, desc, asc
 from app.models.call_log import CallLog
 from app.models.call_session import CallSession
 from app.models.agent import Agent
 from app.schemas.call_log import (
     CallLogCreate, CallLogUpdate, CallLogFilters, CallLogStats, CallLogDashboardResponse
 )
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Any, Tuple
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 class CallLogService:
     """Service class for handling call log operations"""

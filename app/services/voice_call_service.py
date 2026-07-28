@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
 import uuid
-from typing import Optional
 
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse

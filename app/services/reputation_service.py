@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 from sqlalchemy.exc import IntegrityError

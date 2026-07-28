@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.middleware.api_key_middleware import _attach_workspace_context
 from app.models.agent import Agent
 from app.models.call_session import CallSession
 from app.models.phone_number import NumberConfiguration, PhoneNumber

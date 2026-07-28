@@ -6,7 +6,6 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from app.models.api_key import Apikey
 from app.models.tenant import Tenant
 from app.services.api_key_service import (
     RAW_KEY_PREFIX,

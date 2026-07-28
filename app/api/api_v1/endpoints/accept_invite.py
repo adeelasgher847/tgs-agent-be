@@ -4,21 +4,20 @@ from app.api.deps import get_db
 from app.models.invite import Invite
 from app.models.user import User, user_tenant_association
 from app.models.role import Role
-from app.schemas.user import UserCreate, UserOut
+from app.schemas.user import AcceptInviteOut
 from app.schemas.base import SuccessResponse
 from app.core.security import get_password_hash, create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.models.refresh_token import RefreshToken
 from app.utils.response import create_success_response
 from app.services.role_service import get_default_product_id
 from datetime import datetime, timezone
-import uuid
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.post("/accept-invite", response_model=SuccessResponse[UserOut])
+@router.post("/accept-invite", response_model=SuccessResponse[AcceptInviteOut])
 def accept_invite(
     token: str,
     password: str,
@@ -149,7 +148,6 @@ def accept_invite(
         role=role_obj.name
     )
 
-    
     # Create refresh token
     rt_value = create_refresh_token_value()
     rt = RefreshToken(
@@ -161,8 +159,8 @@ def accept_invite(
     db.add(rt)
     db.commit()
     
-    # Return user details
-    user_out = UserOut(
+    # Return user details plus the session tokens
+    user_out = AcceptInviteOut(
         id=user.id,
         first_name=user.first_name,
         last_name=user.last_name,
@@ -170,7 +168,9 @@ def accept_invite(
         phone=user.phone,
         join_date=user.join_date,
         created_at=user.created_at,
-        current_tenant_id=user.current_tenant_id
+        current_tenant_id=user.current_tenant_id,
+        access_token=access_token,
+        refresh_token=rt_value
     )
     
     # Determine response message based on whether user was new or existing

@@ -1,5 +1,4 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing import Optional
 from pydantic import EmailStr
 from datetime import datetime
 import uuid
@@ -36,8 +35,14 @@ class UserOut(UserBase):
     role_id: uuid.UUID | None = None
     join_date: datetime
     created_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True)
+
+
+class AcceptInviteOut(UserOut):
+    """UserOut plus the session tokens issued on invite acceptance."""
+    access_token: str
+    refresh_token: str
 
 
 class RoleInfo(BaseModel):

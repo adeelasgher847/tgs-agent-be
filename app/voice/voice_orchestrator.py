@@ -23,14 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Optional, Set
+from typing import TYPE_CHECKING, Set
 
 from app.core.config import settings
 from app.core.logger import logger
 from app.utils.audio_utils import ulaw_to_linear_sample
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
-from app.voice.stt_events import SttEventBus, SttFinalEvent, SttInterimEvent, SttErrorEvent
+from app.voice.stt_events import SttEventBus
 
 if TYPE_CHECKING:
     from app.core.agent_runtime import ResolvedSttRuntime
@@ -355,7 +355,6 @@ class VoiceOrchestrator:
     async def _maybe_upgrade_stt_for_email(self, agent_text: str) -> None:
         """Recreate the Deepgram session with longer endpointing after the agent
         asks for an email address so spelling pauses don't split finals."""
-        import re as _re
         from app.routers.bidirectional_stream import _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE
 
         if not getattr(settings, "VOICE_STT_ENDPOINTING_EMAIL_PROMPT_RECREATES_STT", True):

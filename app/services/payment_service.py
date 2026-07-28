@@ -11,7 +11,7 @@ Responsibilities:
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Tuple
+from typing import Tuple
 
 from sqlalchemy.orm import Session
 

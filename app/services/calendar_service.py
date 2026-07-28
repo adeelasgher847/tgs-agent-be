@@ -12,7 +12,7 @@ import html
 import uuid
 from datetime import datetime, date, timedelta, timezone, time as dt_time, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session

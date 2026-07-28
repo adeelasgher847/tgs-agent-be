@@ -20,7 +20,7 @@ import re
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple
+from typing import Tuple
 from urllib.parse import urlencode
 
 import httpx

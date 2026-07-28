@@ -1,12 +1,9 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
-from typing import List, Optional
-from datetime import datetime, timezone
+from typing import List
 import uuid
 import asyncio
 
 from app.models.transcript_message import TranscriptMessage
-from app.models.call_session import CallSession
 from app.routers.general_websocket import broadcast_transcript_update
 from app.core.logger import logger
 from app.services.dlp_service import redact_phi_if_hipaa

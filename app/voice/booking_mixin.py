@@ -10,12 +10,11 @@ import re
 import time
 import uuid
 from datetime import datetime, date, timedelta, timezone
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List
 
 from app.core.config import settings
 from app.core.logger import logger
 from app.models.appointment import Appointment
-from app.services.calendar_service import calendar_service
 from app.utils.eleven_tts_text import strip_eleven_v3_style_tags_for_non_eleven_tts
 
 if TYPE_CHECKING:

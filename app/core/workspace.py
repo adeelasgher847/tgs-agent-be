@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
 from app.models.tenant import Tenant
 

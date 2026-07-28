@@ -2,9 +2,8 @@
 Trello API Service for Scheduled Calls Integration
 """
 
-import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
@@ -90,7 +89,7 @@ class TrelloService(BaseCRMService):
             # Final fallback: Use stored URL or build from board_id
             return board_data.get("url", self.build_container_url(board_id))
             
-        except Exception as e:
+        except Exception:
             # If API call fails, fallback to basic URL
             return self.build_container_url(board_id)
 
@@ -220,7 +219,7 @@ class TrelloService(BaseCRMService):
             response = requests.put(url, params=params, timeout=20)
             response.raise_for_status()
             return True
-        except Exception as e:
+        except Exception:
             return False
 
     def ensure_required_fields(self, container_id: str) -> Dict[str, str]:
@@ -236,7 +235,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             existing_fields = response.json()
-        except Exception as e:
+        except Exception:
             existing_fields = []
         
         # Map fields by name
@@ -407,7 +406,7 @@ class TrelloService(BaseCRMService):
                     pass
             
             return card_data
-        except Exception as exc:
+        except Exception:
             return None
 
     def update_item_jd_context(
@@ -475,7 +474,7 @@ class TrelloService(BaseCRMService):
             response = requests.put(url, params=params, timeout=20)
             response.raise_for_status()
             return response.json()
-        except Exception as exc:
+        except Exception:
             return None
 
     def update_item_call_session_id(
@@ -500,7 +499,7 @@ class TrelloService(BaseCRMService):
             response = requests.put(url, params=params, timeout=20)
             response.raise_for_status()
             return response.json()
-        except Exception as exc:
+        except Exception:
             return None
 
     def update_item_call_time_utc(
@@ -618,7 +617,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             cards = response.json()
-        except Exception as exc:
+        except Exception:
             return 0
         
         for card in cards:
@@ -704,7 +703,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             cards = response.json()
-        except Exception as exc:
+        except Exception:
             return 0
         
         for card in cards:
@@ -815,7 +814,7 @@ class TrelloService(BaseCRMService):
             response = requests.get(url, params=params, timeout=20)
             response.raise_for_status()
             cards = response.json()
-        except Exception as exc:
+        except Exception:
             return []
         
         for card in cards:
@@ -832,7 +831,7 @@ class TrelloService(BaseCRMService):
                 custom_fields_response = requests.get(custom_fields_url, params=custom_fields_params, timeout=20)
                 custom_fields_response.raise_for_status()
                 custom_fields = custom_fields_response.json()
-            except Exception as exc:
+            except Exception:
                 custom_fields = []
             
             # Extract batch_id, tenant_id, and call_session_id
@@ -996,7 +995,7 @@ class TrelloService(BaseCRMService):
             update_response.raise_for_status()
             updated = True
             return update_response.json()
-        except Exception as exc:
+        except Exception:
             if updated:
                 # Custom field was updated, so return success
                 return {"id": item_id}

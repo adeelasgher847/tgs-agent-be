@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Union
 
 from fastapi import APIRouter, Body, Depends, Request, status
 from sqlalchemy.orm import Session
@@ -24,7 +23,7 @@ from app.services.call_flow_service import call_flow_service
 router = APIRouter(prefix="/flows", tags=["Visual Flow Editor"])
 
 
-def _tenant_id(principal: Union[User, ApiKeyPrincipal]) -> uuid.UUID:
+def _tenant_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
@@ -38,7 +37,7 @@ def update_flow_data(
     flow_id: uuid.UUID,
     body: FlowDataUpdate,
     request: Request,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_config_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
 ) -> FlowDataResponse:
     tenant_id = _tenant_id(principal)
@@ -69,7 +68,7 @@ def update_flow_data(
 )
 def get_flow_data(
     flow_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ) -> FlowDataResponse:
     return call_flow_service.get_flow_data(db, flow_id, _tenant_id(principal))
@@ -84,7 +83,7 @@ def get_flow_data(
 def validate_flow_data(
     flow_id: uuid.UUID,
     body: FlowDataUpdate | None = Body(default=None),
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_readonly_or_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ) -> FlowValidationResponse:
     return call_flow_service.validate_flow_data(

@@ -1,12 +1,10 @@
 """Router for SAML and OIDC authentication flows."""
 
 import secrets
-import json
-import base64
 import time
 import hmac
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
 from onelogin.saml2.settings import OneLogin_Saml2_Settings

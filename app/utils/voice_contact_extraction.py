@@ -7,7 +7,7 @@ Never uses LLM tokens. Prefers spelled-letter patterns and spoken-email reconstr
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any
 
 from app.core.config import settings
 from app.utils.spoken_email import coerce_email_from_text

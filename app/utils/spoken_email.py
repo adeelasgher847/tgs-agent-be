@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Optional
 
 # Conservative: avoids matching paths, times, etc.
 _EMAIL_LIKE = re.compile(

@@ -945,9 +945,13 @@ class TestIntegrationSettings:
 
     def test_update_settings_raises_when_not_connected(self):
         db = MagicMock()
-        with patch("app.services.ghl_service.get_integration", return_value=None):
-            with pytest.raises(ValueError):
-                ghl_service.update_integration_settings(db, _TENANT_ID, write_back_enabled=False)
+        with (
+            patch("app.services.ghl_service.get_integration", return_value=None),
+            pytest.raises(ValueError),
+        ):
+            ghl_service.update_integration_settings(
+                db, _TENANT_ID, write_back_enabled=False
+            )
 
 
 class TestSyncStatus:

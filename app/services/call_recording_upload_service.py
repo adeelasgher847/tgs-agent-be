@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Optional
 
 from app.core.logger import logger
 

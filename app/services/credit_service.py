@@ -8,12 +8,11 @@ from app.models.tenant import Tenant
 from app.models.agent import Agent
 from app.models.call_session import CallSession
 from app.models.call_log import CallLog
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 import uuid
 import asyncio
 from datetime import datetime, timezone
 import logging
-import math
 
 logger = logging.getLogger(__name__)
 

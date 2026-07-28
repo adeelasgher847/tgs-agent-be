@@ -309,17 +309,17 @@ def test_search_endpoint_returns_results(client, db, workspace_id):
     _app.dependency_overrides[get_db] = lambda: _PgvectorMockSession(db)
 
     try:
-        with _auth_ctx(workspace_id):
-            with (
-                patch("app.routers.knowledge_base.settings") as mock_settings,
-                patch(
-                    "app.routers.knowledge_base.embed_text_for_rag",
-                    return_value=FAKE_EMBEDDING,
-                ),
-            ):
-                mock_settings.OPENAI_API_KEY = "test-key"
-                mock_settings.RAG_TOP_K = 5
-                resp = client.get(f"/api/v1/kb/{kb.id}/search?q=warranty&limit=5")
+        with (
+            _auth_ctx(workspace_id),
+            patch("app.routers.knowledge_base.settings") as mock_settings,
+            patch(
+                "app.routers.knowledge_base.embed_text_for_rag",
+                return_value=FAKE_EMBEDDING,
+            ),
+        ):
+            mock_settings.OPENAI_API_KEY = "test-key"
+            mock_settings.RAG_TOP_K = 5
+            resp = client.get(f"/api/v1/kb/{kb.id}/search?q=warranty&limit=5")
     finally:
         _app.dependency_overrides[get_db] = original_override
 
@@ -330,25 +330,27 @@ def test_search_endpoint_returns_results(client, db, workspace_id):
 
 
 def test_search_endpoint_404_unknown_kb(client, db, workspace_id):
-    with _auth_ctx(workspace_id):
-        with patch("app.routers.knowledge_base.settings") as mock_settings:
-            mock_settings.OPENAI_API_KEY = "test-key"
-            resp = client.get(f"/api/v1/kb/{uuid.uuid4()}/search?q=test")
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+    ):
+        mock_settings.OPENAI_API_KEY = "test-key"
+        resp = client.get(f"/api/v1/kb/{uuid.uuid4()}/search?q=test")
     assert resp.status_code == 404
 
 
 def test_search_endpoint_400_no_openai_key(client, db, workspace_id):
     fake_kb_id = uuid.uuid4()
 
-    with _auth_ctx(workspace_id):
-        with (
-            patch("app.routers.knowledge_base.settings") as mock_settings,
-            # Bypass the 404 check so we reach the OPENAI_API_KEY guard
-            patch(
-                "app.routers.knowledge_base._get_kb_or_404",
-                return_value=MagicMock(),
-            ),
-        ):
-            mock_settings.OPENAI_API_KEY = ""
-            resp = client.get(f"/api/v1/kb/{fake_kb_id}/search?q=test")
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        # Bypass the 404 check so we reach the OPENAI_API_KEY guard
+        patch(
+            "app.routers.knowledge_base._get_kb_or_404",
+            return_value=MagicMock(),
+        ),
+    ):
+        mock_settings.OPENAI_API_KEY = ""
+        resp = client.get(f"/api/v1/kb/{fake_kb_id}/search?q=test")
     assert resp.status_code == 400

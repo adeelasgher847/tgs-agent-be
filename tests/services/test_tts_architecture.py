@@ -12,7 +12,6 @@ from sqlalchemy.pool import StaticPool
 from app.api.deps import get_db, require_admin_or_owner, require_member_or_admin, require_tenant
 from app.db.base import Base
 from app.main import app
-from app.models.agent import Agent
 from app.models.tenant import Tenant
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice

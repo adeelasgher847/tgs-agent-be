@@ -968,9 +968,11 @@ class TestFieldMappingStorage:
 
     def test_save_field_mappings_raises_when_not_connected(self):
         db = MagicMock()
-        with patch("app.services.hubspot_service.get_integration", return_value=None):
-            with pytest.raises(ValueError):
-                hubspot_service.save_field_mappings(db, _TENANT_ID, [])
+        with (
+            patch("app.services.hubspot_service.get_integration", return_value=None),
+            pytest.raises(ValueError),
+        ):
+            hubspot_service.save_field_mappings(db, _TENANT_ID, [])
 
     def test_get_field_mappings_defaults_to_empty_list(self):
         db = MagicMock()
@@ -1043,11 +1045,13 @@ class TestIntegrationSettings:
 
     def test_update_settings_raises_when_not_connected(self):
         db = MagicMock()
-        with patch("app.services.hubspot_service.get_integration", return_value=None):
-            with pytest.raises(ValueError):
-                hubspot_service.update_integration_settings(
-                    db, _TENANT_ID, contact_lookup_enabled=True, write_back_enabled=True
-                )
+        with (
+            patch("app.services.hubspot_service.get_integration", return_value=None),
+            pytest.raises(ValueError),
+        ):
+            hubspot_service.update_integration_settings(
+                db, _TENANT_ID, contact_lookup_enabled=True, write_back_enabled=True
+            )
 
 
 class TestLastWriteBackError:

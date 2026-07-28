@@ -11,9 +11,7 @@ Rate limit: 10 integration-triggered calls per minute per workspace.
 from __future__ import annotations
 
 import hmac
-import uuid
 from datetime import datetime, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse

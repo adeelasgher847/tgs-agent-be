@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.schemas.plan import PlanOut, PlanCreate, PlanUpdate
+from app.schemas.plan import PlanOut, PlanCreate
 from app.schemas.base import SuccessResponse
 from app.models.plan import Plan
 from app.api.deps import get_db, get_current_user_jwt, require_admin
 from app.utils.response import create_success_response
-from typing import List, Optional
-import uuid
+from typing import List
 
 router = APIRouter()
 

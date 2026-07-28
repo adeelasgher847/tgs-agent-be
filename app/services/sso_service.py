@@ -1,7 +1,6 @@
 """Service for handling SAML and OIDC Single Sign-On operations."""
 
 import uuid
-from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -13,7 +12,6 @@ from app.core.security import get_password_hash
 from app.services import role_service
 
 # For authlib OIDC
-from authlib.integrations.httpx_client import AsyncOAuth2Client
 
 def get_sso_config(db: Session, workspace_id: uuid.UUID) -> SsoConfig | None:
     return db.query(SsoConfig).filter(SsoConfig.workspace_id == workspace_id).first()

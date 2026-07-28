@@ -1,4 +1,4 @@
-from typing import Generator, Optional
+from typing import Generator
 import uuid
 
 from sqlalchemy.exc import InterfaceError

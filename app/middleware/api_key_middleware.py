@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import Request

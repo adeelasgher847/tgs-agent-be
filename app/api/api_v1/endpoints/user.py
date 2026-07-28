@@ -31,7 +31,6 @@ from google.oauth2 import id_token as google_id_token
 from google.auth.transport.requests import Request as GoogleRequest
 from app.core.config import settings
 import uuid
-from typing import Optional
 import re
 from app.core.logger import logger
 from app.services.role_service import get_default_product_id
@@ -176,7 +175,6 @@ def login(
         from app.services.role_service import (
             get_user_role_in_tenant,
             get_user_product_in_tenant,
-            assign_role_to_user_tenant,
         )
         
         # Check if user has a role in this tenant
@@ -244,7 +242,6 @@ def google_login(
         # Fields we care about from Google
         sub = idinfo.get("sub")  # stable Google user id
         email = idinfo.get("email")
-        email_verified = idinfo.get("email_verified")
         picture = idinfo.get("picture")
         given_name = idinfo.get("given_name")
         family_name = idinfo.get("family_name")
@@ -281,7 +278,6 @@ def google_login(
         # Always prefer provider-provided names. Fallback: split full name or use default.
         first_name = given_name or (name.split()[0] if name else "User")
         last_name = family_name or (" ".join(name.split()[1:]) if name and len(name.split()) > 1 else ".")
-        hashed_password = get_password_hash(secrets.token_urlsafe(32))  # placeholder for social
 
         db_user = User(
             email=email,
@@ -381,7 +377,6 @@ def google_login(
         db.commit()
 
     role_info = None
-    current_role = None
     if current_tenant_id:
         role = get_user_role_in_tenant(db, user.id, current_tenant_id)
         from app.services.role_service import get_display_role_details
@@ -392,8 +387,6 @@ def google_login(
                 name=disp["name"],
                 description=disp["description"]
             )
-        if role:
-            current_role = role.name
 
     # Issue tokens (provider-based; no password needed)
     token_response = issue_tokens_for_user(db, user, current_tenant_id, role_info)
@@ -869,7 +862,7 @@ def update_user_profile(
     try:
         db.commit()
         db.refresh(current_user)
-    except Exception as e:
+    except Exception:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -25,11 +25,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import socket
 import uuid
 from datetime import datetime, timezone
-from typing import Union
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -416,10 +414,12 @@ class TestRetryIntervals:
         mock_get_pool.return_value = mock_pool
 
         from app.services import webhook_service as _wh_mod
-        with patch.object(_wh_mod, "_schedule_retry", wraps=_wh_mod._schedule_retry):
-            with patch("app.utils.arq_pool.get_arq_pool", return_value=mock_pool):
-                delivery_id = uuid.uuid4()
-                asyncio.run(_wh_mod._schedule_retry(delivery_id, attempt_number=1))
+        with (
+            patch.object(_wh_mod, "_schedule_retry", wraps=_wh_mod._schedule_retry),
+            patch("app.utils.arq_pool.get_arq_pool", return_value=mock_pool),
+        ):
+            delivery_id = uuid.uuid4()
+            asyncio.run(_wh_mod._schedule_retry(delivery_id, attempt_number=1))
 
         mock_pool.enqueue_job.assert_called_once()
         call_kwargs = mock_pool.enqueue_job.call_args
@@ -476,27 +476,30 @@ def _run_attempt_delivery(*, http_status_code=200, timeout=False):
     mock_response.text = "response body"
 
     async def _inner():
-        with patch("app.services.webhook_service.WebhookDelivery", _FakeDelivery):
-            with patch("httpx.AsyncClient") as mock_cls:
-                mock_client = AsyncMock()
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=False)
-                if timeout:
-                    import httpx as _httpx
-                    mock_client.post = AsyncMock(
-                        side_effect=_httpx.TimeoutException("timed out")
-                    )
-                else:
-                    mock_client.post = AsyncMock(return_value=mock_response)
-                mock_cls.return_value = mock_client
+        with (
+            patch("app.services.webhook_service.WebhookDelivery", _FakeDelivery),
+            patch("httpx.AsyncClient") as mock_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            if timeout:
+                import httpx as _httpx
 
-                await svc._attempt_delivery(
-                    endpoint=ep,
-                    raw_secret=SECRET,
-                    event_type="call.completed",
-                    payload={"event": "call.completed"},
-                    existing_delivery=None,
+                mock_client.post = AsyncMock(
+                    side_effect=_httpx.TimeoutException("timed out")
                 )
+            else:
+                mock_client.post = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_client
+
+            await svc._attempt_delivery(
+                endpoint=ep,
+                raw_secret=SECRET,
+                event_type="call.completed",
+                payload={"event": "call.completed"},
+                existing_delivery=None,
+            )
 
     asyncio.run(_inner())
     return added_objects
@@ -550,44 +553,60 @@ class TestSSRFGuard:
     def test_localhost_hostname_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
-        with patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("127.0.0.1")):
-            with pytest.raises(SSRFBlockedError, match="blocked"):
-                assert_public_url("https://localhost/hook")
+        with (
+            patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("127.0.0.1")),
+            pytest.raises(SSRFBlockedError, match="blocked"),
+        ):
+            assert_public_url("https://localhost/hook")
 
     def test_loopback_ip_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
-        with patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("127.0.0.1")):
-            with pytest.raises(SSRFBlockedError, match="127.0.0.1"):
-                assert_public_url("https://127.0.0.1/hook")
+        with (
+            patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("127.0.0.1")),
+            pytest.raises(SSRFBlockedError, match="127.0.0.1"),
+        ):
+            assert_public_url("https://127.0.0.1/hook")
 
     def test_private_10_range_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
-        with patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("10.0.0.1")):
-            with pytest.raises(SSRFBlockedError, match="blocked"):
-                assert_public_url("https://internal.corp/hook")
+        with (
+            patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("10.0.0.1")),
+            pytest.raises(SSRFBlockedError, match="blocked"),
+        ):
+            assert_public_url("https://internal.corp/hook")
 
     def test_private_172_16_range_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
-        with patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("172.16.0.1")):
-            with pytest.raises(SSRFBlockedError, match="blocked"):
-                assert_public_url("https://internal.corp/hook")
+        with (
+            patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("172.16.0.1")),
+            pytest.raises(SSRFBlockedError, match="blocked"),
+        ):
+            assert_public_url("https://internal.corp/hook")
 
     def test_private_172_31_range_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
-        with patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("172.31.255.254")):
-            with pytest.raises(SSRFBlockedError, match="blocked"):
-                assert_public_url("https://internal.corp/hook")
+        with (
+            patch(
+                "socket.getaddrinfo", return_value=self._make_getaddrinfo("172.31.255.254")
+            ),
+            pytest.raises(SSRFBlockedError, match="blocked"),
+        ):
+            assert_public_url("https://internal.corp/hook")
 
     def test_private_192_168_range_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
-        with patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("192.168.1.100")):
-            with pytest.raises(SSRFBlockedError, match="blocked"):
-                assert_public_url("https://internal.corp/hook")
+        with (
+            patch(
+                "socket.getaddrinfo", return_value=self._make_getaddrinfo("192.168.1.100")
+            ),
+            pytest.raises(SSRFBlockedError, match="blocked"),
+        ):
+            assert_public_url("https://internal.corp/hook")
 
     def test_metadata_endpoint_169_254_blocked(self):
         """AWS / GCP metadata endpoint lives in link-local range and must be blocked."""
@@ -602,9 +621,11 @@ class TestSSRFGuard:
     def test_other_link_local_blocked(self):
         from app.utils.ssrf import SSRFBlockedError, assert_public_url
 
-        with patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("169.254.1.1")):
-            with pytest.raises(SSRFBlockedError, match="blocked"):
-                assert_public_url("https://169.254.1.1/hook")
+        with (
+            patch("socket.getaddrinfo", return_value=self._make_getaddrinfo("169.254.1.1")),
+            pytest.raises(SSRFBlockedError, match="blocked"),
+        ):
+            assert_public_url("https://169.254.1.1/hook")
 
     def test_public_ip_passes(self):
         """A genuinely public IP must pass the guard."""
@@ -656,18 +677,20 @@ class TestSSRFGuard:
         svc = WebhookService(db)
 
         async def _run():
-            with patch("app.services.webhook_service.WebhookDelivery", _FakeDelivery):
-                with patch(
+            with (
+                patch("app.services.webhook_service.WebhookDelivery", _FakeDelivery),
+                patch(
                     "app.services.webhook_service.assert_public_url",
                     side_effect=SSRFBlockedError("Blocked: 192.168.0.1"),
-                ):
-                    return await svc._attempt_delivery(
-                        endpoint=ep,
-                        raw_secret=SECRET,
-                        event_type="call.completed",
-                        payload={"event": "call.completed"},
-                        existing_delivery=None,
-                    )
+                ),
+            ):
+                return await svc._attempt_delivery(
+                    endpoint=ep,
+                    raw_secret=SECRET,
+                    event_type="call.completed",
+                    payload={"event": "call.completed"},
+                    existing_delivery=None,
+                )
 
         asyncio.run(_run())
 
@@ -693,20 +716,22 @@ class TestSSRFGuard:
         svc = WebhookService(db)
 
         async def _run():
-            with patch("app.services.webhook_service.WebhookDelivery", _FakeDelivery):
-                with patch(
+            with (
+                patch("app.services.webhook_service.WebhookDelivery", _FakeDelivery),
+                patch(
                     "app.services.webhook_service.assert_public_url",
                     side_effect=SSRFBlockedError("Blocked"),
-                ):
-                    with patch("httpx.AsyncClient") as mock_httpx:
-                        await svc._attempt_delivery(
-                            endpoint=ep,
-                            raw_secret=SECRET,
-                            event_type="ping",
-                            payload={"event": "ping"},
-                            existing_delivery=None,
-                        )
-                        mock_httpx.assert_not_called()
+                ),
+                patch("httpx.AsyncClient") as mock_httpx,
+            ):
+                await svc._attempt_delivery(
+                    endpoint=ep,
+                    raw_secret=SECRET,
+                    event_type="ping",
+                    payload={"event": "ping"},
+                    existing_delivery=None,
+                )
+                mock_httpx.assert_not_called()
 
         asyncio.run(_run())
 
@@ -777,9 +802,13 @@ class TestSecretEncryption:
         # Build a fake compact JWS string (three base64url parts separated by dots)
         legacy_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJhcGlfa2V5IjoibXktc2VjcmV0In0.sig"
 
-        with patch("app.core.db_encryption.is_legacy_jwt_ciphertext", return_value=True):
-            with patch("app.core.security.decrypt_api_key", return_value="my-secret") as mock_dec:
-                result = decrypt_stored_webhook_secret(legacy_jwt)
+        with (
+            patch("app.core.db_encryption.is_legacy_jwt_ciphertext", return_value=True),
+            patch(
+                "app.core.security.decrypt_api_key", return_value="my-secret"
+            ) as mock_dec,
+        ):
+            result = decrypt_stored_webhook_secret(legacy_jwt)
 
         mock_dec.assert_called_once_with(legacy_jwt)
         assert result == "my-secret"
@@ -791,14 +820,16 @@ class TestSecretEncryption:
 
         fake_ct = base64.b64encode(bytes([0x85]) + b"x" * 20).decode()
 
-        with patch("app.core.db_encryption.is_legacy_jwt_ciphertext", return_value=False):
-            with patch("app.core.db_encryption.is_pgcrypto_ciphertext", return_value=True):
-                with patch(
-                    "app.core.db_encryption.decrypt_webhook_secret",
-                    return_value="my-secret",
-                ) as mock_dec:
-                    db = MagicMock()
-                    result = decrypt_stored_webhook_secret(fake_ct, db=db)
+        with (
+            patch("app.core.db_encryption.is_legacy_jwt_ciphertext", return_value=False),
+            patch("app.core.db_encryption.is_pgcrypto_ciphertext", return_value=True),
+            patch(
+                "app.core.db_encryption.decrypt_webhook_secret",
+                return_value="my-secret",
+            ) as mock_dec,
+        ):
+            db = MagicMock()
+            result = decrypt_stored_webhook_secret(fake_ct, db=db)
 
         mock_dec.assert_called_once_with(fake_ct, db)
         assert result == "my-secret"
@@ -806,10 +837,12 @@ class TestSecretEncryption:
     def test_decrypt_stored_raises_on_unknown_format(self):
         from app.core.db_encryption import decrypt_stored_webhook_secret
 
-        with patch("app.core.db_encryption.is_legacy_jwt_ciphertext", return_value=False):
-            with patch("app.core.db_encryption.is_pgcrypto_ciphertext", return_value=False):
-                with pytest.raises(ValueError, match="Unrecognized"):
-                    decrypt_stored_webhook_secret("not-valid-format")
+        with (
+            patch("app.core.db_encryption.is_legacy_jwt_ciphertext", return_value=False),
+            patch("app.core.db_encryption.is_pgcrypto_ciphertext", return_value=False),
+            pytest.raises(ValueError, match="Unrecognized"),
+        ):
+            decrypt_stored_webhook_secret("not-valid-format")
 
     def test_create_endpoint_uses_pgcrypto_not_jwt(self):
         """create_endpoint must call encrypt_webhook_secret (pgcrypto), not encrypt_api_key (JWT)."""
@@ -820,19 +853,22 @@ class TestSecretEncryption:
         db.commit = MagicMock()
         db.refresh = MagicMock(side_effect=lambda obj: None)
 
-        with patch(
-            "app.services.webhook_service.encrypt_webhook_secret",
-            return_value="pgcrypto-ciphertext",
-        ) as mock_enc, patch("app.core.security.encrypt_api_key") as mock_jwt_enc:
+        with (
+            patch(
+                "app.services.webhook_service.encrypt_webhook_secret",
+                return_value="pgcrypto-ciphertext",
+            ) as mock_enc,
+            patch("app.core.security.encrypt_api_key") as mock_jwt_enc,
             # Patch WebhookEndpoint so instantiation doesn't trigger SQLAlchemy
             # mapper configuration (which fails in isolated tests due to
             # unresolved Tenant relationships with partially-imported models).
-            with patch(
+            patch(
                 "app.services.webhook_service.WebhookEndpoint",
                 _FakeEndpoint,
-            ):
-                svc = WebhookService(db)
-                svc.create_endpoint(WORKSPACE_ID, "https://example.com/hook", SECRET)
+            ),
+        ):
+            svc = WebhookService(db)
+            svc.create_endpoint(WORKSPACE_ID, "https://example.com/hook", SECRET)
 
         mock_enc.assert_called_once_with(SECRET, db)
         mock_jwt_enc.assert_not_called()
@@ -863,26 +899,31 @@ class TestConcurrentDelivery:
         async def _fake_deliver(endpoint_id, event_type, payload):
             delivered_to.append(endpoint_id)
 
-        with patch("app.services.webhook_service._deliver_to_endpoint", side_effect=_fake_deliver):
-            with patch("app.db.session.SessionLocal") as mock_sl:
-                db = MagicMock()
+        with (
+            patch(
+                "app.services.webhook_service._deliver_to_endpoint",
+                side_effect=_fake_deliver,
+            ),
+            patch("app.db.session.SessionLocal") as mock_sl,
+        ):
+            db = MagicMock()
 
-                def _make_ep(eid):
-                    ep = MagicMock()
-                    ep.id = eid
-                    ep.is_active = True
-                    return ep
+            def _make_ep(eid):
+                ep = MagicMock()
+                ep.id = eid
+                ep.is_active = True
+                return ep
 
-                db.query.return_value.filter.return_value.all.return_value = [
-                    _make_ep(ep1_id),
-                    _make_ep(ep2_id),
-                ]
-                db.close = MagicMock()
-                mock_sl.return_value = db
+            db.query.return_value.filter.return_value.all.return_value = [
+                _make_ep(ep1_id),
+                _make_ep(ep2_id),
+            ]
+            db.close = MagicMock()
+            mock_sl.return_value = db
 
-                asyncio.run(
-                    fire_webhooks(WORKSPACE_ID, "call.completed", {"call_sid": "CA123"})
-                )
+            asyncio.run(
+                fire_webhooks(WORKSPACE_ID, "call.completed", {"call_sid": "CA123"})
+            )
 
         assert ep1_id in delivered_to
         assert ep2_id in delivered_to
@@ -891,17 +932,17 @@ class TestConcurrentDelivery:
         """Only active endpoints in the DB query; is_active filter is applied."""
         from app.services.webhook_service import fire_webhooks
 
-        with patch("app.services.webhook_service._deliver_to_endpoint") as mock_deliver:
-            with patch("app.db.session.SessionLocal") as mock_sl:
-                db = MagicMock()
-                # Return empty list — simulating all inactive (filter applied in query)
-                db.query.return_value.filter.return_value.all.return_value = []
-                db.close = MagicMock()
-                mock_sl.return_value = db
+        with (
+            patch("app.services.webhook_service._deliver_to_endpoint") as mock_deliver,
+            patch("app.db.session.SessionLocal") as mock_sl,
+        ):
+            db = MagicMock()
+            # Return empty list — simulating all inactive (filter applied in query)
+            db.query.return_value.filter.return_value.all.return_value = []
+            db.close = MagicMock()
+            mock_sl.return_value = db
 
-                asyncio.run(
-                    fire_webhooks(WORKSPACE_ID, "call.completed", {})
-                )
+            asyncio.run(fire_webhooks(WORKSPACE_ID, "call.completed", {}))
 
         mock_deliver.assert_not_called()
 
@@ -975,26 +1016,29 @@ class TestConcurrentDelivery:
                 raise RuntimeError("simulated delivery failure")
             delivered_to.append(endpoint_id)
 
-        with patch("app.services.webhook_service._deliver_to_endpoint", side_effect=_fake_deliver):
-            with patch("app.db.session.SessionLocal") as mock_sl:
-                db = MagicMock()
+        with (
+            patch(
+                "app.services.webhook_service._deliver_to_endpoint",
+                side_effect=_fake_deliver,
+            ),
+            patch("app.db.session.SessionLocal") as mock_sl,
+        ):
+            db = MagicMock()
 
-                def _make_ep(eid):
-                    ep = MagicMock()
-                    ep.id = eid
-                    ep.is_active = True
-                    return ep
+            def _make_ep(eid):
+                ep = MagicMock()
+                ep.id = eid
+                ep.is_active = True
+                return ep
 
-                db.query.return_value.filter.return_value.all.return_value = [
-                    _make_ep(ep1_id),
-                    _make_ep(ep2_id),
-                ]
-                db.close = MagicMock()
-                mock_sl.return_value = db
+            db.query.return_value.filter.return_value.all.return_value = [
+                _make_ep(ep1_id),
+                _make_ep(ep2_id),
+            ]
+            db.close = MagicMock()
+            mock_sl.return_value = db
 
-                asyncio.run(
-                    fire_webhooks(WORKSPACE_ID, "call.completed", {})
-                )
+            asyncio.run(fire_webhooks(WORKSPACE_ID, "call.completed", {}))
 
         # Both endpoints attempted (gather with return_exceptions=True)
         assert call_count == 2

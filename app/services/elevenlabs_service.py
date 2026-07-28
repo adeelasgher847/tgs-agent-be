@@ -6,7 +6,7 @@ Handles text-to-speech operations using ElevenLabs API
 import requests
 from app.core.config import settings
 from app.core.logger import logger
-from typing import AsyncIterator, Dict, Any, Optional, Iterator
+from typing import AsyncIterator, Dict, Any, Iterator
 
 class ElevenLabsService:
     """Service class for handling ElevenLabs operations"""
@@ -277,14 +277,16 @@ class ElevenLabsService:
             "optimize_streaming_latency": safe_optimize,
         }
         try:
-            async with httpx.AsyncClient(timeout=float(request_timeout_seconds)) as client:
-                async with client.stream(
+            async with (
+                httpx.AsyncClient(timeout=float(request_timeout_seconds)) as client,
+                client.stream(
                     "POST", url, headers=headers, params=params, json=data
-                ) as response:
-                    response.raise_for_status()
-                    async for chunk in response.aiter_bytes(chunk_size):
-                        if chunk:
-                            yield chunk
+                ) as response,
+            ):
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(chunk_size):
+                    if chunk:
+                        yield chunk
         except Exception as exc:
             raise RuntimeError("ElevenLabs async streaming TTS request failed.") from exc
 

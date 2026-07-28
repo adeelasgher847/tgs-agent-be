@@ -5,9 +5,9 @@ import io
 import math
 import uuid
 from datetime import datetime
-from typing import AsyncIterator, List, Optional
+from typing import List
 
-from sqlalchemy import case, cast, func, select, text
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.models.agent import Agent

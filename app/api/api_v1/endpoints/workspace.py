@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, get_workspace_api_key, require_tenant, require_config
+from app.api.deps import get_db, get_workspace_api_key, require_config
 from app.core.request_auth import get_workspace_from_request
 from app.core.config import settings
 from app.core.logger import logger

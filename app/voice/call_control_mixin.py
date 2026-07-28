@@ -5,9 +5,8 @@ Handles call termination (goodbye, voicemail), transfer routing, and transcript 
 from __future__ import annotations
 
 import asyncio
-import re
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.logger import logger

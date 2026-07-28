@@ -1,12 +1,12 @@
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func, select
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 from app.models.agent import Agent
 from app.models.phone_number import PhoneNumber
 from app.models.transfer_route import TransferRoute
 from app.models.model import Model
-from app.models.knowledge_base_document import KnowledgeBase, KnowledgeBaseDocument
+from app.models.knowledge_base_document import KnowledgeBase
 from app.models.business_knowledge import BusinessKnowledge
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
@@ -16,18 +16,15 @@ from app.schemas.agent import (
     AgentCreate,
     AgentUpdate,
     AgentListResponse,
-    AgentStatusEnum,
     TtsModelSchema,
     TtsProviderEnum,
     SttModelSchema,
-    SttProviderEnum,
     _DEFAULT_STT_PROVIDER,
     _DEFAULT_STT_MODEL_ID,
     _DEFAULT_STT_LANGUAGE_CODE,
     agent_to_out,
     normalize_tts_provider_slug,
 )
-from app.services.billing_service import BillingService
 from app.services.embedding_service import embed_text_for_rag
 from app.services.rag_service import rag_service
 from app.core.config import settings

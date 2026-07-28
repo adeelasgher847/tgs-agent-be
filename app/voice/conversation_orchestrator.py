@@ -4,13 +4,11 @@ import random
 import time
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
-from app.services.openai_service import openai_service
-from app.services.groq_service import groq_service
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
@@ -190,7 +188,6 @@ class ConversationOrchestrator:
         Generate AI response and stream TTS in real-time WITH conversation history.
         Uses PARALLEL TTS PIPELINE (Vapi-style) for ultra-low latency.
         """
-        from datetime import datetime, timezone
 
         try:
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
@@ -710,7 +707,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = False
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
-                first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
 
                 def _strip_control_tokens(text: str) -> str:
@@ -827,7 +823,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             if _vm:
                                 _vm.mark_first_tts_queued()
                             last_flush_ts = now_ts
-                            first_tts_chunk = False
 
                 # Flush any remaining buffer as final
                 full_accum = response_accum.strip()

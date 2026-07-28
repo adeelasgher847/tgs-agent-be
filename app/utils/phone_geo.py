@@ -10,7 +10,6 @@ for most other national numbering plans.
 """
 from __future__ import annotations
 
-from typing import Optional
 
 # ITU-T E.164 country calling codes (digits only, no leading '+'), grouped by length
 # so the longest matching prefix is tried first.

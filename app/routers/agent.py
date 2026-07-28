@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Query
 from sqlalchemy.orm import Session
-from typing import Optional
 from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse, LanguageEnum, VoiceTypeEnum
 from app.api.deps import (
     get_db,
@@ -8,13 +7,11 @@ from app.api.deps import (
     require_config,
     require_readonly,
 )
-from app.schemas.agent import AgentCreate, AgentUpdate, AgentOut, AgentListResponse
 from app.schemas.base import SuccessResponse
 from app.schemas.prompt_engineer import PromptEngineerRequest, PromptEngineerResult
 from app.services.agent_service import agent_service
 from app.services.audit_service import log_audit_event
 from app.services.openai_service import openai_service
-from app.services.credit_service import credit_service
 from app.services.model_service import model_service
 from app.core.security import decrypt_api_key
 from app.models.user import User

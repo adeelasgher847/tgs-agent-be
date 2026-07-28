@@ -1,6 +1,6 @@
 import re
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -8,6 +8,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from fastapi import HTTPException
 
 from app.core.logger import logger
+from app.core.pii_redactor import redact_pii
 from app.models.call_flow import CallFlow
 from app.models.call_log import CallLog
 from app.models.call_session import CallSession
@@ -15,7 +16,6 @@ from app.services.agent_service import agent_service
 from app.services.dlp_service import redact_phi_if_hipaa
 from app.services.model_service import ModelService
 from app.services.transcript_service import transcript_service
-from app.utils.response import create_success_response
 
 
 class VoiceAnalysisService:
@@ -32,12 +32,10 @@ class VoiceAnalysisService:
         raise_on_no_transcript: bool = True,
     ) -> Dict[str, Any] | None:
         """Behavior-preserving refactor of `analyze_call_transcript` logic from `voice.py`."""
-        from uuid import UUID
 
         # Check if user has access to this call session
         # (same logic as original route)
         # NOTE: caller is responsible for validating call_session_id format and existence.
-        from app.models.user import User  # type: ignore
 
         # We don't have full User here, just ensure tenant/user match is enforced
         # by caller before invoking this method when necessary.
@@ -131,10 +129,10 @@ class VoiceAnalysisService:
                 continue
 
         if not model:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No available model found. Tried: {', '.join(fallback_models)}",
-            )
+            detail = f"No available model found. Tried: {', '.join(fallback_models)}"
+            if last_error is not None:
+                detail += f". Last error: {redact_pii(str(last_error))}"
+            raise HTTPException(status_code=404, detail=detail)
 
         # Get transcript messages
         transcript_messages = transcript_service.get_messages_by_session(

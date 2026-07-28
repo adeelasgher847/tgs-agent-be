@@ -2,8 +2,7 @@
 ClickUp API Service for Scheduled Calls Integration
 """
 
-import json
-from typing import Dict, List, Optional
+from typing import Dict, List
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
@@ -159,7 +158,6 @@ class ClickUpService(BaseCRMService):
                 
                 # Use first space
                 space_id = spaces[0].get("id", "")
-                space_name = spaces[0].get("name", "Unknown")
                 if not space_id:
                     raise ValueError("Could not get space ID")
                 
@@ -420,7 +418,11 @@ class ClickUpService(BaseCRMService):
                     verify_response.raise_for_status()
                     verified_task = verify_response.json()
                     verified_fields = verified_task.get("custom_fields", [])
-                    tenant_field_verified = next((f for f in verified_fields if f.get("id") == field_map.get("tenant_id")), None)
+                    # KNOWN GAP: fetched to "verify tenant_id was saved" per the
+                    # comment above, but the result is never checked or logged —
+                    # the verification currently has no effect. Not removing —
+                    # looks like an incomplete verification, not dead code.
+                    tenant_field_verified = next((f for f in verified_fields if f.get("id") == field_map.get("tenant_id")), None)  # noqa: F841
                 except Exception:
                     pass
             
@@ -563,9 +565,8 @@ class ClickUpService(BaseCRMService):
             for task in tasks:
                 # Get task basic info
                 task_id = task.get("id", "")
-                task_name = task.get("name", "")
                 custom_fields = task.get("custom_fields", [])
-                
+
                 # ClickUp list endpoint doesn't return custom field values properly
                 # Always fetch individual task details to get actual custom field values
                 try:
@@ -576,14 +577,12 @@ class ClickUpService(BaseCRMService):
                     custom_fields = task_detail.get("custom_fields", [])
                 except Exception:
                     custom_fields = []
-                
+
                 # Check tenant_id field
                 item_tenant_id = None
-                tenant_field_found = False
                 for field in custom_fields:
                     field_id = field.get("id", "")
                     if field_id == tenant_field_id:
-                        tenant_field_found = True
                         # ClickUp custom field value can be in different formats
                         # For short_text fields, value is directly in "value" field
                         # But sometimes it might be empty string or None if not set
@@ -673,8 +672,7 @@ class ClickUpService(BaseCRMService):
             
             for task in tasks:
                 task_id = task.get("id", "")
-                task_name = task.get("name", "")
-                
+
                 # ClickUp list endpoint doesn't return full custom field values
                 # Fetch individual task details to get actual custom field values
                 try:
@@ -686,25 +684,17 @@ class ClickUpService(BaseCRMService):
                 except Exception:
                     # Fallback to list endpoint custom fields (may not have values)
                     custom_fields = task.get("custom_fields", [])
-                
+
                 # Check tenant_id and status fields
                 item_tenant_id = None
                 item_status = None
                 item_status_name = None
                 item_status_uuid = None
-                
-                # Check if status field exists in custom_fields
-                status_field_found = False
-                for field in custom_fields:
-                    if field.get("id") == status_field_id:
-                        status_field_found = True
-                        break
-                
+
                 for field in custom_fields:
                     field_id = field.get("id", "")
                     field_value = field.get("value")
-                    field_type = field.get("type", "")
-                    
+
                     if field_id == tenant_field_id:
                         # Handle different value formats for tenant_id (short_text field)
                         if field_value is None:
@@ -861,18 +851,17 @@ class ClickUpService(BaseCRMService):
                 # Check if task belongs to this batch and tenant
                 item_batch_id = None
                 item_tenant_id = None
-                item_call_session_id = None
-                
+
                 for field in custom_fields:
                     field_id = field.get("id", "")
                     field_value = field.get("value", "")
-                    
+
                     if field_id == batch_field_id:
                         item_batch_id = str(field_value).strip() if field_value else None
                     elif field_id == tenant_field_id:
                         item_tenant_id = str(field_value).strip() if field_value else None
                     elif field_id == call_session_field_id and call_session_field_id:
-                        item_call_session_id = str(field_value).strip() if field_value else None
+                        pass  # call_session_id presence is not otherwise used here
                 
                 # Match by batch_id and tenant_id
                 if item_batch_id == batch_id and item_tenant_id == tenant_id:

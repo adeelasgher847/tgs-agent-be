@@ -3,12 +3,9 @@ Tenant status middleware to ensure only active tenants can access the app.
 This middleware checks tenant status and blocks access for pending_payment tenants.
 """
 
-from fastapi import Request, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi import Request
 from sqlalchemy.orm import Session
-from app.db.session import SessionLocal
 from app.models.tenant import Tenant
-from app.models.user import User
 from typing import Callable
 import uuid
 from app.core.logger import logger

@@ -31,7 +31,6 @@ import hmac
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import httpx
 from fastapi import HTTPException, status
@@ -43,7 +42,6 @@ from app.models.webhook import WebhookDelivery, WebhookEndpoint
 from app.schemas.webhook import (
     PaginatedWebhookDeliveries,
     WebhookDeliveryOut,
-    WebhookEndpointOut,
 )
 from app.utils.ssrf import SSRFBlockedError, assert_public_url
 

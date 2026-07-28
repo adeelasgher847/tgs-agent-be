@@ -13,7 +13,6 @@ Returns a short-lived S3 signed URL for the call recording.
 from __future__ import annotations
 
 import uuid
-from typing import Union
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -35,7 +34,7 @@ router = APIRouter()
 
 
 def _enforce_hipaa_recording_access(
-    principal: Union[User, ApiKeyPrincipal],
+    principal: User | ApiKeyPrincipal,
     call_session: CallSession,
     db: Session,
 ) -> None:
@@ -72,7 +71,7 @@ def _enforce_hipaa_recording_access(
 @router.get("/{call_id}", response_model=SuccessResponse[RecordingResponse])
 async def get_recording(
     call_id: uuid.UUID,
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ) -> SuccessResponse[RecordingResponse]:
     """

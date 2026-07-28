@@ -7,7 +7,7 @@ Calculates dynamic per-minute pricing for:
 Also includes Twilio voice cost per minute.
 """
 
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 # Constants
 TOKENS_FRACTION = 200 / 1_000_000  # 0.0002 -> 200 tokens per minute as fraction of 1M

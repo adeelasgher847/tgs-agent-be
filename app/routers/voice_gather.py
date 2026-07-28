@@ -3,16 +3,14 @@ Fast Conversational AI Router using Twilio Gather + Deepgram STT + LLM + TTS
 Optimized for 3-4 second latency per turn
 """
 
-from fastapi import APIRouter, Request, HTTPException, Query, Depends
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Request, Query, Depends
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
-from typing import Optional
-from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
 import uuid
 import asyncio
 import requests
-import sys
 from app.core.logger import logger
 
 from app.api.deps import get_db
@@ -22,11 +20,10 @@ from app.services.call_session_service import call_session_service
 from app.services.deepgram_stt_service import deepgram_stt_service
 from app.services.google_tts_service import google_tts_service
 from app.services.voice_logging_service import VoiceLoggingService
-from app.services.openai_service import openai_service
 from app.services.model_service import ModelService
 from app.core.config import settings
 from app.utils.twilio_validation import get_request_body
-from app.routers.general_websocket import broadcast_transcript_update, broadcast_call_event
+from app.routers.general_websocket import broadcast_call_event
 from urllib.parse import quote
 import hashlib
 from app.routers.bidirectional_stream import build_streaming_twiml
@@ -244,7 +241,7 @@ async def gather_greeting_webhook(
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
         
         # Gather speech input with optimized settings for low latency
-        gather = response.gather(
+        response.gather(
             input='speech',
             action=callback_url,
             method='POST',

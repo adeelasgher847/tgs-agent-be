@@ -13,7 +13,6 @@ GET    /webhooks/{endpoint_id}/deliveries — paginated delivery log
 from __future__ import annotations
 
 import uuid
-from typing import Union
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -37,7 +36,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 def _webhook_service(
     workspace: Workspace = Depends(get_workspace),
-    _principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    _principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """Read + write access for any authenticated principal."""
@@ -49,7 +48,7 @@ def _webhook_service(
 def _webhook_service_write(
     request: Request,
     workspace: Workspace = Depends(get_workspace),
-    principal: Union[User, ApiKeyPrincipal] = Depends(require_tenant),
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
     db: Session = Depends(get_db),
 ):
     """Write access — blocks readonly JWT users on mutating methods."""

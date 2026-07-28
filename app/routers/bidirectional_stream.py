@@ -100,9 +100,9 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import Any, Optional, Dict, Iterable, List
+from typing import List
 import time
-from datetime import datetime, timezone, date
+from datetime import datetime, date
 import uuid
 import re
 from app.core.logger import logger
@@ -111,70 +111,46 @@ from app.core.logger import logger
 
 from app.services.call_session_service import call_session_service
 from app.services.voice_screening_qualification_service import (
-    apply_resume_candidate_status_after_voice_screening,
     is_jd_recruitment_voice_context,
     persist_voice_screening_status_signal,
 )
 from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
-from app.models.appointment import Appointment
-from app.services.transcript_service import transcript_service
 from app.services.openai_service import openai_service
-from app.services.groq_service import groq_service
 from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
 from app.core.agent_runtime import resolve_llm_runtime, resolve_stt_runtime, llm_service_for_provider
-from app.services.rag_service import rag_service
-from app.services.credit_service import credit_service
 from app.services.twilio_service import twilio_service
 from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
-    twilio_caller_id_for_transfer_dial,
 )
-from app.services.google_tts_service import google_tts_service
-from app.utils.tts_adapter import get_tts_adapter
 from app.voice.tone_adapter import tone_adapter
 from app.voice.turn_signals import TurnContext, build_turn_context, build_user_signals_block
-from app.utils.tts_preprocessing import detect_emotion
 from app.core.config import settings
-from app.routers.general_websocket import broadcast_call_status_update
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
 from app.voice.background_audio import BackgroundAudioManager
 from app.voice.conversation_orchestrator import (
     VOICE_TUNABLES,
-    ConversationOrchestrator,
     should_send_quick_ack,
 )
 from app.voice.voice_orchestrator import VoiceOrchestrator
-from app.voice.rag_context import build_rag_context_block, build_rag_context_block_with_trace
+from app.voice.rag_context import build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
 from app.voice.metrics import VoiceTurnMetrics
 
 # Import utilities and services
-from app.utils.audio_utils import (
-    ulaw_to_linear_sample,
-    stream_mulaw_bytes_over_twilio,
-    crossfade_mulaw_segments,
-    build_crossfade_bridge,
-    MULAW_FRAME_BYTES,
-)
 from app.utils.ssml_utils import (
-    strip_ssml_tags,
-    add_natural_ssml,
-    clean_text_for_tts,
-    smart_chunk_text
+    strip_ssml_tags
 )
 from app.services.bidirectional_stream_service import (
     generate_mulaw_tts,
-    build_streaming_twiml,
-    build_tts_only_twiml,
+    build_streaming_twiml,  # noqa: F401 - re-exported for app.routers.voice / voice_gather
+    build_tts_only_twiml,  # noqa: F401 - re-exported for app.routers.voice
 )
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
-    prepare_tts_text_for_provider,
-    strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
 
@@ -2041,7 +2017,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 end_call_after = False
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
-                first_tts_chunk = True
                 last_flush_ts = time.perf_counter()
                 deferred_memory_scheduled = False
                 self._pending_resume_screening_qualify = False
@@ -2213,7 +2188,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 if _vm:
                                     _vm.mark_first_tts_queued()
                                 _schedule_deferred_memory_once()
-                            first_tts_chunk = False
                             last_flush_ts = time.perf_counter()
 
                 # Flush any remaining text as the FINAL chunk
@@ -2950,9 +2924,7 @@ async def bidirectional_stream_websocket(
         agent_id=agentId,
         db=db
     )
-    
-    media_count = 0
-    
+
     try:
         while True:
             # Race: receive next Twilio message OR stop_event (internal call end)

@@ -3,7 +3,6 @@ Resolve IANA timezone from city name (and optional country) using geopy + timezo
 Used when user provides only city for scheduled-call timezone.
 """
 import ssl
-from typing import Optional
 
 from app.core.logger import logger
 

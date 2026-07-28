@@ -4,16 +4,13 @@ Handles voice listening, speech recognition, and call logging
 """
 
 import asyncio
-import json
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 from sqlalchemy.orm import Session
 
 from app.models.call_session import CallSession
-from app.models.call_log import CallLog
 from app.models.agent import Agent
-from app.schemas.call_log import CallLogCreate, CallLogUpdate
 
 from app.core.logger import logger
 
@@ -173,8 +170,6 @@ class VoiceLoggingService:
 
             # Import here to avoid circular imports
             from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
-            from app.services.openai_service import openai_service
-            from app.services.groq_service import groq_service
             from app.core.security import decrypt_api_key
 
             llm_runtime = resolve_llm_runtime(agent)
@@ -562,8 +557,12 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
         """
         try:
             speech_lower = speech_text.lower()
-            agent_name = agent.name if agent and agent.name else "AI Assistant"
-            
+            # KNOWN GAP: computed for response personalization that was never
+            # implemented — none of the fallback strings below use it, and the
+            # except-block's two branches are identical. Not removing — looks
+            # like an incomplete feature, not dead code.
+            agent_name = agent.name if agent and agent.name else "AI Assistant"  # noqa: F841
+
             if "hello" in speech_lower or "hi" in speech_lower:
                 response = "How can I help you today?"
             elif "help" in speech_lower:

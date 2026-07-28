@@ -1,5 +1,4 @@
 import pytest
-import uuid
 from pydantic import ValidationError
 from app.schemas.sso import SsoConfigUpsert
 from app.models.sso_config import SsoConfig

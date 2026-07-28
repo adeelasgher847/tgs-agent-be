@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 import uuid
 import re
 import zipfile
@@ -410,7 +410,10 @@ class JobDescriptionService:
                 llm_data.get("scoring_dimensions")
             )
             must_have_criteria = llm_data.get("must_have_criteria") or self._build_must_have_criteria(jd, skills)
-            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)
+            # KNOWN GAP: computed but there is no JobDescription model column or
+            # response schema field to store/return it in yet. Not removing —
+            # this is a missing feature (persist overall confidence), not dead code.
+            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)  # noqa: F841
             matching_criteria = {
                 "required_skills": skills,
                 "minimum_years_experience": jd.years_experience_min,
@@ -534,7 +537,10 @@ class JobDescriptionService:
                 llm_data.get("scoring_dimensions")
             )
             must_have_criteria = llm_data.get("must_have_criteria") or self._build_must_have_criteria(jd, skills)
-            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)
+            # KNOWN GAP: computed but there is no JobDescription model column or
+            # response schema field to store/return it in yet. Not removing —
+            # this is a missing feature (persist overall confidence), not dead code.
+            overall_confidence = self._compute_overall_confidence(extracted_skills, llm_data)  # noqa: F841
             matching_criteria = {
                 "required_skills": skills,
                 "minimum_years_experience": jd.years_experience_min,

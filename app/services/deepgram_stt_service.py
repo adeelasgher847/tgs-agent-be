@@ -9,7 +9,7 @@ import asyncio
 import queue
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType

@@ -5,7 +5,7 @@ Handles all Gemini-related operations including text generation
 
 from google import genai
 from app.core.config import settings
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 import time
 import json
 

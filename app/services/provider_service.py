@@ -3,12 +3,12 @@ Provider Service
 Handles provider CRUD operations
 """
 
-from typing import List, Optional
+from typing import List
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.models.provider import Provider
 from app.schemas.provider import ProviderCreate, ProviderUpdate
-from app.core.security import encrypt_api_key, decrypt_api_key, is_api_key_encrypted
+from app.core.security import encrypt_api_key, decrypt_api_key
 import uuid
 
 

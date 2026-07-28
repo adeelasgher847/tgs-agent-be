@@ -7,10 +7,9 @@ from sqlalchemy.orm import Session
 from app.models.call_session import CallSession
 from app.models.call_log import CallLog
 from app.schemas.call_log import CallLogCreate
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
-import json
 import asyncio
 from app.core.logger import logger
 from app.services.inbound_call_crm_sync_service import (

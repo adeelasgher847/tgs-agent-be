@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -251,7 +250,6 @@ class TestRimeTTSAdapter:
     def test_rime_payload_includes_streaming_true(self):
         """Rime API payload must include streaming=True for chunked HTTP response."""
         from app.services.rime_tts_service import RimeTtsService
-        import httpx
 
         captured_payload: dict = {}
         captured_headers: dict = {}
@@ -662,16 +660,11 @@ class TestFirstAudioLatency:
         h._background_audio.mix_tts_frame = lambda frame: frame
         h._is_background_audio_enabled = lambda: False
 
-        # send_frame is a closure inside _stream_tts_chunk — we call it directly by
-        # reconstructing the minimal pacing-state environment it expects.
+        # send_frame is a closure inside _stream_tts_chunk — we call it directly with
+        # a minimal reimplementation covering only the metric-capture behavior this
+        # test exercises. Called with pace=False, so no pacing state is needed.
         async def _run():
             import time as _time
-
-            pace_state = {
-                "send_interval": 0.0,  # no sleep in test
-                "first": True,
-                "next_send": _time.perf_counter(),
-            }
 
             # Record when first token arrives
             h._metric_first_token_ts = _time.perf_counter()
@@ -741,9 +734,14 @@ class TestRimeTtsService:
         from app.services.rime_tts_service import RimeTtsService
 
         get_rime_api_key.cache_clear()
-        with patch("app.services.rime_tts_service.get_rime_api_key", side_effect=ValueError("no key")):
-            with pytest.raises(ValueError, match="no key"):
-                RimeTtsService()
+        with (
+            patch(
+                "app.services.rime_tts_service.get_rime_api_key",
+                side_effect=ValueError("no key"),
+            ),
+            pytest.raises(ValueError, match="no key"),
+        ):
+            RimeTtsService()
 
     def test_stream_yields_bytes_on_success(self):
         from app.services.rime_tts_service import RimeTtsService

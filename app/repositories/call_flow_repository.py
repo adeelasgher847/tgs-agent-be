@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.call_flow import CallFlow
-from app.models.agent import Agent
 
 
 class CallFlowRepository:

@@ -6,7 +6,7 @@ Handles all Twilio-related operations including client management and API calls
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioException
 from app.core.config import settings
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 from app.core.logger import logger
 
 def _build_amd_kwargs(
@@ -595,7 +595,7 @@ class TwilioService:
         client = self.get_client()
         
         try:
-            call = client.calls(call_sid).update(status='completed')
+            client.calls(call_sid).update(status='completed')
             logger.info(f"✅ Call {call_sid} ended successfully")
             return True
             
@@ -655,7 +655,7 @@ class TwilioService:
         client = self.get_client()
         
         try:
-            call = client.calls(call_sid).update(
+            client.calls(call_sid).update(
                 url=redirect_url,
                 method=method
             )

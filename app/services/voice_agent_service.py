@@ -1,6 +1,5 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from twilio.twiml.voice_response import VoiceResponse
-import uuid
 from app.core.logger import logger
 
 

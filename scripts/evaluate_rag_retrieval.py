@@ -17,7 +17,7 @@ import argparse
 import json
 import uuid
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 
 from app.core.config import settings
 from app.services.openai_service import openai_service

@@ -1,5 +1,4 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
 from datetime import datetime
 import uuid
 from app.schemas.plan import PlanOut
