@@ -452,10 +452,10 @@ class TestLivekitRoomCreationFailure:
                 MagicMock(return_value=("AC_test", "tok")),
             ),
         ):
-            # KNOWN GAP: unlike sibling tests in this file, the response is never
-            # asserted on (e.g. status_code). Not removing — looks like a missing
-            # assertion / test-coverage gap, not dead code.
-            result = await _run_direct(req)  # noqa: F841
+            result = await _run_direct(req)
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_503_SERVICE_UNAVAILABLE
 
         # create_call_session must NOT have been called
         mock_css.create_call_session.assert_not_called()
