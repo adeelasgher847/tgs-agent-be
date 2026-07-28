@@ -5,8 +5,9 @@ import uuid
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
+from app.models.call_flow import CallFlow
 from app.models.folder import Folder
 from app.models.folder_flow import FolderFlow
 
@@ -69,3 +70,19 @@ class FolderRepository:
         self.db.flush()
         self.db.refresh(link)
         return link
+
+    def find_flows_by_folder(
+        self, folder_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> list[CallFlow]:
+        stmt = (
+            select(CallFlow)
+            .join(FolderFlow, FolderFlow.flow_id == CallFlow.id)
+            .where(
+                FolderFlow.folder_id == folder_id,
+                CallFlow.tenant_id == tenant_id,
+                CallFlow.is_deleted == False,  # noqa: E712
+            )
+            .options(joinedload(CallFlow.agent))
+            .order_by(CallFlow.created_at.desc())
+        )
+        return list(self.db.execute(stmt).unique().scalars().all())

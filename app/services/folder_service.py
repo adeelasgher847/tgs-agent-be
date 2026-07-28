@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.repositories.call_flow_repository import CallFlowRepository
 from app.repositories.folder_repository import FolderRepository
 from app.schemas.folder import FolderCreate, FolderOut, FolderUpdate
+from app.services.call_flow_service import call_flow_service
 
 
 class FolderService:
@@ -93,6 +94,26 @@ class FolderService:
             db.commit()
 
         return {"folderId": str(folder_id), "flowId": str(flow_id)}
+
+    def list_flows_in_folder(
+        self, db: Session, folder_id: uuid.UUID, tenant_id: uuid.UUID
+    ) -> dict:
+        self._get_folder_or_404(db, folder_id, tenant_id)
+
+        repo = FolderRepository(db)
+        flows = repo.find_flows_by_folder(folder_id, tenant_id)
+
+        cf_repo = CallFlowRepository(db)
+        folder_ids_map = cf_repo.find_folder_ids_map([f.id for f in flows])
+
+        return {
+            "folderId": str(folder_id),
+            "data": [
+                call_flow_service.flow_to_list_item(f, folder_ids_map.get(f.id, []))
+                for f in flows
+            ],
+            "total": len(flows),
+        }
 
 
 folder_service = FolderService()

@@ -163,6 +163,7 @@ class CallFlowService:
     def _flow_to_out(self, db: Session, flow: CallFlow) -> dict:
         pv_repo = PromptVersionRepository(db)
         versions = pv_repo.find_by_flow(flow.id, order_desc=True)
+        folder_ids = CallFlowRepository(db).find_folder_ids_map([flow.id]).get(flow.id, [])
 
         # Full AgentOut on detail endpoints (POST 201, GET, PUT)
         agent_dict: dict | None = None
@@ -182,13 +183,22 @@ class CallFlowService:
             flow_data=flow.flow_data,
             settings=flow.settings,
             knowledge_base_ids=flow.knowledge_base_ids or [],
+            folder_ids=folder_ids,
             public_access=flow.public_access,
             created_at=flow.created_at,
             updated_at=flow.updated_at,
         )
         return out.model_dump(by_alias=True, mode="json")
 
-    def _flow_to_list_item(self, flow: CallFlow) -> dict:
+    def flow_to_list_item(
+        self, flow: CallFlow, folder_ids: list[uuid.UUID] | None = None
+    ) -> dict:
+        """Serialize a CallFlow to the slim list-item shape.
+
+        Public (no leading underscore) so other services — e.g. FolderService,
+        when listing the flows attached to a folder — can reuse it instead of
+        duplicating the serialization logic.
+        """
         agent_ref: AgentRef | None = None
         if flow.agent:
             agent_ref = AgentRef.model_validate(flow.agent)
@@ -205,6 +215,7 @@ class CallFlowService:
             flow_data=flow.flow_data,
             settings=flow.settings,
             knowledge_base_ids=flow.knowledge_base_ids or [],
+            folder_ids=folder_ids or [],
             public_access=flow.public_access,
             created_at=flow.created_at,
             updated_at=flow.updated_at,
@@ -284,8 +295,11 @@ class CallFlowService:
     ) -> dict:
         repo = CallFlowRepository(db)
         rows, total = repo.find_by_workspace(tenant_id, page=page, limit=limit)
+        folder_ids_map = repo.find_folder_ids_map([f.id for f in rows])
         return {
-            "data": [self._flow_to_list_item(f) for f in rows],
+            "data": [
+                self.flow_to_list_item(f, folder_ids_map.get(f.id, [])) for f in rows
+            ],
             "total": total,
             "page": page,
             "pageSize": limit,

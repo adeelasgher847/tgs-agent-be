@@ -475,6 +475,32 @@ class TestGetCallFlow:
         )
         assert resp.status_code == 404
 
+    def test_get_reports_folder_membership(self, authed_client, auth_tenant, test_agent):
+        created = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, prompt="hello"),
+            headers=_headers(auth_tenant),
+        ).json()
+        assert created["folderIds"] == []
+
+        folder = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Flow Membership Folder"},
+            headers=_headers(auth_tenant),
+        ).json()
+        authed_client.post(
+            f"/api/v1/folders/{folder['id']}/flows",
+            json={"flowId": created["id"]},
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.get(
+            f"/api/v1/call-flows/{created['id']}",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["folderIds"] == [folder["id"]]
+
 
 @pytest.mark.usefixtures("db")
 class TestListCallFlows:
@@ -501,6 +527,7 @@ class TestListCallFlows:
         for item in body["data"]:
             assert "agent" in item
             assert item["agent"]["name"] == test_agent.name
+            assert item["folderIds"] == []
 
 
 @pytest.mark.usefixtures("db")

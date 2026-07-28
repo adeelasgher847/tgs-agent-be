@@ -272,3 +272,63 @@ class TestAddFlowToFolder:
             headers=_headers(auth_tenant),
         )
         assert resp.status_code == 404
+
+
+@pytest.mark.usefixtures("db")
+class TestListFolderFlows:
+    def test_list_flows_in_folder_returns_linked_flows(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        folder = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Listing Folder"},
+            headers=_headers(auth_tenant),
+        ).json()
+        linked_flow = _make_flow(db, auth_tenant, test_agent, "Linked Flow")
+        unlinked_flow = _make_flow(db, auth_tenant, test_agent, "Unlinked Flow")
+
+        authed_client.post(
+            f"/api/v1/folders/{folder['id']}/flows",
+            json={"flowId": str(linked_flow.id)},
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.get(
+            f"/api/v1/folders/{folder['id']}/flows",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["folderId"] == folder["id"]
+        assert body["total"] == 1
+        flow_ids = {f["id"] for f in body["data"]}
+        assert str(linked_flow.id) in flow_ids
+        assert str(unlinked_flow.id) not in flow_ids
+        # The returned flow should also report the folder it belongs to
+        returned = body["data"][0]
+        assert folder["id"] in returned["folderIds"]
+
+    def test_list_flows_in_unknown_folder_returns_404(self, authed_client, auth_tenant):
+        resp = authed_client.get(
+            f"/api/v1/folders/{uuid.uuid4()}/flows",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+    def test_list_flows_in_empty_folder_returns_empty(
+        self, authed_client, auth_tenant
+    ):
+        folder = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Empty Folder"},
+            headers=_headers(auth_tenant),
+        ).json()
+
+        resp = authed_client.get(
+            f"/api/v1/folders/{folder['id']}/flows",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 0
+        assert body["data"] == []

@@ -26,9 +26,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.workspace import Workspace
 from app.main import app
 from app.models.payment_record import PaymentRecord
-from app.core.workspace import Workspace
 
 # ---------------------------------------------------------------------------
 # Client fixture — reuses the shared SQLite DB from conftest.py
@@ -93,6 +93,7 @@ def _make_payment_intent_event(pi_id: str, event_type: str) -> dict:
 # ---------------------------------------------------------------------------
 # Workspace dependency override — avoids needing a seeded API key
 # ---------------------------------------------------------------------------
+
 
 def _fake_workspace() -> Workspace:
     return Workspace(

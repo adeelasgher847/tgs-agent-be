@@ -1,0 +1,12 @@
+extend-exclude = [
+    "app/db/base.py",
+    "app/db/session.py",
+]
+
+[lint.per-file-ignores]
+# These files intentionally import after setup code that must run first
+# (env vars, sys.path, or sys.modules stubs read/consumed at import time by
+# the modules being imported) — reordering would change import-time behavior.
+"scripts/generate_stt_fixture.py" = ["E402"]
+"tests/conftest.py" = ["E402"]
+"tests/middleware/auth/conftest.py" = ["E402"]

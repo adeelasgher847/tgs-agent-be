@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.call_flow import CallFlow
+from app.models.folder_flow import FolderFlow
 
 
 class CallFlowRepository:
@@ -83,3 +84,19 @@ class CallFlowRepository:
     def soft_delete(self, flow: CallFlow) -> None:
         flow.is_deleted = True
         self.db.flush()
+
+    def find_folder_ids_map(
+        self, flow_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[uuid.UUID]]:
+        """Reverse lookup: folder IDs each flow belongs to, batched for a list of flows."""
+        result: dict[uuid.UUID, list[uuid.UUID]] = {flow_id: [] for flow_id in flow_ids}
+        if not flow_ids:
+            return result
+        rows = self.db.execute(
+            select(FolderFlow.flow_id, FolderFlow.folder_id).where(
+                FolderFlow.flow_id.in_(flow_ids)
+            )
+        ).all()
+        for flow_id, folder_id in rows:
+            result[flow_id].append(folder_id)
+        return result

@@ -1748,6 +1748,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Folders
+      summary: List Folder Flows
+      operationId: list_folder_flows_api_v1_folders__folder_id__flows_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Folder Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/voice/call/initiate/send:
     post:
       tags:
