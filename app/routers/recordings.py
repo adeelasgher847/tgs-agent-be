@@ -128,8 +128,8 @@ async def get_recording(
     size: int | None = None
     try:
         size = s3_recording_service.get_object_size(session.recording_s3_path)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to fetch S3 object size for %s: %s", session.recording_s3_path, exc)
 
     return create_success_response(
         RecordingResponse(

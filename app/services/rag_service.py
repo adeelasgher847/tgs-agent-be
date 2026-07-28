@@ -315,8 +315,8 @@ class RagService:
                     row = db.get(KbChunk, uuid.UUID(vid))
                     if row:
                         db.delete(row)
-                except (ValueError, Exception):
-                    pass
+                except (ValueError, Exception) as exc:
+                    logger.debug("Failed to delete KbChunk for vector_id %s: %s", vid, exc)
             db.commit()
         finally:
             if should_close:

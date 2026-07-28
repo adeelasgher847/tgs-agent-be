@@ -28,7 +28,7 @@ from urllib.parse import quote
 import hashlib
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
-# TTS audio cache from tts_audio router, reused here for pre-generation optimization
+# Import TTS audio cache from tts_audio router for pre-generation optimization
 from app.routers.tts_audio import audio_cache
 
 router = APIRouter()

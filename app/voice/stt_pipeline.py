@@ -282,8 +282,8 @@ class SttPipeline:
         try:
             if self._stt_session:
                 self._stt_session.finish()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[STT] finish_session failed: %s", exc)
 
     async def aclose(self) -> None:
         """Graceful shutdown: signal finish then wait up to 5s for reader."""
@@ -296,7 +296,7 @@ class SttPipeline:
                 self._reader_task.cancel()
                 try:
                     await self._reader_task
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: S110 - expected from cancelling the reader task above
                     pass
             except asyncio.CancelledError:
                 pass

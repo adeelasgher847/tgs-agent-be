@@ -123,8 +123,8 @@ class LiveKitTwilioPublisher:
         if self._room is not None:
             try:
                 await self._room.disconnect()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[LiveKitBridge] room disconnect failed: %s", exc)
         self._room = None
         self._source = None
         logger.info("[LiveKitBridge] disconnected room=%s", self._room_name)

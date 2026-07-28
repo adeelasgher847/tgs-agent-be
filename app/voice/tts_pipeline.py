@@ -275,7 +275,7 @@ class TtsPipeline:
         try:
             if not self.cancel_event.is_set():
                 self.cancel_event.set()
-        except Exception:
+        except Exception:  # noqa: S110 - defensive; Event.set() during shutdown must not block teardown
             pass
 
         tasks = list(self._synthesis_tasks.values())

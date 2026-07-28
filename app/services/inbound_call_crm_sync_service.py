@@ -161,7 +161,7 @@ def _release_inbound_sync_lock(db: Session, call_log_id: uuid.UUID) -> None:
     finally:
         try:
             db.rollback()
-        except Exception:
+        except Exception:  # noqa: S110 - already logged the advisory-unlock failure above
             pass
 
 

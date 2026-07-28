@@ -424,28 +424,28 @@ class VoiceOrchestrator:
             cancel_event = self._tts_pipeline.cancel_event
             if not cancel_event.is_set():
                 cancel_event.set()
-        except Exception:
+        except Exception:  # noqa: S110 - defensive; Event.set() during shutdown must not block teardown
             pass
 
         # Shutdown TTS worker (drains queue, cancels worker task)
         try:
             await self._tts_pipeline.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] TTS pipeline shutdown failed: %s", exc)
 
         # Stop LiveKit audio subscriber (Google STT path)
         lk_subscriber = getattr(self, "_livekit_subscriber", None)
         if lk_subscriber:
             try:
                 await lk_subscriber.stop()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[VoiceOrchestrator] LiveKit subscriber stop failed: %s", exc)
         lk_task = self._livekit_audio_task
         if lk_task and not lk_task.done():
             lk_task.cancel()
             try:
                 await lk_task
-            except (asyncio.CancelledError, Exception):
+            except (asyncio.CancelledError, Exception):  # noqa: S110 - expected from cancelling the task above
                 pass
         self._livekit_audio_task = None
 
@@ -453,8 +453,8 @@ class VoiceOrchestrator:
         try:
             if self._stt_pipeline:
                 await self._stt_pipeline.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] STT pipeline close failed: %s", exc)
 
         logger.info("[VoiceOrchestrator] Shutdown complete")
 
@@ -488,8 +488,8 @@ class VoiceOrchestrator:
                 confidence,
                 self._h.call_session_id,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] Failed to log redacted final transcript: %s", exc)
 
         try:
             h = self._h

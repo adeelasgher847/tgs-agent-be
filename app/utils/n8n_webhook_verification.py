@@ -1,5 +1,6 @@
 from fastapi import Request
 from app.core.config import settings
+from app.core.logger import logger
 import json
 
 
@@ -35,9 +36,9 @@ def verify_n8n_webhook_secret(request: Request) -> bool:
         
         if isinstance(body, dict) and body.get('webhook_secret') == settings.N8N_WEBHOOK_SECRET:
             return True
-    except Exception:
-        pass
-    
+    except Exception as exc:
+        logger.debug("n8n webhook secret body check failed: %s", exc)
+
     return False
 
 
@@ -61,8 +62,8 @@ async def verify_n8n_webhook_secret_async(request: Request) -> bool:
             body = json.loads(body_bytes.decode('utf-8'))
             if isinstance(body, dict) and body.get('webhook_secret') == settings.N8N_WEBHOOK_SECRET:
                 return True
-    except Exception:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         pass
-    
+
     return False
 

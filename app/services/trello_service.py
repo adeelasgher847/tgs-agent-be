@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import requests
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
+from app.core.logger import logger
 
 
 class TrelloService(BaseCRMService):
@@ -174,9 +175,9 @@ class TrelloService(BaseCRMService):
                 })
                 update_response = requests.put(update_url, params=update_params, timeout=20)
                 update_response.raise_for_status()
-            except Exception:
-                pass
-            
+            except Exception as exc:
+                logger.debug("Failed to set Trello board %s visibility to public: %s", board_id, exc)
+
             return {
                 "id": board_id,
                 "url": self.build_container_url(board_id),
@@ -191,7 +192,7 @@ class TrelloService(BaseCRMService):
                 try:
                     error_data = e.response.json()
                     error_msg += f"HTTP {e.response.status_code}: {error_data}"
-                except Exception:
+                except ValueError:
                     error_msg += f"HTTP {e.response.status_code}: {e.response.text[:200]}"
             raise ValueError(error_msg)
         except Exception as e:
@@ -268,7 +269,7 @@ class TrelloService(BaseCRMService):
                         field_id = created_field.get("id", "")
                         if field_id:
                             field_map[field_key] = field_id
-                except Exception:
+                except Exception:  # noqa: S110 - may fail if Power-Ups are not enabled on this board
                     pass
         
         return field_map
@@ -402,9 +403,9 @@ class TrelloService(BaseCRMService):
                     })
                     desc_response = requests.put(update_desc_url, params=update_desc_params, timeout=20)
                     desc_response.raise_for_status()
-                except Exception:
-                    pass
-            
+                except Exception as exc:
+                    logger.debug("Failed to update Trello card %s fallback description: %s", card_id, exc)
+
             return card_data
         except Exception:
             return None
@@ -643,10 +644,9 @@ class TrelloService(BaseCRMService):
                             else:
                                 item_tenant_id = str(field_value).strip()
                             break
-                except Exception:
-                    # Continue to description parsing fallback
+                except Exception:  # noqa: S110 - continue to description parsing fallback
                     pass
-            
+
             # Fallback: Parse tenant_id from card description if custom fields not available
             if not item_tenant_id:
                 card_desc = card.get("desc", "")
@@ -666,9 +666,9 @@ class TrelloService(BaseCRMService):
                     delete_response = requests.delete(delete_url, params=delete_params, timeout=20)
                     delete_response.raise_for_status()
                     deleted += 1
-                except Exception:
-                    pass
-        
+                except Exception as exc:
+                    logger.debug("Failed to delete Trello card %s for tenant %s: %s", card_id, tenant_id, exc)
+
         return deleted
 
     def count_pending_items_for_tenant(
@@ -738,10 +738,9 @@ class TrelloService(BaseCRMService):
                                 item_status = field_value.get("text", "").strip()
                             else:
                                 item_status = str(field_value).strip() if field_value else None
-                except Exception:
-                    # Continue to description parsing fallback
+                except Exception:  # noqa: S110 - continue to description parsing fallback
                     pass
-            
+
             # Fallback to description parsing if custom fields not found or failed
             if not item_tenant_id and card_desc:
                 # Parse tenant_id from description
@@ -959,9 +958,9 @@ class TrelloService(BaseCRMService):
                 response = requests.put(url, params=params, timeout=20)
                 response.raise_for_status()
                 updated = True
-            except Exception:
-                pass
-        
+            except Exception as exc:
+                logger.debug("Failed to update Trello card %s email_sent custom field: %s", item_id, exc)
+
         # Fallback to description update (always try, even if custom field succeeded)
         # This ensures description is also updated for consistency
         try:

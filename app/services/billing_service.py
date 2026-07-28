@@ -128,8 +128,8 @@ class BillingService:
                             period_start = datetime.fromtimestamp(sub.current_period_start, tz=timezone.utc)
                         if sub.current_period_end:
                             period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(f"Failed to retrieve Stripe subscription period for {stripe_sub_id}: {exc}")
                 BillingService.update_subscription(
                     db=db,
                     user_id=user_id,

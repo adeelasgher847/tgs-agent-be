@@ -480,7 +480,7 @@ def get_payment_history(
                         payment_intent = stripe.PaymentIntent.retrieve(session.payment_intent)
                         if payment_intent.last_payment_error:
                             payment_entry["failure_reason"] = payment_intent.last_payment_error.get("message", "Payment failed")
-                    except Exception:
+                    except stripe.error.StripeError:
                         pass
                 
                 payment_history.append(payment_entry)

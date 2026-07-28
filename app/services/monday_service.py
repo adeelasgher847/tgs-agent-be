@@ -10,6 +10,7 @@ import requests
 from app.core.config import settings
 from app.services.base_crm_service import BaseCRMService
 from app.core.security import decrypt_api_key
+from app.core.logger import logger
 
 
 class MondayService(BaseCRMService):
@@ -348,8 +349,8 @@ class MondayService(BaseCRMService):
             if title in required_titles and col.get("type") != type_lookup.get(title):
                 try:
                     MondayService.delete_column_static(board_id, col["id"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to delete mismatched-type Monday column %s on board %s: %s", col["id"], board_id, exc)
 
         # Refresh columns after cleanup
         columns = MondayService.get_board_columns_static(board_id)
@@ -379,8 +380,8 @@ class MondayService(BaseCRMService):
             if title not in required_titles:
                 try:
                     MondayService.delete_column_static(board_id, col["id"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to delete extraneous Monday column %s on board %s: %s", col["id"], board_id, exc)
 
         # Final mapping
         required_map: Dict[str, str] = {}
@@ -442,8 +443,8 @@ class MondayService(BaseCRMService):
                 try:
                     MondayService.delete_item(item_id)
                     deleted += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to delete Monday item %s: %s", item_id, exc)
 
             if not cursor:
                 break
@@ -541,8 +542,8 @@ class MondayService(BaseCRMService):
                     try:
                         MondayService.delete_item(item["id"])
                         deleted += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to delete Monday item %s for tenant %s: %s", item["id"], tenant_id, exc)
 
             if not cursor:
                 break
@@ -687,8 +688,8 @@ class MondayService(BaseCRMService):
             if title in required_titles and col.get("type") != type_lookup.get(title):
                 try:
                     self.delete_column(board_id, col["id"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to delete mismatched-type Monday column %s on board %s: %s", col["id"], board_id, exc)
 
         # Refresh columns after cleanup
         columns = self.get_board_columns(board_id)
@@ -718,8 +719,8 @@ class MondayService(BaseCRMService):
             if title not in required_titles:
                 try:
                     self.delete_column(board_id, col["id"])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to delete extraneous Monday column %s on board %s: %s", col["id"], board_id, exc)
 
         # Final mapping
         required_map: Dict[str, str] = {}

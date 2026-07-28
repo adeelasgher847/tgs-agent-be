@@ -121,8 +121,8 @@ async def _cached_file_count(db: Session, kb_id: uuid.UUID) -> int:
             cached = await redis.get(key)
             if cached is not None:
                 return int(cached)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis file-count cache read failed for %s: %s", key, exc)
     else:
         mem = _mem_cache_get(key)
         if mem is not None:
@@ -133,8 +133,8 @@ async def _cached_file_count(db: Session, kb_id: uuid.UUID) -> int:
     if redis is not None:
         try:
             await redis.setex(key, _FILE_COUNT_TTL, count)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis file-count cache write failed for %s: %s", key, exc)
     else:
         _mem_cache_set(key, count, _FILE_COUNT_TTL)
 
@@ -150,8 +150,8 @@ async def _cached_chunk_count(db: Session, kb_id: uuid.UUID) -> int:
             cached = await redis.get(key)
             if cached is not None:
                 return int(cached)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis chunk-count cache read failed for %s: %s", key, exc)
     else:
         mem = _mem_cache_get(key)
         if mem is not None:
@@ -162,8 +162,8 @@ async def _cached_chunk_count(db: Session, kb_id: uuid.UUID) -> int:
     if redis is not None:
         try:
             await redis.setex(key, _CHUNK_COUNT_TTL, count)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Redis chunk-count cache write failed for %s: %s", key, exc)
     else:
         _mem_cache_set(key, count, _CHUNK_COUNT_TTL)
 

@@ -52,7 +52,7 @@ async def _probe_redis() -> bool:
         # the pool rather than let those callers read a desynced response.
         try:
             await redis.connection_pool.disconnect()
-        except Exception:
+        except Exception:  # noqa: S110 - best-effort disconnect; probe already reports unhealthy either way
             pass
         return False
     except Exception:

@@ -100,13 +100,14 @@ def downgrade() -> None:
     # Use PostgreSQL conditional drop execution to bypass missing tables safely
     op.execute("DROP TABLE IF EXISTS usage_records CASCADE;")
     # Remove RBAC columns from the 'role' table
+    # Best-effort: ignore if object doesn't exist (downgrade may run against partially-migrated schema)
     try:
         op.drop_index('uq_role_workspace_user_active', table_name='role')
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort downgrade cleanup, object may not exist
         pass
     try:
         op.drop_constraint('chk_role_role', table_name='role', type_='check')
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort downgrade cleanup, object may not exist
         pass
     op.drop_column('role', 'deleted_at')
     op.drop_column('role', 'role')
@@ -117,25 +118,25 @@ def downgrade() -> None:
     # Wrapped in try/except blocks so it won't crash if they are partially missing
     try:
         op.drop_index('idx_tenant_parent_workspace_id', table_name='tenant')
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort downgrade cleanup, object may not exist
         pass
 
     try:
         op.drop_index('idx_tenant_sub_accounts', table_name='tenant')
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort downgrade cleanup, object may not exist
         pass
 
     try:
         op.drop_constraint('chk_tenant_workspace_type', table_name='tenant', type_='check')
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort downgrade cleanup, object may not exist
         pass
 
     try:
         op.drop_column('tenant', 'workspace_type')
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort downgrade cleanup, object may not exist
         pass
 
     try:
         op.drop_column('tenant', 'parent_workspace_id')
-    except Exception:
+    except Exception:  # noqa: S110 - best-effort downgrade cleanup, object may not exist
         pass

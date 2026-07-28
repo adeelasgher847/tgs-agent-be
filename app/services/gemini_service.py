@@ -322,7 +322,7 @@ class GeminiService:
             if call_session and call_session.call_transcript:
                 try:
                     conversation_history = json.loads(call_session.call_transcript)
-                except Exception:
+                except json.JSONDecodeError:
                     conversation_history = []
 
             # 🗣️ Prepare message context
