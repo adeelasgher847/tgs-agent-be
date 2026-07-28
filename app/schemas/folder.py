@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.call_flow import CallFlowListItem
+
 
 class FolderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -39,4 +41,14 @@ class FolderListResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     data: list[FolderOut]
+    total: int
+
+
+class FolderFlowsResponse(BaseModel):
+    """Response body for ``GET /api/v1/folders/{folder_id}/flows``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    folder_id: uuid.UUID = Field(..., serialization_alias="folderId")
+    data: list[CallFlowListItem]
     total: int

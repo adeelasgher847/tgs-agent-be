@@ -124,6 +124,7 @@ class CallFlowOut(BaseModel):
     flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
     settings: Dict[str, Any] | None = None
     knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
+    folder_ids: List[uuid.UUID] = Field(default_factory=list, serialization_alias="folderIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
     created_at: datetime = Field(..., serialization_alias="createdAt")
     updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
@@ -145,6 +146,7 @@ class CallFlowListItem(BaseModel):
     flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
     settings: Dict[str, Any] | None = None
     knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
+    folder_ids: List[uuid.UUID] = Field(default_factory=list, serialization_alias="folderIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
     created_at: datetime = Field(..., serialization_alias="createdAt")
     updated_at: datetime | None = Field(None, serialization_alias="updatedAt")

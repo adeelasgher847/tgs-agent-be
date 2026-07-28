@@ -65,3 +65,12 @@ def add_flow_to_folder(
     return folder_service.add_flow_to_folder(
         db, folder_id, _workspace_id(principal), body.flow_id
     )
+
+
+@router.get("/{folder_id}/flows")
+def list_folder_flows(
+    folder_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    return folder_service.list_flows_in_folder(db, folder_id, _workspace_id(principal))
