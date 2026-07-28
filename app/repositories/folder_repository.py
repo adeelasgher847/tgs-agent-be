@@ -71,6 +71,10 @@ class FolderRepository:
         self.db.refresh(link)
         return link
 
+    def remove_flow(self, link: FolderFlow) -> None:
+        self.db.delete(link)
+        self.db.flush()
+
     def find_flows_by_folder(
         self, folder_id: uuid.UUID, tenant_id: uuid.UUID
     ) -> list[CallFlow]:
