@@ -23,6 +23,8 @@ from app.models.stt_model import STTModel
 from app.routers.tts_audio import audio_cache
 from app.schemas.agent import AgentCreate
 from app.services.agent_service import agent_service
+from app.services.bidirectional_stream_service import generate_mulaw_tts
+from app.services.tts_catalog_service import tts_catalog_service
 
 
 def _agent_create(**overrides) -> AgentCreate:
@@ -37,8 +39,6 @@ def _agent_create(**overrides) -> AgentCreate:
     }
     data.update(overrides)
     return AgentCreate.model_validate(data)
-from app.services.bidirectional_stream_service import generate_mulaw_tts
-from app.services.tts_catalog_service import tts_catalog_service
 
 
 engine = create_engine(

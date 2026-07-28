@@ -403,7 +403,7 @@ class ClickUpService(BaseCRMService):
                 try:
                     error_data = response.json()
                     error_msg = error_data.get("err", "") or error_data.get("error", "") or str(error_data)
-                except:
+                except Exception:
                     error_msg = response.text[:200]
             
             response.raise_for_status()

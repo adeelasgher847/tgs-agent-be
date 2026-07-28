@@ -8,7 +8,6 @@ from app.services.clickup_service import ClickUpService
 from app.services.jira_service import JiraService
 from app.services.trello_service import TrelloService
 from app.models.tenant_crm_config import CRMConfig
-from app.core.security import decrypt_api_key
 import json
 
 

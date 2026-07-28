@@ -5,14 +5,14 @@ Revises: 20260611_rename_tables_base_class
 Create Date: 2026-06-11 00:00:00.000000
 """
 
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
+
 revision = "20260611_add_kb_ids_callflow"
 down_revision = "20260611_rename_tables_base_class"
 branch_labels = None
 depends_on = None
-
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB
 
 
 def upgrade() -> None:
