@@ -57,6 +57,7 @@ class SttPipeline:
         silence_threshold_ms: int = 1500,
         api_config: dict | None = None,
         event_bus: SttEventBus | None = None,
+        model_id: str | None = None,
     ) -> None:
         self._language_code = language_code
         self._on_interim = on_interim
@@ -70,6 +71,7 @@ class SttPipeline:
         self._silence_threshold_ms = silence_threshold_ms
         self._api_config = api_config or {}
         self._event_bus = event_bus or SttEventBus()
+        self._model_id = model_id
 
         self._stt_session = None
         self._reader_task: asyncio.Task | None = None
@@ -109,6 +111,7 @@ class SttPipeline:
             silence_threshold_ms=resolved.silence_threshold_ms,
             api_config=resolved.api_config,
             event_bus=event_bus,
+            model_id=resolved.model_id,
         )
 
     @property
@@ -153,6 +156,8 @@ class SttPipeline:
             interim_results=True,
             single_utterance=False,
             endpointing_ms=self._endpointing_ms,
+            model=self._model_id,
+            api_config=self._api_config,
         )
         self._reader_task = asyncio.create_task(self._reader_loop())
         asyncio.create_task(self._stt_session.start())
@@ -259,10 +264,17 @@ class SttPipeline:
 
     async def recreate_with_endpointing(self, endpointing_ms: int) -> None:
         """Reopen Deepgram session with a new endpointing value (email collection).
-        No-op for Google STT (uses silence_threshold_ms instead).
+        No-op for Google STT (uses silence_threshold_ms instead) and for Deepgram
+        Flux models, which use native turn detection (eot_threshold/eot_timeout_ms)
+        instead of app-side endpointing.
         """
         if self._provider_slug != "deepgram":
             logger.debug("[STT] recreate_with_endpointing is Deepgram-only; skipping")
+            return
+        if (self._model_id or "").startswith("flux-"):
+            logger.debug(
+                "[STT] recreate_with_endpointing is not applicable to Flux (native turn detection); skipping"
+            )
             return
         want = int(endpointing_ms)
         if want == self._effective_endpointing_ms() and self._stt_session is not None:
