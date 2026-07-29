@@ -185,6 +185,7 @@ class CallFlowService:
             knowledge_base_ids=flow.knowledge_base_ids or [],
             folder_ids=folder_ids,
             public_access=flow.public_access,
+            status=flow.status,
             created_at=flow.created_at,
             updated_at=flow.updated_at,
         )
@@ -217,6 +218,7 @@ class CallFlowService:
             knowledge_base_ids=flow.knowledge_base_ids or [],
             folder_ids=folder_ids or [],
             public_access=flow.public_access,
+            status=flow.status,
             created_at=flow.created_at,
             updated_at=flow.updated_at,
         )
@@ -257,6 +259,7 @@ class CallFlowService:
                 "custom_welcome_message": body.custom_welcome_message,
                 "flow_data": flow_data_dict,
                 "settings": body.settings,
+                "status": body.status.value,
             }
         )
 
@@ -335,6 +338,8 @@ class CallFlowService:
             scalar_updates["flow_data"] = body.flow_data.model_dump()
         if body.settings is not None:
             scalar_updates["settings"] = body.settings
+        if body.status is not None:
+            scalar_updates["status"] = body.status.value
 
         # Prompt versioning logic
         if body.prompt is not None and body.prompt.strip():

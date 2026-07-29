@@ -74,3 +74,20 @@ def list_folder_flows(
     db: Session = Depends(get_db),
 ):
     return folder_service.list_flows_in_folder(db, folder_id, _workspace_id(principal))
+
+
+@router.delete(
+    "/{folder_id}/flows/{flow_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def remove_flow_from_folder(
+    folder_id: uuid.UUID,
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    folder_service.remove_flow_from_folder(
+        db, folder_id, _workspace_id(principal), flow_id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

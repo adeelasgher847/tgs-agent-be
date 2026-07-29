@@ -22,6 +22,18 @@ from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 from app.core.logger import logger
 
+# Populate SQLAlchemy's class registry before any job (including on_startup)
+# can run a query. Unlike the FastAPI process — where importing the router
+# tree transitively imports every model — this worker imports models lazily
+# per-function, so nothing has registered CallSession by the time
+# startup_recover_callbacks queries CallbackSchedule, whose `original_call`
+# relationship resolves "CallSession" as a string at mapper-configure time.
+# app/db/base.py imports every model for exactly this reason (alembic/env.py
+# relies on it too); import it here, not just the one class currently
+# missing, so this doesn't recur the next time a new string relationship is
+# added to a model this worker doesn't otherwise import.
+import app.db.base  # noqa: F401
+
 # ── Job functions ─────────────────────────────────────────────────────────────
 
 

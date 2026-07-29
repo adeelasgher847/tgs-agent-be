@@ -229,6 +229,89 @@ class TestCreateCallFlow:
 
 
 @pytest.mark.usefixtures("db")
+class TestCallFlowStatus:
+    def test_create_defaults_to_active_status(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        resp = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id),
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["status"] == "active"
+
+    def test_create_with_explicit_inactive_status(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        resp = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, status="inactive"),
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["status"] == "inactive"
+
+    def test_update_status_to_inactive_and_back(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        created = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id),
+            headers=_headers(auth_tenant),
+        ).json()
+        assert created["status"] == "active"
+
+        resp = authed_client.put(
+            f"/api/v1/call-flows/{created['id']}",
+            json={"status": "inactive"},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "inactive"
+
+        resp = authed_client.put(
+            f"/api/v1/call-flows/{created['id']}",
+            json={"status": "active"},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "active"
+
+    def test_invalid_status_value_rejected(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        resp = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, status="paused"),
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 400
+
+    def test_list_and_get_include_status(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        created = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, status="inactive"),
+            headers=_headers(auth_tenant),
+        ).json()
+
+        get_resp = authed_client.get(
+            f"/api/v1/call-flows/{created['id']}",
+            headers=_headers(auth_tenant),
+        )
+        assert get_resp.json()["status"] == "inactive"
+
+        list_resp = authed_client.get(
+            "/api/v1/call-flows",
+            headers=_headers(auth_tenant),
+        )
+        item = next(f for f in list_resp.json()["data"] if f["id"] == created["id"])
+        assert item["status"] == "inactive"
+
+
+@pytest.mark.usefixtures("db")
 class TestUpdateCallFlow:
     def _create_flow(self, client, tenant, agent) -> dict:
         resp = client.post(

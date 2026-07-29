@@ -22,6 +22,11 @@ class WelcomeMessageTypeEnum(str, Enum):
     ai_custom = "ai_custom"
 
 
+class CallFlowStatusEnum(str, Enum):
+    active = "active"
+    inactive = "inactive"
+
+
 class FlowDataSchema(BaseModel):
     """Structural validation for flowData JSONB — future visual-editor format."""
 
@@ -56,6 +61,7 @@ class CallFlowCreate(BaseModel):
     #   function-calling + Calendly instead of the legacy [BOOK_APPOINTMENT:...]
     #   regex-token pipeline (see app/voice/booking_mixin.py::_calendly_enabled).
     settings: Dict[str, Any] | None = None
+    status: CallFlowStatusEnum = CallFlowStatusEnum.active
 
 
 class CallFlowUpdate(BaseModel):
@@ -71,6 +77,7 @@ class CallFlowUpdate(BaseModel):
     current_prompt_id: uuid.UUID | None = Field(None, alias="currentPromptId")
     flow_data: FlowDataSchema | None = Field(None, alias="flowData")
     settings: Dict[str, Any] | None = None
+    status: CallFlowStatusEnum | None = None
 
     @model_validator(mode="after")
     def prompt_and_rollback_exclusive(self) -> "CallFlowUpdate":
@@ -126,6 +133,7 @@ class CallFlowOut(BaseModel):
     knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
     folder_ids: List[uuid.UUID] = Field(default_factory=list, serialization_alias="folderIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
+    status: str = "active"
     created_at: datetime = Field(..., serialization_alias="createdAt")
     updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
 
@@ -148,6 +156,7 @@ class CallFlowListItem(BaseModel):
     knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
     folder_ids: List[uuid.UUID] = Field(default_factory=list, serialization_alias="folderIds")
     public_access: bool = Field(False, serialization_alias="publicAccess")
+    status: str = "active"
     created_at: datetime = Field(..., serialization_alias="createdAt")
     updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
 
