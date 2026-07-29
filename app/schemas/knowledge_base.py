@@ -9,8 +9,18 @@ from datetime import datetime
 # ── Knowledge Base CRUD ───────────────────────────────────────────────────────
 
 class KbCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255)
-    description: str | None = None
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Display name for the knowledge base.",
+        examples=["Product FAQ"],
+    )
+    description: str | None = Field(
+        None,
+        description="Optional human-readable summary of what this KB contains.",
+        examples=["Answers to common pricing and refund questions"],
+    )
 
 
 class KbUpdate(BaseModel):

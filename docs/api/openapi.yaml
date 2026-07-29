@@ -1775,6 +1775,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/folders/{folder_id}/flows/{flow_id}:
+    delete:
+      tags:
+      - Folders
+      summary: Remove Flow From Folder
+      operationId: remove_flow_from_folder_api_v1_folders__folder_id__flows__flow_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Folder Id
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/voice/call/initiate/send:
     post:
       tags:
@@ -4821,7 +4853,27 @@ paths:
     post:
       tags:
       - Knowledge Base
-      summary: Create Knowledge Base
+      summary: Create a knowledge base
+      description: "Create an empty knowledge base (KB) container, scoped to the caller's\n\
+        current workspace. This only creates the KB record — it has no content\nyet,\
+        \ so it won't affect any calls until you populate and attach it.\n\n**Auth:**\
+        \ requires `admin` or `owner` role (JWT). Workspace is taken from\nthe authenticated\
+        \ user's `current_tenant_id` — there is no `workspaceId`\nin the request body.\n\
+        \n**Typical frontend flow:**\n1. `POST /api/v1/kb/` (this endpoint) → get\
+        \ back `data.id` (the `kb_id`).\n2. Add content to the KB, either or both:\n\
+        \   - `POST /api/v1/kb/{kb_id}/file` — upload a PDF/DOCX/TXT file (≤ 50 MB).\n\
+        \     Returns `202` immediately with a `job_id`; ingestion (chunking +\n \
+        \    embedding) runs asynchronously. Poll\n     `GET /api/v1/kb/{kb_id}/files/{file_id}/status`\
+        \ to know when it's\n     ready.\n   - `POST /api/v1/kb/{kb_id}/text` — ingest\
+        \ raw text directly.\n     Synchronous — chunks + embeddings are ready when\
+        \ this call returns\n     `201`.\n3. Attach the KB to a call flow so the voice\
+        \ agent can retrieve from it:\n   `PUT /api/v1/call-flows/{flow_id}/knowledge-bases`\
+        \ with\n   `{\"kb_ids\": [\"<kb_id>\", ...]}`. A call flow can have multiple\
+        \ KBs;\n   passing an empty list detaches all of them.\n\n**Request body:**\n\
+        - `name` (required) — display name, 1–255 characters.\n- `description` (optional)\
+        \ — free-text summary of the KB's contents.\n\n**Response (`201`):** `data`\
+        \ is the created KB —\n`{id, workspace_id, name, description, created_at,\
+        \ updated_at}`."
       operationId: create_knowledge_base_api_v1_kb__post
       security:
       - HTTPBearer: []
@@ -11525,6 +11577,9 @@ components:
           additionalProperties: true
           type: object
           nullable: true
+        status:
+          $ref: '#/components/schemas/CallFlowStatusEnum'
+          default: active
       additionalProperties: false
       type: object
       required:
@@ -11543,6 +11598,12 @@ components:
       - public_access
       title: CallFlowSettingsUpdate
       description: Request body for ``PUT /api/v1/call-flows/{id}/settings``.
+    CallFlowStatusEnum:
+      type: string
+      enum:
+      - active
+      - inactive
+      title: CallFlowStatusEnum
     CallFlowUpdate:
       properties:
         name:
@@ -11582,6 +11643,10 @@ components:
         settings:
           additionalProperties: true
           type: object
+          nullable: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/CallFlowStatusEnum'
           nullable: true
       additionalProperties: false
       type: object
@@ -13592,6 +13657,9 @@ components:
           maxLength: 255
           minLength: 1
           title: Name
+          description: Display name for the knowledge base.
+          examples:
+          - Product FAQ
         description:
           type: string
           nullable: true

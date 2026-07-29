@@ -247,6 +247,26 @@ async def initiate_call(
                     detail="Invalid callFlowId format: must be a valid UUID",
                 )
 
+            requested_flow = db.execute(
+                select(CallFlow).where(
+                    CallFlow.id == flow_uuid,
+                    CallFlow.tenant_id == tenant_id_filter,
+                    CallFlow.is_deleted == False,  # noqa: E712
+                )
+            ).scalar_one_or_none()
+            if requested_flow is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Call flow {flow_uuid} not found in workspace",
+                )
+            if requested_flow.status != "active":
+                return _err(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "call_flow_inactive",
+                    f"Call flow {flow_uuid} is inactive and cannot be used to initiate calls. "
+                    "Set it to active first.",
+                )
+
         # ── Resolve Twilio credentials upfront ───────────────────────────
         use_custom_credentials = False
         account_sid: str | None = None
@@ -433,13 +453,12 @@ async def initiate_call(
             # A/B prompt testing: assign + persist the variant now, before any
             # LLM request, so it's known even if the call fails mid-way. Locked
             # for the duration of the call via call_metadata["ab_prompt_text"].
-            call_flow_row = db.execute(
-                select(CallFlow).where(CallFlow.id == flow_uuid)
-            ).scalar_one_or_none()
-            if call_flow_row is not None:
-                ab_testing_service.assign_and_lock_variant(
-                    db, call_session, call_flow_row
-                )
+            # Reuse the row already fetched by the active-status gate above —
+            # intervening db.commit() calls expire it, so SQLAlchemy transparently
+            # reloads fresh attributes on next access; no extra explicit SELECT needed.
+            ab_testing_service.assign_and_lock_variant(
+                db, call_session, requested_flow
+            )
 
         # JD / resume enrichment (non-blocking on failure)
         _ctx = call_request.jd_context or {}

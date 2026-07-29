@@ -200,14 +200,12 @@ class TestSoftDeleteLogin:
             )
         # We accept 200 (login ok) or 404/422 if tenant/role wiring incomplete in test DB
         # The critical assertion: it must NOT be a deleted-user 404 from our code path
-        # (deleted user returns 404 with specific error_type)
+        # (deleted user returns 404 with error.code="email_not_found")
         if resp.status_code == 404:
             body = resp.json()
-            detail = body.get("detail", {})
-            if isinstance(detail, dict):
-                assert detail.get("error_type") != "email_not_found", (
-                    "Active user was rejected as if soft-deleted"
-                )
+            assert body.get("error", {}).get("code") != "email_not_found", (
+                "Active user was rejected as if soft-deleted"
+            )
 
 
 class TestSoftDeleteRefresh:

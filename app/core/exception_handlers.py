@@ -33,18 +33,21 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
                 "X-Request-ID": request_id,
             },
         )
-    if (
-        isinstance(exc.detail, dict)
-        and "code" in exc.detail
-        and "message" in exc.detail
-    ):
+    if isinstance(exc.detail, dict) and "message" in exc.detail:
+        # "code" is the standard key; "error_type" is an older convention still
+        # used by the password-auth endpoints (login/register/reset-password) —
+        # accept either so those specific messages aren't collapsed to a
+        # generic "Request failed" by the dict branch below.
+        error_code = exc.detail.get("code") or exc.detail.get("error_type")
         extras = {
-            k: v for k, v in exc.detail.items() if k not in ("code", "message")
+            k: v
+            for k, v in exc.detail.items()
+            if k not in ("code", "message", "error_type")
         }
         payload = build_api_error_payload(
             exc.status_code,
             exc.detail["message"],
-            error_code=exc.detail["code"],
+            error_code=error_code,
             request_id=request_id,
             extras=extras or None,
         )
