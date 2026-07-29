@@ -14,9 +14,14 @@ from typing import Any, Dict
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
 from deepgram.listen.v1.types.listen_v1results import ListenV1Results
+from deepgram.listen.v1.types.listen_v1utterance_end import ListenV1UtteranceEnd
+from deepgram.listen.v2.types.listen_v2fatal_error import ListenV2FatalError
+from deepgram.listen.v2.types.listen_v2turn_info import ListenV2TurnInfo
 
 from app.core.config import settings
 from app.core.logger import logger
+
+_FLUX_MODEL_PREFIX = "flux-"
 
 
 class DeepgramSTTService:
@@ -47,6 +52,7 @@ class DeepgramSTTService:
             interim_results: bool,
             single_utterance: bool,
             endpointing_ms: int | None = None,
+            model: str | None = None,
         ) -> None:
             self._client = client
             self._language_code = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en"
@@ -56,6 +62,9 @@ class DeepgramSTTService:
             self._single_utterance = single_utterance  # unused — stream stays open like Google
             # None → use settings.DEEPGRAM_STT_ENDPOINTING_MS at connect time
             self._endpointing_ms: int | None = endpointing_ms
+            # Resolved from the agent's STT catalog selection; falls back to the
+            # global default only when no agent/catalog model was resolved.
+            self._model = model or settings.DEEPGRAM_STT_MODEL or "nova-3"
 
             self._audio_q: "queue.Queue[bytes | None]" = queue.Queue()
             self._results_q: "queue.Queue[dict]" = queue.Queue()
@@ -66,6 +75,16 @@ class DeepgramSTTService:
             self._first_interim_logged = False
             self._first_final_logged = False
             self._session_end_reason = "unknown"
+            # Latest not-yet-finalized interim, used as a fallback final when
+            # UtteranceEnd fires without a preceding speech_final (see on_message).
+            self._pending_transcript = ""
+            self._pending_confidence = 0.0
+            # Deepgram's per-message transcript is scoped to the current segment,
+            # not cumulative -- when a long utterance is finalized (is_final=true)
+            # in multiple segments before speech_final ever arrives, this
+            # accumulates the earlier segments so the UtteranceEnd fallback
+            # doesn't drop everything but the last segment.
+            self._pending_finalized_prefix = ""
 
         def push_audio(self, audio_chunk: bytes) -> None:
             if self._closed:
@@ -84,7 +103,7 @@ class DeepgramSTTService:
             self._session_started_monotonic = time.perf_counter()
             logger.info(
                 "[Deepgram STT] session_start model=%s language=%s sample_rate=%s encoding=%s",
-                settings.DEEPGRAM_STT_MODEL or "nova-3",
+                self._model,
                 self._language_code,
                 self._sample_rate,
                 self._encoding,
@@ -104,6 +123,25 @@ class DeepgramSTTService:
 
             def on_message(message: Any) -> None:
                 try:
+                    if isinstance(message, ListenV1UtteranceEnd):
+                        # Word-timing-based fallback: fires when Deepgram sees a large
+                        # gap between words, independent of audio silence. Only acts
+                        # if speech_final hasn't already finalized this utterance --
+                        # covers phone-line noise (static, hold music, cross-talk) that
+                        # can otherwise block silence-based endpointing indefinitely.
+                        if self._pending_transcript:
+                            self._results_q.put(
+                                {
+                                    "transcript": self._pending_transcript,
+                                    "confidence": self._pending_confidence,
+                                    "is_final": True,
+                                }
+                            )
+                            self._pending_transcript = ""
+                            self._pending_confidence = 0.0
+                            self._pending_finalized_prefix = ""
+                        return
+
                     if not isinstance(message, ListenV1Results):
                         return
                     if not message.channel or not message.channel.alternatives:
@@ -115,6 +153,9 @@ class DeepgramSTTService:
 
                     # Turn-taking: speech_final mirrors Google's "user stopped" final.
                     if speech_final:
+                        self._pending_transcript = ""
+                        self._pending_confidence = 0.0
+                        self._pending_finalized_prefix = ""
                         if not transcript:
                             return
                         if (
@@ -136,6 +177,25 @@ class DeepgramSTTService:
 
                     if not transcript:
                         return
+                    # message.is_final marks this segment's text as settled (won't
+                    # change on a later message) but does NOT mean the utterance is
+                    # over -- only speech_final does. Fold settled segments into the
+                    # prefix so the UtteranceEnd fallback can still recover the full
+                    # utterance if speech_final never arrives.
+                    if bool(message.is_final):
+                        self._pending_finalized_prefix = (
+                            f"{self._pending_finalized_prefix} {transcript}".strip()
+                            if self._pending_finalized_prefix
+                            else transcript
+                        )
+                        self._pending_transcript = self._pending_finalized_prefix
+                    else:
+                        self._pending_transcript = (
+                            f"{self._pending_finalized_prefix} {transcript}".strip()
+                            if self._pending_finalized_prefix
+                            else transcript
+                        )
+                    self._pending_confidence = confidence
                     if (
                         self._session_started_monotonic is not None
                         and not self._first_interim_logged
@@ -215,8 +275,11 @@ class DeepgramSTTService:
                 # SDK urlencodes Python bools as True/False; Deepgram requires "true"/"false"
                 # or handshake returns HTTP 400 + dg-error: Invalid query string.
                 interim_q: str = "true" if self._interim_results else "false"
+                utterance_end_ms = int(
+                    getattr(settings, "DEEPGRAM_STT_UTTERANCE_END_MS", 1000) or 1000
+                )
                 with self._client.listen.v1.connect(
-                    model=settings.DEEPGRAM_STT_MODEL or "nova-3",
+                    model=self._model,
                     encoding=dg_encoding,
                     sample_rate=self._sample_rate,
                     channels=1,
@@ -225,6 +288,7 @@ class DeepgramSTTService:
                     smart_format="true",
                     endpointing=endpointing,
                     punctuate="true",
+                    utterance_end_ms=utterance_end_ms,
                 ) as connection:
                     connection.on(EventType.MESSAGE, on_message)
                     connection.on(EventType.ERROR, on_error)
@@ -249,6 +313,240 @@ class DeepgramSTTService:
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, self._results_q.get)
 
+    class FluxStreamingSTTSession:
+        """
+        Deepgram Flux (v2/listen) — native turn-detection model.
+
+        Unlike Nova (v1/listen), Flux emits discrete TurnInfo events
+        (StartOfTurn/Update/EagerEndOfTurn/TurnResumed/EndOfTurn) rather than
+        interim/speech_final transcripts, and has no app-controllable
+        endpointing (eot_threshold/eot_timeout_ms replace it server-side).
+        This class translates those events into the same result-dict shape
+        StreamingSTTSession produces so SttPipeline's reader loop is unchanged.
+
+        EagerEndOfTurn/TurnResumed are acknowledged but not forwarded — wiring
+        them into speculative LLM generation is a separate change.
+        """
+
+        def __init__(
+            self,
+            *,
+            client: DeepgramClient,
+            language_code: str | None,
+            encoding: str,
+            sample_rate: int,
+            model: str,
+            eot_threshold: float | None = None,
+            eager_eot_threshold: float | None = None,
+            eot_timeout_ms: int | None = None,
+        ) -> None:
+            self._client = client
+            self._language_code = language_code or settings.DEEPGRAM_STT_LANGUAGE or "en"
+            self._encoding = encoding.upper() if encoding else "MULAW"
+            self._sample_rate = sample_rate or 8000
+            self._model = model
+            self._eot_threshold = eot_threshold
+            self._eager_eot_threshold = eager_eot_threshold
+            self._eot_timeout_ms = eot_timeout_ms
+
+            self._audio_q: "queue.Queue[bytes | None]" = queue.Queue()
+            self._results_q: "queue.Queue[dict]" = queue.Queue()
+            self._closed = False
+            self._task_started = False
+            self._thread: threading.Thread | None = None
+            self._session_started_monotonic: float | None = None
+            self._first_interim_logged = False
+            self._first_final_logged = False
+            self._session_end_reason = "unknown"
+
+        def push_audio(self, audio_chunk: bytes) -> None:
+            if self._closed:
+                return
+            self._audio_q.put(audio_chunk)
+
+        def finish(self) -> None:
+            if not self._closed:
+                self._closed = True
+                self._audio_q.put(None)
+
+        async def start(self) -> None:
+            if self._task_started:
+                return
+            self._task_started = True
+            self._session_started_monotonic = time.perf_counter()
+            logger.info(
+                "[Deepgram Flux STT] session_start model=%s language=%s sample_rate=%s encoding=%s",
+                self._model,
+                self._language_code,
+                self._sample_rate,
+                self._encoding,
+            )
+            self._thread = threading.Thread(target=self._run_blocking_stream, daemon=True)
+            self._thread.start()
+
+        @staticmethod
+        def _avg_word_confidence(words: Any) -> float:
+            items = list(words or [])
+            if not items:
+                return 0.0
+            confidences = [float(getattr(w, "confidence", 0.0) or 0.0) for w in items]
+            return sum(confidences) / len(confidences)
+
+        def _run_blocking_stream(self) -> None:
+            if not self._client:
+                self._results_q.put(
+                    {"error": "Deepgram client not initialized", "transcript": "", "confidence": 0.0, "is_final": True}
+                )
+                self._results_q.put({"done": True})
+                return
+
+            dg_encoding = "mulaw" if self._encoding == "MULAW" else "linear16"
+
+            def on_message(message: Any) -> None:
+                try:
+                    if isinstance(message, ListenV2FatalError):
+                        self._session_end_reason = "fatal_error"
+                        logger.error(
+                            "[Deepgram Flux STT] fatal error code=%s description=%s",
+                            message.code,
+                            message.description,
+                        )
+                        self._results_q.put(
+                            {
+                                "error": message.description or message.code,
+                                "transcript": "",
+                                "confidence": 0.0,
+                                "is_final": True,
+                            }
+                        )
+                        return
+
+                    if not isinstance(message, ListenV2TurnInfo):
+                        return
+
+                    event = message.event
+                    if event in ("StartOfTurn", "EagerEndOfTurn", "TurnResumed"):
+                        logger.debug("[Deepgram Flux STT] turn_event=%s", event)
+                        return
+
+                    transcript = (message.transcript or "").strip()
+                    if not transcript:
+                        return
+                    confidence = self._avg_word_confidence(message.words)
+
+                    if event == "EndOfTurn":
+                        if (
+                            self._session_started_monotonic is not None
+                            and not self._first_final_logged
+                        ):
+                            final_latency_ms = int(
+                                (time.perf_counter() - self._session_started_monotonic) * 1000
+                            )
+                            logger.info(
+                                "[Deepgram Flux STT] final_latency_ms=%s", final_latency_ms
+                            )
+                            self._first_final_logged = True
+                        self._results_q.put(
+                            {"transcript": transcript, "confidence": confidence, "is_final": True}
+                        )
+                        return
+
+                    # event == "Update" -> interim
+                    if (
+                        self._session_started_monotonic is not None
+                        and not self._first_interim_logged
+                    ):
+                        first_interim_latency_ms = int(
+                            (time.perf_counter() - self._session_started_monotonic) * 1000
+                        )
+                        logger.info(
+                            "[Deepgram Flux STT] first_interim_latency_ms=%s",
+                            first_interim_latency_ms,
+                        )
+                        self._first_interim_logged = True
+                    self._results_q.put(
+                        {"transcript": transcript, "confidence": confidence, "is_final": False}
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("[Deepgram Flux STT] on_message error: %s", exc, exc_info=True)
+
+            def on_error(error: Any) -> None:
+                self._session_end_reason = "websocket_error"
+                logger.error("[Deepgram Flux STT] websocket error: %s", error, exc_info=True)
+                self._results_q.put(
+                    {"error": str(error), "transcript": "", "confidence": 0.0, "is_final": True}
+                )
+
+            def _close_connection(conn: Any) -> None:
+                """Signal end-of-stream, then force the underlying WebSocket closed.
+                Unlike v1, v2 has no send_finalize() -- send_close_stream() is the
+                only graceful-close signal Flux exposes.
+                """
+                try:
+                    conn.send_close_stream()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[Deepgram Flux STT] send_close_stream: %s", exc)
+                try:
+                    ws = getattr(conn, "_websocket", None)
+                    if ws is not None:
+                        closer = getattr(ws, "close", None)
+                        if callable(closer):
+                            closer()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[Deepgram Flux STT] websocket.close: %s", exc)
+
+            def sender_loop(conn: Any) -> None:
+                while True:
+                    chunk = self._audio_q.get()
+                    if chunk is None:
+                        self._session_end_reason = "client_finish"
+                        _close_connection(conn)
+                        break
+                    if chunk:
+                        try:
+                            conn.send_media(chunk)
+                        except Exception as exc:  # noqa: BLE001
+                            self._session_end_reason = "send_media_failed"
+                            logger.error(
+                                "[Deepgram Flux STT] send_media failed: %s", exc, exc_info=True
+                            )
+                            self._results_q.put(
+                                {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True}
+                            )
+                            break
+
+            try:
+                with self._client.listen.v2.connect(
+                    model=self._model,
+                    encoding=dg_encoding,
+                    sample_rate=self._sample_rate,
+                    eot_threshold=self._eot_threshold,
+                    eager_eot_threshold=self._eager_eot_threshold,
+                    eot_timeout_ms=self._eot_timeout_ms,
+                ) as connection:
+                    connection.on(EventType.MESSAGE, on_message)
+                    connection.on(EventType.ERROR, on_error)
+
+                    sender = threading.Thread(target=sender_loop, args=(connection,), daemon=True)
+                    sender.start()
+                    connection.start_listening()
+                    if self._session_end_reason == "unknown":
+                        self._session_end_reason = "normal_close"
+                    sender.join(timeout=10.0)
+            except Exception as exc:  # noqa: BLE001
+                self._session_end_reason = "stream_exception"
+                logger.error("[Deepgram Flux STT] streaming session error: %s", exc, exc_info=True)
+                self._results_q.put(
+                    {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True}
+                )
+            finally:
+                logger.info("[Deepgram Flux STT] session_end reason=%s", self._session_end_reason)
+                self._results_q.put({"done": True})
+
+        async def get_result(self) -> Dict[str, Any]:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._results_q.get)
+
     def create_streaming_session(
         self,
         language_code: str | None = None,
@@ -257,9 +555,26 @@ class DeepgramSTTService:
         interim_results: bool = True,
         single_utterance: bool = False,
         endpointing_ms: int | None = None,
-    ) -> "DeepgramSTTService.StreamingSTTSession":
+        model: str | None = None,
+        api_config: Dict[str, Any] | None = None,
+    ) -> "DeepgramSTTService.StreamingSTTSession | DeepgramSTTService.FluxStreamingSTTSession":
         if not self._client:
             raise RuntimeError("Deepgram client not initialized — set DEEPGRAM_API_KEY")
+
+        resolved_model = model or settings.DEEPGRAM_STT_MODEL or "nova-3"
+        if resolved_model.startswith(_FLUX_MODEL_PREFIX):
+            cfg = api_config or {}
+            return DeepgramSTTService.FluxStreamingSTTSession(
+                client=self._client,
+                language_code=language_code,
+                encoding=encoding or "MULAW",
+                sample_rate=sample_rate or settings.STT_SAMPLE_RATE or settings.GOOGLE_STT_SAMPLE_RATE or 8000,
+                model=resolved_model,
+                eot_threshold=cfg.get("eot_threshold"),
+                eager_eot_threshold=cfg.get("eager_eot_threshold"),
+                eot_timeout_ms=cfg.get("eot_timeout_ms"),
+            )
+
         return DeepgramSTTService.StreamingSTTSession(
             client=self._client,
             language_code=language_code,
@@ -268,6 +583,7 @@ class DeepgramSTTService:
             interim_results=interim_results,
             single_utterance=single_utterance,
             endpointing_ms=endpointing_ms,
+            model=resolved_model,
         )
 
     def _transcribe_sync(

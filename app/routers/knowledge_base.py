@@ -176,6 +176,36 @@ def _bytes_to_mb(size_bytes: int | None) -> str | None:
     return f"{round(size_bytes / 1_048_576, 2):.2f} MB"
 
 
+def _linked_call_flow_ids_by_kb(
+    db: Session, workspace_id: uuid.UUID
+) -> dict[str, list[uuid.UUID]]:
+    """Non-deleted call flows in this workspace, grouped by linked KB id.
+
+    One query for the whole workspace (used by both the list and detail
+    endpoints) rather than one query per KB. Filters in Python rather than
+    with a JSONB containment operator so this stays portable across the
+    Postgres (JSONB) and SQLite (TEXT) test setups.
+    """
+    flows = (
+        db.query(CallFlow.id, CallFlow.knowledge_base_ids)
+        .filter(CallFlow.tenant_id == workspace_id, CallFlow.is_deleted == False)  # noqa: E712
+        .all()
+    )
+    by_kb: dict[str, list[uuid.UUID]] = {}
+    for flow_id, kb_ids in flows:
+        # dict.fromkeys dedupes while preserving order, in case a flow's own
+        # knowledge_base_ids array ever contains the same id twice.
+        for kb_id_str in dict.fromkeys(kb_ids or []):
+            by_kb.setdefault(kb_id_str, []).append(flow_id)
+    return by_kb
+
+
+def _linked_call_flow_ids(
+    db: Session, kb_id: uuid.UUID, workspace_id: uuid.UUID
+) -> list[uuid.UUID]:
+    return _linked_call_flow_ids_by_kb(db, workspace_id).get(str(kb_id), [])
+
+
 def _is_kb_linked_to_active_flow(db: Session, kb_id: uuid.UUID) -> bool:
     """Return True if the KB is referenced in any non-deleted call flow.
 
@@ -277,6 +307,7 @@ async def list_knowledge_bases(
         or 0
     )
 
+    call_flow_ids_by_kb = _linked_call_flow_ids_by_kb(db, workspace_id)
     items = []
     for kb in kbs:
         items.append(
@@ -287,6 +318,7 @@ async def list_knowledge_bases(
                 file_count=await _cached_file_count(db, kb.id),
                 total_chunk_count=await _cached_chunk_count(db, kb.id),
                 created_at=kb.created_at,
+                call_flow_ids=call_flow_ids_by_kb.get(str(kb.id), []),
             )
         )
     return create_success_response(
@@ -332,6 +364,7 @@ def get_knowledge_base(
         created_at=kb.created_at,
         updated_at=kb.updated_at,
         files=file_out,
+        call_flow_ids=_linked_call_flow_ids(db, kb_id, workspace_id),
     )
     return create_success_response(detail, "Knowledge base fetched")
 

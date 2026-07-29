@@ -282,7 +282,8 @@ async def general_websocket(
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
                 
-            except WebSocketDisconnect:
+            except WebSocketDisconnect as e:
+                logger.info(f"🔌 WebSocket receive loop ended: code={e.code} reason={e.reason!r}")
                 break
             except json.JSONDecodeError:
                 await websocket_manager.send_to_websocket(websocket, {
@@ -298,10 +299,10 @@ async def general_websocket(
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 })
     
-    except WebSocketDisconnect:
-        logger.info("🔌 WebSocket disconnected")
+    except WebSocketDisconnect as e:
+        logger.info(f"🔌 WebSocket disconnected: code={e.code} reason={e.reason!r}")
     except Exception as e:
-        logger.error(f"❌ WebSocket error: {e}")
+        logger.error(f"❌ WebSocket error: {type(e).__name__}: {e}")
     finally:
         websocket_manager.disconnect(websocket)
 

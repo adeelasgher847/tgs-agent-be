@@ -111,6 +111,9 @@ class LlmSettings(BaseModel):
     deepgram_stt_endpointing_ms_extended: int = Field(
         default=500, validation_alias="DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED"
     )
+    deepgram_stt_utterance_end_ms: int = Field(
+        default=1000, validation_alias="DEEPGRAM_STT_UTTERANCE_END_MS"
+    )
     # Google STT
     google_stt_language_code: str = Field(
         default="en-US", validation_alias="GOOGLE_STT_LANGUAGE_CODE"
@@ -468,6 +471,11 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_ENDPOINTING_MS: int = 350
     # After the agent asks for email, bidirectional stream may reopen STT once with this value.
     DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
+    # Word-timing-based fallback for end-of-turn detection (Deepgram's UtteranceEnd event),
+    # robust to phone-line noise that can prevent silence-based endpointing/speech_final
+    # from firing. Deepgram requires >=1000ms; only takes effect if speech_final never
+    # arrives for the current utterance -- never fires early, never double-finalizes.
+    DEEPGRAM_STT_UTTERANCE_END_MS: int = 1000
     # Telecom-oriented silence window for spelling/email (when mode is extended or email-recreate runs).
     # Ignored unless VOICE_STT_ENDPOINTING_MODE == "extended" or email flow bumps endpointing.
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
@@ -859,6 +867,7 @@ class Settings(BaseSettings):
             deepgram_stt_language=self.DEEPGRAM_STT_LANGUAGE,
             deepgram_stt_endpointing_ms=self.DEEPGRAM_STT_ENDPOINTING_MS,
             deepgram_stt_endpointing_ms_extended=self.DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED,
+            deepgram_stt_utterance_end_ms=self.DEEPGRAM_STT_UTTERANCE_END_MS,
             google_stt_language_code=self.GOOGLE_STT_LANGUAGE_CODE,
             google_stt_sample_rate=self.GOOGLE_STT_SAMPLE_RATE,
             google_stt_encoding=self.GOOGLE_STT_ENCODING,

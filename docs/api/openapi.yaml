@@ -13696,6 +13696,14 @@ components:
             $ref: '#/components/schemas/KbFileOut'
           type: array
           title: Files
+        call_flow_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Call Flow Ids
+          description: IDs of non-deleted call flows this KB is currently attached
+            to.
       type: object
       required:
       - id
@@ -13807,6 +13815,14 @@ components:
           type: string
           format: date-time
           title: Created At
+        call_flow_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Call Flow Ids
+          description: IDs of non-deleted call flows this KB is currently attached
+            to.
       type: object
       required:
       - id
