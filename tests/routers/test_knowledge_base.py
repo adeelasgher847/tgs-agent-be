@@ -123,6 +123,39 @@ def test_list_knowledge_bases(client, db, kb, workspace_id):
     assert str(kb.id) in ids
 
 
+def test_list_knowledge_bases_includes_call_flow_ids(client, db, kb, workspace_id):
+    from app.models.call_flow import CallFlow
+    from app.models.agent import Agent
+
+    agent = Agent(id=uuid.uuid4(), tenant_id=workspace_id, name="Test Agent", is_deleted=False)
+    db.add(agent)
+    db.commit()
+
+    flow = CallFlow(
+        id=uuid.uuid4(),
+        tenant_id=workspace_id,
+        agent_id=agent.id,
+        name="Test Flow",
+        direction="inbound",
+        is_deleted=False,
+        knowledge_base_ids=[str(kb.id)],
+    )
+    db.add(flow)
+    db.commit()
+
+    with _auth_ctx(workspace_id):
+        resp = client.get("/api/v1/kb/")
+
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["data"]["knowledge_bases"]
+    item = next(i for i in items if i["id"] == str(kb.id))
+    assert item["call_flow_ids"] == [str(flow.id)]
+
+    db.delete(flow)
+    db.delete(agent)
+    db.commit()
+
+
 # ── FILE UPLOAD → 202 ─────────────────────────────────────────────────────────
 
 def test_file_upload_returns_202(client, db, kb, workspace_id):
@@ -335,6 +368,89 @@ def test_get_knowledge_base_detail_not_found(client, db, workspace_id):
     with _auth_ctx(workspace_id):
         resp = client.get(f"/api/v1/kb/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+def test_get_knowledge_base_detail_includes_linked_call_flow_ids(client, db, kb, workspace_id):
+    from app.models.call_flow import CallFlow
+    from app.models.agent import Agent
+
+    agent = Agent(id=uuid.uuid4(), tenant_id=workspace_id, name="Test Agent", is_deleted=False)
+    db.add(agent)
+    db.commit()
+
+    flow = CallFlow(
+        id=uuid.uuid4(),
+        tenant_id=workspace_id,
+        agent_id=agent.id,
+        name="Test Flow",
+        direction="inbound",
+        is_deleted=False,
+        knowledge_base_ids=[str(kb.id)],
+    )
+    deleted_flow = CallFlow(
+        id=uuid.uuid4(),
+        tenant_id=workspace_id,
+        agent_id=agent.id,
+        name="Deleted Flow",
+        direction="inbound",
+        is_deleted=True,
+        knowledge_base_ids=[str(kb.id)],
+    )
+    db.add_all([flow, deleted_flow])
+    db.commit()
+
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/{kb.id}")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["call_flow_ids"] == [str(flow.id)]
+
+    db.delete(flow)
+    db.delete(deleted_flow)
+    db.delete(agent)
+    db.commit()
+
+
+def test_get_knowledge_base_detail_dedupes_flow_with_repeated_kb_id(client, db, kb, workspace_id):
+    """Nothing currently prevents knowledge_base_ids from holding the same id
+    twice within one flow -- the response must still list that flow once.
+    """
+    from app.models.call_flow import CallFlow
+    from app.models.agent import Agent
+
+    agent = Agent(id=uuid.uuid4(), tenant_id=workspace_id, name="Test Agent", is_deleted=False)
+    db.add(agent)
+    db.commit()
+
+    flow = CallFlow(
+        id=uuid.uuid4(),
+        tenant_id=workspace_id,
+        agent_id=agent.id,
+        name="Test Flow",
+        direction="inbound",
+        is_deleted=False,
+        knowledge_base_ids=[str(kb.id), str(kb.id)],
+    )
+    db.add(flow)
+    db.commit()
+
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/{kb.id}")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["call_flow_ids"] == [str(flow.id)]
+
+    db.delete(flow)
+    db.delete(agent)
+    db.commit()
+
+
+def test_get_knowledge_base_detail_call_flow_ids_empty_when_unlinked(client, db, kb, workspace_id):
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/{kb.id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["call_flow_ids"] == []
 
 
 # ── GET / LIST WITH COUNTS ────────────────────────────────────────────────────

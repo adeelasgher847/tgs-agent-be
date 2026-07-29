@@ -46,6 +46,10 @@ class KbListItem(BaseModel):
     file_count: int
     total_chunk_count: int
     created_at: datetime
+    call_flow_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        description="IDs of non-deleted call flows this KB is currently attached to.",
+    )
 
 
 class KbList(BaseModel):
@@ -75,6 +79,10 @@ class KbDetail(BaseModel):
     created_at: datetime
     updated_at: datetime | None = None
     files: List[KbFileOut]
+    call_flow_ids: List[uuid.UUID] = Field(
+        default_factory=list,
+        description="IDs of non-deleted call flows this KB is currently attached to.",
+    )
 
 
 # ── Call-flow KB linking ──────────────────────────────────────────────────────
