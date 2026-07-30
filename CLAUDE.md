@@ -12,6 +12,55 @@ Whenever you're given a prompt about this codebase — especially "update docume
 
 ---
 
+## Local specialized agents
+
+This repo has a set of local-only Claude Code subagents defined in
+`.claude/agents/` (gitignored — personal dev workflow, never pushed). Each
+one owns a specific domain of this codebase and reads
+`.claude/agents/_shared-conventions.md` plus this file before acting.
+
+**Whenever a task falls into one of these domains, automatically use the
+matching agent instead of handling it directly in the main context.** If a
+task spans multiple domains, invoke the agents in the sequence below rather
+than picking just one.
+
+| Agent | Domain |
+|---|---|
+| `db-migration` | `app/models/`, `alembic/versions/`, `app/db/base.py` — any schema change |
+| `backend-feature` | FastAPI routers/services/schemas/RBAC outside voice, CRM, and RAG |
+| `voice-pipeline` | `app/voice/*`, Twilio/LiveKit, STT/TTS, call dispatch, callback scheduler |
+| `crm-integration` | Any of the three CRM stacks (HubSpot/Salesforce/GHL, Trello inbound-sync, Monday/ClickUp/Jira/Trello task boards) |
+| `rag-knowledge-base` | KB ingestion, embeddings, Pinecone/pgvector, `rag_context.py` |
+| `bug-fix-investigator` | Entry point for defects/regressions, in place of the feature agents above |
+| `refactoring` | Pure code-quality improvements — never business logic changes |
+| `test-writer` | pytest coverage for whatever an agent above just changed |
+| `code-reviewer` | Strict pre-merge review — architecture, multi-tenancy, security, RBAC, async correctness, performance, API consistency, backward compatibility, test coverage |
+| `docs-vault-sync` | Updating the Obsidian vault (see "Knowledge base vault" above) — writes only to the vault, never to this repo |
+
+**Standard sequencing for a non-trivial change:**
+
+1. If a schema change is needed → `db-migration` first.
+2. Do the domain work → `backend-feature` / `voice-pipeline` /
+   `crm-integration` / `rag-knowledge-base` (pick by domain), or
+   `bug-fix-investigator` if the task is a defect rather than new work, or
+   `refactoring` if it's a pure quality pass with no behavior change.
+3. `test-writer` to cover what changed.
+4. `code-reviewer` before treating the change as done.
+5. `docs-vault-sync` if the change touched architecture, APIs, DB,
+   integrations, or business logic.
+
+Skip steps that don't apply (e.g. a pure refactor skips `db-migration`; a
+vault-only documentation request skips straight to `docs-vault-sync`).
+
+**Keeping these agents current:** if you notice an agent definition or
+`_shared-conventions.md` has drifted from the actual codebase or from this
+file (a referenced path/file no longer exists, a convention here changed, a
+new subsystem isn't covered by any agent), flag it and propose the specific
+edit — don't change the agent files silently, and don't leave the drift
+unmentioned either.
+
+---
+
 ## Project Overview
 
 Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that handle inbound/outbound phone calls via Twilio + LiveKit, transcribe speech (Deepgram / Google STT), generate responses via LLM (OpenAI / Gemini / Groq), and synthesise voice (ElevenLabs / Rime / Google TTS). Post-call data syncs to tenant-configured CRMs (see "CRM integrations" below — there are three independent CRM stacks).

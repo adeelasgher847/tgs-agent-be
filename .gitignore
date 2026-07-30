@@ -82,6 +82,9 @@ alembic/versions/*.pyc
 # VS Code
 .vscode/
 
+# Local Claude Code subagent configs (personal dev workflow, not shared)
+.claude/agents/
+
 # Mac
 .DS_Store
 
