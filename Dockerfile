@@ -71,4 +71,4 @@ COPY --chown=nonroot:nonroot . /app
 
 EXPOSE 8001
 
-ENTRYPOINT ["python3", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+ENTRYPOINT ["python3", "-m", "app.run"]

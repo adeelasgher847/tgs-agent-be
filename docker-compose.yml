@@ -3,9 +3,18 @@ services:
   web:
     build: .
     ports:
-      - "8001:8001"
+      # Bound to loopback only: nginx runs on this same EC2 host and reverse
+      # proxies here over localhost. Publishing as "8001:8001" would bind
+      # 0.0.0.0 and expose the app directly to the internet, bypassing nginx
+      # (and its TLS termination) entirely — this must stay loopback-only.
+      - "127.0.0.1:8001:8001"
     env_file:
       - .env
+    environment:
+      # Safe to trust all forwarded headers: the app is unreachable except
+      # via loopback (see the port binding above), and nginx on this host is
+      # the only thing able to connect. See app/run.py.
+      FORWARDED_ALLOW_IPS: "*"
     depends_on:
       - redis
     restart: always
