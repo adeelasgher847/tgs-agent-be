@@ -788,6 +788,76 @@ async def handle_call_events_webhook(
             
             return HTMLResponse("", media_type="application/xml")
         
+        elif call_status == "canceled":
+            # Call canceled via REST API before it was answered — same "never
+            # completed" business effects as "failed" (GAP 4 follow-up): fire the
+            # webhook, stop credit monitoring, and notify batch-call completion so
+            # a canceled outbound batch call doesn't get stuck as permanently "active".
+            logger.info(f"Call canceled - SID: {call_sid}")
+
+            # Fire call.failed webhook (no dedicated call.canceled event type)
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.failed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "reason": "canceled",
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.failed (canceled) webhook fire failed: %s", _wh_exc)
+
+            # Broadcast call canceled event (non-blocking - fire and forget)
+            if call_session:
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="failed",
+                        metadata={
+                            "call_sid": call_sid,
+                            "twilio_status": call_status,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    logger.debug(f"✅ Queued call canceled event for session {call_session.id}")
+
+                    asyncio.create_task(broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="canceled",
+                        final_data={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "duration": 0
+                        }
+                    ))
+                    logger.debug(f"✅ Queued call ended (canceled) event for session {call_session.id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to broadcast call canceled event: {e}")
+
+                # Stop credit monitoring when call is canceled
+                try:
+                    credit_service.stop_credit_monitoring(call_session.id)
+                    logger.debug(f"✅ Stopped credit monitoring for canceled call session {call_session.id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+
+                try:
+                    await notify_batch_call_ended(db, call_session.id, call_status)
+                except Exception as batch_exc:
+                    logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
+
+            return HTMLResponse("", media_type="application/xml")
+
         elif call_status in ("busy", "no-answer"):
             # Both busy and no-answer → internal "no_answer" (per ticket spec)
             logger.info(f"Call {call_status} (internal: no_answer) - SID: {call_sid}")

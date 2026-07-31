@@ -616,6 +616,213 @@ class TestCallStatusMapping:
         assert _TWILIO_TO_INTERNAL_STATUS["no-answer"] == "no_answer"
         assert _TWILIO_TO_INTERNAL_STATUS["busy"] == "no_answer"
 
+    def test_batch_ended_reason_mapping_includes_canceled(self):
+        """notify_batch_call_ended() silently no-ops on an unmapped ended_reason —
+        without this entry a canceled batch call would never leave 'active'."""
+        from app.services.batch_call_completion_service import _TWILIO_TO_ENDED_REASON
+
+        assert _TWILIO_TO_ENDED_REASON["canceled"] == "failed"
+        assert _TWILIO_TO_ENDED_REASON["failed"] == "failed"
+
+
+class TestQueuedStatusIsPreConnectionNoOp:
+    """
+    Confirms the reviewer's stated assumption: unlike "canceled", "queued" needs no
+    business-effect wiring. Credit monitoring only starts on first media packet
+    (app/voice/tts_stream_mixin.py, on call answer) and a batch record is marked
+    "active" at dispatch time (before any status webhook arrives) — so at "queued"
+    (before ringing) there is no batch/credit state open yet that needs closing.
+    """
+
+    def test_queued_does_not_stop_credit_monitoring_or_notify_batch(self, db):
+        from app.routers.voice import handle_call_events_webhook
+
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user_id = _make_user(db)
+        cs = _make_call_session(db, workspace_id, agent_id, user_id)
+
+        request = _FakeRequest(
+            {
+                "CallStatus": "queued",
+                "CallSid": cs.twilio_call_sid,
+                "From": "+15550001111",
+                "To": "+15550002222",
+                "Direction": "outbound-api",
+            }
+        )
+
+        with (
+            patch("app.routers.voice.credit_service.stop_credit_monitoring") as mock_stop,
+            patch(
+                "app.routers.voice.notify_batch_call_ended", new=AsyncMock()
+            ) as mock_notify,
+        ):
+            resp = asyncio.run(
+                handle_call_events_webhook(
+                    request=request,
+                    background_tasks=BackgroundTasks(),
+                    agentId=str(agent_id),
+                    userId=None,
+                    callSessionId=str(cs.id),
+                    timeout=None,
+                    body="",
+                    db=db,
+                )
+            )
+
+        assert resp.status_code == 200
+        mock_stop.assert_not_called()
+        mock_notify.assert_not_awaited()
+
+
+class TestCanceledStatusSideEffects:
+    """
+    Blocker 2 follow-up: `handle_call_events_webhook`'s business-effect dispatch
+    branches on the literal Twilio CallStatus string, not the mapped internal
+    status, so "canceled" needs its own elif mirroring "failed" — otherwise a
+    canceled outbound (esp. batch) call is left stuck without ever being marked
+    ended (no webhook fire, no credit-monitoring stop, no batch completion).
+    """
+
+    def test_canceled_stops_credit_monitoring_and_notifies_batch(self, db):
+        from app.routers.voice import handle_call_events_webhook
+
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user_id = _make_user(db)
+        cs = _make_call_session(db, workspace_id, agent_id, user_id)
+
+        request = _FakeRequest(
+            {
+                "CallStatus": "canceled",
+                "CallSid": cs.twilio_call_sid,
+                "From": "+15550001111",
+                "To": "+15550002222",
+                "Direction": "outbound-api",
+            }
+        )
+
+        with (
+            patch("app.routers.voice.credit_service.stop_credit_monitoring") as mock_stop,
+            patch(
+                "app.routers.voice.notify_batch_call_ended", new=AsyncMock()
+            ) as mock_notify,
+            patch("app.services.webhook_service.fire_webhooks", new=AsyncMock()),
+        ):
+            resp = asyncio.run(
+                handle_call_events_webhook(
+                    request=request,
+                    background_tasks=BackgroundTasks(),
+                    agentId=str(agent_id),
+                    userId=None,
+                    callSessionId=str(cs.id),
+                    timeout=None,
+                    body="",
+                    db=db,
+                )
+            )
+
+        assert resp.status_code == 200
+        mock_stop.assert_called_once_with(cs.id)
+        mock_notify.assert_awaited_once()
+        assert mock_notify.call_args.args[1] == cs.id
+        assert mock_notify.call_args.args[2] == "canceled"
+
+    def test_canceled_fires_call_failed_webhook(self, db):
+        from app.routers.voice import handle_call_events_webhook
+
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user_id = _make_user(db)
+        cs = _make_call_session(db, workspace_id, agent_id, user_id)
+
+        request = _FakeRequest(
+            {
+                "CallStatus": "canceled",
+                "CallSid": cs.twilio_call_sid,
+                "From": "+15550001111",
+                "To": "+15550002222",
+                "Direction": "outbound-api",
+            }
+        )
+
+        background_tasks = BackgroundTasks()
+
+        with (
+            patch("app.routers.voice.credit_service.stop_credit_monitoring"),
+            patch("app.routers.voice.notify_batch_call_ended", new=AsyncMock()),
+        ):
+            asyncio.run(
+                handle_call_events_webhook(
+                    request=request,
+                    background_tasks=background_tasks,
+                    agentId=str(agent_id),
+                    userId=None,
+                    callSessionId=str(cs.id),
+                    timeout=None,
+                    body="",
+                    db=db,
+                )
+            )
+
+        # A call.failed webhook (reason=canceled) was scheduled as a background task.
+        assert len(background_tasks.tasks) == 1
+        scheduled = background_tasks.tasks[0]
+        assert scheduled.args[1] == "call.failed"
+        assert scheduled.args[2]["reason"] == "canceled"
+
+    def test_canceled_applies_internal_status_mapping_in_memory(self, db):
+        """
+        The status-update block (separate from the business-effect elif chain)
+        must apply the canceled -> "failed" mapping from _TWILIO_TO_INTERNAL_STATUS
+        to the in-memory call_session object.
+
+        NOTE: this assertion intentionally does NOT go through db.refresh(). This
+        webhook path only persists call_session.status via
+        call_session_service.update_call_session_status(), which is exclusively
+        called from the "completed" branch — "failed"/"busy"/"no-answer"/"canceled"
+        all set call_session.status in memory without an explicit db.commit(), so
+        the change does not survive a refresh. That's a pre-existing gap shared by
+        "failed"/"busy"/"no-answer" (reproduced independently, not introduced by
+        this change) — out of scope here; flagged separately in the fix report.
+        """
+        from app.routers.voice import handle_call_events_webhook
+
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user_id = _make_user(db)
+        cs = _make_call_session(db, workspace_id, agent_id, user_id)
+
+        request = _FakeRequest(
+            {
+                "CallStatus": "canceled",
+                "CallSid": cs.twilio_call_sid,
+                "From": "+15550001111",
+                "To": "+15550002222",
+                "Direction": "outbound-api",
+            }
+        )
+
+        with (
+            patch("app.routers.voice.credit_service.stop_credit_monitoring"),
+            patch("app.routers.voice.notify_batch_call_ended", new=AsyncMock()),
+        ):
+            asyncio.run(
+                handle_call_events_webhook(
+                    request=request,
+                    background_tasks=BackgroundTasks(),
+                    agentId=str(agent_id),
+                    userId=None,
+                    callSessionId=str(cs.id),
+                    timeout=None,
+                    body="",
+                    db=db,
+                )
+            )
+
+        assert cs.status == "failed"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Retry/backoff for transient Twilio call-creation failures
@@ -623,12 +830,27 @@ class TestCallStatusMapping:
 
 
 class TestTwilioCallRetryBackoff:
-    def test_is_transient_twilio_error_true_for_429_and_5xx(self):
+    """
+    `calls.create` is non-idempotent and side-effecting (it dials the customer) and
+    Twilio has no idempotency-key mechanism for it. Only 429 is safe to retry —
+    Twilio guarantees a 429 means the call was never queued/dialed. A 5xx is
+    ambiguous (may have already dialed before erroring) and must NOT be retried,
+    to avoid double-dialing a customer with no way to detect/track the duplicate
+    (only one call_session.twilio_call_sid is ever stored).
+    """
+
+    def test_is_transient_twilio_error_true_only_for_429(self):
         from app.services.voice_call_service import _is_transient_twilio_error
 
         assert _is_transient_twilio_error(SimpleNamespace(status=429)) is True
-        assert _is_transient_twilio_error(SimpleNamespace(status=500)) is True
-        assert _is_transient_twilio_error(SimpleNamespace(status=503)) is True
+
+    def test_is_transient_twilio_error_false_for_5xx(self):
+        """5xx must NOT be retried — ambiguous whether Twilio already dialed."""
+        from app.services.voice_call_service import _is_transient_twilio_error
+
+        assert _is_transient_twilio_error(SimpleNamespace(status=500)) is False
+        assert _is_transient_twilio_error(SimpleNamespace(status=502)) is False
+        assert _is_transient_twilio_error(SimpleNamespace(status=503)) is False
 
     def test_is_transient_twilio_error_false_for_permanent_4xx(self):
         from app.services.voice_call_service import _is_transient_twilio_error
@@ -638,7 +860,7 @@ class TestTwilioCallRetryBackoff:
         assert _is_transient_twilio_error(SimpleNamespace(status=401)) is False
         assert _is_transient_twilio_error(SimpleNamespace(status=404)) is False
 
-    def test_retries_transient_error_then_succeeds(self):
+    def test_retries_429_then_succeeds(self):
         from twilio.base.exceptions import TwilioRestException
 
         from app.services.voice_call_service import _create_twilio_call_with_retry
@@ -646,7 +868,7 @@ class TestTwilioCallRetryBackoff:
         call_fn = MagicMock(
             side_effect=[
                 TwilioRestException(status=429, uri="/Calls", msg="rate limited"),
-                TwilioRestException(status=503, uri="/Calls", msg="unavailable"),
+                TwilioRestException(status=429, uri="/Calls", msg="rate limited"),
                 SimpleNamespace(sid="CAsuccess"),
             ]
         )
@@ -657,7 +879,7 @@ class TestTwilioCallRetryBackoff:
         assert result.sid == "CAsuccess"
         assert call_fn.call_count == 3
 
-    def test_does_not_retry_permanent_error(self):
+    def test_does_not_retry_permanent_4xx_error(self):
         from twilio.base.exceptions import TwilioRestException
 
         from app.services.voice_call_service import _create_twilio_call_with_retry
@@ -675,7 +897,26 @@ class TestTwilioCallRetryBackoff:
         assert call_fn.call_count == 1
         mock_sleep.assert_not_called()
 
-    def test_exhausts_retries_and_raises(self):
+    def test_does_not_retry_5xx_error(self):
+        """Regression guard for the double-dial risk: a 5xx must fail on the
+        first attempt, never retried, since the call may have already been
+        dialed server-side before Twilio returned the error."""
+        from twilio.base.exceptions import TwilioRestException
+
+        from app.services.voice_call_service import _create_twilio_call_with_retry
+
+        call_fn = MagicMock(
+            side_effect=TwilioRestException(status=500, uri="/Calls", msg="server error")
+        )
+
+        with patch("app.services.voice_call_service.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            with pytest.raises(TwilioRestException):
+                asyncio.run(_create_twilio_call_with_retry(call_fn, to_number="+1"))
+
+        assert call_fn.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_exhausts_429_retries_and_raises(self):
         from twilio.base.exceptions import TwilioRestException
 
         from app.services.voice_call_service import (
@@ -684,7 +925,7 @@ class TestTwilioCallRetryBackoff:
         )
 
         call_fn = MagicMock(
-            side_effect=TwilioRestException(status=500, uri="/Calls", msg="server error")
+            side_effect=TwilioRestException(status=429, uri="/Calls", msg="rate limited")
         )
 
         with patch("app.services.voice_call_service.asyncio.sleep", new=AsyncMock()):

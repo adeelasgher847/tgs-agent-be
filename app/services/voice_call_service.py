@@ -34,22 +34,29 @@ from app.routers.general_websocket import broadcast_call_status_update
 # Outbound sessions occupying a workspace concurrent-call slot (must match DB values).
 _ACTIVE_OUTBOUND_STATUSES = ("initiated", "ringing", "connected", "in-progress")
 
-# Retry/backoff for transient Twilio call-creation failures (rate limiting / Twilio-side
-# outages) — never retried for permanent 4xx errors (invalid number, unverified caller ID,
-# etc: Twilio error codes like 21211, 21214). Mirrors the pattern used for CRM outbound
-# HTTP calls elsewhere in this codebase (see ghl_service.py / hubspot_service.py
-# _request_with_backoff).
+# Retry/backoff for transient Twilio call-creation failures — deliberately narrow:
+# `calls.create` is a non-idempotent, side-effecting operation (it actually dials the
+# customer) and Twilio provides no idempotency-key mechanism for it. Only HTTP 429 is
+# retried, because Twilio guarantees a 429 means the request was rejected before being
+# queued/dialed. A 5xx is ambiguous — it can mean the call was already dialed server-side
+# before the error was returned (e.g. a gateway timeout) — so retrying on 5xx risks a real
+# duplicate outbound call to the customer that would go untracked (only one
+# call_session.twilio_call_sid is ever stored). 5xx / permanent 4xx errors (invalid number,
+# unverified caller ID — Twilio error codes like 21211, 21214) all fail immediately.
+# Mirrors the retry/backoff *pattern* used for CRM outbound HTTP calls elsewhere in this
+# codebase (see ghl_service.py / hubspot_service.py _request_with_backoff), which retry
+# only on 429 for the same "don't double-fire a side-effecting request" reasoning.
 _TWILIO_CALL_MAX_RETRIES = 2
 _TWILIO_CALL_BASE_BACKOFF_SECONDS = 0.5
 
 
 def _is_transient_twilio_error(exc: TwilioRestException) -> bool:
-    """True for HTTP 429 (rate limited) or 5xx (Twilio-side) errors — retryable.
-    False for everything else, including 4xx errors like invalid/unverified numbers."""
+    """True only for HTTP 429 (rate limited — Twilio guarantees the call was never
+    dialed). False for everything else, including 5xx: `calls.create` is
+    non-idempotent and side-effecting, so an ambiguous 5xx must not be retried
+    (risk of dialing the customer twice)."""
     status_code = getattr(exc, "status", None)
-    if status_code is None:
-        return False
-    return status_code == 429 or 500 <= status_code < 600
+    return status_code == 429
 
 
 async def _create_twilio_call_with_retry(call_fn, **kwargs):
