@@ -143,6 +143,10 @@ their pre-existing `require_tenant` / legacy-alias gating, listed in the
 | PUT | `/api/v1/call-flows/{id}/settings` (public_access toggle) | `admin` | API-key principals rejected (pre-existing) |
 | DELETE | `/api/v1/call-flows/{id}` | `config_only` | also accepts API-key principals |
 | PUT | `/api/v1/call-flows/{id}/knowledge-bases` | `admin` | API-key principals rejected (pre-existing) |
+| POST | `/api/v1/call-flows/{flow_id}/demo-links` | `config_only` | also accepts API-key principals; creates a shareable, origin-unrestricted demo link |
+| GET | `/api/v1/call-flows/{flow_id}/demo-links` | `config_only` | also accepts API-key principals; token is a bearer-style credential, so gated above `read_only` |
+| PATCH | `/api/v1/call-flows/demo-links/{link_id}` | `config_only` | also accepts API-key principals |
+| DELETE | `/api/v1/call-flows/demo-links/{link_id}` | `config_only` | also accepts API-key principals; hard delete, cascades to visitor usage rows |
 
 ### Knowledge base — `app/routers/knowledge_base.py`
 

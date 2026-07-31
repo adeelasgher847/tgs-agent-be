@@ -18,8 +18,15 @@ from app.models.call_flow import CallFlow
 from app.models.knowledge_base_document import KnowledgeBase
 from app.models.user import User
 from app.schemas.call_flow import CallFlowCreate, CallFlowSettingsUpdate, CallFlowUpdate
+from app.schemas.call_flow_demo_link import (
+    CallFlowDemoLinkCreate,
+    CallFlowDemoLinkListResponse,
+    CallFlowDemoLinkOut,
+    CallFlowDemoLinkUpdate,
+)
 from app.schemas.knowledge_base import FlowKbUpdate
 from app.services.audit_service import log_audit_event
+from app.services.call_flow_demo_link_service import call_flow_demo_link_service
 from app.services.call_flow_service import call_flow_service
 from app.utils.response import create_success_response
 
@@ -262,3 +269,105 @@ def update_flow_knowledge_bases(
         {"flow_id": str(flow_id), "kb_ids": flow.knowledge_base_ids},
         "Knowledge bases updated",
     )
+
+
+# ── Demo links ────────────────────────────────────────────────────────────
+# Tenant-facing CRUD only. Public/anonymous consumption of a demo link
+# (token lookup + minute-usage accounting) lives on app/routers/sdk.py.
+
+
+def _demo_link_to_out(link) -> CallFlowDemoLinkOut:
+    out = CallFlowDemoLinkOut.model_validate(link)
+    out.share_url = call_flow_demo_link_service.build_share_url(link.token)
+    return out
+
+
+@router.post(
+    "/{flow_id}/demo-links",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CallFlowDemoLinkOut,
+)
+def create_demo_link(
+    flow_id: uuid.UUID,
+    body: CallFlowDemoLinkCreate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
+    db: Session = Depends(get_db),
+):
+    tid = _workspace_id(principal)
+    created_by_user_id = principal.id if isinstance(principal, User) else None
+    link = call_flow_demo_link_service.create_demo_link(
+        db, tid, flow_id, body, created_by_user_id
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.demo_link_created",
+        resource_type="call_flow_demo_link",
+        resource_id=link.id,
+        new_value=body.model_dump(exclude_none=True),
+        actor_user_id=created_by_user_id,
+    )
+    return _demo_link_to_out(link)
+
+
+@router.get("/{flow_id}/demo-links", response_model=CallFlowDemoLinkListResponse)
+def list_demo_links(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
+    db: Session = Depends(get_db),
+):
+    tid = _workspace_id(principal)
+    links = call_flow_demo_link_service.list_demo_links(db, tid, flow_id)
+    return CallFlowDemoLinkListResponse(
+        data=[_demo_link_to_out(link) for link in links]
+    )
+
+
+@router.patch("/demo-links/{link_id}", response_model=CallFlowDemoLinkOut)
+def update_demo_link(
+    link_id: uuid.UUID,
+    body: CallFlowDemoLinkUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
+    db: Session = Depends(get_db),
+):
+    tid = _workspace_id(principal)
+    link = call_flow_demo_link_service.update_demo_link(db, tid, link_id, body)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.demo_link_updated",
+        resource_type="call_flow_demo_link",
+        resource_id=link_id,
+        new_value=body.model_dump(exclude_unset=True),
+        actor_user_id=principal.id if isinstance(principal, User) else None,
+    )
+    return _demo_link_to_out(link)
+
+
+@router.delete(
+    "/demo-links/{link_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+def delete_demo_link(
+    link_id: uuid.UUID,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
+    db: Session = Depends(get_db),
+):
+    tid = _workspace_id(principal)
+    call_flow_demo_link_service.delete_demo_link(db, tid, link_id)
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tid,
+        action="call_flow.demo_link_deleted",
+        resource_type="call_flow_demo_link",
+        resource_id=link_id,
+        actor_user_id=principal.id if isinstance(principal, User) else None,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

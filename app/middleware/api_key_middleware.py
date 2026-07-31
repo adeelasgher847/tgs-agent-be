@@ -67,6 +67,9 @@ _SKIP_PREFIXES = (
     "/api/v1/webhooks/twilio/",
     # Public Web SDK endpoints — security enforced via flow.public_access +
     # allowed_domains Origin check inside the handler, not API credentials.
+    # This prefix also covers /api/v1/sdk/demo/{token}/call-token (share-demo-link
+    # flow), whose handler enforces token validity/expiry/budget instead of an
+    # Origin allowlist — see app/routers/sdk.py::demo_call_token.
     "/api/v1/sdk/",
     "/api/v1/integrations/hubspot/callback",
     "/health",

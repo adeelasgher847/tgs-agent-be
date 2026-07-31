@@ -10,6 +10,7 @@ from app.schemas.call_log import CallLogCreate
 from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 import asyncio
 from app.core.logger import logger
 from app.services.inbound_call_crm_sync_service import (
@@ -141,6 +142,80 @@ class CallSessionService:
         
         return call_session
     
+    def _record_demo_link_usage(self, db: Session, call_session: CallSession) -> None:
+        """
+        Credit a finished call's duration against its originating demo link's
+        total_minutes_used and the visitor's per-visitor minutes_used, if the
+        session was created via the public demo-link flow.
+
+        No-op for every other call session (call_metadata missing the
+        "demo_link" key, which is the overwhelming majority of calls).
+
+        KNOWN LIMITATION (accepted, not missing logic — do not "fix" by
+        adding more accounting here): this method is only ever reached via
+        this class's own update_call_session_status(), and nothing in the
+        codebase currently calls that for a call_type="web" / demo-link
+        CallSession — there is no LiveKit room_finished webhook receiver and
+        no public "call ended" beacon a browser client can hit. Twilio calls
+        reach update_call_session_status() via call_control_mixin.py /
+        voice_webhook_service.py; the browser-only demo-link path
+        (app/routers/sdk.py::demo_call_token) has no equivalent trigger yet.
+        This is a pre-existing gap shared with the public-call-token widget
+        flow, deliberately scoped out of the demo-link feature (see
+        01 Architecture/Voice Pipeline.md in the docs vault). Practical
+        effect: CallFlowDemoLink.total_minutes_used and
+        CallFlowDemoLinkVisitorUsage.minutes_used are checked at
+        token-issuance time but do not currently decrement from real call
+        activity in production. Closing this requires a call-end signal
+        (e.g. a public beacon endpoint or a LiveKit webhook receiver) that
+        affects both flows together — track as separate follow-up work.
+        """
+        metadata = call_session.call_metadata or {}
+        demo_meta = metadata.get("demo_link") if isinstance(metadata, dict) else None
+        if not isinstance(demo_meta, dict):
+            return
+
+        demo_link_id = demo_meta.get("demo_link_id")
+        visitor_id = demo_meta.get("visitor_id")
+        if not demo_link_id or not visitor_id or not call_session.duration:
+            return
+
+        from app.models.call_flow_demo_link import CallFlowDemoLink
+        from app.models.call_flow_demo_link_visitor_usage import CallFlowDemoLinkVisitorUsage
+
+        try:
+            demo_link_uuid = uuid.UUID(str(demo_link_id))
+        except ValueError:
+            logger.warning(
+                "Demo link usage accounting: malformed demo_link_id=%r session=%s",
+                demo_link_id, call_session.id,
+            )
+            return
+
+        minutes = Decimal(call_session.duration) / Decimal(60)
+
+        demo_link = db.query(CallFlowDemoLink).filter(CallFlowDemoLink.id == demo_link_uuid).first()
+        if demo_link is None:
+            return
+        demo_link.total_minutes_used = (demo_link.total_minutes_used or Decimal("0")) + minutes
+
+        visitor_usage = (
+            db.query(CallFlowDemoLinkVisitorUsage)
+            .filter(
+                CallFlowDemoLinkVisitorUsage.demo_link_id == demo_link_uuid,
+                CallFlowDemoLinkVisitorUsage.visitor_id == str(visitor_id),
+            )
+            .first()
+        )
+        if visitor_usage is not None:
+            visitor_usage.minutes_used = (visitor_usage.minutes_used or Decimal("0")) + minutes
+
+        db.commit()
+        logger.info(
+            "Demo link usage recorded demo_link_id=%s visitor_id=%s session=%s minutes=%s",
+            demo_link_id, visitor_id, call_session.id, minutes,
+        )
+
     def _create_call_log_for_session(self, db: Session, call_session: CallSession) -> CallLog:
         """Create a call log entry for a call session"""
         # Generate a shortened call ID for display (like in Vapi dashboard)
@@ -258,13 +333,28 @@ class CallSessionService:
                     if call_session.start_time:
                         duration = (call_session.end_time - call_session.start_time).total_seconds()
                         call_session.duration = int(duration)
-                
+
                 db.commit()
                 db.refresh(call_session)
 
                 self._update_call_log_for_session(
                     db, call_session, ended_reason, success_evaluation, cost, transferred
                 )
+
+                # Demo link minute accounting: a call session created via
+                # POST /api/v1/sdk/demo/{token}/call-token stashes
+                # {"demo_link_id", "visitor_id"} under call_metadata["demo_link"]
+                # (see app/routers/sdk.py::demo_call_token). On terminal status
+                # with a computed duration, credit that duration against the
+                # link's total budget and the visitor's per-user budget.
+                if status in ("completed", "failed", "busy", "no_answer") and call_session.duration:
+                    try:
+                        self._record_demo_link_usage(db, call_session)
+                    except Exception as demo_exc:  # pragma: no cover
+                        logger.warning(
+                            "Demo link usage accounting failed (non-critical) session=%s: %s",
+                            session_id, demo_exc,
+                        )
 
                 if (
                     (call_session.call_type or "").lower() == "inbound"

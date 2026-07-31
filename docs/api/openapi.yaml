@@ -1617,6 +1617,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/call-flows/{flow_id}/demo-links:
+    post:
+      tags:
+      - Call Flows
+      summary: Create Demo Link
+      operationId: create_demo_link_api_v1_call_flows__flow_id__demo_links_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallFlowDemoLinkCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallFlowDemoLinkOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Call Flows
+      summary: List Demo Links
+      operationId: list_demo_links_api_v1_call_flows__flow_id__demo_links_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallFlowDemoLinkListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/call-flows/demo-links/{link_id}:
+    patch:
+      tags:
+      - Call Flows
+      summary: Update Demo Link
+      operationId: update_demo_link_api_v1_call_flows_demo_links__link_id__patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: link_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Link Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CallFlowDemoLinkUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CallFlowDemoLinkOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Call Flows
+      summary: Delete Demo Link
+      operationId: delete_demo_link_api_v1_call_flows_demo_links__link_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: link_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Link Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/folders/:
     get:
       tags:
@@ -4666,6 +4788,37 @@ paths:
             schema:
               $ref: '#/components/schemas/PublicCallTokenRequest'
         required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/sdk/demo/{token}/call-token:
+    post:
+      tags:
+      - Web SDK — Public
+      summary: Demo Call Token
+      operationId: demo_call_token_api_v1_sdk_demo__token__call_token_post
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DemoCallTokenRequest'
       responses:
         '200':
           description: Successful Response
@@ -11587,6 +11740,141 @@ components:
       - direction
       - agentId
       title: CallFlowCreate
+    CallFlowDemoLinkCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        perUserLimitMinutes:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Peruserlimitminutes
+        totalBudgetMinutes:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Totalbudgetminutes
+      additionalProperties: false
+      type: object
+      title: CallFlowDemoLinkCreate
+      description: Request body for ``POST /api/v1/call-flows/{flow_id}/demo-links``.
+    CallFlowDemoLinkListResponse:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/CallFlowDemoLinkOut'
+          type: array
+          title: Data
+      type: object
+      required:
+      - data
+      title: CallFlowDemoLinkListResponse
+    CallFlowDemoLinkOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        callFlowId:
+          type: string
+          format: uuid
+          title: Callflowid
+        name:
+          type: string
+          nullable: true
+        token:
+          type: string
+          title: Token
+        shareUrl:
+          type: string
+          nullable: true
+        isActive:
+          type: boolean
+          title: Isactive
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        perUserLimitMinutes:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
+        totalBudgetMinutes:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
+        totalMinutesUsed:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Totalminutesused
+        createdByUserId:
+          type: string
+          format: uuid
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - id
+      - callFlowId
+      - token
+      - isActive
+      - totalMinutesUsed
+      - createdAt
+      title: CallFlowDemoLinkOut
+      description: Response shape for a demo link, including the derived shareable
+        URL.
+    CallFlowDemoLinkUpdate:
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        perUserLimitMinutes:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Peruserlimitminutes
+        totalBudgetMinutes:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Totalbudgetminutes
+        isActive:
+          type: boolean
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: CallFlowDemoLinkUpdate
+      description: Request body for ``PATCH /api/v1/call-flows/demo-links/{link_id}``.
     CallFlowSettingsUpdate:
       properties:
         public_access:
@@ -12668,6 +12956,18 @@ components:
       - board_id
       - board_url
       title: DeleteBoardItemsResponse
+    DemoCallTokenRequest:
+      properties:
+        visitor_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Visitor Id
+      additionalProperties: false
+      type: object
+      required:
+      - visitor_id
+      title: DemoCallTokenRequest
     DirectionEnum:
       type: string
       enum:
