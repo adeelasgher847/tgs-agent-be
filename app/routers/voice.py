@@ -297,6 +297,33 @@ _TWILIO_TO_INTERNAL_STATUS: dict[str, str] = {
 }
 
 
+def _commit_terminal_call_session_status(db: Session, call_session: CallSession | None) -> None:
+    """
+    Persist the call_session.status mutation applied earlier in
+    handle_call_events_webhook (`call_session.status = internal_status`).
+
+    Only the "completed" branch persists status today, via
+    call_session_service.update_call_session_status() (which commits). The
+    "failed" / "busy" / "no-answer" / "canceled" branches previously only
+    mutated the in-memory ORM object with no commit anywhere in the request —
+    the transition was silently lost once the request's DB session closed
+    without a commit (SessionLocal is autocommit=False/autoflush=False).
+
+    Deliberately NOT a swap to update_call_session_status(): that method has
+    additional side effects (end_time/duration, call log update, inbound CRM
+    sync scheduling for completed/failed/busy) that aren't a byproduct-free fit
+    here and would risk double-firing behavior already handled explicitly by
+    this webhook's elif chain (webhook fire, credit-monitoring stop, batch
+    completion notify). This is intentionally just the missing commit.
+    """
+    if call_session is None:
+        return
+    try:
+        db.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to persist call session status update (non-critical): {e}")
+
+
 @router.post("/call-events", response_class=HTMLResponse, include_in_schema=False)
 @router.post("/webhook/call-events", response_class=HTMLResponse, include_in_schema=False)
 async def handle_call_events_webhook(
@@ -733,6 +760,10 @@ async def handle_call_events_webhook(
             # Call failed - handle error
             logger.error(f"Call failed - SID: {call_sid}")
 
+            # Persist the "failed" status set earlier in this function (Blocker B
+            # follow-up: previously never committed for this branch).
+            _commit_terminal_call_session_status(db, call_session)
+
             # Fire call.failed webhook
             if call_session:
                 try:
@@ -803,6 +834,10 @@ async def handle_call_events_webhook(
             # a canceled outbound batch call doesn't get stuck as permanently "active".
             logger.info(f"Call canceled - SID: {call_sid}")
 
+            # Persist the "failed" status set earlier in this function (Blocker B
+            # follow-up: previously never committed for this branch).
+            _commit_terminal_call_session_status(db, call_session)
+
             # Fire call.failed webhook (no dedicated call.canceled event type)
             if call_session:
                 try:
@@ -869,6 +904,10 @@ async def handle_call_events_webhook(
         elif call_status in ("busy", "no-answer"):
             # Both busy and no-answer → internal "no_answer" (per ticket spec)
             logger.info(f"Call {call_status} (internal: no_answer) - SID: {call_sid}")
+
+            # Persist the "no_answer" status set earlier in this function (Blocker B
+            # follow-up: previously never committed for this branch).
+            _commit_terminal_call_session_status(db, call_session)
 
             # Fire call.failed webhook for no_answer/busy
             if call_session:

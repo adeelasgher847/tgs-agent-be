@@ -813,20 +813,13 @@ class TestCanceledStatusSideEffects:
         assert scheduled.args[1] == "call.failed"
         assert scheduled.args[2]["reason"] == "canceled"
 
-    def test_canceled_applies_internal_status_mapping_in_memory(self, db):
+    def test_canceled_status_is_persisted_via_fresh_db_read(self, db):
         """
-        The status-update block (separate from the business-effect elif chain)
-        must apply the canceled -> "failed" mapping from _TWILIO_TO_INTERNAL_STATUS
-        to the in-memory call_session object.
-
-        NOTE: this assertion intentionally does NOT go through db.refresh(). This
-        webhook path only persists call_session.status via
-        call_session_service.update_call_session_status(), which is exclusively
-        called from the "completed" branch — "failed"/"busy"/"no-answer"/"canceled"
-        all set call_session.status in memory without an explicit db.commit(), so
-        the change does not survive a refresh. That's a pre-existing gap shared by
-        "failed"/"busy"/"no-answer" (reproduced independently, not introduced by
-        this change) — out of scope here; flagged separately in the fix report.
+        Blocker B fix: the "canceled" -> "failed" status mutation must actually be
+        committed, not just set on the in-memory ORM object. Verified via a fresh
+        query on a separate Session bound to the same underlying connection (not
+        db.refresh() on the same session/object, which would trivially pass even
+        without a commit as long as the object is still attached and unexpired).
         """
         from app.routers.voice import handle_call_events_webhook
 
@@ -834,6 +827,7 @@ class TestCanceledStatusSideEffects:
         agent_id = _make_agent(db, workspace_id)
         user_id = _make_user(db)
         cs = _make_call_session(db, workspace_id, agent_id, user_id)
+        cs_id = cs.id
 
         request = _FakeRequest(
             {
@@ -862,7 +856,85 @@ class TestCanceledStatusSideEffects:
                 )
             )
 
-        assert cs.status == "failed"
+        fresh_session = _Session()
+        try:
+            from app.models.call_session import CallSession
+
+            reloaded = fresh_session.get(CallSession, cs_id)
+            assert reloaded.status == "failed"
+        finally:
+            fresh_session.close()
+
+
+class TestTerminalStatusPersistence:
+    """
+    Blocker B regression coverage: "failed" / "busy" / "no-answer" previously had
+    the exact same missing-commit bug as "canceled" (they all only mutated the
+    in-memory call_session.status with no db.commit() anywhere in the request).
+    Each is verified via a fresh Session/query, not db.refresh() on the same
+    session (which doesn't prove persistence).
+    """
+
+    def _run_and_reload(self, db, cs, call_status: str):
+        from app.models.call_session import CallSession
+        from app.routers.voice import handle_call_events_webhook
+
+        request = _FakeRequest(
+            {
+                "CallStatus": call_status,
+                "CallSid": cs.twilio_call_sid,
+                "From": "+15550001111",
+                "To": "+15550002222",
+                "Direction": "outbound-api",
+            }
+        )
+
+        with (
+            patch("app.routers.voice.credit_service.stop_credit_monitoring"),
+            patch("app.routers.voice.notify_batch_call_ended", new=AsyncMock()),
+        ):
+            asyncio.run(
+                handle_call_events_webhook(
+                    request=request,
+                    background_tasks=BackgroundTasks(),
+                    agentId=str(cs.agent_id),
+                    userId=None,
+                    callSessionId=str(cs.id),
+                    timeout=None,
+                    body="",
+                    db=db,
+                )
+            )
+
+        fresh_session = _Session()
+        try:
+            return fresh_session.get(CallSession, cs.id).status
+        finally:
+            fresh_session.close()
+
+    def test_failed_status_is_persisted(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user_id = _make_user(db)
+        cs = _make_call_session(db, workspace_id, agent_id, user_id)
+
+        assert self._run_and_reload(db, cs, "failed") == "failed"
+
+    def test_busy_status_is_persisted_as_no_answer(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user_id = _make_user(db)
+        cs = _make_call_session(db, workspace_id, agent_id, user_id)
+
+        assert self._run_and_reload(db, cs, "busy") == "no_answer"
+
+    def test_no_answer_status_is_persisted(self, db):
+        workspace_id = _make_tenant(db)
+        agent_id = _make_agent(db, workspace_id)
+        user_id = _make_user(db)
+        cs = _make_call_session(db, workspace_id, agent_id, user_id)
+
+        assert self._run_and_reload(db, cs, "no-answer") == "no_answer"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
