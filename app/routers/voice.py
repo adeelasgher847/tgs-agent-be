@@ -23,7 +23,6 @@ from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import (
     validate_twilio_signature,
     validate_twilio_signature_with_token,
-    validate_webrtc_auth,
     get_request_body,
 )
 from app.utils.response import create_success_response
@@ -406,9 +405,21 @@ async def handle_call_events_webhook(
                     except Exception:
                         agent = None
         
-        # Validate request (Twilio signature or WebRTC auth)
+        # Validate request — Twilio signature only.
+        #
+        # This endpoint is exclusively used as a Twilio `status_callback` URL (see
+        # phone_number_service.py / voice_call_service.py / call_control_mixin.py —
+        # every caller that builds this URL does so for a Twilio `calls.create` /
+        # `<Dial>` status_callback). There is no browser/WebRTC-originated caller of
+        # this endpoint anywhere in the codebase: the Web SDK calling feature
+        # (app/routers/sdk.py `public-call-token`) connects browser clients directly
+        # to a LiveKit room and never posts here. The previous `elif is_webrtc` branch
+        # accepted *any* `Authorization: Bearer <anything>` header via a no-op stub
+        # (`validate_webrtc_auth`), which let an attacker bypass X-Twilio-Signature
+        # enforcement entirely by sending an arbitrary Authorization header instead —
+        # removed rather than wired up, since there's no real auth mechanism to wire
+        # it to.
         is_twilio = 'X-Twilio-Signature' in request.headers
-        is_webrtc = 'Authorization' in request.headers
 
         if is_twilio:
             form_params = dict(form_data)
@@ -419,12 +430,9 @@ async def handle_call_events_webhook(
                     callSessionId,
                 )
                 raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-        elif is_webrtc:
-            if not validate_webrtc_auth(request):
-                raise HTTPException(status_code=403, detail="Invalid WebRTC authentication")
         else:
             if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
-                logger.warning("Call events webhook: no auth headers present and unauthenticated webhooks disallowed")
+                logger.warning("Call events webhook: no Twilio signature present and unauthenticated webhooks disallowed")
                 raise HTTPException(status_code=403, detail="Missing Twilio signature")
             logger.info("No authentication headers found, allowing for testing")
         

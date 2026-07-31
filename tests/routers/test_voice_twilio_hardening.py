@@ -248,6 +248,47 @@ class TestCallEventsWebhookSignature:
             )
         assert resp.status_code == 200
 
+    def test_forged_authorization_header_no_longer_bypasses_signature_check(self, db):
+        """
+        Regression guard: this endpoint used to accept ANY `Authorization: Bearer
+        <anything>` header via a no-op `validate_webrtc_auth()` stub, letting an
+        attacker skip X-Twilio-Signature enforcement entirely by sending an
+        Authorization header instead of (or without) a valid Twilio signature.
+        This endpoint is Twilio-status-callback-only (no real WebRTC caller exists
+        anywhere in the codebase) — the bypass branch was removed, not fixed.
+        """
+        from app.routers.voice import handle_call_events_webhook
+
+        request = _FakeRequest(
+            {"CallStatus": "completed", "CallSid": "CA1"},
+            headers={"Authorization": "Bearer attacker-supplied-token"},
+        )
+
+        with (
+            patch.object(settings, "ALLOW_UNAUTHENTICATED_WEBHOOKS", False),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            asyncio.run(
+                handle_call_events_webhook(
+                    request=request,
+                    background_tasks=BackgroundTasks(),
+                    agentId=None,
+                    userId=None,
+                    callSessionId=None,
+                    timeout=None,
+                    body="",
+                    db=db,
+                )
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_validate_webrtc_auth_no_longer_imported_or_referenced(self):
+        """The dead WebRTC-bypass branch (and its no-op stub import) must be gone,
+        not just unreachable."""
+        import app.routers.voice as voice_module
+
+        assert not hasattr(voice_module, "validate_webrtc_auth")
+
 
 class TestRecordingCallbackSignature:
     def test_rejects_invalid_signature(self, db):
