@@ -9,6 +9,7 @@ passes through :func:`~app.core.pii_redactor.prepare_request_log_context` first.
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -17,6 +18,15 @@ from starlette.responses import Response
 
 from app.core.logger import logger
 from app.core.pii_redactor import prepare_request_log_context
+
+# The demo-link token is a bearer-style credential embedded in the URL path
+# (unlike other secrets in this codebase, which travel in the body/query) —
+# redact it before it lands in the access log.
+_DEMO_LINK_TOKEN_PATH = re.compile(r"(/api/v1/sdk/demo/)[^/]+(/call-token)")
+
+
+def _redact_path(path: str) -> str:
+    return _DEMO_LINK_TOKEN_PATH.sub(r"\1[redacted]\2", path)
 
 
 class PiiLoggingMiddleware(BaseHTTPMiddleware):
@@ -34,7 +44,7 @@ class PiiLoggingMiddleware(BaseHTTPMiddleware):
 
             ctx = prepare_request_log_context(
                 request.method,
-                request.url.path,
+                _redact_path(request.url.path),
                 request.headers,
                 query_params=request.query_params,
                 body_length=body_length,
@@ -49,7 +59,7 @@ class PiiLoggingMiddleware(BaseHTTPMiddleware):
         logger.info(
             "%s %s %s %dms requestId=%s",
             request.method,
-            request.url.path,
+            _redact_path(request.url.path),
             response.status_code,
             duration_ms,
             request_id,

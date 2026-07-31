@@ -1,4 +1,4 @@
-"""Dynamic CORS for the public Web SDK endpoint.
+"""Dynamic CORS for the public Web SDK endpoints.
 
 The global ``CORSMiddleware`` only allows origins listed in the static
 ``ALLOWED_ORIGINS`` env var. But /api/v1/sdk/public-call-token must be
@@ -9,9 +9,16 @@ rejects the browser's preflight OPTIONS for any origin outside the static
 list before the request ever reaches our handler, so a whitelisted tenant
 domain could never actually call the endpoint from a browser.
 
-This middleware reflects the request's Origin for that one path only — it
+/api/v1/sdk/demo/{token}/call-token has an even looser requirement: it is
+origin-unrestricted by design (any site holding the token may use it, see
+app/models/call_flow_demo_link.py), so it needs the same Origin reflection
+with no allowlist check at all — that check lives entirely inside the
+handler (token/expiry/budget validation), not here.
+
+This middleware reflects the request's Origin for these paths only — it
 grants no security by itself. The real authorization boundary is the
-allowed_domains check inside app/routers/sdk.py (403 domain_not_allowed).
+allowed_domains check (public-call-token) or the demo-link validation
+(demo/{token}/call-token) inside app/routers/sdk.py.
 Must be registered OUTERMOST (added after CORSMiddleware in main.py) so it
 intercepts preflight before the static-origin CORSMiddleware can 400 it.
 """
@@ -22,12 +29,22 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 _PUBLIC_SDK_PATHS = frozenset({"/api/v1/sdk/public-call-token"})
 
 
+def _is_public_sdk_path(path: str) -> bool:
+    if path in _PUBLIC_SDK_PATHS:
+        return True
+    # /api/v1/sdk/demo/{token}/call-token — token is opaque, so match by shape
+    # rather than adding every issued token to a static set.
+    if path.startswith("/api/v1/sdk/demo/") and path.endswith("/call-token"):
+        return True
+    return False
+
+
 class PublicSdkCorsMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("path") not in _PUBLIC_SDK_PATHS:
+        if scope["type"] != "http" or not _is_public_sdk_path(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
 
