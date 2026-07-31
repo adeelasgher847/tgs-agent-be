@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from twilio.base.exceptions import TwilioRestException
 
 from app.core.config import settings
 from app.core.error_responses import build_call_initiate_error_payload
@@ -32,6 +33,56 @@ from app.routers.general_websocket import broadcast_call_status_update
 
 # Outbound sessions occupying a workspace concurrent-call slot (must match DB values).
 _ACTIVE_OUTBOUND_STATUSES = ("initiated", "ringing", "connected", "in-progress")
+
+# Retry/backoff for transient Twilio call-creation failures — deliberately narrow:
+# `calls.create` is a non-idempotent, side-effecting operation (it actually dials the
+# customer) and Twilio provides no idempotency-key mechanism for it. Only HTTP 429 is
+# retried, because Twilio guarantees a 429 means the request was rejected before being
+# queued/dialed. A 5xx is ambiguous — it can mean the call was already dialed server-side
+# before the error was returned (e.g. a gateway timeout) — so retrying on 5xx risks a real
+# duplicate outbound call to the customer that would go untracked (only one
+# call_session.twilio_call_sid is ever stored). 5xx / permanent 4xx errors (invalid number,
+# unverified caller ID — Twilio error codes like 21211, 21214) all fail immediately.
+# Mirrors the retry/backoff *pattern* used for CRM outbound HTTP calls elsewhere in this
+# codebase (see ghl_service.py / hubspot_service.py _request_with_backoff), which retry
+# only on 429 for the same "don't double-fire a side-effecting request" reasoning.
+_TWILIO_CALL_MAX_RETRIES = 2
+_TWILIO_CALL_BASE_BACKOFF_SECONDS = 0.5
+
+
+def _is_transient_twilio_error(exc: TwilioRestException) -> bool:
+    """True only for HTTP 429 (rate limited — Twilio guarantees the call was never
+    dialed). False for everything else, including 5xx: `calls.create` is
+    non-idempotent and side-effecting, so an ambiguous 5xx must not be retried
+    (risk of dialing the customer twice)."""
+    status_code = getattr(exc, "status", None)
+    return status_code == 429
+
+
+async def _create_twilio_call_with_retry(call_fn, **kwargs):
+    """
+    Call `twilio_service.make_call` / `make_call_with_credentials` with exponential
+    backoff retry on transient failures only. Permanent errors raise immediately on
+    the first attempt so the caller can fail fast.
+    """
+    attempt = 0
+    while True:
+        try:
+            return call_fn(**kwargs)
+        except TwilioRestException as exc:
+            if not _is_transient_twilio_error(exc) or attempt >= _TWILIO_CALL_MAX_RETRIES:
+                raise
+            wait_seconds = _TWILIO_CALL_BASE_BACKOFF_SECONDS * (2 ** attempt)
+            logger.warning(
+                "Transient Twilio call-creation error (status=%s code=%s); retrying in %.1fs (attempt %d/%d)",
+                exc.status,
+                getattr(exc, "code", None),
+                wait_seconds,
+                attempt + 1,
+                _TWILIO_CALL_MAX_RETRIES,
+            )
+            await asyncio.sleep(wait_seconds)
+            attempt += 1
 
 
 async def initiate_call(
@@ -561,7 +612,8 @@ async def initiate_call(
                 else {}
             )
             if use_custom_credentials:
-                call = twilio_service.make_call_with_credentials(
+                call = await _create_twilio_call_with_retry(
+                    twilio_service.make_call_with_credentials,
                     to_number=call_request.toNumber,
                     from_number=from_number,
                     webhook_url=webhook_url,
@@ -572,7 +624,8 @@ async def initiate_call(
                     **amd_kwargs,
                 )
             else:
-                call = twilio_service.make_call(
+                call = await _create_twilio_call_with_retry(
+                    twilio_service.make_call,
                     to_number=call_request.toNumber,
                     from_number=from_number,
                     webhook_url=webhook_url,

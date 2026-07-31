@@ -12,11 +12,17 @@ from app.core.logger import logger
 from app.models.batch_call_record import BatchCallRecord
 
 # Twilio terminal statuses we care about for batch lifecycle
+# "canceled" (call canceled via REST API before it was answered) maps to "failed" —
+# same "never completed" semantics as the existing "failed" entry (GAP 4 follow-up):
+# without this, a canceled outbound batch call would never advance out of
+# BatchCallRecord.status == "active" (see notify_batch_call_ended's early-return
+# on an unmapped ended_reason).
 _TWILIO_TO_ENDED_REASON = {
     "completed": "completed",
     "busy": "busy",
     "no-answer": "no-answer",
     "failed": "failed",
+    "canceled": "failed",
 }
 
 
