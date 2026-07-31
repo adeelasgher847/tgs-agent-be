@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,6 +112,24 @@ def mock_livekit():
     mock = MagicMock()
     mock.generate_caller_token = MagicMock(return_value="signed.demo.jwt")
     with patch("app.services.livekit_service.livekit_service", mock):
+        yield mock
+
+
+@pytest.fixture(autouse=True)
+def mock_agent_join():
+    """
+    demo_call_token now fires a detached background task
+    (run_livekit_browser_call) that joins the LiveKit room as the agent —
+    see app/voice/livekit_browser_call_handler.py. Autoused so every existing
+    test in this file keeps exercising only the synchronous token-issuance
+    path (no real DB session / LiveKit network connection from a background
+    task racing the test's own teardown). Dedicated coverage for the
+    scheduling itself lives in TestDemoCallTokenAgentJoin below.
+    """
+    with patch(
+        "app.voice.livekit_browser_call_handler.run_livekit_browser_call",
+        new_callable=AsyncMock,
+    ) as mock:
         yield mock
 
 
@@ -298,3 +316,45 @@ class TestDemoCallToken:
         )
         assert resp.status_code == 200, resp.text
         assert "livekit_token" in resp.json()
+
+
+@pytest.mark.usefixtures("db")
+class TestDemoCallTokenAgentJoin:
+    """
+    demo_call_token spawns a detached background task
+    (run_livekit_browser_call) so the AI agent actually joins the LiveKit
+    room and talks back. See app/voice/livekit_browser_call_handler.py.
+    """
+
+    def test_agent_join_scheduled_with_new_call_session_id(
+        self, client: TestClient, db, tenant, flow, demo_link, mock_livekit, mock_agent_join
+    ):
+        resp = client.post(
+            f"/api/v1/sdk/demo/{demo_link.token}/call-token",
+            json=_body("visitor-agent-join"),
+        )
+        assert resp.status_code == 200, resp.text
+        call_session_id = uuid.UUID(resp.json()["call_session_id"])
+
+        # The endpoint must return before/without waiting on the background
+        # task — asserting on call args here (rather than a return value)
+        # confirms the response body didn't depend on it completing.
+        mock_agent_join.assert_called_once_with(call_session_id)
+
+    def test_response_not_blocked_by_slow_agent_join(
+        self, client: TestClient, db, tenant, flow, demo_link, mock_livekit, mock_agent_join
+    ):
+        """Even if the agent-join coroutine would take a long time, the HTTP
+        response must not wait on it — demo_call_token only creates the task."""
+        import asyncio as _asyncio
+
+        async def _slow(*_args, **_kwargs):
+            await _asyncio.sleep(30)
+
+        mock_agent_join.side_effect = _slow
+
+        resp = client.post(
+            f"/api/v1/sdk/demo/{demo_link.token}/call-token",
+            json=_body("visitor-slow-join"),
+        )
+        assert resp.status_code == 200, resp.text

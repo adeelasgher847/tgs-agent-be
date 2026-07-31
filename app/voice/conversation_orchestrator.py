@@ -192,10 +192,15 @@ class ConversationOrchestrator:
         try:
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
-                # Get greeting from agent or use default
-                if self._h.agent and hasattr(self._h.agent, "first_message") and self._h.agent.first_message:
-                    greeting_text = self._h.agent.first_message
-                else:
+                # Get greeting from agent or use default. Prefer greeting_message
+                # (current field) over the legacy first_message, matching the
+                # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
+                greeting_text = None
+                if self._h.agent:
+                    greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
+                    if not greeting_text:
+                        greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
+                if not greeting_text:
                     greeting_text = "hello how are you"
 
                 # Add greeting to transcript

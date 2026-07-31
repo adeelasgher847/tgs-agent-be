@@ -36,12 +36,10 @@ class CallFlowDemoLink(Base):
 
     per_user_limit_minutes = Column(Numeric, nullable=True)
     total_budget_minutes = Column(Numeric, nullable=True)
-    # TODO(known limitation, not missing logic): incremented by
-    # CallSessionService._record_demo_link_usage(), but nothing in
-    # production currently calls update_call_session_status() for a
-    # browser-only demo-link CallSession (no LiveKit call-end signal
-    # exists yet — see that method's docstring). Checked at token-issuance
-    # time; does not yet decrement from real call activity.
+    # Incremented by CallSessionService._record_demo_link_usage(), called
+    # from update_call_session_status() when app.voice.livekit_browser_call_handler
+    # .run_livekit_browser_call() finalizes a demo-link CallSession as the
+    # LiveKit room disconnects — this does decrement from real call activity.
     total_minutes_used = Column(Numeric, nullable=False, default=0, server_default="0")
 
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)

@@ -359,6 +359,19 @@ async def demo_call_token(
         demo_link.id, call_session.id, room_name, ip,
     )
 
+    # Spawn the agent's join/conversation loop as a detached background task —
+    # never awaited here, so the HTTP response returns immediately regardless
+    # of how long the call takes. All failures (agent-join, STT/TTS wiring,
+    # LiveKit connectivity) are caught and logged inside
+    # run_livekit_browser_call itself so this never becomes an unhandled task
+    # exception. spawn_browser_call keeps a strong reference to the task for
+    # its whole lifetime — asyncio.Task is only weakly held by the event
+    # loop, and this task can run for the entire duration of a live call.
+    # See app/voice/livekit_browser_call_handler.py.
+    from app.voice.livekit_browser_call_handler import spawn_browser_call
+
+    spawn_browser_call(call_session.id)
+
     return {
         "livekit_token": lk_token,
         "room_name": room_name,
