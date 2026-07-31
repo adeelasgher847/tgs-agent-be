@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from twilio.base.exceptions import TwilioRestException
 
 from app.core.config import settings
 from app.core.error_responses import build_call_initiate_error_payload
@@ -32,6 +33,49 @@ from app.routers.general_websocket import broadcast_call_status_update
 
 # Outbound sessions occupying a workspace concurrent-call slot (must match DB values).
 _ACTIVE_OUTBOUND_STATUSES = ("initiated", "ringing", "connected", "in-progress")
+
+# Retry/backoff for transient Twilio call-creation failures (rate limiting / Twilio-side
+# outages) — never retried for permanent 4xx errors (invalid number, unverified caller ID,
+# etc: Twilio error codes like 21211, 21214). Mirrors the pattern used for CRM outbound
+# HTTP calls elsewhere in this codebase (see ghl_service.py / hubspot_service.py
+# _request_with_backoff).
+_TWILIO_CALL_MAX_RETRIES = 2
+_TWILIO_CALL_BASE_BACKOFF_SECONDS = 0.5
+
+
+def _is_transient_twilio_error(exc: TwilioRestException) -> bool:
+    """True for HTTP 429 (rate limited) or 5xx (Twilio-side) errors — retryable.
+    False for everything else, including 4xx errors like invalid/unverified numbers."""
+    status_code = getattr(exc, "status", None)
+    if status_code is None:
+        return False
+    return status_code == 429 or 500 <= status_code < 600
+
+
+async def _create_twilio_call_with_retry(call_fn, **kwargs):
+    """
+    Call `twilio_service.make_call` / `make_call_with_credentials` with exponential
+    backoff retry on transient failures only. Permanent errors raise immediately on
+    the first attempt so the caller can fail fast.
+    """
+    attempt = 0
+    while True:
+        try:
+            return call_fn(**kwargs)
+        except TwilioRestException as exc:
+            if not _is_transient_twilio_error(exc) or attempt >= _TWILIO_CALL_MAX_RETRIES:
+                raise
+            wait_seconds = _TWILIO_CALL_BASE_BACKOFF_SECONDS * (2 ** attempt)
+            logger.warning(
+                "Transient Twilio call-creation error (status=%s code=%s); retrying in %.1fs (attempt %d/%d)",
+                exc.status,
+                getattr(exc, "code", None),
+                wait_seconds,
+                attempt + 1,
+                _TWILIO_CALL_MAX_RETRIES,
+            )
+            await asyncio.sleep(wait_seconds)
+            attempt += 1
 
 
 async def initiate_call(
@@ -561,7 +605,8 @@ async def initiate_call(
                 else {}
             )
             if use_custom_credentials:
-                call = twilio_service.make_call_with_credentials(
+                call = await _create_twilio_call_with_retry(
+                    twilio_service.make_call_with_credentials,
                     to_number=call_request.toNumber,
                     from_number=from_number,
                     webhook_url=webhook_url,
@@ -572,7 +617,8 @@ async def initiate_call(
                     **amd_kwargs,
                 )
             else:
-                call = twilio_service.make_call(
+                call = await _create_twilio_call_with_retry(
+                    twilio_service.make_call,
                     to_number=call_request.toNumber,
                     from_number=from_number,
                     webhook_url=webhook_url,

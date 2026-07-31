@@ -39,6 +39,29 @@ class TtsStreamMixin:
             return pub.publish_mulaw
         return None
 
+    async def _send_twilio_clear_event(self) -> None:
+        """
+        Tell Twilio to discard any audio already buffered/sent for this stream.
+
+        Required by the Media Streams protocol on barge-in: cancelling our own
+        in-flight TTS task only stops *us* from sending more frames — it does
+        not stop Twilio from continuing to play frames it already received.
+        See: https://www.twilio.com/docs/voice/media-streams/websocket-messages
+        """
+        stream_sid = getattr(self, "stream_sid", None)
+        if not stream_sid:
+            return
+        try:
+            await self.websocket.send_json({
+                "event": "clear",
+                "streamSid": stream_sid,
+            })
+        except RuntimeError:
+            # WebSocket already closed (hangup) — nothing to clear.
+            pass
+        except Exception as e:
+            logger.warning(f"Failed to send Twilio 'clear' event: {e}")
+
     async def _start_background_audio_with_delay(self):
         """Start background loop after call stabilizes (dev-branch behavior)."""
         try:
