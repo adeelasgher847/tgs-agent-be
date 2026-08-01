@@ -222,13 +222,29 @@ class RagService:
                     logger.error("Embedding failed for chunk %d: %s", idx, e, exc_info=True)
                     raise
 
+                if not isinstance(embedding, list):
+                    raise TypeError(
+                        f"embedding for chunk {idx} must be a list[float], got {type(embedding)}"
+                    )
+                if not all(isinstance(x, (float, int)) for x in embedding):
+                    raise TypeError(
+                        f"embedding for chunk {idx} must contain only float/int values"
+                    )
+
+                logger.debug(
+                    "kbchunk insert: embedding type=%s len=%d first5=%s",
+                    type(embedding).__name__,
+                    len(embedding),
+                    embedding[:5],
+                )
+
                 chunk_rows.append(
                     KbChunk(
                         id=uuid.uuid4(),
                         kb_id=kb.id,
                         file_id=None,
                         content=chunk_content,
-                        embedding=json.dumps(embedding),
+                        embedding=embedding,
                         chunk_metadata={
                             "chunk_index": idx,
                             "document_id": str(document_id),

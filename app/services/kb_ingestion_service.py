@@ -212,7 +212,6 @@ async def run_file_ingestion(
                 kb_id=kb_file.kb_id,
                 file_id=file_id,
                 content=chunk_content,
-                # Store as JSON string for the TEXT column; Postgres sees it as vector-compatible string
                 embedding=embedding,
                 chunk_metadata={"chunk_index": i, "source": "file", "filename": kb_file.original_filename},
             )
