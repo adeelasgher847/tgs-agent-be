@@ -532,6 +532,10 @@ class LiveKitBrowserCallHandler:
                     return
 
                 self._is_tts_playing = True
+                logger.debug(
+                    "[LiveKitBrowserCall] LiveKit playback: publishing %d mu-law bytes "
+                    "(call_session_id=%s)", len(mulaw_bytes), self.call_session_id,
+                )
                 await publisher.publish_mulaw(mulaw_bytes, cancel=self._tts_cancel)
             finally:
                 self.is_speaking = False

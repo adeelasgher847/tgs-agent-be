@@ -235,6 +235,11 @@ class SttPipeline:
                         self._last_final_norm_mono = now_mono
 
                     is_silence = self._is_silence()
+                    logger.debug(
+                        "[STT] final transcript received: %r confidence=%.2f "
+                        "(call_session_id=%s)",
+                        transcript[:80], confidence, self._call_session_id,
+                    )
                     await self._event_bus.emit(
                         SttFinalEvent(
                             transcript=transcript,
@@ -244,6 +249,11 @@ class SttPipeline:
                     )
                     await self._on_final(transcript, confidence)
                 else:
+                    logger.debug(
+                        "[STT] partial transcript received: %r confidence=%.2f "
+                        "(call_session_id=%s)",
+                        transcript[:80], confidence, self._call_session_id,
+                    )
                     await self._event_bus.emit(
                         SttInterimEvent(transcript=transcript, confidence=confidence)
                     )
@@ -260,7 +270,16 @@ class SttPipeline:
         self._last_audio_mono = time.monotonic()
         await self._ensure_session()
         if self._stt_session:
+            logger.debug(
+                "[STT] send: bytes=%s provider=%s (call_session_id=%s)",
+                len(audio_data), self._provider_slug, self._call_session_id,
+            )
             self._stt_session.push_audio(audio_data)
+        else:
+            logger.debug(
+                "[STT] send skipped — no session available (provider=%s, call_session_id=%s)",
+                self._provider_slug, self._call_session_id,
+            )
 
     async def recreate_with_endpointing(self, endpointing_ms: int) -> None:
         """Reopen Deepgram session with a new endpointing value (email collection).
