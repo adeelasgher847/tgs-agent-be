@@ -277,3 +277,57 @@ class TestRecordDemoLinkUsage:
 
         db.refresh(demo_link)
         assert demo_link.total_minutes_used == Decimal("0")
+
+    def test_completed_demo_link_call_skips_crm_writeback(self, db, tenant, agent, cs_user, demo_link):
+        """
+        A demo-link CallSession has an anonymous customer_phone_number
+        placeholder, not a real contact — CRM write-back scheduling must be
+        skipped entirely for it, even when the tenant has HubSpot/Salesforce/
+        GHL connected, rather than relying on the placeholder phone number
+        being unmatchable as an implicit safety net.
+        """
+        session = _make_session(
+            db, tenant, agent, cs_user,
+            call_metadata={
+                "demo_link": {
+                    "demo_link_id": str(demo_link.id),
+                    "visitor_id": "visitor-crm-skip",
+                }
+            },
+            minutes_ago=5,
+        )
+
+        with _naive_utcnow_patch(), \
+             patch("app.services.hubspot_service.tenant_has_hubspot_connected", return_value=True) as mock_hs_conn, \
+             patch("app.services.hubspot_service.schedule_hubspot_writeback") as mock_hs_sched, \
+             patch("app.services.salesforce_service.tenant_has_salesforce_connected", return_value=True) as mock_sf_conn, \
+             patch("app.services.salesforce_service.schedule_salesforce_writeback") as mock_sf_sched, \
+             patch("app.services.ghl_service.tenant_has_ghl_connected", return_value=True) as mock_ghl_conn, \
+             patch("app.services.ghl_service.schedule_ghl_writeback") as mock_ghl_sched:
+            call_session_service.update_call_session_status(db, session.id, "completed")
+
+        mock_hs_conn.assert_not_called()
+        mock_hs_sched.assert_not_called()
+        mock_sf_conn.assert_not_called()
+        mock_sf_sched.assert_not_called()
+        mock_ghl_conn.assert_not_called()
+        mock_ghl_sched.assert_not_called()
+
+    def test_completed_non_demo_link_call_still_triggers_crm_writeback(self, db, tenant, agent, cs_user):
+        """Sanity check the skip is scoped to demo-link calls only — an
+        ordinary completed call must still trigger CRM write-back scheduling
+        when the tenant has an integration connected."""
+        session = _make_session(
+            db, tenant, agent, cs_user,
+            call_metadata=None,
+            minutes_ago=5,
+        )
+
+        with _naive_utcnow_patch(), \
+             patch("app.services.hubspot_service.tenant_has_hubspot_connected", return_value=True), \
+             patch("app.services.hubspot_service.schedule_hubspot_writeback") as mock_hs_sched, \
+             patch("app.services.salesforce_service.tenant_has_salesforce_connected", return_value=False), \
+             patch("app.services.ghl_service.tenant_has_ghl_connected", return_value=False):
+            call_session_service.update_call_session_status(db, session.id, "completed")
+
+        mock_hs_sched.assert_called_once_with(session.id)

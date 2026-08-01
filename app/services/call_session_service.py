@@ -151,24 +151,21 @@ class CallSessionService:
         No-op for every other call session (call_metadata missing the
         "demo_link" key, which is the overwhelming majority of calls).
 
-        KNOWN LIMITATION (accepted, not missing logic — do not "fix" by
-        adding more accounting here): this method is only ever reached via
-        this class's own update_call_session_status(), and nothing in the
-        codebase currently calls that for a call_type="web" / demo-link
-        CallSession — there is no LiveKit room_finished webhook receiver and
-        no public "call ended" beacon a browser client can hit. Twilio calls
-        reach update_call_session_status() via call_control_mixin.py /
-        voice_webhook_service.py; the browser-only demo-link path
-        (app/routers/sdk.py::demo_call_token) has no equivalent trigger yet.
-        This is a pre-existing gap shared with the public-call-token widget
-        flow, deliberately scoped out of the demo-link feature (see
-        01 Architecture/Voice Pipeline.md in the docs vault). Practical
-        effect: CallFlowDemoLink.total_minutes_used and
-        CallFlowDemoLinkVisitorUsage.minutes_used are checked at
-        token-issuance time but do not currently decrement from real call
-        activity in production. Closing this requires a call-end signal
-        (e.g. a public beacon endpoint or a LiveKit webhook receiver) that
-        affects both flows together — track as separate follow-up work.
+        RESOLVED for the demo-link flow specifically: run_livekit_browser_call()
+        (app/voice/livekit_browser_call_handler.py), spawned as a background
+        task from app/routers/sdk.py::demo_call_token, now calls this class's
+        update_call_session_status() with status="completed" once the LiveKit
+        room disconnects or the caller leaves — so this method is reached and
+        CallFlowDemoLink.total_minutes_used / CallFlowDemoLinkVisitorUsage.
+        minutes_used do decrement from real call activity for demo-link
+        sessions now.
+
+        STILL OPEN (deliberately out of scope here): the public-call-token
+        widget flow (app/routers/sdk.py::public_call_token) has no equivalent
+        call-end signal — it doesn't even create a CallSession row, so this
+        method never applies to it regardless. That gap is unrelated to demo
+        links (public-call-token has no minute-budget accounting at all) and
+        is tracked separately.
         """
         metadata = call_session.call_metadata or {}
         demo_meta = metadata.get("demo_link") if isinstance(metadata, dict) else None
@@ -347,6 +344,9 @@ class CallSessionService:
                 # (see app/routers/sdk.py::demo_call_token). On terminal status
                 # with a computed duration, credit that duration against the
                 # link's total budget and the visitor's per-user budget.
+                is_demo_link_call = isinstance(call_session.call_metadata, dict) and isinstance(
+                    call_session.call_metadata.get("demo_link"), dict
+                )
                 if status in ("completed", "failed", "busy", "no_answer") and call_session.duration:
                     try:
                         self._record_demo_link_usage(db, call_session)
@@ -369,7 +369,10 @@ class CallSessionService:
                 # HubSpot post-call write-back: create a Call engagement with the
                 # transcript summary once the call has actually completed. Fire-and-forget
                 # (fail open) — see app/services/hubspot_service.py::schedule_hubspot_writeback.
-                if status == "completed":
+                # Skipped for anonymous demo-link calls (customer_phone_number is a
+                # placeholder, not a real contact — would just be wasted API calls,
+                # or worse, a false match onto a real customer's CRM record).
+                if status == "completed" and not is_demo_link_call:
                     try:
                         from app.services.hubspot_service import (
                             schedule_hubspot_writeback,
@@ -386,7 +389,8 @@ class CallSessionService:
                 # Salesforce post-call write-back: create a Task (Activity) with the
                 # transcript summary once the call has actually completed. Fire-and-forget
                 # (fail open) — see app/services/salesforce_service.py::schedule_salesforce_writeback.
-                if status == "completed":
+                # Skipped for anonymous demo-link calls — see HubSpot block above for why.
+                if status == "completed" and not is_demo_link_call:
                     try:
                         from app.services.salesforce_service import (
                             schedule_salesforce_writeback,
@@ -405,7 +409,8 @@ class CallSessionService:
                 # transcript summary once the call has actually completed. Enqueued
                 # as an ARQ background job (fail open) — see
                 # app/services/ghl_service.py::schedule_ghl_writeback.
-                if status == "completed":
+                # Skipped for anonymous demo-link calls — see HubSpot block above for why.
+                if status == "completed" and not is_demo_link_call:
                     try:
                         from app.services.ghl_service import (
                             schedule_ghl_writeback,

@@ -444,6 +444,9 @@ class TtsPipeline:
                 async with self._synthesis_semaphore:
                     if self.cancel_event.is_set():
                         return
+                    logger.debug(
+                        "[TTS] generation started chunk %d '%.25s'", chunk_id, text
+                    )
                     try:
                         audio_bytes = await self._handler._prefetch_tts_audio(task)  # type: ignore[attr-defined]
                     except asyncio.CancelledError:

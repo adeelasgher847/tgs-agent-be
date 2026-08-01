@@ -27,9 +27,8 @@ class CallFlowDemoLinkVisitorUsage(Base):
     )
     visitor_id = Column(String, nullable=False, index=True)
 
-    # TODO(known limitation, not missing logic): see the matching comment
-    # on CallFlowDemoLink.total_minutes_used — same accepted gap, same
-    # accounting hook, currently untriggered in production.
+    # See the matching comment on CallFlowDemoLink.total_minutes_used — same
+    # accounting hook, now triggered by run_livekit_browser_call() at call end.
     minutes_used = Column(Numeric, nullable=False, default=0, server_default="0")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

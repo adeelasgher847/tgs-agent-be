@@ -37,6 +37,7 @@ class LiveKitAudioSubscriber:
         self._output_sample_rate = output_sample_rate
         self._stop_event = asyncio.Event()
         self._processor: LiveKitAudioProcessor | None = None
+        self._vad_note_logged = False
 
     async def run(self) -> None:
         """Connect to LiveKit room, subscribe to caller audio, feed STT."""
@@ -107,6 +108,21 @@ class LiveKitAudioSubscriber:
             if audio_stream is None or self._processor is None:
                 return
 
+            if not self._vad_note_logged:
+                # No local VAD/silence gate exists on this path — every decoded
+                # frame is forwarded to STT (Deepgram/Google) unconditionally;
+                # turn-taking ("speech started/stopped") is entirely delegated
+                # to the STT provider's own server-side endpointing
+                # (speech_final / UtteranceEnd for Deepgram, is_final for
+                # Google). Logged once so a future "conversation never
+                # starts" investigation doesn't waste time looking for an
+                # app-side VAD gate that was never here.
+                logger.debug(
+                    "[LiveKitAudioSubscriber] VAD decision: no local VAD gate — "
+                    "all frames forwarded, turn-taking is provider-side endpointing"
+                )
+                self._vad_note_logged = True
+
             async for audio_frame_event in audio_stream:
                 if self._stop_event.is_set():
                     break
@@ -119,12 +135,27 @@ class LiveKitAudioSubscriber:
                 sample_rate = int(getattr(frame, "sample_rate", 48000) or 48000)
                 num_channels = int(getattr(frame, "num_channels", 1) or 1)
 
-                pcm_bytes = await self._processor.process_frame(
-                    raw_bytes,
-                    sample_rate=sample_rate,
-                    num_channels=num_channels,
-                )
+                try:
+                    pcm_bytes = await self._processor.process_frame(
+                        raw_bytes,
+                        sample_rate=sample_rate,
+                        num_channels=num_channels,
+                    )
+                except Exception as exc:
+                    # A single frame's processing failure must never abort the
+                    # whole subscription loop — that would silently end STT
+                    # ingestion for the rest of the call after only the frames
+                    # seen so far. Drop this frame and keep listening.
+                    logger.error(
+                        "[LiveKitAudioSubscriber] frame processing error "
+                        "(dropping this frame, continuing): %s", exc, exc_info=True,
+                    )
+                    continue
+
                 if pcm_bytes:
+                    logger.debug(
+                        "[LiveKitAudioSubscriber] STT send: bytes=%s", len(pcm_bytes)
+                    )
                     await self._stt_pipeline.feed_audio_chunk(pcm_bytes)
 
         except asyncio.CancelledError:
