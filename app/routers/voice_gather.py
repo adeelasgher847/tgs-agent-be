@@ -3,7 +3,7 @@ Fast Conversational AI Router using Twilio Gather + Deepgram STT + LLM + TTS
 Optimized for 3-4 second latency per turn
 """
 
-from fastapi import APIRouter, Request, Query, Depends
+from fastapi import APIRouter, Request, Query, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from twilio.twiml.voice_response import VoiceResponse
@@ -22,7 +22,12 @@ from app.services.google_tts_service import google_tts_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.model_service import ModelService
 from app.core.config import settings
-from app.utils.twilio_validation import get_request_body
+from app.utils.twilio_validation import (
+    get_request_body,
+    validate_twilio_signature,
+    validate_twilio_signature_with_token,
+)
+from app.utils.voice_twilio_utils import get_twilio_credentials_for_call
 from app.routers.general_websocket import broadcast_call_event
 from urllib.parse import quote
 import hashlib
@@ -33,6 +38,26 @@ from app.routers.tts_audio import audio_cache
 
 router = APIRouter()
 model_service = ModelService()
+
+
+async def _validate_streaming_webhook_signature(
+    request: Request, db: Session, call_session, form_params: dict
+) -> bool:
+    """Same per-tenant-token-with-global-fallback pattern used across the other
+    Twilio-facing webhooks in this codebase (see voice.py / amd_webhook.py)."""
+    if settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
+        return True
+    if call_session is not None:
+        try:
+            _, auth_token = get_twilio_credentials_for_call(db, call_session)
+            if validate_twilio_signature_with_token(request, form_params, auth_token):
+                return True
+        except Exception as cred_err:
+            logger.warning(
+                "Streaming greeting webhook: per-session Twilio token unavailable (%s); falling back to env token",
+                cred_err,
+            )
+    return validate_twilio_signature(request, form_params)
 
 
 def generate_cache_key(text: str, language: str, voice_type: str, use_chirp3_hd: bool = False, format: str = "mp3") -> str:
@@ -659,7 +684,28 @@ async def streaming_greeting_webhook(
         form_data = await request.form()
         call_sid = form_data.get("CallSid", "")
         call_status = form_data.get("CallStatus", "")
-        
+
+        call_session_for_auth = None
+        if callSessionId:
+            try:
+                call_session_for_auth = call_session_service.get_call_session_by_id(
+                    db, uuid.UUID(callSessionId)
+                )
+            except ValueError:
+                call_session_for_auth = None
+
+        if not await _validate_streaming_webhook_signature(
+            request, db, call_session_for_auth, dict(form_data)
+        ):
+            logger.warning(
+                "Streaming greeting webhook: invalid Twilio signature (call_sid=%s, callSessionId=%s)",
+                call_sid,
+                callSessionId,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Invalid Twilio signature"
+            )
+
         # 🎯 WAIT FOR USER TO ANSWER - Only connect when call is answered!
         logger.info(f"🔍 Streaming webhook - Call Status: '{call_status}'")
         
@@ -728,10 +774,12 @@ async def streaming_greeting_webhook(
         logger.debug("🔗 WebSocket: %s", ws_url)
 
         return HTMLResponse(str(response), media_type="application/xml")
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error in streaming webhook: {e}", exc_info=True)
-        
+
         # Fallback response
         response = VoiceResponse()
         response.say("Sorry, something went wrong. Please call back later.", voice="Polly.Joanna")

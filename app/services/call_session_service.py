@@ -10,6 +10,7 @@ from app.schemas.call_log import CallLogCreate
 from typing import List, Dict, Any
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 import asyncio
 from app.core.logger import logger
 from app.services.inbound_call_crm_sync_service import (
@@ -141,6 +142,77 @@ class CallSessionService:
         
         return call_session
     
+    def _record_demo_link_usage(self, db: Session, call_session: CallSession) -> None:
+        """
+        Credit a finished call's duration against its originating demo link's
+        total_minutes_used and the visitor's per-visitor minutes_used, if the
+        session was created via the public demo-link flow.
+
+        No-op for every other call session (call_metadata missing the
+        "demo_link" key, which is the overwhelming majority of calls).
+
+        RESOLVED for the demo-link flow specifically: run_livekit_browser_call()
+        (app/voice/livekit_browser_call_handler.py), spawned as a background
+        task from app/routers/sdk.py::demo_call_token, now calls this class's
+        update_call_session_status() with status="completed" once the LiveKit
+        room disconnects or the caller leaves — so this method is reached and
+        CallFlowDemoLink.total_minutes_used / CallFlowDemoLinkVisitorUsage.
+        minutes_used do decrement from real call activity for demo-link
+        sessions now.
+
+        STILL OPEN (deliberately out of scope here): the public-call-token
+        widget flow (app/routers/sdk.py::public_call_token) has no equivalent
+        call-end signal — it doesn't even create a CallSession row, so this
+        method never applies to it regardless. That gap is unrelated to demo
+        links (public-call-token has no minute-budget accounting at all) and
+        is tracked separately.
+        """
+        metadata = call_session.call_metadata or {}
+        demo_meta = metadata.get("demo_link") if isinstance(metadata, dict) else None
+        if not isinstance(demo_meta, dict):
+            return
+
+        demo_link_id = demo_meta.get("demo_link_id")
+        visitor_id = demo_meta.get("visitor_id")
+        if not demo_link_id or not visitor_id or not call_session.duration:
+            return
+
+        from app.models.call_flow_demo_link import CallFlowDemoLink
+        from app.models.call_flow_demo_link_visitor_usage import CallFlowDemoLinkVisitorUsage
+
+        try:
+            demo_link_uuid = uuid.UUID(str(demo_link_id))
+        except ValueError:
+            logger.warning(
+                "Demo link usage accounting: malformed demo_link_id=%r session=%s",
+                demo_link_id, call_session.id,
+            )
+            return
+
+        minutes = Decimal(call_session.duration) / Decimal(60)
+
+        demo_link = db.query(CallFlowDemoLink).filter(CallFlowDemoLink.id == demo_link_uuid).first()
+        if demo_link is None:
+            return
+        demo_link.total_minutes_used = (demo_link.total_minutes_used or Decimal("0")) + minutes
+
+        visitor_usage = (
+            db.query(CallFlowDemoLinkVisitorUsage)
+            .filter(
+                CallFlowDemoLinkVisitorUsage.demo_link_id == demo_link_uuid,
+                CallFlowDemoLinkVisitorUsage.visitor_id == str(visitor_id),
+            )
+            .first()
+        )
+        if visitor_usage is not None:
+            visitor_usage.minutes_used = (visitor_usage.minutes_used or Decimal("0")) + minutes
+
+        db.commit()
+        logger.info(
+            "Demo link usage recorded demo_link_id=%s visitor_id=%s session=%s minutes=%s",
+            demo_link_id, visitor_id, call_session.id, minutes,
+        )
+
     def _create_call_log_for_session(self, db: Session, call_session: CallSession) -> CallLog:
         """Create a call log entry for a call session"""
         # Generate a shortened call ID for display (like in Vapi dashboard)
@@ -258,13 +330,31 @@ class CallSessionService:
                     if call_session.start_time:
                         duration = (call_session.end_time - call_session.start_time).total_seconds()
                         call_session.duration = int(duration)
-                
+
                 db.commit()
                 db.refresh(call_session)
 
                 self._update_call_log_for_session(
                     db, call_session, ended_reason, success_evaluation, cost, transferred
                 )
+
+                # Demo link minute accounting: a call session created via
+                # POST /api/v1/sdk/demo/{token}/call-token stashes
+                # {"demo_link_id", "visitor_id"} under call_metadata["demo_link"]
+                # (see app/routers/sdk.py::demo_call_token). On terminal status
+                # with a computed duration, credit that duration against the
+                # link's total budget and the visitor's per-user budget.
+                is_demo_link_call = isinstance(call_session.call_metadata, dict) and isinstance(
+                    call_session.call_metadata.get("demo_link"), dict
+                )
+                if status in ("completed", "failed", "busy", "no_answer") and call_session.duration:
+                    try:
+                        self._record_demo_link_usage(db, call_session)
+                    except Exception as demo_exc:  # pragma: no cover
+                        logger.warning(
+                            "Demo link usage accounting failed (non-critical) session=%s: %s",
+                            session_id, demo_exc,
+                        )
 
                 if (
                     (call_session.call_type or "").lower() == "inbound"
@@ -279,7 +369,10 @@ class CallSessionService:
                 # HubSpot post-call write-back: create a Call engagement with the
                 # transcript summary once the call has actually completed. Fire-and-forget
                 # (fail open) — see app/services/hubspot_service.py::schedule_hubspot_writeback.
-                if status == "completed":
+                # Skipped for anonymous demo-link calls (customer_phone_number is a
+                # placeholder, not a real contact — would just be wasted API calls,
+                # or worse, a false match onto a real customer's CRM record).
+                if status == "completed" and not is_demo_link_call:
                     try:
                         from app.services.hubspot_service import (
                             schedule_hubspot_writeback,
@@ -296,7 +389,8 @@ class CallSessionService:
                 # Salesforce post-call write-back: create a Task (Activity) with the
                 # transcript summary once the call has actually completed. Fire-and-forget
                 # (fail open) — see app/services/salesforce_service.py::schedule_salesforce_writeback.
-                if status == "completed":
+                # Skipped for anonymous demo-link calls — see HubSpot block above for why.
+                if status == "completed" and not is_demo_link_call:
                     try:
                         from app.services.salesforce_service import (
                             schedule_salesforce_writeback,
@@ -315,7 +409,8 @@ class CallSessionService:
                 # transcript summary once the call has actually completed. Enqueued
                 # as an ARQ background job (fail open) — see
                 # app/services/ghl_service.py::schedule_ghl_writeback.
-                if status == "completed":
+                # Skipped for anonymous demo-link calls — see HubSpot block above for why.
+                if status == "completed" and not is_demo_link_call:
                     try:
                         from app.services.ghl_service import (
                             schedule_ghl_writeback,

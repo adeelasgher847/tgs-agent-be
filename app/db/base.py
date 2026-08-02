@@ -92,3 +92,8 @@ from app.models.payment_record import PaymentRecord  # noqa: F401
 
 # Outbound number reputation monitoring / auto-rotation
 from app.models.phone_number_reputation import PhoneNumberReputation  # noqa: F401
+
+# Call flow demo links (origin-unrestricted shareable links, separate from
+# the embedded-widget public-call-token / AllowedDomain flow)
+from app.models.call_flow_demo_link import CallFlowDemoLink  # noqa: F401
+from app.models.call_flow_demo_link_visitor_usage import CallFlowDemoLinkVisitorUsage  # noqa: F401

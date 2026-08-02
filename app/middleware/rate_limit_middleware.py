@@ -69,6 +69,9 @@ _PUBLIC_TOKEN_POST_PATHS: frozenset[str] = frozenset({
     "/api/v1/sdk/public-call-token",
 })
 
+_DEMO_LINK_PATH_PREFIX = "/api/v1/sdk/demo/"
+_DEMO_LINK_PATH_SUFFIX = "/call-token"
+
 
 def _should_skip(path: str) -> bool:
     if path in _SKIP_EXACT:
@@ -92,7 +95,12 @@ def _is_public_token_post(scope: Scope) -> bool:
     if scope.get("method") != "POST":
         return False
     path = scope.get("path", "")
-    return path in _PUBLIC_TOKEN_POST_PATHS
+    if path in _PUBLIC_TOKEN_POST_PATHS:
+        return True
+    # /api/v1/sdk/demo/{token}/call-token — same "no auth identity to bucket
+    # on" reasoning as public-call-token; matched by shape since the token
+    # segment is opaque/dynamic.
+    return path.startswith(_DEMO_LINK_PATH_PREFIX) and path.endswith(_DEMO_LINK_PATH_SUFFIX)
 
 
 def _sha256(raw: str) -> str:

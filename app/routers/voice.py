@@ -23,7 +23,6 @@ from app.services.voice_logging_service import VoiceLoggingService
 from app.utils.twilio_validation import (
     validate_twilio_signature,
     validate_twilio_signature_with_token,
-    validate_webrtc_auth,
     get_request_body,
 )
 from app.utils.response import create_success_response
@@ -36,7 +35,8 @@ from app.routers.general_websocket import (
 from app.services.model_service import ModelService
 from app.services.credit_service import credit_service
 from app.services.batch_call_completion_service import notify_batch_call_ended
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+import re
 from app.routers.bidirectional_stream import build_streaming_twiml
 from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
@@ -278,16 +278,50 @@ async def handle_incoming_call(
 # "busy" maps to "no_answer" per ticket spec (both mean the callee was unreachable).
 # "in-progress" and "answered" are skipped for outbound (handled by first media packet
 # in bidirectional_stream.py); they map to "connected" for inbound/other flows.
+# Documented Twilio CallStatus values: https://www.twilio.com/docs/voice/api/call-resource#call-status-values
+# "queued" (call queued before dialing) maps to "initiated" — same pre-connection
+# semantics as the existing "initiated" entry.
+# "canceled" (call canceled via REST API before it was answered) maps to "failed" —
+# same "never completed" semantics as the existing "failed" entry.
 _TWILIO_TO_INTERNAL_STATUS: dict[str, str] = {
+    "queued": "initiated",
     "initiated": "initiated",
     "ringing": "ringing",
     "in-progress": "connected",
     "answered": "connected",
     "completed": "completed",
     "failed": "failed",
+    "canceled": "failed",
     "no-answer": "no_answer",
     "busy": "no_answer",
 }
+
+
+def _commit_terminal_call_session_status(db: Session, call_session: CallSession | None) -> None:
+    """
+    Persist the call_session.status mutation applied earlier in
+    handle_call_events_webhook (`call_session.status = internal_status`).
+
+    Only the "completed" branch persists status today, via
+    call_session_service.update_call_session_status() (which commits). The
+    "failed" / "busy" / "no-answer" / "canceled" branches previously only
+    mutated the in-memory ORM object with no commit anywhere in the request —
+    the transition was silently lost once the request's DB session closed
+    without a commit (SessionLocal is autocommit=False/autoflush=False).
+
+    Deliberately NOT a swap to update_call_session_status(): that method has
+    additional side effects (end_time/duration, call log update, inbound CRM
+    sync scheduling for completed/failed/busy) that aren't a byproduct-free fit
+    here and would risk double-firing behavior already handled explicitly by
+    this webhook's elif chain (webhook fire, credit-monitoring stop, batch
+    completion notify). This is intentionally just the missing commit.
+    """
+    if call_session is None:
+        return
+    try:
+        db.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to persist call session status update (non-critical): {e}")
 
 
 @router.post("/call-events", response_class=HTMLResponse, include_in_schema=False)
@@ -398,19 +432,35 @@ async def handle_call_events_webhook(
                     except Exception:
                         agent = None
         
-        # Validate request (Twilio signature or WebRTC auth)
+        # Validate request — Twilio signature only.
+        #
+        # This endpoint is exclusively used as a Twilio `status_callback` URL (see
+        # phone_number_service.py / voice_call_service.py / call_control_mixin.py —
+        # every caller that builds this URL does so for a Twilio `calls.create` /
+        # `<Dial>` status_callback). There is no browser/WebRTC-originated caller of
+        # this endpoint anywhere in the codebase: the Web SDK calling feature
+        # (app/routers/sdk.py `public-call-token`) connects browser clients directly
+        # to a LiveKit room and never posts here. The previous `elif is_webrtc` branch
+        # accepted *any* `Authorization: Bearer <anything>` header via a no-op stub
+        # (`validate_webrtc_auth`), which let an attacker bypass X-Twilio-Signature
+        # enforcement entirely by sending an arbitrary Authorization header instead —
+        # removed rather than wired up, since there's no real auth mechanism to wire
+        # it to.
         is_twilio = 'X-Twilio-Signature' in request.headers
-        is_webrtc = 'Authorization' in request.headers
-        
+
         if is_twilio:
-            logger.info("Twilio signature found, but skipping validation for testing")
-            # if not validate_twilio_signature(request, body):
-            #     raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-        elif is_webrtc:
-            if not validate_webrtc_auth(request):
-                raise HTTPException(status_code=403, detail="Invalid WebRTC authentication")
+            form_params = dict(form_data)
+            if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+                logger.warning(
+                    "Call events webhook: invalid Twilio signature (call_sid=%s, callSessionId=%s)",
+                    call_sid,
+                    callSessionId,
+                )
+                raise HTTPException(status_code=403, detail="Invalid Twilio signature")
         else:
-            # For testing purposes, allow requests without validation
+            if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
+                logger.warning("Call events webhook: no Twilio signature present and unauthenticated webhooks disallowed")
+                raise HTTPException(status_code=403, detail="Missing Twilio signature")
             logger.info("No authentication headers found, allowing for testing")
         
         # (Removed outbound in-progress gating based on AnsweredBy/has_media)
@@ -710,6 +760,10 @@ async def handle_call_events_webhook(
             # Call failed - handle error
             logger.error(f"Call failed - SID: {call_sid}")
 
+            # Persist the "failed" status set earlier in this function (Blocker B
+            # follow-up: previously never committed for this branch).
+            _commit_terminal_call_session_status(db, call_session)
+
             # Fire call.failed webhook
             if call_session:
                 try:
@@ -773,9 +827,87 @@ async def handle_call_events_webhook(
             
             return HTMLResponse("", media_type="application/xml")
         
+        elif call_status == "canceled":
+            # Call canceled via REST API before it was answered — same "never
+            # completed" business effects as "failed" (GAP 4 follow-up): fire the
+            # webhook, stop credit monitoring, and notify batch-call completion so
+            # a canceled outbound batch call doesn't get stuck as permanently "active".
+            logger.info(f"Call canceled - SID: {call_sid}")
+
+            # Persist the "failed" status set earlier in this function (Blocker B
+            # follow-up: previously never committed for this branch).
+            _commit_terminal_call_session_status(db, call_session)
+
+            # Fire call.failed webhook (no dedicated call.canceled event type)
+            if call_session:
+                try:
+                    from app.services.webhook_service import fire_webhooks
+                    background_tasks.add_task(
+                        fire_webhooks,
+                        call_session.tenant_id,
+                        "call.failed",
+                        {
+                            "call_session_id": str(call_session.id),
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "reason": "canceled",
+                        },
+                    )
+                except Exception as _wh_exc:
+                    logger.warning("call.failed (canceled) webhook fire failed: %s", _wh_exc)
+
+            # Broadcast call canceled event (non-blocking - fire and forget)
+            if call_session:
+                try:
+                    asyncio.create_task(broadcast_call_status_update(
+                        call_session_id=str(call_session.id),
+                        status="failed",
+                        metadata={
+                            "call_sid": call_sid,
+                            "twilio_status": call_status,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    ))
+                    logger.debug(f"✅ Queued call canceled event for session {call_session.id}")
+
+                    asyncio.create_task(broadcast_call_ended(
+                        call_session_id=str(call_session.id),
+                        reason="canceled",
+                        final_data={
+                            "call_sid": call_sid,
+                            "direction": direction,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "duration": 0
+                        }
+                    ))
+                    logger.debug(f"✅ Queued call ended (canceled) event for session {call_session.id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to broadcast call canceled event: {e}")
+
+                # Stop credit monitoring when call is canceled
+                try:
+                    credit_service.stop_credit_monitoring(call_session.id)
+                    logger.debug(f"✅ Stopped credit monitoring for canceled call session {call_session.id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to stop credit monitoring (non-critical): {e}")
+
+                try:
+                    await notify_batch_call_ended(db, call_session.id, call_status)
+                except Exception as batch_exc:
+                    logger.warning("Batch call completion hook failed: %s", batch_exc, exc_info=True)
+
+            return HTMLResponse("", media_type="application/xml")
+
         elif call_status in ("busy", "no-answer"):
             # Both busy and no-answer → internal "no_answer" (per ticket spec)
             logger.info(f"Call {call_status} (internal: no_answer) - SID: {call_sid}")
+
+            # Persist the "no_answer" status set earlier in this function (Blocker B
+            # follow-up: previously never committed for this branch).
+            _commit_terminal_call_session_status(db, call_session)
 
             # Fire call.failed webhook for no_answer/busy
             if call_session:
@@ -891,6 +1023,40 @@ async def get_dashboard_analytics(
         )
 
 
+# Twilio's documented recording resource path (GAP 2 / SSRF hardening):
+# https://www.twilio.com/docs/voice/api/recording#recording-uris
+# https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Recordings/{RecordingSid}
+_TWILIO_RECORDING_URL_PATH_RE = re.compile(
+    r"^/2010-04-01/Accounts/[A-Za-z0-9]+/Recordings/[A-Za-z0-9]+$"
+)
+
+
+def _build_authenticated_recording_url(
+    recording_url: str, account_sid: str, auth_token: str
+) -> str | None:
+    """
+    Validate that `recording_url` is a genuine Twilio recording resource before
+    injecting credentials and fetching it, and build the authenticated URL.
+
+    Returns None if `recording_url` doesn't match Twilio's documented recording
+    URL shape — callers must reject the request rather than fetching an
+    attacker-controlled URL (SSRF guard).
+    """
+    if recording_url.startswith("http://") or recording_url.startswith("https://"):
+        parsed = urlparse(recording_url)
+        if parsed.scheme != "https" or parsed.netloc != "api.twilio.com":
+            return None
+        path = parsed.path
+    else:
+        # Twilio also sends relative recording URLs on some webhook shapes.
+        path = recording_url
+
+    if not _TWILIO_RECORDING_URL_PATH_RE.match(path):
+        return None
+
+    return f"https://{account_sid}:{auth_token}@api.twilio.com{path}.wav"
+
+
 @router.post("/webhook/recording-callback", response_class=HTMLResponse)
 async def handle_recording_callback(
     request: Request,
@@ -914,19 +1080,42 @@ async def handle_recording_callback(
     
     try:
         form_data = await request.form()
-        
+
         # Extract recording details
         recording_url = form_data.get("RecordingUrl", "")
         recording_sid = form_data.get("RecordingSid", "")
         recording_duration = form_data.get("RecordingDuration", "0")
         call_sid = form_data.get("CallSid", "")
         recording_status = form_data.get("RecordingStatus", "")
-        
+
+        # Resolve call session up front so per-tenant Twilio credentials are
+        # available for signature validation below.
+        call_session = None
+        agent = None
+        if callSessionId:
+            try:
+                session_uuid = uuid.UUID(callSessionId)
+                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
+                if call_session and agentId:
+                    agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
+                    logger.debug(f"✅ Found call session and agent: {agent.name if agent else 'Unknown'}")
+            except ValueError:
+                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
+
+        form_params = dict(form_data)
+        if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+            logger.warning(
+                "Recording callback webhook: invalid Twilio signature (call_sid=%s, callSessionId=%s)",
+                call_sid,
+                callSessionId,
+            )
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
         logger.debug(f"🎵 Recording URL: {recording_url}")
         logger.debug(f"📝 Recording SID: {recording_sid}")
         logger.debug(f"⏱️ Duration: {recording_duration}s")
         logger.debug(f"📊 Status: {recording_status}")
-        
+
         # IMPORTANT: Twilio calls this webhook twice:
         # 1. 'action' callback (no status, has URL) - User finished speaking → PROCESS THIS for TTS
         # 2. 'recordingStatusCallback' (has status) - Recording processed → SKIP (just for logging)
@@ -945,22 +1134,7 @@ async def handle_recording_callback(
         # This is the 'action' callback - user finished speaking
         # Process this for TTS response
         logger.info("✅ Action callback detected - processing for TTS response")
-        
-        # Get call session
-        call_session = None
-        agent = None
-        
-        if callSessionId:
-            try:
-                session_uuid = uuid.UUID(callSessionId)
-                call_session = call_session_service.get_call_session_by_id(db, session_uuid)
-                
-                if call_session and agentId:
-                    agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
-                    logger.debug(f"✅ Found call session and agent: {agent.name if agent else 'Unknown'}")
-            except ValueError:
-                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
-        
+
         # Process recording if available
         if recording_url and call_session:
             try:
@@ -968,16 +1142,17 @@ async def handle_recording_callback(
                 
                 # ✅ Get Twilio credentials based on call session (DB or Env)
                 account_sid, auth_token = get_twilio_credentials_for_call(db, call_session)
-                
-                # Build authenticated recording URL
-                # Twilio recordings are usually at /Recordings/{RecordingSid}
-                if not recording_url.startswith('http'):
-                    # Relative URL - build full URL
-                    auth_url = f"https://{account_sid}:{auth_token}@api.twilio.com{recording_url}.wav"
-                else:
-                    # Full URL - add auth
-                    auth_url = recording_url.replace('https://api.twilio.com', f'https://{account_sid}:{auth_token}@api.twilio.com') + '.wav'
-                
+
+                # Build authenticated recording URL — strictly validated against
+                # Twilio's documented recording resource shape (SSRF guard, GAP 2).
+                auth_url = _build_authenticated_recording_url(recording_url, account_sid, auth_token)
+                if auth_url is None:
+                    logger.error(
+                        "❌ Rejected recording URL that does not match Twilio's recording resource pattern: %s",
+                        recording_url,
+                    )
+                    raise Exception("Invalid Twilio recording URL")
+
                 logger.debug("📥 Downloading audio from Twilio...")
                 
                 # Download the recording
@@ -1176,10 +1351,12 @@ async def handle_recording_callback(
         )
         
         return HTMLResponse(str(response), media_type="application/xml")
-    
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Error in recording callback webhook: {e}", exc_info=True)
-        
+
         # Ultimate fallback - use streaming TwiML if we have session info
         if call_session and agent:
             streaming_twiml = build_streaming_twiml(str(call_session.id), str(agent.id))
@@ -1240,22 +1417,38 @@ async def handle_gather_speech_webhook(
                 logger.debug(f"✅ Agent: {agent.name}")
             except Exception as e:
                 logger.warning(f"⚠️ Error fetching agent: {e}")
-        
+
+        form_params = dict(form_data)
+        if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+            logger.warning(
+                "Gather speech webhook: invalid Twilio signature (call_sid=%s, callSessionId=%s)",
+                call_sid,
+                callSessionId,
+            )
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
         # Download audio from Twilio recording
         if recording_url and call_session:
             try:
                 import requests
-                
+
                 # Get Twilio credentials
                 client = twilio_service.get_client()
                 account_sid = client.username
                 auth_token = client.password
-                
-                # Download recording with authentication
-                auth_url = f"https://{account_sid}:{auth_token}@api.twilio.com{recording_url}.wav"
+
+                # Download recording with authentication — strictly validated
+                # against Twilio's documented recording resource shape (SSRF guard).
+                auth_url = _build_authenticated_recording_url(recording_url, account_sid, auth_token)
+                if auth_url is None:
+                    logger.error(
+                        "❌ Rejected recording URL that does not match Twilio's recording resource pattern: %s",
+                        recording_url,
+                    )
+                    raise Exception("Invalid Twilio recording URL")
                 logger.debug("📥 Downloading audio from Twilio...")
-                
-                audio_response = requests.get(auth_url)
+
+                audio_response = requests.get(auth_url, timeout=10)
                 audio_content = audio_response.content
                 
                 logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
@@ -1407,10 +1600,23 @@ async def handle_recording_status_webhook(
         logger.debug(f"Status: {recording_status}")
         logger.debug(f"URL: {recording_url}")
         logger.debug(f"Duration: {recording_duration}")
-        
+
         # Find the call session
+        call_session = (
+            call_session_service.get_call_session_by_twilio_sid(db, call_sid)
+            if call_sid
+            else None
+        )
+
+        form_params = dict(form_data)
+        if not await _validate_transfer_webhook_signature(request, db, call_session, form_params):
+            logger.warning(
+                "Recording status webhook: invalid Twilio signature (call_sid=%s)",
+                call_sid,
+            )
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
         if call_sid:
-            call_session = call_session_service.get_call_session_by_twilio_sid(db, call_sid)
             if call_session:
                 # Update recording URL when recording is completed
                 if recording_status == "completed" and recording_url:
@@ -1440,7 +1646,9 @@ async def handle_recording_status_webhook(
         
         # Return empty TwiML response
         return HTMLResponse("", media_type="application/xml")
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(f"⚠️ Error handling recording status webhook: {e}")
         return HTMLResponse("", media_type="application/xml")

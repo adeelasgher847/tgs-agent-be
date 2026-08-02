@@ -192,10 +192,15 @@ class ConversationOrchestrator:
         try:
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
-                # Get greeting from agent or use default
-                if self._h.agent and hasattr(self._h.agent, "first_message") and self._h.agent.first_message:
-                    greeting_text = self._h.agent.first_message
-                else:
+                # Get greeting from agent or use default. Prefer greeting_message
+                # (current field) over the legacy first_message, matching the
+                # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
+                greeting_text = None
+                if self._h.agent:
+                    greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
+                    if not greeting_text:
+                        greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
+                if not greeting_text:
                     greeting_text = "hello how are you"
 
                 # Add greeting to transcript
@@ -698,6 +703,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) "
                 f"for response to: '{user_text[:20]}...'"
             )
+            logger.debug(
+                "[LLM] request sent: provider=%s model=%s user_text_len=%s",
+                llm_runtime.provider_slug, model_name, len(user_text or ""),
+            )
 
             async def try_stream(service, model: str, api_key_override: str | None = None) -> str:
                 nonlocal chunk_counter
@@ -866,6 +875,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             final_text = ""
             try:
                 final_text = await try_stream(llm_service, model_name, api_key_override=api_key)
+                logger.debug(
+                    "[LLM] response received: chars=%s chunks_queued=%s",
+                    len(final_text or ""), chunk_counter,
+                )
             except Exception as e:
                 logger.error(f"LLM streaming failed: {e}", exc_info=True)
 

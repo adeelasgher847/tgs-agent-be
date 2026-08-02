@@ -835,6 +835,10 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 pass
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
+        # Twilio Media Streams protocol: cancelling our TTS task locally does not
+        # stop Twilio from continuing to play audio frames already sent to it —
+        # tell Twilio to flush its buffer too (no-op if nothing is queued/playing).
+        await self._send_twilio_clear_event()
         # Discard stale RAG prefetch so the next turn gets a fresh retrieval.
         prefetch = getattr(self, "_rag_prefetch_task", None)
         if prefetch and not prefetch.done():

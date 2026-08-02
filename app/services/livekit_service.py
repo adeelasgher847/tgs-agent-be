@@ -146,17 +146,25 @@ class RoomService:
     # Token generation
     # ------------------------------------------------------------------
 
-    def generate_agent_token(self, room_name: str) -> str:
+    def generate_agent_token(self, room_name: str, identity: str | None = None) -> str:
         """
         Return a signed JWT granting agent-{room_name} join access to the room.
         TTL = LIVEKIT_TOKEN_TTL seconds (default 3600).
         Never logged — callers must treat the return value as a secret.
+
+        `identity` defaults to "agent-{room_name}" (existing behaviour). Pass
+        an explicit override when a second, distinct agent-side participant
+        needs to join the same room concurrently (e.g. a dedicated TTS-out
+        publisher alongside the default audio-in subscriber identity — see
+        app/voice/livekit_browser_call_handler.py) — LiveKit disconnects the
+        older session on a duplicate-identity reconnect, so those two
+        connections must not share an identity.
         """
         from livekit.api import AccessToken, VideoGrants
 
         self._validate_room_name(room_name)
         _, api_key, api_secret = self._get_credentials()
-        identity = f"agent-{room_name}"
+        identity = identity or f"agent-{room_name}"
         token = (
             AccessToken(api_key=api_key, api_secret=api_secret)
             .with_identity(identity)
