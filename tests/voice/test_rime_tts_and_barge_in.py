@@ -301,6 +301,162 @@ class TestRimeTTSAdapter:
         )
 
 
+class TestRimeSyncSynthesizeEventLoopBridge:
+    """
+    Regression: RimeTTSAdapter.synthesize() (the sync BaseTTSProviderAdapter
+    contract) is invoked from generate_mulaw_tts() (an `async def`) via
+    LiveKitBrowserCallHandler._prefetch_tts_audio() — i.e. from a thread that
+    already has a running event loop. The old implementation bridged
+    sync→async with `asyncio.get_event_loop().run_until_complete(...)`, which
+    raises `RuntimeError: This event loop is already running` whenever a loop
+    is already running on the calling thread — exactly this call path.
+    Caller heard nothing (TTS synthesis always failed).
+
+    Fix: detect a running loop and, if present, execute the coroutine on a
+    dedicated one-off thread with its own fresh event loop instead of trying
+    to reuse the calling thread's loop.
+    """
+
+    def test_synthesize_from_within_running_event_loop_does_not_raise(self):
+        from app.utils.tts_adapter import RimeTTSAdapter
+
+        adapter = RimeTTSAdapter()
+
+        async def _fake_service_synthesize(**kwargs):
+            return b"\xff" * 320
+
+        async def _run():
+            with patch(
+                "app.services.rime_tts_service.rime_tts_service.synthesize",
+                side_effect=_fake_service_synthesize,
+            ):
+                # Called directly from a coroutine running on this thread's
+                # event loop — this is the exact scenario that previously
+                # raised "This event loop is already running".
+                return adapter.synthesize(
+                    text="Hello there",
+                    voice_external_id="mistv2_Wildflower",
+                    settings_json={"speed": 1.0},
+                )
+
+        result = asyncio.run(_run())
+        assert result == b"\xff" * 320
+
+    def test_synthesize_without_running_event_loop_still_works(self):
+        """The plain-sync-caller path (no loop on this thread) must keep working."""
+        from app.utils.tts_adapter import RimeTTSAdapter
+
+        adapter = RimeTTSAdapter()
+
+        async def _fake_service_synthesize(**kwargs):
+            return b"\xab" * 160
+
+        with patch(
+            "app.services.rime_tts_service.rime_tts_service.synthesize",
+            side_effect=_fake_service_synthesize,
+        ):
+            result = adapter.synthesize(
+                text="Hello there",
+                voice_external_id="mistv2_Wildflower",
+                settings_json={"speed": 1.0},
+            )
+
+        assert result == b"\xab" * 160
+
+    @pytest.mark.asyncio
+    async def test_generate_mulaw_tts_does_not_block_sibling_task_on_the_loop(self):
+        """
+        The bridge fix in RimeTTSAdapter.synthesize() only stops the crash —
+        by itself it still blocks the calling event-loop thread for the full
+        Rime call (via Future.result()), starving every other concurrent
+        call on that loop (STT frame delivery, other calls' TTS, etc). The
+        actual fix for that is in generate_mulaw_tts() (bidirectional_stream_
+        service.py), which now offloads adapter.synthesize() to a worker
+        thread via run_in_executor() *before* it ever reaches
+        RimeTTSAdapter.synthesize() — so the main loop stays free while a
+        slow Rime call is in flight. This test proves that end-to-end via
+        the real generate_mulaw_tts() call, not just the adapter in
+        isolation.
+        """
+        from app.services.bidirectional_stream_service import generate_mulaw_tts
+
+        agent = MagicMock()
+        agent.tts_voice = None
+        agent.tts_settings_json = {"speed": 1.0}
+
+        async def _slow_fake_service_synthesize(**kwargs):
+            # Simulate the ~real Rime HTTP round trip latency.
+            await asyncio.sleep(0.3)
+            return b"\xff" * 320
+
+        tick_count = 0
+
+        async def _ticker():
+            nonlocal tick_count
+            while True:
+                await asyncio.sleep(0.01)
+                tick_count += 1
+
+        with patch(
+            "app.services.rime_tts_service.rime_tts_service.synthesize",
+            side_effect=_slow_fake_service_synthesize,
+        ), patch(
+            "app.services.bidirectional_stream_service._resolve_tts_provider_slug",
+            return_value="rime",
+        ), patch(
+            "app.services.bidirectional_stream_service.resolve_tts_runtime",
+        ) as mock_resolve_runtime, patch(
+            "app.services.bidirectional_stream_service.audio_cache", {}
+        ):
+            mock_resolve_runtime.return_value = MagicMock(
+                voice_external_id="mistv2_Wildflower", settings_json={"speed": 1.0}
+            )
+
+            ticker_task = asyncio.create_task(_ticker())
+            try:
+                result = await generate_mulaw_tts(
+                    text="Hello there, this is a test utterance",
+                    agent=agent,
+                )
+            finally:
+                ticker_task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await ticker_task
+
+        assert result == b"\xff" * 320
+        # While the ~300ms Rime call was "in flight", a sibling task ticking
+        # every 10ms must have kept making progress — if the main loop had
+        # been blocked synchronously for that duration, tick_count would be
+        # ~0 instead of ~20+.
+        assert tick_count >= 10, (
+            f"expected sibling task to keep progressing during TTS synth, "
+            f"got only {tick_count} ticks — event loop was blocked"
+        )
+
+    def test_synthesize_from_running_loop_propagates_service_errors(self):
+        """Errors from the underlying async service must still surface, not be swallowed."""
+        from app.utils.tts_adapter import RimeTTSAdapter
+
+        adapter = RimeTTSAdapter()
+
+        async def _fake_service_synthesize(**kwargs):
+            raise RuntimeError("Rime upstream error")
+
+        async def _run():
+            with patch(
+                "app.services.rime_tts_service.rime_tts_service.synthesize",
+                side_effect=_fake_service_synthesize,
+            ):
+                adapter.synthesize(
+                    text="Hello there",
+                    voice_external_id="mistv2_Wildflower",
+                    settings_json={"speed": 1.0},
+                )
+
+        with pytest.raises(RuntimeError, match="Rime upstream error"):
+            asyncio.run(_run())
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. agent_runtime — 'rime' adapter resolution
 # ─────────────────────────────────────────────────────────────────────────────

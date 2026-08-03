@@ -238,3 +238,191 @@ class TestLiveKitAudioSubscriberFrameLoop:
             )
 
         stt_pipeline.feed_audio_chunk.assert_awaited_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LiveKitAudioSubscriber: caller audio track arriving after the first 30s
+# window must not be treated as a permanent failure — regression coverage for
+# a production stall where the subscriber gave up and disconnected after
+# exactly one 30s timeout, permanently killing STT ingestion for the rest of
+# a call that continued for minutes afterward.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestLiveKitAudioSubscriberCallerTrackWaitLoop:
+    @pytest.mark.asyncio
+    async def test_stop_requested_shortly_after_start_ends_wait_promptly(self):
+        """
+        stop_event set shortly after start, before the track is ever found —
+        must return False promptly rather than blocking for the full 30s
+        internal timeout window.
+        """
+        subscriber = LiveKitAudioSubscriber(
+            room_name="room_test", stt_pipeline=MagicMock(), output_sample_rate=16000
+        )
+        caller_track_found = asyncio.Event()
+        room_disconnected = asyncio.Event()
+
+        async def _stop_soon():
+            await asyncio.sleep(0.05)
+            subscriber._stop_event.set()
+
+        stopper = asyncio.create_task(_stop_soon())
+        result = await asyncio.wait_for(
+            subscriber._wait_for_caller_track(caller_track_found, room_disconnected),
+            timeout=5.0,
+        )
+        await stopper
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_caller_track_arriving_after_first_timeout_window_is_not_lost(self):
+        """
+        Core regression: the caller's track is NOT found within the first
+        30s window, but arrives shortly after. Before the fix, the subscriber
+        gave up permanently on the first timeout and disconnected — STT would
+        never see this track no matter how long the call continued. After
+        the fix, the wait loop keeps waiting (bounded by asyncio.wait's
+        internal 30s timeout, looped) and must pick the track up as soon as
+        it's set, without ever disconnecting.
+        """
+        subscriber = LiveKitAudioSubscriber(
+            room_name="room_test", stt_pipeline=MagicMock(), output_sample_rate=16000
+        )
+        caller_track_found = asyncio.Event()
+        room_disconnected = asyncio.Event()
+
+        # Patch the loop's internal 30s timeout down to something fast so the
+        # test doesn't actually wait 30 real seconds to exercise a second
+        # iteration of the retry loop.
+        async def _set_track_after_delay():
+            await asyncio.sleep(0.2)
+            caller_track_found.set()
+
+        setter = asyncio.create_task(_set_track_after_delay())
+
+        _real_asyncio_wait = asyncio.wait
+
+        with patch("asyncio.wait") as _wrapped:
+            # Force the internal per-iteration timeout way down so a single
+            # "timeout" retry cycle happens well before the track is set at
+            # t=0.2s, proving the loop survives at least one timeout without
+            # giving up.
+            async def _wait_with_short_timeout(tasks, timeout=None, return_when=None):
+                return await _real_asyncio_wait(tasks, timeout=0.05, return_when=return_when)
+
+            _wrapped.side_effect = _wait_with_short_timeout
+
+            result = await asyncio.wait_for(
+                subscriber._wait_for_caller_track(caller_track_found, room_disconnected),
+                timeout=5.0,
+            )
+
+        await setter
+        assert result is True
+        # Must not have given up: no stop/disconnect should have been needed.
+        assert not subscriber._stop_event.is_set()
+        assert not room_disconnected.is_set()
+        # The rate-limited timeout warning must have fired at least once,
+        # proving the loop actually looped through a timeout before success.
+        assert subscriber._caller_track_wait_timeout_logged is True
+
+    @pytest.mark.asyncio
+    async def test_stop_event_ends_the_wait_without_disconnect_flag(self):
+        subscriber = LiveKitAudioSubscriber(
+            room_name="room_test", stt_pipeline=MagicMock(), output_sample_rate=16000
+        )
+        caller_track_found = asyncio.Event()
+        room_disconnected = asyncio.Event()
+        subscriber._stop_event.set()
+
+        result = await asyncio.wait_for(
+            subscriber._wait_for_caller_track(caller_track_found, room_disconnected),
+            timeout=2.0,
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_room_disconnected_ends_the_wait(self):
+        subscriber = LiveKitAudioSubscriber(
+            room_name="room_test", stt_pipeline=MagicMock(), output_sample_rate=16000
+        )
+        caller_track_found = asyncio.Event()
+        room_disconnected = asyncio.Event()
+        room_disconnected.set()
+
+        result = await asyncio.wait_for(
+            subscriber._wait_for_caller_track(caller_track_found, room_disconnected),
+            timeout=2.0,
+        )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_full_subscribe_loop_survives_late_caller_track_end_to_end(self):
+        """
+        Full _subscribe_and_transcode() path: caller track arrives late (after
+        the on_track_subscribed callback fires from a delayed simulated
+        LiveKit event), and STT ingestion must still proceed — the room must
+        not have been disconnected in between.
+        """
+        stt_pipeline = MagicMock()
+        stt_pipeline.feed_audio_chunk = AsyncMock()
+
+        subscriber = LiveKitAudioSubscriber(
+            room_name="room_test", stt_pipeline=stt_pipeline, output_sample_rate=16000
+        )
+
+        frames = [_FakeAudioFrame(_FRAME_48K_MONO)]
+        audio_stream = _FakeAudioStream(frames)
+
+        fake_room = MagicMock()
+        fake_room.connect = AsyncMock()
+        fake_room.disconnect = AsyncMock()
+        fake_room.on = MagicMock()
+
+        fake_rtc = MagicMock()
+        fake_rtc.Room = MagicMock(return_value=fake_room)
+        fake_rtc.TrackKind.KIND_AUDIO = "audio"
+        fake_rtc.AudioStream = MagicMock(return_value=audio_stream)
+
+        fake_processor = MagicMock()
+        fake_processor.process_frame = AsyncMock(return_value=b"\x01\x02" * 50)
+        subscriber._processor = fake_processor
+
+        fake_track = MagicMock()
+        fake_track.kind = "audio"
+        fake_track.sid = "TR_test"
+        fake_participant = MagicMock()
+        fake_participant.identity = "caller-room_test"
+
+        async def _connect_and_fire_track_subscribed_late(*_args, **_kwargs):
+            async def _fire_late():
+                await asyncio.sleep(0.15)
+                for call in fake_room.on.call_args_list:
+                    if call.args and call.args[0] == "track_subscribed":
+                        handler = call.args[1]
+                        handler(fake_track, MagicMock(), fake_participant)
+                        return
+
+            asyncio.create_task(_fire_late())
+
+        fake_room.connect.side_effect = _connect_and_fire_track_subscribed_late
+
+        _real_asyncio_wait = asyncio.wait
+
+        with patch("app.core.config.settings.LIVEKIT_ENABLED", True), \
+             patch.dict("sys.modules", {"livekit": MagicMock(rtc=fake_rtc)}), \
+             patch("asyncio.wait") as _wrapped:
+
+            async def _wait_with_short_timeout(tasks, timeout=None, return_when=None):
+                return await _real_asyncio_wait(tasks, timeout=0.05, return_when=return_when)
+
+            _wrapped.side_effect = _wait_with_short_timeout
+
+            await asyncio.wait_for(
+                subscriber._subscribe_and_transcode("ws://fake", "fake-token"), timeout=5.0
+            )
+
+        stt_pipeline.feed_audio_chunk.assert_awaited_once()
+        # disconnect() is called once at the very end via the outer `finally`,
+        # not prematurely after the (survived) first timeout.
+        fake_room.disconnect.assert_awaited_once()
