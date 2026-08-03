@@ -209,7 +209,14 @@ class _LiveKitAgentAudioPublisher:
                 samples = [ulaw_to_linear_sample(b) for b in chunk]
                 pcm = struct.pack(f"<{len(samples)}h", *samples)
                 frame = rtc.AudioFrame.create(_AGENT_AUDIO_SAMPLE_RATE, 1, len(samples))
-                frame.data[:] = pcm
+                # frame.data is a memoryview already cast to int16 ("h")
+                # format (see livekit.rtc.AudioFrame.data); assigning a plain
+                # `bytes` object (format "B") straight into it raises
+                # "ValueError: memoryview assignment: lvalue and rvalue have
+                # different structures" even though the byte lengths match.
+                # Cast the destination view to bytes format first so both
+                # sides agree on structure.
+                frame.data.cast("B")[:] = pcm
                 await self._source.capture_frame(frame)
                 self._publish_failed_logged = False
         except Exception as exc:

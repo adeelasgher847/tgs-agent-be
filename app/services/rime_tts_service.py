@@ -16,6 +16,7 @@ Rime mistv2 supports:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import AsyncIterator
 
@@ -38,18 +39,39 @@ class RimeTtsService:
     """Thin async wrapper around the Rime TTS HTTP streaming endpoint."""
 
     def __init__(self) -> None:
-        # Client is created lazily (no event loop at module import time).
-        self._client: httpx.AsyncClient | None = None
+        # httpx.AsyncClient's connection pool (httpcore/anyio) is bound to
+        # whichever asyncio event loop was running when the client's
+        # sockets were opened — it is NOT safe to reuse a single client
+        # across different loops (a stale pooled connection tries to
+        # call_soon() on its original loop when closed/reused, raising
+        # "RuntimeError: Event loop is closed" if that loop already ended).
+        #
+        # This service is called from two distinct execution contexts that
+        # each have their own long-lived loop for the life of the process:
+        #   - the live Twilio/LiveKit streaming path (stream_text_to_speech
+        #     awaited directly on the app's main event loop)
+        #   - RimeTTSAdapter.synthesize()'s sync-bridge path, which now runs
+        #     all its coroutines on one dedicated background loop (see
+        #     app/utils/tts_adapter.py::_get_rime_sync_bridge_loop) instead
+        #     of spinning up/tearing down a fresh loop per call.
+        # Keying the cached client by the *running loop* means each of those
+        # stable loops gets its own client, created once and reused for that
+        # loop's whole lifetime — never shared across loops.
+        self._clients: dict[int, httpx.AsyncClient] = {}
         # Resolve once at construction so a missing key fails before any live call.
         self._api_key = get_rime_api_key()
 
     def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        client = self._clients.get(key)
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=3.0, read=30.0, write=10.0, pool=5.0),
                 http2=False,
             )
-        return self._client
+            self._clients[key] = client
+        return client
 
     # ------------------------------------------------------------------
     # Public API
@@ -152,8 +174,17 @@ class RimeTtsService:
         return b"".join(chunks)
 
     async def close(self) -> None:
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
+        """Close whichever client is bound to the *currently running* loop.
+
+        Only the caller's own loop-scoped client can be safely closed from
+        here — closing a client bound to a different (possibly already
+        stopped) loop would itself risk the same "Event loop is closed"
+        failure this file exists to avoid.
+        """
+        loop = asyncio.get_running_loop()
+        client = self._clients.pop(id(loop), None)
+        if client and not client.is_closed:
+            await client.aclose()
 
 
 rime_tts_service = RimeTtsService()

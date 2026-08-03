@@ -284,7 +284,7 @@ class TestRimeTTSAdapter:
         mock_client.stream.side_effect = _fake_stream_call
 
         svc = RimeTtsService()
-        svc._client = mock_client
+        svc._get_client = lambda: mock_client
 
         with patch("app.core.secret_manager.get_rime_api_key", return_value="test-key"):
             async def _run():
@@ -926,7 +926,7 @@ class TestRimeTtsService:
         mock_client = MagicMock()
         mock_client.is_closed = False
         mock_client.stream.return_value = _FakeStream()
-        svc._client = mock_client
+        svc._get_client = lambda: mock_client
 
         with patch("app.core.secret_manager.get_rime_api_key", return_value="test-key"):
 

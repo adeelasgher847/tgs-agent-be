@@ -113,7 +113,17 @@ class LiveKitTwilioPublisher:
                 frame = rtc.AudioFrame.create(
                     _TWILIO_SAMPLE_RATE, 1, len(samples)
                 )
-                frame.data[:] = pcm
+                # frame.data is a memoryview already cast to int16 ("h")
+                # format (see livekit.rtc.AudioFrame.data); assigning a
+                # plain `bytes` object (format "B") straight into it raises
+                # "ValueError: memoryview assignment: lvalue and rvalue have
+                # different structures" even though the byte lengths match.
+                # Cast the destination view to bytes format first so both
+                # sides agree on structure. (Same bug as, and same fix as,
+                # _LiveKitAgentAudioPublisher.publish_mulaw in
+                # livekit_browser_call_handler.py — previously silently
+                # swallowed here via the debug-level log below.)
+                frame.data.cast("B")[:] = pcm
                 await self._source.capture_frame(frame)
         except Exception as exc:
             logger.debug("[LiveKitBridge] publish_mulaw: %s", exc)

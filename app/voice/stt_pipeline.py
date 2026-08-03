@@ -75,6 +75,14 @@ class SttPipeline:
 
         self._stt_session = None
         self._reader_task: asyncio.Task | None = None
+        # Set by aclose() — once the pipeline has been deliberately shut down,
+        # a trailing/late-arriving audio chunk (e.g. an ffmpeg buffer flush
+        # racing the call's own shutdown sequence) must not lazily reopen a
+        # brand-new STT session that can never receive further audio and
+        # will just time out and error minutes later. Reset by
+        # recreate_with_endpointing(), which intentionally closes then
+        # expects the next feed_audio_chunk() to reopen a fresh session.
+        self._closed = False
 
         # Normalized-final dedup — catches re-endpoints within window
         self._last_final_norm_key: str = ""
@@ -267,6 +275,12 @@ class SttPipeline:
         """Feed raw audio bytes (MULAW or LINEAR16) into the streaming session."""
         if not audio_data:
             return
+        if self._closed:
+            logger.debug(
+                "[STT] send skipped — pipeline already closed, not reopening "
+                "(call_session_id=%s)", self._call_session_id,
+            )
+            return
         self._last_audio_mono = time.monotonic()
         await self._ensure_session()
         if self._stt_session:
@@ -299,6 +313,7 @@ class SttPipeline:
         if want == self._effective_endpointing_ms() and self._stt_session is not None:
             return
         await self.aclose()
+        self._closed = False  # aclose() marks closed; this call reopens deliberately
         self._endpointing_ms = want
         self._stt_session = None
         self._reader_task = None
@@ -318,6 +333,7 @@ class SttPipeline:
 
     async def aclose(self) -> None:
         """Graceful shutdown: signal finish then wait up to 5s for reader."""
+        self._closed = True
         self.finish_session()
         if self._reader_task and not self._reader_task.done():
             try:

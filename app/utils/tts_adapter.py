@@ -1,12 +1,88 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Coroutine
 
 from app.core.secret_manager import get_rime_api_key
 from app.models.tts_provider import TTSProvider
 from app.services.elevenlabs_service import elevenlabs_service
 from app.services.google_tts_service import google_tts_service
+
+
+class _RimeSyncEventLoopBridge:
+    """Runs Rime's async HTTP calls on a single, persistent background event
+    loop so synchronous callers (RimeTTSAdapter.synthesize(), invoked from a
+    worker thread via run_in_executor()) can drive them without spinning up
+    and tearing down a fresh event loop on every call.
+
+    Why this exists: rime_tts_service caches an httpx.AsyncClient for
+    connection pooling, and an httpx.AsyncClient's connection pool is bound
+    to whichever event loop was running when its sockets were opened. Doing
+    `asyncio.run(coro)` per call — one fresh loop created and destroyed each
+    time — meant a second call could reuse a pooled connection still bound
+    to the *first* call's already-closed loop, raising
+    "RuntimeError: Event loop is closed" deep inside httpx/httpcore/anyio's
+    connection teardown.
+
+    A dedicated loop, started once and reused for the process's lifetime,
+    keeps the cached client bound to exactly one stable loop for its whole
+    life — matching httpx's actual threading/loop contract. This is chosen
+    over "don't cache the client" because Rime is on the hot TTS-latency
+    path and repeated TLS handshakes per call would add real latency; a
+    single background thread is a small, one-time cost.
+
+    This bridge is used *only* for the sync-bridge path
+    (RimeTTSAdapter.synthesize()). The live streaming path
+    (async_stream_synthesize / stream_synthesize, called from
+    app/voice/tts_stream_mixin.py) is already correctly awaited directly on
+    the caller's own real running loop and must keep working exactly as
+    before — it does not go through this bridge at all.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._start_lock = threading.Lock()
+
+    def _ensure_started(self) -> asyncio.AbstractEventLoop:
+        loop = self._loop
+        if loop is not None:
+            return loop
+        with self._start_lock:
+            if self._loop is not None:
+                return self._loop
+
+            ready = threading.Event()
+            state: dict[str, asyncio.AbstractEventLoop] = {}
+
+            def _run_forever() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                state["loop"] = loop
+                ready.set()
+                loop.run_forever()
+
+            thread = threading.Thread(
+                target=_run_forever,
+                name="rime-tts-sync-bridge",
+                daemon=True,
+            )
+            thread.start()
+            ready.wait()
+            self._loop = state["loop"]
+            return self._loop
+
+    def run(self, coro: "Coroutine[Any, Any, bytes]") -> bytes:
+        """Schedule `coro` on the dedicated bridge loop and block the
+        calling thread until it completes. Safe to call from any thread,
+        regardless of whether that thread has its own running event loop."""
+        loop = self._ensure_started()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+
+_rime_sync_bridge = _RimeSyncEventLoopBridge()
 
 
 class BaseTTSProviderAdapter(ABC):
@@ -331,7 +407,6 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
         voice_external_id: str,
         settings_json: dict[str, Any] | None = None,
     ) -> bytes:
-        import asyncio
         cfg = dict(settings_json or {})
         model_id = cfg.get("model_id", self._DEFAULT_MODEL)
         speed_alpha = self._user_speed_to_speed_alpha(cfg.get("speed", 1.0), model_id)
@@ -347,28 +422,14 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
             audio_format="mulaw",
         )
 
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            # No loop running on the calling thread — safe to drive the
-            # coroutine to completion directly.
-            return asyncio.run(coro)
-
-        # A loop IS already running on this thread. asyncio.run() /
-        # run_until_complete() would raise "This event loop is already
-        # running" in that case, so hand the coroutine to a dedicated
-        # one-off thread with its own fresh event loop instead. In practice
-        # this branch should no longer trigger for generate_mulaw_tts()'s
-        # call site — that caller now offloads adapter.synthesize() to a
-        # worker thread via run_in_executor() (see
-        # bidirectional_stream_service.py) specifically so this blocking
-        # call never runs on the main event loop's thread; this remains as
-        # a defensive fallback for any other/future caller invoked directly
-        # from an async context.
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(asyncio.run, coro).result()
+        # Drive the coroutine on a single persistent background event loop
+        # (see _RimeSyncEventLoopBridge above) instead of asyncio.run()'s
+        # per-call fresh-loop-then-teardown, which corrupted rime_tts_service's
+        # cached httpx.AsyncClient across calls ("Event loop is closed").
+        # Safe to call regardless of whether the calling thread already has
+        # its own running loop — run_coroutine_threadsafe only needs the
+        # target (bridge) loop to be running, not the caller's thread.
+        return _rime_sync_bridge.run(coro)
 
     async def async_stream_synthesize(
         self,

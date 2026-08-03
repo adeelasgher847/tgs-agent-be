@@ -59,6 +59,66 @@ def test_stt_pipeline_exits_reader_loop_on_done(monkeypatch):
     assert seen["final"] == 0
 
 
+def test_feed_audio_chunk_after_aclose_does_not_reopen_session(monkeypatch):
+    """
+    Regression: a trailing/late-arriving audio chunk (e.g. an ffmpeg buffer
+    flush racing the call's own shutdown sequence) fed to an already-closed
+    SttPipeline used to lazily reopen a brand-new provider session via
+    _ensure_session() — a session that could never receive further audio
+    (the call had already ended and the LiveKit room had disconnected) and
+    would just sit there until it timed out and errored minutes later
+    (observed in production: "Deepgram did not receive audio data ... within
+    the timeout window", ~12s after a call had already ended cleanly).
+    aclose() must mark the pipeline closed so a subsequent feed_audio_chunk()
+    is a no-op instead of opening a new session.
+    """
+    sessions_created = {"count": 0}
+
+    class FakeSession:
+        async def start(self):
+            return None
+
+        async def get_result(self):
+            await asyncio.sleep(1)
+            return {}
+
+        def push_audio(self, _):
+            return None
+
+        def finish(self):
+            return None
+
+    def _create_session(**_):
+        sessions_created["count"] += 1
+        return FakeSession()
+
+    from app.services import deepgram_stt_service as dg_module
+
+    monkeypatch.setattr(
+        dg_module.deepgram_stt_service, "create_streaming_session", _create_session
+    )
+
+    async def on_interim(_, __):
+        return None
+
+    async def on_final(_, __):
+        return None
+
+    async def _run():
+        pipeline = SttPipeline(language_code="en-US", on_interim=on_interim, on_final=on_final)
+        await pipeline.feed_audio_chunk(b"\x00\x01")
+        assert sessions_created["count"] == 1
+
+        await pipeline.aclose()
+
+        # A trailing chunk arriving after shutdown must not reopen a session.
+        await pipeline.feed_audio_chunk(b"\x00\x01")
+        assert sessions_created["count"] == 1
+        assert pipeline._stt_session is None
+
+    asyncio.run(_run())
+
+
 def test_bidirectional_disconnect_triggers_finish_session(monkeypatch):
     close_state = {"closed": False, "finished": 0}
 
