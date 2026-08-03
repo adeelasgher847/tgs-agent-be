@@ -3,6 +3,8 @@ Service functions for bidirectional streaming.
 Handles TTS generation and TwiML building.
 """
 
+import asyncio
+import functools
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -132,10 +134,20 @@ async def generate_mulaw_tts(
             settings_json.setdefault("output_format", "ulaw_8000")
             adapter = get_tts_adapter(provider_slug)
             logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [provider={provider_slug}]")
-            audio_content = adapter.synthesize(
-                text=tts_text,
-                voice_external_id=external_voice_id,
-                settings_json=settings_json,
+            # adapter.synthesize() is a blocking sync call (network round-trip
+            # for Rime/ElevenLabs, or a bridged asyncio.run() for Rime's async
+            # backend) — this function is awaited directly on the caller's
+            # event loop (e.g. LiveKitBrowserCallHandler on the main loop), so
+            # calling it inline would freeze that loop for every other
+            # concurrent call sharing it. Offload to a worker thread instead.
+            audio_content = await asyncio.get_running_loop().run_in_executor(
+                None,
+                functools.partial(
+                    adapter.synthesize,
+                    text=tts_text,
+                    voice_external_id=external_voice_id,
+                    settings_json=settings_json,
+                ),
             )
 
         if add_office_bg:

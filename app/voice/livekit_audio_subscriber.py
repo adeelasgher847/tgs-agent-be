@@ -38,6 +38,12 @@ class LiveKitAudioSubscriber:
         self._stop_event = asyncio.Event()
         self._processor: LiveKitAudioProcessor | None = None
         self._vad_note_logged = False
+        # Rate-limits the "still waiting for caller audio track" warning to
+        # once (the first 30s timeout) rather than once per retry, so a
+        # sustained wait (slow mic permission grant, ICE/TURN negotiation on
+        # a restrictive network, etc.) doesn't flood the logs while still
+        # being fully visible the first time it happens.
+        self._caller_track_wait_timeout_logged = False
 
     async def run(self) -> None:
         """Connect to LiveKit room, subscribe to caller audio, feed STT."""
@@ -65,6 +71,81 @@ class LiveKitAudioSubscriber:
             await self._subscribe_and_transcode(ws_url, agent_token)
         self._processor = None
 
+    async def _wait_for_caller_track(
+        self,
+        caller_track_found: asyncio.Event,
+        room_disconnected: asyncio.Event,
+    ) -> bool:
+        """
+        Wait for the caller's audio track to be subscribed, for the effective
+        lifetime of the call — not just a single 30s window.
+
+        A live web-demo call can run for minutes (bounded only by the caller
+        hanging up or an explicit end-call), and the browser side may take
+        longer than 30s to actually publish its mic track on a first-time
+        visit (mic permission prompt, restrictive-network ICE/TURN
+        negotiation, etc.). Giving up permanently after one timeout silently
+        kills STT ingestion for the rest of the call. Instead, loop the wait
+        indefinitely, exiting only when the track is found, the caller
+        explicitly requests stop (``self._stop_event``), or the room itself
+        disconnects.
+
+        Returns True if the caller track was found, False otherwise (in
+        which case the caller should not proceed to consume audio_stream).
+        """
+        stop_task = asyncio.ensure_future(self._stop_event.wait())
+        disconnect_task = asyncio.ensure_future(room_disconnected.wait())
+        track_task = asyncio.ensure_future(caller_track_found.wait())
+
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {stop_task, disconnect_task, track_task},
+                    timeout=30.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if track_task in done:
+                    return True
+
+                if stop_task in done:
+                    logger.info(
+                        "[LiveKitAudioSubscriber] stop requested while waiting "
+                        "for caller audio track room=%s", self._room_name,
+                    )
+                    return False
+
+                if disconnect_task in done:
+                    logger.warning(
+                        "[LiveKitAudioSubscriber] room disconnected while "
+                        "waiting for caller audio track room=%s", self._room_name,
+                    )
+                    return False
+
+                # 30s elapsed with none of the above — keep waiting, but
+                # don't spam the logs on every subsequent retry.
+                if not self._caller_track_wait_timeout_logged:
+                    logger.warning(
+                        "[LiveKitAudioSubscriber] still waiting for caller "
+                        "audio track after 30s (room=%s) — continuing to "
+                        "wait for the rest of the call instead of "
+                        "disconnecting; further waits logged at debug level",
+                        self._room_name,
+                    )
+                    self._caller_track_wait_timeout_logged = True
+                else:
+                    logger.debug(
+                        "[LiveKitAudioSubscriber] still waiting for caller "
+                        "audio track (room=%s)", self._room_name,
+                    )
+        finally:
+            for task in (stop_task, disconnect_task, track_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(
+                stop_task, disconnect_task, track_task, return_exceptions=True
+            )
+
     async def _subscribe_and_transcode(self, ws_url: str, token: str) -> None:
         try:
             from livekit import rtc
@@ -75,6 +156,7 @@ class LiveKitAudioSubscriber:
         room = rtc.Room()
         audio_stream: Any | None = None
         caller_track_found = asyncio.Event()
+        room_disconnected = asyncio.Event()
 
         def on_track_subscribed(track, publication, participant):
             nonlocal audio_stream
@@ -89,7 +171,11 @@ class LiveKitAudioSubscriber:
                 audio_stream = rtc.AudioStream(track)
                 caller_track_found.set()
 
+        def on_room_disconnected(*_args):
+            room_disconnected.set()
+
         room.on("track_subscribed", on_track_subscribed)
+        room.on("disconnected", on_room_disconnected)
 
         try:
             await room.connect(ws_url, token)
@@ -97,12 +183,9 @@ class LiveKitAudioSubscriber:
                 "[LiveKitAudioSubscriber] connected to room=%s", self._room_name
             )
 
-            try:
-                await asyncio.wait_for(caller_track_found.wait(), timeout=30.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[LiveKitAudioSubscriber] timed out waiting for caller audio track"
-                )
+            if not await self._wait_for_caller_track(
+                caller_track_found, room_disconnected
+            ):
                 return
 
             if audio_stream is None or self._processor is None:
