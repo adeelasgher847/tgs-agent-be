@@ -337,16 +337,38 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
         speed_alpha = self._user_speed_to_speed_alpha(cfg.get("speed", 1.0), model_id)
         speaker = voice_external_id or self._DEFAULT_VOICE
         from app.services.rime_tts_service import rime_tts_service
-        return asyncio.get_event_loop().run_until_complete(
-            rime_tts_service.synthesize(
-                text=text,
-                speaker=speaker,
-                model_id=model_id,
-                speed_alpha=speed_alpha,
-                sample_rate=8000,
-                audio_format="mulaw",
-            )
+
+        coro = rime_tts_service.synthesize(
+            text=text,
+            speaker=speaker,
+            model_id=model_id,
+            speed_alpha=speed_alpha,
+            sample_rate=8000,
+            audio_format="mulaw",
         )
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop running on the calling thread — safe to drive the
+            # coroutine to completion directly.
+            return asyncio.run(coro)
+
+        # A loop IS already running on this thread. asyncio.run() /
+        # run_until_complete() would raise "This event loop is already
+        # running" in that case, so hand the coroutine to a dedicated
+        # one-off thread with its own fresh event loop instead. In practice
+        # this branch should no longer trigger for generate_mulaw_tts()'s
+        # call site — that caller now offloads adapter.synthesize() to a
+        # worker thread via run_in_executor() (see
+        # bidirectional_stream_service.py) specifically so this blocking
+        # call never runs on the main event loop's thread; this remains as
+        # a defensive fallback for any other/future caller invoked directly
+        # from an async context.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, coro).result()
 
     async def async_stream_synthesize(
         self,
