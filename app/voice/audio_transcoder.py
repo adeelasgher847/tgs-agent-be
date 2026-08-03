@@ -18,6 +18,14 @@ _FFMPEG_OUTPUT_FORMAT = "s16le"
 # sustained outage (binary missing, fork/exec exhaustion) doesn't retry on
 # every ~20ms frame and pile onto whatever resource pressure caused it.
 _RESTART_BACKOFF_SECONDS = 1.0
+# A single stdout-read timeout is normal/expected — a freshly (re)started
+# ffmpeg process needs a moment to initialize and buffer enough input before
+# it flushes its first output block, especially under container CPU
+# contention, and each caller-audio frame is only ~10-20ms of PCM. Only treat
+# it as "the process is actually stuck" (and reset it) after this many
+# *consecutive* timeouts, so we don't kill-and-respawn ffmpeg before it ever
+# gets a chance to reach steady state.
+_MAX_CONSECUTIVE_READ_TIMEOUTS = 15
 
 
 class LiveKitAudioProcessor:
@@ -41,6 +49,7 @@ class LiveKitAudioProcessor:
         # flood the logs while still being fully visible.
         self._ffmpeg_start_failed_logged = False
         self._last_restart_failure: float | None = None
+        self._consecutive_read_timeouts = 0
 
     async def process_frame(
         self,
@@ -134,19 +143,33 @@ class LiveKitAudioProcessor:
             proc.stdin.write(pcm)
             await proc.stdin.drain()
             out = await asyncio.wait_for(proc.stdout.read(65536), timeout=0.5)
+            self._consecutive_read_timeouts = 0
             return out or b""
         except (BrokenPipeError, ConnectionResetError) as exc:
             logger.warning("[LiveKitAudioProcessor] ffmpeg pipe broken: %s", exc)
+            self._consecutive_read_timeouts = 0
             await self._reset_after_failure()
             return b""
         except asyncio.TimeoutError:
-            logger.warning(
-                "[LiveKitAudioProcessor] ffmpeg read timed out — process likely stuck, resetting"
-            )
-            await self._reset_after_failure()
+            # A single (or occasional) timeout is normal — the process just
+            # hasn't buffered enough input yet to flush output for this
+            # frame; drop this frame only, keep the same process running so
+            # it can reach steady state. Only reset once enough consecutive
+            # timeouts have piled up to indicate the process is genuinely
+            # stuck rather than merely warming up / catching up.
+            self._consecutive_read_timeouts += 1
+            if self._consecutive_read_timeouts >= _MAX_CONSECUTIVE_READ_TIMEOUTS:
+                logger.warning(
+                    "[LiveKitAudioProcessor] ffmpeg read timed out %d times in a "
+                    "row — process likely stuck, resetting",
+                    self._consecutive_read_timeouts,
+                )
+                self._consecutive_read_timeouts = 0
+                await self._reset_after_failure()
             return b""
         except Exception as exc:
             logger.warning("[LiveKitAudioProcessor] ffmpeg convert error: %s", exc)
+            self._consecutive_read_timeouts = 0
             await self._reset_after_failure()
             return b""
 
