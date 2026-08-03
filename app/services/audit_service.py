@@ -7,6 +7,7 @@ abort a business operation.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -16,6 +17,19 @@ from sqlalchemy.orm import Session
 from app.core.logger import logger
 from app.core.request_auth import AUTH_METHOD_API_KEY, get_auth_method
 from app.models.audit_log import AuditLog
+
+
+def _json_safe(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Coerce a dict into something the plain JSON column can actually store.
+
+    Callers commonly pass Pydantic .model_dump() output, which keeps native
+    Python objects (datetime, UUID, Decimal, ...) rather than JSON-primitive
+    values. AuditLog.old_value/new_value are plain `JSON` columns with no
+    custom serializer, so those objects raise TypeError at flush time.
+    """
+    if value is None:
+        return None
+    return json.loads(json.dumps(value, default=str))
 
 
 def _extract_ip(request: Request) -> str | None:
@@ -63,8 +77,8 @@ def log_audit_event(
             action=action,
             resource_type=resource_type,
             resource_id=resource_id,
-            old_value=old_value,
-            new_value=new_value,
+            old_value=_json_safe(old_value),
+            new_value=_json_safe(new_value),
             ip_address=ip,
             user_agent=user_agent,
         )
