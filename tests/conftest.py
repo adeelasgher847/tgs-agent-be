@@ -35,6 +35,21 @@ _RUN_GOOGLE_STT_INTEGRATION = os.environ.get(
 ).lower() in ("1", "true", "yes")
 
 if not _RUN_GOOGLE_STT_INTEGRATION:
+    # Force-load livekit's rtc extension (and, transitively, the real
+    # google.protobuf submodules it needs — descriptor, descriptor_pool,
+    # symbol_database, etc.) *before* stubbing out the `google` namespace
+    # below. Those protobuf submodules are an unrelated real dependency
+    # (used by livekit/grpc, not Google Cloud/GenAI), but once `google`
+    # itself is replaced with a bare MagicMock (no `__path__`), any *new*
+    # `from google.protobuf import ...` fails with "'google' is not a
+    # package". Pre-importing here caches the real submodules in
+    # sys.modules so later imports hit that cache directly instead of
+    # resolving through the mocked parent package.
+    try:
+        import livekit.rtc  # noqa: F401
+    except ImportError:
+        pass
+
     sys.modules["google"] = MagicMock()
     sys.modules["google.genai"] = MagicMock()
     sys.modules["google.oauth2"] = MagicMock()
