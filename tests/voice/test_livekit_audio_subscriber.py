@@ -173,6 +173,70 @@ class TestLiveKitAudioProcessorResilience:
         # process for the rest of the call.
         assert out2 != b""
 
+    @pytest.mark.asyncio
+    async def test_occasional_read_timeout_does_not_reset_ffmpeg(self):
+        """
+        Regression: a single (or occasional) stdout-read timeout is a normal
+        condition for a live/freshly-started ffmpeg process that hasn't
+        buffered enough input yet to flush output for a tiny 10-20ms frame —
+        it is NOT evidence the process is dead. A prior fix incorrectly
+        treated every timeout the same as a broken pipe / dead process and
+        reset (killed + forced a respawn) on every single one — which meant
+        ffmpeg was killed before it ever got a chance to reach steady state,
+        producing an infinite respawn loop where caller audio was NEVER
+        successfully converted (observed in production: "ffmpeg read timed
+        out — process likely stuck, resetting" logged continuously, every
+        ~1.5s, for the whole call). A timeout must leave the same process in
+        place so it can catch up on a later frame.
+        """
+        processor = LiveKitAudioProcessor(output_sample_rate=16000)
+
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdout = MagicMock()
+        proc.stdout.read = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        processor._ffmpeg_process = proc
+        processor._ffmpeg_input_rate = 48000
+        processor._ffmpeg_input_channels = 1
+
+        for _ in range(5):
+            out = await processor.process_frame(_FRAME_48K_MONO, sample_rate=48000, num_channels=1)
+            assert out == b""
+
+        # After several (but not too many) consecutive timeouts, the SAME
+        # process must still be in place — not reset/killed.
+        assert processor._ffmpeg_process is proc
+
+    @pytest.mark.asyncio
+    async def test_sustained_read_timeouts_eventually_reset_ffmpeg(self):
+        """A process that never recovers across many consecutive timeouts is
+        genuinely stuck and must still eventually self-heal."""
+        processor = LiveKitAudioProcessor(output_sample_rate=16000)
+
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.drain = AsyncMock()
+        proc.stdout = MagicMock()
+        proc.stdout.read = AsyncMock(side_effect=asyncio.TimeoutError())
+        proc.returncode = None
+        proc.wait = AsyncMock(return_value=None)
+        proc.kill = MagicMock()
+
+        processor._ffmpeg_process = proc
+        processor._ffmpeg_input_rate = 48000
+        processor._ffmpeg_input_channels = 1
+
+        from app.voice.audio_transcoder import _MAX_CONSECUTIVE_READ_TIMEOUTS
+
+        for _ in range(_MAX_CONSECUTIVE_READ_TIMEOUTS):
+            await processor.process_frame(_FRAME_48K_MONO, sample_rate=48000, num_channels=1)
+
+        assert processor._ffmpeg_process is None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LiveKitAudioSubscriber: a single bad frame must not abort ingestion for the

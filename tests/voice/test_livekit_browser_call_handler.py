@@ -11,6 +11,7 @@ scheduling coverage.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -401,6 +402,33 @@ class TestLiveKitAgentAudioPublisher:
 
         mock_source.capture_frame.assert_not_called()
         mock_source.clear_queue.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_publish_mulaw_failure_is_logged_at_warning_not_swallowed(self, caplog):
+        """
+        Regression: capture_frame() failures were previously caught and
+        logged only at DEBUG — invisible in normal/production logs. This
+        meant TTS synthesis could succeed and be reported as "turn
+        complete" while the actual publish to the browser silently failed
+        with zero audible output and zero trace of why. Must now be visible
+        at WARNING.
+        """
+        publisher = _LiveKitAgentAudioPublisher("room_x")
+        publisher._connected = True
+        mock_source = MagicMock()
+        mock_source.capture_frame = AsyncMock(side_effect=RuntimeError("source closed"))
+        publisher._source = mock_source
+
+        mock_rtc = MagicMock()
+        mock_rtc.AudioFrame.create.return_value = MagicMock(data=bytearray(320))
+
+        with patch.dict("sys.modules", {"livekit": MagicMock(rtc=mock_rtc)}), \
+             caplog.at_level(logging.WARNING, logger="tgs_agent"):
+            await publisher.publish_mulaw(b"\xff" * 320)
+
+        assert any(
+            "publish_mulaw failed" in record.message for record in caplog.records
+        ), "expected a WARNING-level log for the swallowed publish failure"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

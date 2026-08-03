@@ -125,6 +125,13 @@ class _LiveKitAgentAudioPublisher:
         self._room: Any = None
         self._source: Any = None
         self._connected = False
+        # Rate-limits the "publish failed" warning to once per outage (rather
+        # than once per ~20ms frame) so a sustained failure doesn't flood the
+        # logs while still being visible at all — previously this was a bare
+        # DEBUG log, so a capture_frame() failure meant TTS could be reported
+        # as synthesized/queued successfully while zero audio ever reached
+        # the browser, with no trace of why in normal logs.
+        self._publish_failed_logged = False
 
     @property
     def connected(self) -> bool:
@@ -204,8 +211,14 @@ class _LiveKitAgentAudioPublisher:
                 frame = rtc.AudioFrame.create(_AGENT_AUDIO_SAMPLE_RATE, 1, len(samples))
                 frame.data[:] = pcm
                 await self._source.capture_frame(frame)
+                self._publish_failed_logged = False
         except Exception as exc:
-            logger.debug("[LiveKitBrowserCall] publish_mulaw failed: %s", exc)
+            if not self._publish_failed_logged:
+                logger.warning(
+                    "[LiveKitBrowserCall] publish_mulaw failed room=%s: %s",
+                    self._room_name, exc, exc_info=True,
+                )
+                self._publish_failed_logged = True
 
     async def disconnect(self) -> None:
         self._connected = False
